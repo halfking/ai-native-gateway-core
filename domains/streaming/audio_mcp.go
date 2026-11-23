@@ -122,9 +122,11 @@ func (h *AudioMCPHandler) servePost(w http.ResponseWriter, r *http.Request, requ
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Audio service unavailable", "server_error", "service_unavailable")
 		return
 	}
-	if _, ok := h.svc.authenticate(w, r, requestID); !ok {
+	keyInfo, ok := h.svc.authenticate(w, r, requestID)
+	if !ok {
 		return
 	}
+	r = r.WithContext(withModalityAttemptKey(r.Context(), keyInfo))
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAudioUploadBytes))
 	if err != nil {
 		writeErrorJSON(w, http.StatusRequestEntityTooLarge, requestID, "Request body too large", "invalid_request_error", "request_too_large")
@@ -142,15 +144,18 @@ func (h *AudioMCPHandler) servePost(w http.ResponseWriter, r *http.Request, requ
 	// 鉴权/服务不可用/体积超限不属于协议级错误：它们发生在协议成立之前，
 	// 保持传输层 4xx（客户端连信封都还没资格收）。
 	if trimmed == "" {
+		markModalityProtocolFailure(r, "mcp_parse_error")
 		writeJSONRPCError(w, mcpErrParse, "Empty JSON-RPC body", nil)
 		return
 	}
 	if trimmed[0] == '[' {
+		markModalityProtocolFailure(r, "mcp_invalid_request")
 		writeJSONRPCError(w, mcpErrInvalidRq, "JSON-RPC batch requests are not supported", nil)
 		return
 	}
 	var req jsonRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		markModalityProtocolFailure(r, "mcp_parse_error")
 		writeJSONRPCError(w, mcpErrParse, "Invalid JSON-RPC body", nil)
 		return
 	}
@@ -162,6 +167,9 @@ func (h *AudioMCPHandler) servePost(w http.ResponseWriter, r *http.Request, requ
 	}
 
 	resp := h.dispatch(r, requestID, req)
+	if resp.Error != nil {
+		markModalityProtocolFailure(r, "mcp_rpc_error")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)

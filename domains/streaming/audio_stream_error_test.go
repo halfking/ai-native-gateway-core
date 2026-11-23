@@ -35,7 +35,7 @@ func TestRelayChatAudioSSEErrorFrame(t *testing.T) {
 	var got []string
 	text, _, err := relayChatAudioSSE(context.Background(), strings.NewReader(stream), func(d string) {
 		got = append(got, d)
-	})
+	}, nil)
 	if err == nil {
 		t.Fatalf("error frame must fail the relay, got success text=%q", text)
 	}

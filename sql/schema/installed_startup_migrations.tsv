@@ -410,3 +410,8 @@
 392	982_provider_call_attempts.sql
 393	983_request_metrics.sql
 394	984_session_universe_cost_aware_probe_scope.sql
+395	985_request_reconciliation_links.sql
+396	986_provider_attempt_media_usage.sql
+397	987_provider_invoice_evidence.sql
+398	988_provider_invoice_usage_buckets.sql
+399	989_supplier_contract_rates.sql

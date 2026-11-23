@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
@@ -139,6 +140,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			TenantID:    "default",
 			SessionID:   provisionalSessionID,
 			Provisional: true,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("request_logger: messages early CreateInitial failed", "request_id", requestID, "error", err)
 		}
@@ -237,6 +239,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			// block on request_context_attrs was persisted empty for this
 			// path. Same wiring order as the chat path.
 			logCtx.SetKey(ki)
+			h.chatHandler.enrichAuthenticatedRequestWAL(r.Context(), requestID, ki.TenantID, provisionalSessionID)
 			bindRequestJourney(r, ki.TenantID, attemptClientModel)
 			// SP-02: state machine — auth succeeded.
 			rt.Emit(state.EventAuthed)
@@ -248,7 +251,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			//	预算闸（闸只落在 chat 面）⇒ hard 模式可被整面绕过。
 			//	⇒ 与 chat 面共用同一个闸（domains/streaming/handler.go
 			//	enforceTenantMonthlyBudget）。
-			if !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
+			if !tenantBillingExempt(r.Context(), keyInfo) && !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 				attemptErrCode = errCode
 				attemptErrMsg = errMsg
 			}, func(w http.ResponseWriter, status int, reqID, errType, errMsg, errCode string) {
@@ -598,6 +601,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			SessionID:   sessionID,
 			ClientModel: clientModel,
 			Provisional: false,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("request_logger: messages session merge failed", "request_id", requestID, "error", err)
 		}
@@ -833,6 +837,8 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
+			PlatformOrigin:             platformOriginForKey(r.Context(), keyInfo),
+			AttemptBusinessKey:         reconciliationBusinessKey(keyInfo),
 			W:                          streamWriter,
 			R:                          r,
 			BodyBytes:                  upstreamBody,

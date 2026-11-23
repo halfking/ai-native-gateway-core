@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -53,12 +54,17 @@ type ImagesGenerationsHandler struct {
 	// sanitizeInput / restoreHook 由 SetSanitizeGuard 注入（2026-11-13 脱敏域
 	// 审计 P2 收口）：此前本端点完全绕过 SmartSaniGuard——prompt 明文出上游、
 	// 响应占位符无从还原。nil 时行为与历史完全一致（零开销直通）。
-	sanitizeInput func(http.Handler) http.Handler
-	restoreHook   *sanitize.SanitizeRestoreInterceptor
+	sanitizeInput   func(http.Handler) http.Handler
+	restoreHook     *sanitize.SanitizeRestoreInterceptor
+	attemptRecorder reconciliation.AttemptStore
 }
 
 func NewImagesGenerationsHandler(resolver imageProviderResolver, upstreamClient *upstream.Client) *ImagesGenerationsHandler {
 	return &ImagesGenerationsHandler{provider: resolver, upstream: upstreamClient}
+}
+
+func (h *ImagesGenerationsHandler) SetAttemptRecorder(r reconciliation.AttemptStore) {
+	h.attemptRecorder = r
 }
 
 // SetSanitizeGuard 挂载 SmartSaniGuard 的请求侧中间件与响应侧占位符还原。
@@ -155,7 +161,7 @@ func (h *ImagesGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *htt
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), maxImagesRequestDuration)
+	ctx, cancel := context.WithTimeout(withModalityAttemptKey(r.Context(), keyInfo), maxImagesRequestDuration)
 	defer cancel()
 
 	candidates, _, cerr := h.provider.GetCandidatesByModality(ctx, parsed.Model, profile, tenantID, imageModalityRequest)
@@ -172,7 +178,7 @@ func (h *ImagesGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *htt
 
 	var lastErr error
 	for _, cand := range candidates {
-		status, respBody, ct, perr := h.proxyGenerations(ctx, cand, body)
+		status, respBody, ct, perr := h.proxyGenerations(ctx, cand, body, tenantID, requestID)
 		if perr != nil {
 			lastErr = perr
 			continue
@@ -218,7 +224,7 @@ func (h *ImagesGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *htt
 	writeErrorJSON(w, http.StatusBadGateway, requestID, msg, "server_error", "upstream_error")
 }
 
-func (h *ImagesGenerationsHandler) proxyGenerations(ctx context.Context, cand provider.Candidate, body []byte) (int, []byte, string, error) {
+func (h *ImagesGenerationsHandler) proxyGenerations(ctx context.Context, cand provider.Candidate, body []byte, tenantID, requestID string) (int, []byte, string, error) {
 	endpoint := strings.TrimRight(cand.BaseURL, "/") + "/images/generations"
 	// Rewrite model to upstream-facing name while preserving other fields.
 	var payload map[string]any
@@ -238,6 +244,7 @@ func (h *ImagesGenerationsHandler) proxyGenerations(ctx context.Context, cand pr
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "image_generation")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, h.attemptRecorder, cand, tenantID, requestID, "images_generations")
 	resp, upErr := h.upstream.Do(upReq)
 	if upErr != nil {
 		return 0, nil, "", upErr
@@ -246,6 +253,15 @@ func (h *ImagesGenerationsHandler) proxyGenerations(ctx context.Context, cand pr
 	respBody, err := readLimitedResponse(resp.Body, maxImagesResponseBytes)
 	if err != nil {
 		return 0, nil, "", err
+	}
+	if attemptObserver != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != http.StatusAccepted {
+		media, usage := generatedImageEvidence(respBody)
+		attemptObserver.RecordResponse(usage, media)
+		if media.GeneratedImages != nil && *media.GeneratedImages > 0 {
+			attemptObserver.Finish("success")
+		}
+	} else {
+		attemptObserver.RecordResponse(respBody)
 	}
 	return resp.StatusCode, respBody, resp.Header.Get("Content-Type"), nil
 }
@@ -264,11 +280,14 @@ func (h *ImagesGenerationsHandler) authenticate(w http.ResponseWriter, r *http.R
 		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid API key", "authentication_error", "invalid_api_key")
 		return nil, false
 	}
+	observeModalityIdentity(r, keyInfo)
 	if keyInfo.Status == "throttled" {
+		markModalityRateLimited(r, "key_throttled")
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
 	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, nil, 0); !outcome.Skipped {
+		markModalityRateLimited(r, "rate_limit_exceeded")
 		// 2026-11-15（限流统一按 key 轮）：code 与其它面统一为
 		// rate_limit_exceeded（旧 rate_limited 是本面独有的第五种限流词汇）。
 		writeRateLimitHeaders(w, outcome)

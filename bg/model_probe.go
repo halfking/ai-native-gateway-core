@@ -159,7 +159,8 @@ func (r *ModelProbeRunner) SetAvailabilityCache(cache *ModelAvailabilityCache) {
 // run whenever this runner changes a binding's routability.
 //
 // ★ 语义与 bg/node_probe.go 的同名注入点**逐字一致**（同一族、同一形状）⇒
-//   两个探针栈的「判定变了 ⇒ 缓存作废」不再一个有一个没有。
+//
+//	两个探针栈的「判定变了 ⇒ 缓存作废」不再一个有一个没有。
 func (r *ModelProbeRunner) SetInvalidateCandidateCache(fn func(credentialID int)) {
 	if r == nil {
 		return
@@ -742,7 +743,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
-		       COALESCE(mps.consecutive_failures, 0)
+		       COALESCE(mps.consecutive_failures, 0), p.id
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -795,7 +796,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			&q.t.CredentialID, &q.t.RawModel, &q.t.OutboundModel, &q.t.Modality,
 			&q.t.BaseURL, &q.t.Protocol,
 			&ciphertext, &q.t.ManualDisabled,
-			&q.state, &q.succCnt, &q.failCnt,
+			&q.state, &q.succCnt, &q.failCnt, &q.t.ProviderID,
 		); err != nil {
 			if dbrows.SkipOrFail("bg.ModelProbeRunner.cycle", err) {
 				continue
@@ -945,6 +946,7 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 //   - INV-5: the credential has failure evidence in the last 24h;
 //   - INV-4: the credential has NOT already been re-verified by two distinct
 //     models whose latest probe run succeeded within 24h.
+//
 // 2026-11-05: INV-3 usage EXISTS removed from this cycle — featured models are
 // always in automatic scope; Go-side globalIsFeaturedModel is the model gate.
 // Non-featured models still require 24h real usage (Enqueue/Run model scope).
@@ -958,7 +960,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		       COALESCE(mc.modality, 'text'),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
-		       COALESCE(pm.standardized_name, '')
+		       COALESCE(pm.standardized_name, ''), p.id
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -996,7 +998,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		var standardized string
 		if err := rows.Scan(
 			&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality,
-			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled, &standardized,
+			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled, &standardized, &t.ProviderID,
 		); err != nil {
 			if dbrows.SkipOrFail("bg.ModelProbeRunner.featuredCycle", err) {
 				continue
@@ -1559,7 +1561,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
-		       COALESCE(mps.consecutive_failures, 0)
+		       COALESCE(mps.consecutive_failures, 0), p.id
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -1582,7 +1584,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	var prevState string
 	var prevSucc, prevFail int
 	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality, &t.BaseURL, &t.Protocol,
-		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail); err != nil {
+		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail, &t.ProviderID); err != nil {
 		if err == pgx.ErrNoRows {
 			var disabled bool
 			if probeErr := r.db.QueryRow(ctx, `
@@ -1719,7 +1721,7 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 
 	var results []ProbeAllResult
 	for rows.Next() {
-		var t probeTarget
+		t := probeTarget{ProviderID: providerID}
 		var ciphertext []byte
 		if err := rows.Scan(
 			&t.CredentialID, &t.RawModel, &t.OutboundModel,
@@ -1821,6 +1823,7 @@ func probeDescriptorFor(protocol string) providercap.Descriptor {
 // tuple we test.
 type probeTarget struct {
 	CredentialID   int
+	ProviderID     int
 	RawModel       string
 	OutboundModel  string // COALESCE(pm.outbound_model_name, pm.raw_model_name)
 	Modality       string // canonical modality inferred during discovery
@@ -1844,7 +1847,8 @@ func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarg
 	}
 	desc := probeDescriptorFor(t.Protocol)
 	endpoint := upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint)
-	result := ProbeModality(ctx, endpoint, t.APIKey, model, t.Modality, desc.Protocol == "anthropic-messages")
+	probeCtx := withPlatformProbeBinding(ctx, t.ProviderID, t.CredentialID, t.RawModel)
+	result := ProbeModality(probeCtx, endpoint, t.APIKey, model, t.Modality, desc.Protocol == "anthropic-messages")
 	if result.ErrCode == "" && result.Supported {
 		slog.Info("model modality probe succeeded",
 			"credential_id", t.CredentialID,

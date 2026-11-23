@@ -174,6 +174,7 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 			g.reject(w, r, status, code, logMessage, rej)
 			return
 		}
+		claimOrchestrationChild(r, VerifiedKeyInfoFromContext(r.Context()), ref.SHA256)
 		body := prefix
 		report := sessioncontext.Report{SourceBytes: ref.Size, OutputBytes: len(body), SourceHash: ref.SHA256}
 		// Rejections after RAW commit must retain an auditable recovery reference.
@@ -550,7 +551,7 @@ func (g *LargeIngress) reject(w http.ResponseWriter, r *http.Request, status int
 	} else {
 		write.ServeHTTP(w, r)
 	}
-
+	RecordGatewayAdmissionRejection(r, status, code, VerifiedKeyInfoFromContext(r.Context()))
 }
 
 // Archive identity is merged into existing metadata. Neither raw bytes nor local

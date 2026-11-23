@@ -178,9 +178,10 @@ func (g *KeyConcurrentGate) serve(w http.ResponseWriter, r *http.Request, next h
 		used := g.used[keyInfo.ID]
 		g.minuteRejected[keyInfo.ID]++
 		g.mu.Unlock()
+		observeModalityIdentity(r, keyInfo)
+		markModalityRateLimited(r, "key_concurrent_limit")
 		// 拒绝可观测（本轮补齐）：WARN + 指标（reason=key_concurrent_limit，
-		// 与 RPM 族的 llm_gateway_rate_limit_rejections_total 同家族）——
-		// 闸在 telemetry 之前拦，不写 request_logs，这两条是唯一痕迹。
+		// 与 RPM 族的 llm_gateway_rate_limit_rejections_total 同家族）。
 		outcome := rateLimitOutcome{Blocked: true, Limit: limit, Remaining: 0, ResetSec: 1, Reason: "key_concurrent_limit"}
 		recordGatewayRateLimitRejection(outcome)
 		slog.Warn("key_concurrent_gate_rejected",
@@ -195,6 +196,9 @@ func (g *KeyConcurrentGate) serve(w http.ResponseWriter, r *http.Request, next h
 		writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusTooManyRequests, requestIDOf(r),
 			"Key concurrent request limit reached", "rate_limit_error", "rate_limit_exceeded", "rate_limit_exceeded",
 			map[string]any{"stage": "key_concurrency", "limit": limit, "in_flight": used})
+		if r.Context().Value(modalityIngressKey{}) == nil {
+			RecordGatewayAdmissionRejection(r, http.StatusTooManyRequests, "key_concurrent_limit", keyInfo)
+		}
 		return
 	}
 	g.used[keyInfo.ID]++

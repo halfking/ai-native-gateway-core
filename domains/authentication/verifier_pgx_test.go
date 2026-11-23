@@ -64,7 +64,8 @@ func TestKeyVerifier_Verify_Cache_StaleKeyPrefix(t *testing.T) {
 		"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias",
 		"customer_id", // 2026-07-15 (migration 407): applications.customer_id
 		"expires_at",  // 2026-09-04 keystore: read-time expiry validation
-	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, nil)
+		"is_system",
+	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, nil, true)
 	mp.ExpectQuery(`SELECT`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(rows)
@@ -78,6 +79,9 @@ func TestKeyVerifier_Verify_Cache_StaleKeyPrefix(t *testing.T) {
 	}
 	if got.KeyPrefix != "sk-1" {
 		t.Fatalf("KeyPrefix = %q", got.KeyPrefix)
+	}
+	if !got.IsSystem {
+		t.Fatal("database verifier must propagate api_keys.is_system")
 	}
 	// 等待异步 UPDATE
 	time.Sleep(50 * time.Millisecond)

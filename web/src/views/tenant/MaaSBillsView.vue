@@ -17,10 +17,11 @@ import { formatBytes } from '../../utils/format'
 import PageBackLink from '../../components/PageBackLink.vue'
 import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
-import { authBearer } from '../../store'
+import { authBearer, isTenantAdmin } from '../../store'
+import DailyReconciliationPanel from '../../components/reconciliation/DailyReconciliationPanel.vue'
 
 const { t } = useI18n()
-const { pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
+const { pageTitle: ctxPageTitle, maasBackLink, isAdminTenantView, tenantCode } = useMaasTenantContext()
 const pageTitle = computed(() => ctxPageTitle(t('tenants.bills.title')))
 const backLink = computed(() => maasBackLink('bills'))
 
@@ -119,6 +120,8 @@ onMounted(load)
     </header>
 
     <p v-if="error" class="error-banner">{{ error }}</p>
+
+    <DailyReconciliationPanel v-if="isTenantAdmin() || isAdminTenantView" :tenant-scope="tenantCode" />
 
     <section class="card-block">
       <h2>{{ t('tenants.bills.listTitle') }}</h2>

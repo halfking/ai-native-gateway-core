@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -54,7 +55,8 @@ type EmbeddingsHandler struct {
 	// candidate_failure_logs_hot ledger (plus the supplier_errors_hot
 	// projection) — same writer the chat executor uses. Optional wiring;
 	// nil disables the ledger writes (2026-09-14 audit #8).
-	failureLogger *executors.CandidateFailureWriter
+	failureLogger   *executors.CandidateFailureWriter
+	attemptRecorder reconciliation.AttemptStore
 }
 
 func NewEmbeddingsHandler(providerResolver embeddingProviderResolver, upstreamClient *upstream.Client) *EmbeddingsHandler {
@@ -66,6 +68,8 @@ func NewEmbeddingsHandler(providerResolver embeddingProviderResolver, upstreamCl
 func (h *EmbeddingsHandler) SetFailureLogger(writer *executors.CandidateFailureWriter) {
 	h.failureLogger = writer
 }
+
+func (h *EmbeddingsHandler) SetAttemptRecorder(r reconciliation.AttemptStore) { h.attemptRecorder = r }
 
 func (h *EmbeddingsHandler) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimiter ratelimit.RPMLimiter) {
 	h.keyVerifier = keyVerifier
@@ -196,7 +200,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			lastErr = marshalErr.Error()
 			continue
 		}
-		upstreamReq, requestErr := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamurl.EmbeddingsURL(candidate.BaseURL), bytes.NewReader(upstreamBody))
+		upstreamReq, requestErr := http.NewRequestWithContext(withModalityAttemptKey(r.Context(), keyInfo), http.MethodPost, upstreamurl.EmbeddingsURL(candidate.BaseURL), bytes.NewReader(upstreamBody))
 		if requestErr != nil {
 			lastErr = requestErr.Error()
 			continue
@@ -206,8 +210,10 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set("Accept", "application/json")
 		upstreamReq.Header.Set("X-Gateway-Internal-Purpose", "embedding")
 
+		upstreamReq, attemptObserver := observeModalityRequest(upstreamReq, h.attemptRecorder, candidate, tenantID, requestID, "embeddings")
 		resp, upstreamErr := h.upstream.Do(upstreamReq)
 		if upstreamErr != nil {
+			attemptObserver.Finish("unknown")
 			// 5xx / network path: Do already classified (status+body) and
 			// captured the body; harvest Kind + per-family Retry-After for
 			// exhaustion, then fail over to the next candidate.
@@ -226,6 +232,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// credential-fatal / anything not client-determined) or renders a
 		// terminal client-determined family as a gateway-shaped error.
 		if !isEmbeddingPassthroughStatus(resp.StatusCode) {
+			attemptObserver.Finish("failure")
 			typedErr := upstream.ErrorFromResponse(resp)
 			_ = resp.Body.Close()
 			if typedErr == nil {
@@ -250,8 +257,18 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		responseBody, readErr := readLimitedResponse(resp.Body, maxEmbeddingsResponseBytes)
 		_ = resp.Body.Close()
 		if readErr != nil {
+			attemptObserver.Finish("unknown")
 			lastErr = readErr.Error()
 			continue
+		}
+		attemptObserver.RecordResponse(responseBody)
+		if attemptObserver != nil && len(responseBody) <= maxModalityEvidenceBody {
+			var reply struct {
+				Data []json.RawMessage `json:"data"`
+			}
+			if json.Unmarshal(responseBody, &reply) == nil && reply.Data != nil {
+				attemptObserver.Finish("success")
+			}
 		}
 		if autoDecision != "" {
 			// Minimal X-Gw-Auto-Decision for embeddings (no task taxonomy).
@@ -381,7 +398,9 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 		return nil, false
 	}
+	observeModalityIdentity(r, keyInfo)
 	if keyInfo.Status == "throttled" {
+		markModalityRateLimited(r, "key_throttled")
 		ratelimit.MarkGatewaySharedKeyRateLimit(w)
 		h.recordRateLimited(requestID, keyInfo, "<unknown>", "key_throttled")
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
@@ -390,6 +409,7 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, nil, 0); !outcome.Skipped {
 		writeRateLimitHeaders(w, outcome)
 		if outcome.Blocked {
+			markModalityRateLimited(r, "rate_limit_exceeded")
 			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			h.recordRateLimited(requestID, keyInfo, "<unknown>", "rate_limit_exceeded")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")

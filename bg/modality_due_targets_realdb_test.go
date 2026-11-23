@@ -146,7 +146,7 @@ func TestDueTargetsPicksNeverProbedFirst(t *testing.T) {
 	// batchLimit*scanFactor，若排序被改回「纯 checked_at 且 NULLS LAST」，
 	// 未核实的两行会沉到末尾并被 LIMIT 截掉。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO public.providers (code, base_url, protocol) VALUES ('p1','https://x.invalid','openai-completions');
+		INSERT INTO public.providers (id, code, base_url, protocol) VALUES (17,'p1','https://x.invalid','openai-completions');
 		INSERT INTO public.credentials (provider_id) SELECT id FROM public.providers WHERE code='p1';
 		INSERT INTO public.models_canonical (canonical_name, modality, modality_source)
 		VALUES ('never-1','text','inferred'), ('never-2','text','inferred'), ('stale-1','vision','semantic');
@@ -222,6 +222,9 @@ func TestDueTargetsPicksNeverProbedFirst(t *testing.T) {
 	got := map[string]bool{}
 	order := make([]string, 0, len(targets))
 	for _, tg := range targets {
+		if tg.ProviderID != 17 || tg.CredentialID != 1 {
+			t.Errorf("due target %q provider=%d credential=%d, want provider 17 and credential 1", tg.RawModel, tg.ProviderID, tg.CredentialID)
+		}
 		got[tg.CanonicalName] = true
 		order = append(order, tg.CanonicalName)
 	}

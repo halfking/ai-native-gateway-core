@@ -1555,6 +1555,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// T1.4 用量成本增强端点 (2026-07-06)
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/admin/usage/request-reconciliation", h.admin(h.handleRequestReconciliation))
+	mux.HandleFunc("/api/admin/provider-cost-reconciliation/invoices", h.superAdmin(h.handleProviderInvoices))
+	mux.HandleFunc("/api/admin/provider-cost-reconciliation/rates", h.superAdmin(h.handleSupplierContractRates))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
 	// T4 审计（2026-10-01 起）：top-problems 报表端点。

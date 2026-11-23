@@ -1182,8 +1182,10 @@ func authenticateNoRPMWith(
 		writeErr(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 		return nil, false
 	}
+	observeModalityIdentity(r, keyInfo)
 	if keyInfo.Status == "throttled" {
 		ratelimit.MarkGatewaySharedKeyRateLimit(w)
+		markModalityRateLimited(r, "key_throttled")
 		writeErr(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
@@ -1221,6 +1223,7 @@ func loopbackChatCompletions(ctx context.Context, hc *http.Client, endpoint, aut
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-Id", requestID)
 	req.Header.Set("X-Gateway-Internal-Purpose", purpose)
+	registerOrchestrationChild(req, body)
 
 	resp, err := hc.Do(req)
 	if err != nil {

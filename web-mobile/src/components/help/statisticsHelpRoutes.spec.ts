@@ -7,15 +7,15 @@ describe('statisticsHelpForPath', () => {
     ['/usage-enhanced', 'usage-enhanced', 'usageEnhanced'],
     ['/usage-trend-series', 'usage-trends', 'usageTrendSeries'],
     ['/report-rollup', 'reconciliation', 'reportRollup'],
-    ['/reconciliation', 'reconciliation', 'reconciliation'],
-    ['/cache-state', 'usage-enhanced', 'cacheState'],
+    ['/reconciliation', undefined, 'reconciliation'],
+    ['/cache-state', undefined, 'cacheState'],
     ['/logs', 'request-logs', 'logs'],
     ['/session-audit', 'session-detail', 'sessionAudit'],
-    ['/sessions-online', 'session-analytics-overview', 'sessionsOnline'],
+    ['/sessions-online', undefined, 'sessionsOnline'],
     ['/session-analytics', 'session-analytics-overview', 'sessionAnalytics'],
     ['/request-detail/abc-123', 'request-detail', 'requestDetail'],
   ])('maps %s to page-specific help', (path, contentId, contextKey) => {
-    expect(statisticsHelpForPath(path)).toEqual({ contentId, contextKey })
+    expect(statisticsHelpForPath(path)).toStrictEqual(contentId ? { contentId, contextKey } : { contextKey })
   })
 
   it('does not add the help action to unrelated pages', () => {

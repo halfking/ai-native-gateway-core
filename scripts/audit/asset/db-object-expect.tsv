@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-23T03:13:26+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 959, "indexes_created": 1011, "indexes_dropped_somewhere": 93, "migration_files": 665, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-23T16:54:07+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 970, "indexes_created": 1022, "indexes_dropped_somewhere": 93, "migration_files": 671, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 -1	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
@@ -933,6 +933,17 @@
 981	idx_sessions_is_probe	sessions	981_session_analytics_foundation.sql	is_probe	
 981	idx_sessions_project	sessions	981_session_analytics_foundation.sql	project	
 981	idx_sessions_task_category	sessions	981_session_analytics_foundation.sql	task_category	
+982	idx_provider_call_attempts_request	provider_call_attempts	982_provider_call_attempts.sql	tenant_id,request_id	
+982	idx_provider_call_attempts_sent	provider_call_attempts	982_provider_call_attempts.sql	sent_at	
+982	idx_provider_call_attempts_unconfirmed	provider_call_attempts	982_provider_call_attempts.sql	prepared_at	
+984	idx_reconciliation_links_child	request_reconciliation_links	984_request_reconciliation_links.sql	tenant_id,child_request_id	
+984	idx_reconciliation_links_parent	request_reconciliation_links	984_request_reconciliation_links.sql	tenant_id,parent_request_id	
+984	idx_reconciliation_links_registered	request_reconciliation_links	984_request_reconciliation_links.sql	registered_at	
+986	idx_provider_call_attempts_account_time	provider_call_attempts	986_provider_invoice_evidence.sql	provider_id,credential_id	
+986	idx_provider_call_attempts_provider_request	provider_call_attempts	986_provider_invoice_evidence.sql	provider_id,provider_request_id,sent_at	
+986	idx_provider_invoice_lines_request	provider_invoice_lines	986_provider_invoice_evidence.sql	provider_request_id,invoice_id	
+986	idx_provider_invoices_provider_month	provider_invoices	986_provider_invoice_evidence.sql	provider_id,month_start,invoice_id	
+987	idx_provider_invoices_window	provider_invoices	987_provider_invoice_usage_buckets.sql	window_start,window_end,invoice_id	
 994	idx_agent_usage_agg_agent	agent_usage_aggregates	994_session_analytics_owner_key_and_close_path.sql	agent_name,date	
 994	idx_agent_usage_agg_pk	agent_usage_aggregates	994_session_analytics_owner_key_and_close_path.sql	agent_name,tenant_id,date	
 994	idx_agent_usage_agg_tenant	agent_usage_aggregates	994_session_analytics_owner_key_and_close_path.sql	tenant_id,date	

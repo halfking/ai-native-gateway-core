@@ -1941,6 +1941,36 @@ var providerCallAttempts982 []byte
 //go:embed embeddata/startup/982_provider_call_attempts.down.sql
 var providerCallAttempts982Down []byte
 
+//go:embed embeddata/startup/986_provider_invoice_evidence.sql
+var providerInvoiceEvidence986 []byte
+
+//go:embed embeddata/startup/986_provider_invoice_evidence.down.sql
+var providerInvoiceEvidence986Down []byte
+
+//go:embed embeddata/startup/984_request_reconciliation_links.sql
+var requestReconciliationLinks984 []byte
+
+//go:embed embeddata/startup/984_request_reconciliation_links.down.sql
+var requestReconciliationLinks984Down []byte
+
+//go:embed embeddata/startup/985_provider_attempt_media_usage.sql
+var providerAttemptMediaUsage985 []byte
+
+//go:embed embeddata/startup/985_provider_attempt_media_usage.down.sql
+var providerAttemptMediaUsage985Down []byte
+
+//go:embed embeddata/startup/987_provider_invoice_usage_buckets.sql
+var providerInvoiceUsageBuckets987 []byte
+
+//go:embed embeddata/startup/987_provider_invoice_usage_buckets.down.sql
+var providerInvoiceUsageBuckets987Down []byte
+
+//go:embed embeddata/startup/988_supplier_contract_rates.sql
+var supplierContractRates988 []byte
+
+//go:embed embeddata/startup/988_supplier_contract_rates.down.sql
+var supplierContractRates988Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2602,6 +2632,16 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/989_migration_ledger_session_analytics_981_repair.down.sql": migrationLedgerSessionAnalytics981Repair989Down,
 	"startup/982_provider_call_attempts.sql":                             providerCallAttempts982,
 	"startup/982_provider_call_attempts.down.sql":                        providerCallAttempts982Down,
+	"startup/986_provider_invoice_evidence.sql":                          providerInvoiceEvidence986,
+	"startup/986_provider_invoice_evidence.down.sql":                     providerInvoiceEvidence986Down,
+	"startup/984_request_reconciliation_links.sql":                       requestReconciliationLinks984,
+	"startup/984_request_reconciliation_links.down.sql":                  requestReconciliationLinks984Down,
+	"startup/985_provider_attempt_media_usage.sql":                       providerAttemptMediaUsage985,
+	"startup/985_provider_attempt_media_usage.down.sql":                  providerAttemptMediaUsage985Down,
+	"startup/987_provider_invoice_usage_buckets.sql":                     providerInvoiceUsageBuckets987,
+	"startup/987_provider_invoice_usage_buckets.down.sql":                providerInvoiceUsageBuckets987Down,
+	"startup/988_supplier_contract_rates.sql":                            supplierContractRates988,
+	"startup/988_supplier_contract_rates.down.sql":                       supplierContractRates988Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

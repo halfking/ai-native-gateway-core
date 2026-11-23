@@ -52,7 +52,7 @@ func responsesChatFallbackPing(ctx context.Context, client *http.Client, apiKey,
 	return r.HTTPStatus, r.Body, r.LatencyMs, r.OK
 }
 
-func responsesChatFallbackRound(ctx context.Context, client *http.Client, apiKey, baseURL, model string) responsesChatFallbackResult {
+func responsesChatFallbackRound(ctx context.Context, client *http.Client, apiKey, baseURL, model string, credIDs ...int) responsesChatFallbackResult {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -70,7 +70,8 @@ func responsesChatFallbackRound(ctx context.Context, client *http.Client, apiKey
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := client.Do(req)
+	credID:=0;if len(credIDs)>0{credID=credIDs[0]}
+	resp, err := platformProbeDo(ctx,client,req,credID,model,"responses_chat_fallback")
 	r.LatencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		r.Body = fmt.Sprintf("chat fallback unreachable: %s", err.Error())

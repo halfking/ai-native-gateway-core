@@ -282,6 +282,13 @@ func bearerKeyPrefixForLog(key string) string {
 	return key[:8] + "****"
 }
 
+type authRejectionObserverKey struct{}
+
+// ObserveAuthRejection attaches the gateway's observer for requests rejected by global auth.
+func ObserveAuthRejection(ctx context.Context, observe func(string)) context.Context {
+	return context.WithValue(ctx, authRejectionObserverKey{}, observe)
+}
+
 // writeAuthUnauthorized emits the canonical 401 authentication-error envelope.
 // messageKey is translated via i18n for the request's locale; code is the
 // machine-readable token kept stable for SDKs.
@@ -300,4 +307,7 @@ func writeAuthUnauthorized(ctx context.Context, w http.ResponseWriter, messageKe
 			"code":    code,
 		},
 	})
+	if observe, ok := ctx.Value(authRejectionObserverKey{}).(func(string)); ok {
+		observe(code)
+	}
 }

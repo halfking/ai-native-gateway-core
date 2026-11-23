@@ -88,7 +88,7 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 	rows, err := c.db.Query(timeoutCtx, `
 		SELECT c.id, c.label, c.secret_ciphertext, p.base_url, p.protocol,
-		       COALESCE(c.health_status, 'unknown'), c.availability_state, c.quota_state
+		       COALESCE(c.health_status, 'unknown'), c.availability_state, c.quota_state, p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
@@ -116,12 +116,12 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 	unreachable := 0
 
 	for rows.Next() {
-		var credID int
+		var credID, providerID int
 		var label, baseURL, protocol string
 		var ciphertext []byte // bytea in DB, must be []byte for pgx scan
 		var healthStatus, availState, quotaState *string
 
-		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState); err != nil {
+		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState, &providerID); err != nil {
 			if dbrows.SkipOrFail("bg.CredentialCycler.cycleAll", err) {
 				continue
 			}
@@ -138,7 +138,7 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 			continue
 		}
 
-		ok, errMsg := probeCredential(ctx, baseURL, decrypted)
+		ok, errMsg := probeCredential(withPlatformProbeBinding(ctx, providerID, credID, ""), baseURL, decrypted)
 		checked++
 		if ok {
 			healthy++
@@ -248,7 +248,7 @@ func probeCredential(ctx context.Context, baseURL, apiKey string) (bool, string)
 		}
 
 		client := &http.Client{Timeout: 15 * time.Second}
-		resp, err := client.Do(req)
+		resp, err := platformProbeDo(ctx, client, req, 0, "", "credential_cycler_models")
 		if err != nil {
 			lastErr = err
 			continue
@@ -303,12 +303,13 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 
 	var ciphertext []byte // bytea in DB, must be []byte for pgx scan
 	var baseURL, protocol string
+	var providerID int
 	err := c.db.QueryRow(execCtx, `
-		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions')
+		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions'), p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1 AND c.status = 'active'
-	`, credID).Scan(&ciphertext, &baseURL, &protocol)
+	`, credID).Scan(&ciphertext, &baseURL, &protocol, &providerID)
 	if err != nil {
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "not found"}
 	}
@@ -318,7 +319,7 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "decrypt failed"}
 	}
 
-	ok, errMsg := probeCredential(ctx, baseURL, decrypted)
+	ok, errMsg := probeCredential(withPlatformProbeBinding(ctx, providerID, credID, ""), baseURL, decrypted)
 	if ok {
 		result.Status = "healthy"
 		c.updateHealth(ctx, credID, "healthy", "")

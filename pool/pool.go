@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/httpwrite"
 )
 
 const (
@@ -125,6 +127,7 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 		}).DialContext,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 	}
+	httpwrite.TrackTransport(transport)
 
 	p := &Pool{
 		key:         key,

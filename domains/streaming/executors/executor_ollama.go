@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -1059,6 +1060,8 @@ func (e *Executor) executeOllama(
 	if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "ollama-native"), bodyBytes); err != nil {
 		return nil, err
 	}
+	callAttempt := newProviderAttempt(params, cand, "executor_ollama")
+	req, attemptBatch := e.observeProviderCalls(req, params, cand, callAttempt)
 
 	reqStart := time.Now()
 	var resp *http.Response
@@ -1067,13 +1070,18 @@ func (e *Executor) executeOllama(
 		resp, uErr = e.Upstream.Do(req)
 	} else {
 		var doErr error
-		resp, doErr = http.DefaultClient.Do(req)
+		resp, doErr = upstreampkg.DoObserved(req, http.DefaultClient)
 		if doErr != nil {
 			uErr = &upstreampkg.Error{
 				Kind:    errorsx.ClassifyError(doErr, nil),
 				Message: doErr.Error(),
 				Err:     doErr,
 			}
+		}
+	}
+	if attemptBatch != nil {
+		if last := attemptBatch.latestAttempt(); last.ID != "" {
+			callAttempt = last
 		}
 	}
 	latencyMs := int(time.Since(tTotal).Milliseconds())
@@ -1154,6 +1162,7 @@ func (e *Executor) executeOllama(
 			captured = captured[:maxPassthroughErrorBody]
 		}
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "ollama-native"), captured)
+		e.recordAttemptUsage(callAttempt, reconciliation.ParseUsageEvidence(captured, cand.Protocol), captured, reconciliation.ResponseEndpoint(resp))
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, captured)
 		// Ollama returns context overflow as a normal 4xx JSON error. Reuse
 		// the shared recovery coordinator, but mark the recursive attempt so
@@ -1241,6 +1250,7 @@ func (e *Executor) executeOllama(
 			params.OnStreamReady = nil
 		}
 		outcome := oe.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
+		e.finishObservedStream(callAttempt, params.Capture, outcome, cand.Protocol)
 		if outcome.Interrupted && isClientStreamInterruption(outcome.Kind, outcome.Reason) {
 			slog.Info("executor: client disconnected during ollama stream",
 				"credential_id", cand.CredentialID,
@@ -1319,6 +1329,14 @@ func (e *Executor) executeOllama(
 		}}
 	}
 	body, werr := oe.WriteNonStreamResponse(responseSink(params), resp, params.ClientModel, cand.QualityFixMode, nil)
+	if len(body) > 0 {
+		e.recordAttemptUsage(callAttempt, reconciliation.ParseUsageEvidence(body, cand.Protocol), body, reconciliation.ResponseEndpoint(resp))
+	}
+	if werr == nil && e.AttemptRecorder != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = e.AttemptRecorder.Finish(ctx, callAttempt.ID, "success")
+		cancel()
+	}
 	if werr != nil {
 		// Even on write error, return the body so the dispatcher's
 		// request-log preview sees what we tried to send. Use
