@@ -68,6 +68,7 @@ export default {
     tenantOrder: 'Order detail',
     tenantUsage: 'My usage',
     boardOperational: 'Operations board',
+    usageBreakdown: 'Usage breakdown data notes',
     opsOverview: 'Ops overview',
     pricing: 'Pricing management',
     modelPricing: 'Standard model pricing',

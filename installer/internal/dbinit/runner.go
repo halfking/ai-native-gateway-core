@@ -4,6 +4,8 @@ package dbinit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -2025,6 +2027,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix
 			//     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 的台账行记过同款）。
 			"989_migration_ledger_session_analytics_981_repair.sql",
+			"982_provider_call_attempts.sql",
 		},
 	}
 }
@@ -2080,12 +2083,44 @@ ON CONFLICT (canonical_name) DO UPDATE
 // content_sha256 指纹判断「内容被加固后重放」；本通道只按 version 跳过 ——
 // 同编号文件的内容加固不会在这里重放（需要内容变更时按仓内纪律出更高编号
 // 的增量迁移，而不是改老文件）。
+//
+// ★★★ 2026-11-23 L33 轮（真库空库 + 装完再升实测）：★ 本通道的「跳过」判据
+//
+// ★★★ 原来只认「版本号在 schema_migrations 台账里」⇒ ★★ 而台账是**迁移文件
+// ★★ 自己**在尾部 INSERT 维护的 ⇒ ★★ 392 条 startup 迁移里只有 110 条自登记
+// ★★ ⇒ ★★ 其余 280 条**从不记账** ⇒ ★★ **每次增量都被重放** ⇒ ★★ 而「重放
+// ★★ 安全」是个**未经证明的假设**（★ 实测两条反例：★ bootstrap 撞已被 890
+// ★★ 下线的 public.request_logs_hot；★ 392 的 SELECT * UNION ALL 视图在列序
+// ★★ 漂移的库上炸）⇒ ★★ ⇒ **同一个刚装成功的库，第二次升级必失败**。
+//
+// ★★ 本轮补三条（★ **零迁移字节变更**，★ 全在安装器代码里）：
+//
+//	★ F1 记账补齐：应用成功后把版本补记进人读台账 schema_migrations
+//	  （★ 923 那条迁移就是为同一目的写的：★ 「人读视图落后 ⇒ 运维把已应用
+//	  ★ 误判成待应用」）⇒ ★★ 增量通道从此**只补未登记的变更**。
+//	★ F2 安装器专属资产（★ bootstrap）只在**全新安装**路径投递
+//	  （★ 判据来自文件自身的契约声明，★ 见 freshInstallOnlyAssets）。
+//	★ F3 **只读**咨询部署通道的权威台账 gateway_db_revision_sequences
+//	  （★ 已被部署通道按同一内容指纹应用过的文件 ⇒ 不重放；★ 这与部署通道
+//	  ★ 自己的跳过判据同款 ⇒ ★ 两条通道从此对「什么算已应用」口径一致）。
 func (r *Runner) InitSchema(logger func(string)) error {
 	applied, hasLedger, err := r.appliedVersions()
 	if err != nil {
 		return err
 	}
 	incremental := hasLedger && len(applied) > 0
+
+	// ★ F3：增量路径**只读**部署通道的权威台账（★ 表不存在 ⇒ 空表 ⇒ 不影响）。
+	var deployApplied map[string]string
+	if incremental {
+		deployApplied, err = r.deployLedgerApplied()
+		if err != nil {
+			return err
+		}
+		if len(deployApplied) > 0 {
+			logger(fmt.Sprintf("  ▶ 部署通道权威台账 gateway_db_revision_sequences 命中 %d 条已应用文件（★ 只读咨询，★ 不写）", len(deployApplied)))
+		}
+	}
 
 	if incremental {
 		logger("  ▶ 检测到已有数据库（schema_migrations 台账非空）—— 增量模式：跳过基线三件，仅应用 pending 迁移")
@@ -2123,21 +2158,188 @@ func (r *Runner) InitSchema(logger func(string)) error {
 	}
 
 	appliedCount := 0
+	skippedCount := 0
 	for _, name := range r.StartupFiles {
-		if incremental && !startupPending(name, applied) {
-			continue
+		if incremental {
+			if reason, skip := r.startupSkipReason(name, applied, deployApplied); skip {
+				logger(fmt.Sprintf("  ▶ 跳过 startup migration %s（%s）", name, reason))
+				skippedCount++
+				continue
+			}
 		}
 		logger(fmt.Sprintf("  ▶ 应用 startup migration %s ...", name))
 		if err := r.applySQL(filepath.Join("startup", name)); err != nil {
 			return fmt.Errorf("应用 startup migration %s 失败: %w", name, err)
 		}
 		logger(fmt.Sprintf("  ✅ startup migration %s 完成", name))
+		// ★ F1：应用成功后把版本补记进人读台账（★ 自登记的文件 ⇒ 这里是空操作）。
+		if err := r.recordAppliedVersion(name); err != nil {
+			return fmt.Errorf("补记 %s 的台账行失败: %w", name, err)
+		}
 		appliedCount++
 	}
 	if incremental {
-		logger(fmt.Sprintf("  ✅ 增量迁移完成：本次应用 %d 个 startup 迁移（其余已登记项跳过）", appliedCount))
+		logger(fmt.Sprintf("  ✅ 增量迁移完成：本次应用 %d 个 startup 迁移（跳过 %d 个）", appliedCount, skippedCount))
 	}
 	return nil
+}
+
+// freshInstallOnlyAssets：**只在全新安装路径投递**的资产（★ 增量路径跳过）。
+//
+// ★ 判据来自**文件自身的契约声明**——不是本代码的偏好：
+//
+//	session_turns_hot_bootstrap.sql 的文件头写着：
+//	  "This installer-only asset ... It is not an upgrade migration and
+//	   must not be applied to an existing deployment."
+//
+// ★ 而安装器对**无数字前缀**的文件一向「恒执行」（★ 靠幂等契约兜底）
+// ⇒ ★★ 两条契约直接对撞 ⇒ ★★ 增量路径执行它 ⇒ 撞已被 890 下线的
+// ★★ public.request_logs_hot ⇒ ★★ 报错（★ 本机实测：
+// ★★ ERROR:  relation "public.request_logs_hot" does not exist）。
+//
+// ★ 另一条无前缀文件 361b_provider_models_source_prelude.sql **不在**本表：
+// ★ 它的契约是「host-first 部署通道 prelude」（★ 幂等 ADD COLUMN，★ 纯加列）
+// ⇒ ★ 它**必须**在增量路径照跑 ⇒ ★★ ⇒ 本表按**逐文件契约**列，★ 不按
+// ★★ 「无前缀即跳过」一刀切。
+//
+// ★ 本表与 embeddata 的一致性由 TestFreshInstallOnlyAssetsMatchFileContract
+// ★ 双向核对（★ 新增同款契约声明的资产 ⇒ 那道门立刻报红 ⇒ 不会静默漏登）。
+var freshInstallOnlyAssets = map[string]string{
+	"session_turns_hot_bootstrap.sql": "文件头自述：installer-only，must not be applied to an existing deployment",
+}
+
+// startupSkipReason 判定增量模式下该 startup 文件是否跳过（★ 并给出可读理由）。
+//
+// ★ 三条判据（★ 顺序即优先级）：
+//  1. 安装器专属资产（freshInstallOnlyAssets）⇒ 跳过（★ 契约声明）。
+//  2. 版本号已在 schema_migrations 台账 ⇒ 跳过（★ 既有判据，★ F1 之后覆盖面
+//     从 110 条扩到全部 392 条）。
+//  3. 部署通道权威台账里已有该文件 ⇒ 跳过（★ F3：★ 同一内容指纹 ⇒ 已应用；
+//     ★ 遗留无指纹记账行 ⇒ 部署通道自己按「已应用」处理 ⇒ 同款；★ 指纹不同 ⇒
+//     ★ 内容被加固过 ⇒ **不跳过**（★ 与部署通道的「内容加固 ⇒ 重放」同款）。
+//
+// ★ 其余（★ 无前缀且不在专属资产表里、★ 或台账里没有的版本）⇒ 不跳过（★ 执行）。
+func (r *Runner) startupSkipReason(name string, applied map[int]bool, deployApplied map[string]string) (string, bool) {
+	if reason, ok := freshInstallOnlyAssets[name]; ok {
+		return reason, true
+	}
+	v, hasVersion := migrationVersionOf(name)
+	if !hasVersion {
+		return "", false
+	}
+	if !startupPending(name, applied) {
+		return fmt.Sprintf("版本 %d 已在 schema_migrations 台账", v), true
+	}
+	storedSHA, hit := deployApplied[name]
+	if !hit {
+		return "", false
+	}
+	if storedSHA == "" {
+		return "部署通道已应用（★ 遗留无指纹记账行 ⇒ 同部署通道口径按已应用处理）", true
+	}
+	currentSHA, err := r.fileSHA256(filepath.Join("startup", name))
+	if err != nil {
+		// ★ 读不到文件 ⇒ 不在这里判红（★ 让 applySQL 去报真实的错）。
+		return "", false
+	}
+	if currentSHA == storedSHA {
+		return "部署通道已按同一内容指纹应用", true
+	}
+	return "", false
+}
+
+// recordAppliedVersion 把「这条 startup 文件已被应用」补记进人读台账
+// public.schema_migrations（★ 只在缺行时补一行；★ 不覆盖运维改过的 description）。
+//
+// ★ 为什么需要它（★ 本轮的核心修法 F1）：
+//
+//	· 台账的行是**迁移文件自己**在尾部 INSERT 维护的（★ 本仓定式）；
+//	· ★ 而 392 条 startup 迁移里只有 110 条有那句 INSERT ⇒ ★★ 其余 280 条
+//	  **从不记账** ⇒ ★★ 增量通道按「版本在台账里 ⇒ 跳过」判定时，★★ 那 280 条
+//	  **每次增量都被重放**；
+//	· ★★ 而重放安全是**未经证明的假设**（★ 本轮实测两条反例）。
+//	· ★★ 923_schema_migrations_ledger_backfill.sql 就是为同一目的写的迁移
+//	  （★ 「schema_migrations = 人读视图；它落后 ⇒ 运维把『已应用』误判成
+//	  ★ 『待应用』」）⇒ ★★ 本函数把同一件事**前移到安装器** ⇒ ★★ 从此增量
+//	  ★★ 通道只补**未登记**的变更。
+//
+// ★ 幂等：★ WHERE NOT EXISTS ⇒ 不写重行；★ 自登记的文件重复调用是空操作。
+// ★ 无版本号的资产不入版本台账（★ 它们不参与版本判定）。
+func (r *Runner) recordAppliedVersion(name string) error {
+	v, ok := migrationVersionOf(name)
+	if !ok {
+		return nil
+	}
+	desc := "installer:" + name
+	sql := fmt.Sprintf(`INSERT INTO public.schema_migrations (version, description)
+SELECT '%d', '%s'
+WHERE NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = '%d')`, v, desc, v)
+	return r.execSQL(sql)
+}
+
+// deployLedgerApplied 读部署通道的**权威台账** public.gateway_db_revision_sequences
+// （★ ★ 只读：★ 本函数只 SELECT，★ 不写、★ 不建表）。
+//
+// ★ 台账行形态（★ 见 scripts/apply-db-revision-sequence.sh）：★ 每行一个
+// ★ **文件**标记，sequence_name = "<序列名>:<文件名>"，★ content_sha256 = 该
+// ★ 文件当时的内容指纹（★ 空串 = 指纹通道上线前的遗留记账行）。
+//
+// ★ 返回「文件名 → 内容指纹」映射（★ 文件名取 sequence_name 最后一个 ':' 之后
+// ★ 的部分 ⇒ ★ 不依赖部署序列的名字 ⇒ ★ 换序列名也不影响）。
+func (r *Runner) deployLedgerApplied() (map[string]string, error) {
+	exists, err := r.psqlQuery("SELECT to_regclass('public.gateway_db_revision_sequences')")
+	if err != nil {
+		return nil, fmt.Errorf("探测部署通道权威台账失败: %w", err)
+	}
+	if strings.TrimSpace(exists) == "" {
+		return map[string]string{}, nil
+	}
+	rows, err := r.psqlQuery("SELECT sequence_name || '|' || COALESCE(content_sha256, '') FROM public.gateway_db_revision_sequences")
+	if err != nil {
+		return nil, fmt.Errorf("读取部署通道权威台账失败: %w", err)
+	}
+	return parseDeployLedgerMarkers(rows), nil
+}
+
+// parseDeployLedgerMarkers 把权威台账的原始行解析成「文件名 → 内容指纹」。
+//
+// ★ 行形态（★ 见 scripts/apply-db-revision-sequence.sh 的写入点）：
+// ★   `sequence_name || '|' || COALESCE(content_sha256, ”)`
+// ★   其中 sequence_name = 「<序列名>:<文件名>」（★ 每行一个**文件**标记），
+// ★   content_sha256 = 该文件当时的内容指纹（★ 空串 = 指纹通道上线前的遗留行）。
+//
+// ★ 抽出成纯函数是为了**能单测**：★ marker 的 basename 切分规则（★ 取最后一个
+// ★ ':' 之后）★ 是跨通道口径对齐的关键（★ 换序列名不影响识别）⇒ ★ 不能只靠
+// ★ 真库读数兜着。
+func parseDeployLedgerMarkers(rows string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(rows, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		marker, sha, ok := strings.Cut(line, "|")
+		if !ok {
+			continue
+		}
+		idx := strings.LastIndex(marker, ":")
+		if idx < 0 || idx+1 >= len(marker) {
+			continue
+		}
+		out[marker[idx+1:]] = sha
+	}
+	return out
+}
+
+// fileSHA256 计算安装器 SQL 目录下一个文件的内容指纹（★ 与部署通道
+// sha256_file 同口径：★ 原始字节的 sha256 小写十六进制）。
+func (r *Runner) fileSHA256(relPath string) (string, error) {
+	content, err := readFile(filepath.Join(r.SQLDir, relPath))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // appliedVersions 读取目标库的 schema_migrations 台账。

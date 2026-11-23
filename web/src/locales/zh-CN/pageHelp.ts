@@ -71,6 +71,7 @@ export default {
     tenantOrder: '订单详情页数据说明',
     tenantUsage: '我的消耗页数据说明',
     boardOperational: '运营面板页数据说明',
+    usageBreakdown: '维度用量数据说明',
     opsOverview: '运维总览页数据说明',
     pricing: '定价管理页数据说明',
     modelPricing: '标准模型定价页数据说明',

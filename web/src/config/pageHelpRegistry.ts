@@ -25,6 +25,8 @@
 export interface PageHelpEntry {
   /** vue-router 路径 pattern；支持 :param 段与通配尾段（a/b/*） */
   match: string
+  /** 附加跨报表的统计与对账定义。 */
+  statistics?: boolean
   /** 内容文件 id（= web/content/page-help/<id>.<locale>.md；8 语种，缺译文回退 zh-CN） */
   id: string
   /** 抽屉标题的语言键（i18n；zh-CN 提供中文，其余语种 parity 同步） */
@@ -33,25 +35,25 @@ export interface PageHelpEntry {
 
 const entries: PageHelpEntry[] = [
   // ── 总览与实时面 ──
-  { match: '/dashboard', id: 'dashboard', titleKey: 'pageHelp.title.dashboard' },
+  { match: '/dashboard', id: 'dashboard', titleKey: 'pageHelp.title.dashboard', statistics: true },
   // 看板 / 会话与统计两个页签的**统计标准**（2026-11-23 一致性取证轮）：
   // 两页的请求数与费用口径不同（请求级 vs 会话级）、窗口不同、探测剔除面
   // 不同 ⇒ 数字本来就不该相等。这篇正文把两页逐项口径与差异写成对照表，
   // 由两个页签**页面内嵌**的帮助按钮打开（match 是虚拟键，不是真实路由）。
-  { match: '/dashboard-stats-standards', id: 'dashboard-stats-standards', titleKey: 'pageHelp.title.dashboardStatsStandards' },
+  { match: '/dashboard-stats-standards', id: 'dashboard-stats-standards', titleKey: 'pageHelp.title.dashboardStatsStandards', statistics: true },
   // 简易模式总览：与 /dashboard 同一路由（HomeView 内嵌 SimpleOverviewView 按
   // useWorkMode 切换渲染）。match 用虚拟键 /dashboard-simple，AppTopbar 在简易
   // 模式下把路径改写成它 ⇒ 同一 URL 两份帮助正文互不覆盖。
-  { match: '/dashboard-simple', id: 'dashboard-simple', titleKey: 'pageHelp.title.dashboardSimple' },
+  { match: '/dashboard-simple', id: 'dashboard-simple', titleKey: 'pageHelp.title.dashboardSimple', statistics: true },
   { match: '/live', id: 'live-topology', titleKey: 'pageHelp.title.liveTopology' },
   { match: '/live2', id: 'live-stage-tree', titleKey: 'pageHelp.title.liveStageTree' },
-  { match: '/live/request/:requestId', id: 'request-detail', titleKey: 'pageHelp.title.requestDetail' },
+  { match: '/live/request/:requestId', id: 'request-detail', titleKey: 'pageHelp.title.requestDetail', statistics: true },
 
   // ── 请求与会话 ──
-  { match: '/request-logs', id: 'request-logs', titleKey: 'pageHelp.title.requestLogs' },
-  { match: '/request-detail/:requestId', id: 'request-detail', titleKey: 'pageHelp.title.requestDetail' },
-  { match: '/admin/sessions/:id', id: 'session-detail', titleKey: 'pageHelp.title.sessionDetail' },
-  { match: '/admin/turns', id: 'turns-list', titleKey: 'pageHelp.title.turns' },
+  { match: '/request-logs', id: 'request-logs', titleKey: 'pageHelp.title.requestLogs', statistics: true },
+  { match: '/request-detail/:requestId', id: 'request-detail', titleKey: 'pageHelp.title.requestDetail', statistics: true },
+  { match: '/admin/sessions/:id', id: 'session-detail', titleKey: 'pageHelp.title.sessionDetail', statistics: true },
+  { match: '/admin/turns', id: 'turns-list', titleKey: 'pageHelp.title.turns', statistics: true },
   { match: '/admin/turns/filter-options', id: 'turns-filter-options', titleKey: 'pageHelp.title.turnsFilter' },
   { match: '/admin/request-actions/:id', id: 'request-actions', titleKey: 'pageHelp.title.requestActions' },
   { match: '/admin/request-registry', id: 'request-registry', titleKey: 'pageHelp.title.requestRegistry' },
@@ -61,19 +63,19 @@ const entries: PageHelpEntry[] = [
   { match: '/dispatch/waterfall', id: 'dispatch-waterfall', titleKey: 'pageHelp.title.dispatchWaterfall' },
 
   // ── 会话分析 ──
-  { match: '/admin/session-analytics/users/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail' },
-  { match: '/admin/session-analytics/users', id: 'session-users', titleKey: 'pageHelp.title.sessionUsers' },
-  { match: '/admin/session-analytics/clients/:id', id: 'session-client-detail', titleKey: 'pageHelp.title.sessionClientDetail' },
-  { match: '/admin/session-analytics/tasks/:id', id: 'session-task-detail', titleKey: 'pageHelp.title.sessionTaskDetail' },
-  { match: '/admin/session-analytics/user-ranking/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail' },
-  { match: '/admin/session-analytics/user-ranking', id: 'session-ranking', titleKey: 'pageHelp.title.sessionRanking' },
-  { match: '/admin/session-analytics/agent-ranking', id: 'session-ranking', titleKey: 'pageHelp.title.sessionAgentRanking' },
-  { match: '/admin/session-analytics/model-ranking', id: 'session-ranking', titleKey: 'pageHelp.title.sessionModelRanking' },
-  { match: '/admin/session-analytics', id: 'session-analytics-overview', titleKey: 'pageHelp.title.sessionAnalyticsOverview' },
+  { match: '/admin/session-analytics/users/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail', statistics: true },
+  { match: '/admin/session-analytics/users', id: 'session-users', titleKey: 'pageHelp.title.sessionUsers', statistics: true },
+  { match: '/admin/session-analytics/clients/:id', id: 'session-client-detail', titleKey: 'pageHelp.title.sessionClientDetail', statistics: true },
+  { match: '/admin/session-analytics/tasks/:id', id: 'session-task-detail', titleKey: 'pageHelp.title.sessionTaskDetail', statistics: true },
+  { match: '/admin/session-analytics/user-ranking/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail', statistics: true },
+  { match: '/admin/session-analytics/user-ranking', id: 'session-ranking', titleKey: 'pageHelp.title.sessionRanking', statistics: true },
+  { match: '/admin/session-analytics/agent-ranking', id: 'session-ranking', titleKey: 'pageHelp.title.sessionAgentRanking', statistics: true },
+  { match: '/admin/session-analytics/model-ranking', id: 'session-ranking', titleKey: 'pageHelp.title.sessionModelRanking', statistics: true },
+  { match: '/admin/session-analytics', id: 'session-analytics-overview', titleKey: 'pageHelp.title.sessionAnalyticsOverview', statistics: true },
   { match: '/admin/session-analytics/filter-options', id: 'filter-options', titleKey: 'pageHelp.title.filterOptions' },
 
   // ── 供应商与模型 ──
-  { match: '/providers/:id', id: 'provider-detail', titleKey: 'pageHelp.title.providerDetail' },
+  { match: '/providers/:id', id: 'provider-detail', titleKey: 'pageHelp.title.providerDetail', statistics: true },
   { match: '/providers', id: 'providers', titleKey: 'pageHelp.title.providers' },
   { match: '/models', id: 'models', titleKey: 'pageHelp.title.models' },
   { match: '/routing-v2', id: 'routing-dashboard', titleKey: 'pageHelp.title.routingOverview' },
@@ -104,24 +106,26 @@ const entries: PageHelpEntry[] = [
 
   // ── 租户门户（我的服务） ──
   { match: '/tenant/models', id: 'tenant-models', titleKey: 'pageHelp.title.tenantModels' },
-  { match: '/tenant/account', id: 'tenant-account', titleKey: 'pageHelp.title.tenantAccount' },
-  { match: '/tenant/bills', id: 'tenant-bills', titleKey: 'pageHelp.title.tenantBills' },
+  { match: '/tenant/account', id: 'tenant-account', titleKey: 'pageHelp.title.tenantAccount', statistics: true },
+  { match: '/tenant/bills', id: 'tenant-bills', titleKey: 'pageHelp.title.tenantBills', statistics: true },
   { match: '/tenant/pricing', id: 'tenant-pricing', titleKey: 'pageHelp.title.tenantPricing' },
   { match: '/tenant/orders/:id', id: 'tenant-order', titleKey: 'pageHelp.title.tenantOrder' },
-  { match: '/tenant/usage', id: 'tenant-usage', titleKey: 'pageHelp.title.tenantUsage' },
+  { match: '/tenant/usage', id: 'tenant-usage', titleKey: 'pageHelp.title.tenantUsage', statistics: true },
 
   // ── 运营管理 ──
-  { match: '/admin/board-operational', id: 'board-operational', titleKey: 'pageHelp.title.boardOperational' },
-  { match: '/admin/ops-overview', id: 'ops-overview', titleKey: 'pageHelp.title.opsOverview' },
+  { match: '/admin/board-operational', id: 'board-operational', titleKey: 'pageHelp.title.boardOperational', statistics: true },
+  { match: '/admin/board-operational/:dimension', id: 'usage-breakdown', titleKey: 'pageHelp.title.usageBreakdown', statistics: true },
+  { match: '/admin/analytics/:dimension/:id', id: 'usage-breakdown', titleKey: 'pageHelp.title.usageBreakdown', statistics: true },
+  { match: '/admin/ops-overview', id: 'ops-overview', titleKey: 'pageHelp.title.opsOverview', statistics: true },
   { match: '/pricing', id: 'pricing-management', titleKey: 'pageHelp.title.pricing' },
   { match: '/model-pricing', id: 'model-pricing', titleKey: 'pageHelp.title.modelPricing' },
-  { match: '/admin/reconciliation', id: 'reconciliation', titleKey: 'pageHelp.title.reconciliation' },
+  { match: '/admin/reconciliation', id: 'reconciliation', titleKey: 'pageHelp.title.reconciliation', statistics: true },
   { match: '/operations/sales', id: 'sales-workbench', titleKey: 'pageHelp.title.salesWorkbench' },
   { match: '/operations/marketing', id: 'operations-marketing', titleKey: 'pageHelp.title.operationsMarketing' },
   { match: '/operations/market-prices', id: 'market-prices', titleKey: 'pageHelp.title.marketPrices' },
-  { match: '/admin/usage', id: 'usage-cost', titleKey: 'pageHelp.title.usageCost' },
-  { match: '/admin/usage-trends', id: 'usage-trends', titleKey: 'pageHelp.title.usageTrends' },
-  { match: '/admin/usage-enhanced', id: 'usage-enhanced', titleKey: 'pageHelp.title.usageEnhanced' },
+  { match: '/admin/usage', id: 'usage-cost', titleKey: 'pageHelp.title.usageCost', statistics: true },
+  { match: '/admin/usage-trends', id: 'usage-trends', titleKey: 'pageHelp.title.usageTrends', statistics: true },
+  { match: '/admin/usage-enhanced', id: 'usage-enhanced', titleKey: 'pageHelp.title.usageEnhanced', statistics: true },
   { match: '/admin/subscription-tiers', id: 'subscription-tiers', titleKey: 'pageHelp.title.subscriptionTiers' },
   { match: '/admin/approvals/:id', id: 'approval-detail', titleKey: 'pageHelp.title.approvalDetail' },
   { match: '/admin/approvals', id: 'approval-list', titleKey: 'pageHelp.title.approvals' },

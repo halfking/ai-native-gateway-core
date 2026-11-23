@@ -59,6 +59,12 @@ const modules = import.meta.glob('../../../content/page-help/*.md', {
   import: 'default',
 }) as Record<string, string>
 
+const statisticsContent = import.meta.glob<string>('../../../content/statistics-standards/*.md', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+})
+
 /** 从模块路径提取内容键：<id>.<locale>.md → "<id>.<locale>"（id 与语种整体作键，
  *  取值时按当前 locale 优先、zh-CN 兜底逐级降级） */
 function keyOf(path: string): string {
@@ -82,7 +88,15 @@ const hasContent = computed(() => entry.value !== null && content.value !== unde
 
 const blocks = computed<ManualBlock[]>(() => {
   const raw = content.value
-  return raw ? parseMarkdown(raw) : []
+  if (!raw) return []
+
+  const page = parseMarkdown(raw)
+  if (!entry.value?.statistics) return page
+
+  const directory = '../../../content/statistics-standards'
+  const definitions = statisticsContent[`${directory}/${locale.value}.md`]
+    ?? statisticsContent[`${directory}/zh-CN.md`]
+  return definitions ? [...page, ...parseMarkdown(definitions)] : page
 })
 
 // 抽屉标题：语言键（titleKey 的 zh-CN 值就是页面名，比正文 H1 更稳定可对拍）

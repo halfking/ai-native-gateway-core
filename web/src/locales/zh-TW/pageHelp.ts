@@ -68,6 +68,7 @@ export default {
     tenantOrder: '訂單詳情',
     tenantUsage: '我的消耗',
     boardOperational: '運營面板',
+    usageBreakdown: '維度用量資料說明',
     opsOverview: '運維總覽',
     pricing: '定價管理',
     modelPricing: '標準模型定價',

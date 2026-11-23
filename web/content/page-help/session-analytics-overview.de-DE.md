@@ -19,7 +19,7 @@ Diese Seite beantwortet die Frage „Wie wird das Angebot genutzt?“: Wie viele
 
 - Das Trenddiagramm wird nach Tagen aggregiert (Tageswechsel in Weltzeit UTC) und zeigt die tägliche Veränderung der Konversationszahl oder der Kosten.
 - „Gegenüber dem vorherigen Zeitraum“ = prozentuale Veränderung des aktuellen Zeitfensters gegenüber dem gleich langen vorherigen Zeitfenster.
-- Die Rangliste (Personen/Agenten/Modelle) wird nach der ausgewählten Kennzahl sortiert; die Spalte „Ausgaben“ addiert die Werte beider Messgrößen und **dient nur zum relativen Vergleich der Höhe und darf nicht als Betrag gelesen werden**.
+- Rankings (Personen/Agenten/Modelle) werden nach der ausgewählten Kennzahl sortiert. Die Sortierung nach „Ausgaben“ verwendet das Kompatibilitätsfeld `total_cost`: Es addiert die Rohwerte der internen Kosten in USD und der externen Kosten in Credits ohne Währungsumrechnung. Die Liste kann den Wert dennoch mit einem Dollarzeichen formatieren; er ist daher kein Geldbetrag und nicht währungsübergreifend vergleichbar. Prüfen Sie interne Kosten (USD) und externe Kosten (Credits) getrennt.
 
 ## Datenaktualität
 

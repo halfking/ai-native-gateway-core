@@ -14,11 +14,13 @@ type stubAudioMaas struct {
 	tenant  string
 	owner   string
 	stamped float64
+	calls   int
 }
 
 func (s *stubAudioMaas) Enabled() bool { return s.enabled }
 
 func (s *stubAudioMaas) ChargeRequestMultimodalWithMultiplier(ctx context.Context, tenantID, ownerUser, requestID, canonicalName string, usage maas.TokenUsage, rateMultiplier float64) (int64, float64, error) {
+	s.calls++
 	s.last = usage
 	s.model = canonicalName
 	s.tenant = tenantID
@@ -30,6 +32,20 @@ func (s *stubAudioMaas) ChargeRequestMultimodalWithMultiplier(ctx context.Contex
 		return 0, rateMultiplier, nil
 	}
 	return int64(usage.AudioSeconds) + 1, rateMultiplier, nil
+}
+
+func TestChargeTranscription_skipsTrustedPlatformOwner(t *testing.T) {
+	svc := &AudioService{}
+	stub := &stubAudioMaas{enabled: true}
+	svc.SetMaas(stub)
+	sec := 3.0
+	svc.chargeTranscription(context.Background(), "acme", "credential-selfcheck-worker", "req-platform-audio", "asr", &sec)
+	if stub.calls != 0 {
+		t.Fatalf("trusted platform origin must not debit tenant wallet, called MaaS %d times", stub.calls)
+	}
+	if stub.last.AudioSeconds != 0 {
+		t.Fatalf("platform request unexpectedly reached charger: %#v", stub.last)
+	}
 }
 
 func TestChargeTranscription_usesDuration(t *testing.T) {

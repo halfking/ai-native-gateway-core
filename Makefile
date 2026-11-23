@@ -702,9 +702,22 @@ guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scrip
 #   ⇒ ★ 扫描面**故意**仍比 Go 门宽：Go 门只扫 git 追踪的文件（它要拿读数
 #     对棘轮登记册 ⇒ 读数必须确定）；shell 门扫「已跟踪 ∪ 未跟踪未忽略」
 #     ⇒ 新写好还没 git add 的脚本也在视野里 ⇒ 本门无登记册 ⇒ 宽面不引入不确定性。
-.PHONY: guards-shell
-guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
+.PHONY: guards-shell guards-shell-vacuous
+guards-shell: guards-shell-vacuous ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）＋ **判据恒真 shell 门**（★ 2026-11-23 L33 二轮新增）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
+# ★★ 2026-11-23 L33 二轮新增：★ 「判据恒真」shell 门 ★★
+#   ★ 起因：★ 本轮给「空库新装烟测门」扩第三阶段时，★ 写出了
+#     `if (grep -q "…" "$LOG" || true); then` ⇒ ★★ **`if` 条件恒为真** ⇒ ★★
+#     ★★ 「跳过」恒判绿、★ 「重放」恒判红 ⇒ ★★ 门输出**自相矛盾**
+#     （★ 「✔ 被跳过」与「✘ 被重放」同时出现）★★。
+#   ★ ⇒ ★ 「判据恒真」是**门自己发现不了**的缺陷类别（★ 门不会知道自己恒真）★★
+#     ⇒ ⇒ 必须由**另一道门**盯 ⇒ ★ 本门专盯这一类。
+#   ★ 纯静态（★ 只用 git ＋ awk ＋ grep）⇒ ★ 约 1~2s、★ 无外部依赖
+#     ⇒ ⇒ 与全角变量门**同族**（★ 同在 `guards-shell` 目标、★ 同进 CI 快门族）。
+#   ★ 变异自证（★ 本轮实测）：★ 注入 `if (grep -q … || true); then` ⇒
+#     ★★ 门红（★ 精确到 文件:行）★★；★ 移除 ⇒ ★★ 绿（★ 868 个脚本 0 命中）★★。
+guards-shell-vacuous: ## 「判据恒真」shell 门（★ `|| true` 落在 if/elif/while 条件位 ⇒ 判据永远成立）
+	@bash scripts/guards/check-shell-vacuous-assertion.sh
 
 # scripts/ursmcheck 的门文件（**数量实时取**，见文件头 URSMCHECK_GATE_COUNT；
 # 比主门慢一个量级 ⇒ 独立 timeout）

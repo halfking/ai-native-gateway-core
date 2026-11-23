@@ -11151,3 +11151,8 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 998 | `998_session_summaries_task_association.sql` | `682c5f43d3ba8e00f67925deb65cfc3ed44d82ba453274d20e3ca5aec9e355a5` | applied+verified |
 | 999 | `999_session_summary_layers.sql` | `3f374cd050e36a0eb852647168447dee3342dd96836ccc57455a1988a3711921` | applied+verified |
 
+## 2026-11-23 — 请求与会话对账（982 新增）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 982 | `982_provider_call_attempts.sql` | `5421564ddbb0b894689b87ff2ca2adb3c701c72143e0bf6b30ab8faaae3f106a` | pending deploy。逐次记录供应商发送证据、用量、测算与供应商返回金额。首次安装及增量通道均追加执行，离线升级副本同步。无历史补写。 |

@@ -68,6 +68,7 @@ export default {
     tenantOrder: 'Detalle de pedido',
     tenantUsage: 'Mi consumo',
     boardOperational: 'Panel operativo',
+    usageBreakdown: 'Notas del desglose de uso',
     opsOverview: 'Visión de operaciones',
     pricing: 'Gestión de precios',
     modelPricing: 'Precios estándar',

@@ -1830,6 +1830,26 @@ func (c *RequestLogContext) SetOriginStage(stage string) {
 	c.OriginStage = strings.TrimSpace(stage)
 }
 
+// trustedPlatformOrigin derives platform attribution only from an
+// authenticated, allowlisted system-key owner. Middleware-captured claims
+// are revalidated by ResolveOriginForSystemKey; ordinary request headers,
+// proxy addresses, and the global-auth sentinel do not grant this status.
+func trustedPlatformOrigin(ctx context.Context, keyInfo *authentication.KeyInfo) (string, string, bool) {
+	if keyInfo == nil || keyInfo.OwnerUser == nil || strings.TrimSpace(*keyInfo.OwnerUser) == "" || *keyInfo.OwnerUser == "global-auth-passed" {
+		return "", "", false
+	}
+	return trustedPlatformOriginForOwner(ctx, *keyInfo.OwnerUser)
+}
+
+func trustedPlatformOriginForOwner(ctx context.Context, ownerUser string) (string, string, bool) {
+	ownerUser = strings.TrimSpace(ownerUser)
+	if ownerUser == "" || ownerUser == "global-auth-passed" {
+		return "", "", false
+	}
+	stage, actor, ok := middleware.ResolveOriginForSystemKey(ctx, ownerUser)
+	return stage, actor, ok && stage != "" && stage != "business"
+}
+
 // applyOriginMetadata 把 origin 元数据落到 telemetry 条目上（2026-09-25）。
 //
 // ① ctx 路径：OriginMiddleware 已判定的值（可信 worker 的声明 stage，或

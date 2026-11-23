@@ -1920,6 +1920,12 @@ var migrationLedgerSessionAnalytics981Repair989 []byte
 //go:embed embeddata/startup/989_migration_ledger_session_analytics_981_repair.down.sql
 var migrationLedgerSessionAnalytics981Repair989Down []byte
 
+//go:embed embeddata/startup/982_provider_call_attempts.sql
+var providerCallAttempts982 []byte
+
+//go:embed embeddata/startup/982_provider_call_attempts.down.sql
+var providerCallAttempts982Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2574,6 +2580,8 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复（981 自登记回填）。
 	"startup/989_migration_ledger_session_analytics_981_repair.sql":      migrationLedgerSessionAnalytics981Repair989,
 	"startup/989_migration_ledger_session_analytics_981_repair.down.sql": migrationLedgerSessionAnalytics981Repair989Down,
+	"startup/982_provider_call_attempts.sql":                             providerCallAttempts982,
+	"startup/982_provider_call_attempts.down.sql":                        providerCallAttempts982Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
