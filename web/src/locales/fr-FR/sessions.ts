@@ -115,6 +115,9 @@ export default {
     status: { all: 'Toutes', active: 'Actives', stopped: 'Arrêtées' },
   },
   stats: {
+    scopeNoticeTitle: 'Précision sur le périmètre :',
+    scopeNoticeBody: 'Cette page compte toutes les requêtes et les coûts des sessions dont la première requête a eu lieu au cours des {days} derniers jours.',
+    scopeNoticeHint: 'Remarque : les sessions commencées avant la fenêtre mais encore actives dedans ne sont pas incluses ; les coûts ici peuvent donc être inférieurs à ceux de la page « Dashboard » (qui compte toutes les requêtes de la fenêtre). Pour le coût complet de la fenêtre, consultez la page « Dashboard ».',
     loading: "Chargement des statistiques de session…",
     last7Days: "7 derniers jours",
     last30Days: "30 derniers jours",

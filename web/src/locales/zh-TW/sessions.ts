@@ -111,6 +111,9 @@ export default {
     status: { all: '全部', active: '活躍', stopped: '已停止' },
   },
   stats: {
+    scopeNoticeTitle: '統計說明：',
+    scopeNoticeBody: '本頁面統計「首次請求在近{days}天內」的會話的全部請求與費用。',
+    scopeNoticeHint: '注意：視窗外開始但視窗內仍活躍的會話暫未包含，導致費用可能低於「看板」頁面（看板統計視窗內所有請求）。若需檢視視窗內的完整費用資料，請檢視「看板」頁面。',
     loading: "正在載入會話統計…",
     last7Days: "最近7天",
     last30Days: "最近30天",

@@ -320,12 +320,14 @@ defineExpose({
     </div>
 
     <!-- 2026-11-23 统计口径说明：告知用户当前统计方法及其局限性 -->
+    <!-- ★ 2026-11-23 12h 修订审计轮：★ 本段原先是**硬编码中文** ⇒ ★ 被
+         「硬编码 CJK 棘轮门」计入（★ 计数 4360 → 4375 > baseline 4369 ⇒ main 上红）
+         ⇒ ★ 正规化为 8 语种 i18n 键（★ sessions.stats.scopeNotice*）。 -->
     <div class="alert alert-info" role="status" data-testid="stats-scope-info">
-      <strong>统计说明：</strong>本页面统计"首次请求在近{{ days }}天内"的会话的全部请求和费用。
+      <strong>{{ t('sessions.stats.scopeNoticeTitle') }}</strong>{{ t('sessions.stats.scopeNoticeBody', { days }) }}
       <br>
       <small style="opacity: 0.9;">
-        注意：窗口外开始但窗口内仍活跃的会话暂未包含，导致费用可能低于"看板"页面（看板统计窗口内所有请求）。
-        若需查看窗口内的完整费用数据，请查看"看板"页面。
+        {{ t('sessions.stats.scopeNoticeHint') }}
       </small>
     </div>
 

@@ -119,6 +119,9 @@ export default {
     status: { all: 'All', active: 'Active', stopped: 'Stopped' },
   },
   stats: {
+    scopeNoticeTitle: 'Scope note:',
+    scopeNoticeBody: 'This page counts all requests and costs for sessions whose first request happened within the last {days} days.',
+    scopeNoticeHint: 'Note: sessions that started before the window but are still active inside it are not included, so costs here may be lower than on the Dashboard page (which counts every request in the window). For the complete in-window cost, see the Dashboard page.',
     last7Days: 'Last 7 Days',
     last30Days: 'Last 30 Days',
     sessionCount: 'Session Count',

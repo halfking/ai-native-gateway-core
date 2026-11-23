@@ -115,6 +115,9 @@ export default {
     status: { all: '全部', active: '活跃', stopped: '已停止' },
   },
   stats: {
+    scopeNoticeTitle: '统计说明：',
+    scopeNoticeBody: '本页面统计"首次请求在近{days}天内"的会话的全部请求和费用。',
+    scopeNoticeHint: '注意：窗口外开始但窗口内仍活跃的会话暂未包含，导致费用可能低于"看板"页面（看板统计窗口内所有请求）。若需查看窗口内的完整费用数据，请查看"看板"页面。',
     loading: "正在加载会话统计…",
     last7Days: '最近7天',
     last30Days: '最近30天',
