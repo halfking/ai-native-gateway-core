@@ -176,6 +176,10 @@ func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric)
 	//   · `request_state_transitions`（★ 直播、★ 每请求一行、★ 带 `gateway_instance_id`）
 	//   ⇒ ★ `gateway_instance` 这一列**在任何活表里都不存在**（★ 只有实例级的
 	//     `gateway_instances` 注册表、★ 语义不同）⇒ ★ 这是唯一等价的活源。
+	// ★ ★ **会话族必须读【两面】**（★ `session_turns_hot` ∪ `session_turns`）：★ 只读
+	//   父表会漏掉仍在 hot 面的行 ⇒ ★★ 而且仓里有一道门专门管这个
+	//   （★ `admin/session_family_two_surface_test.go` 的 `TestNoBareParentSessionFamilyRead`
+	//   ⇒ ★ 父表裸读 ⇒ 判红；★ ★ 本轮第一版就踩了这道门、★ 当场红、★ 才改成两腿形态 ★★）。
 	// ★ ★ 另一条路走不通：★ `retiredV1ReferenceExceptions` 例外台账**只许缩小**、
 	//   **不许新增条目** ⇒ ★★ 不能靠登记例外把这道门抹绿 ★★。
 	var sessionID sql.NullString
@@ -183,7 +187,11 @@ func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric)
 
 	err := p.db.QueryRowContext(ctx, `
 		SELECT
-			(SELECT st.session_id FROM public.session_turns st WHERE st.request_id = $1 LIMIT 1),
+			(SELECT st.session_id FROM (
+				SELECT session_id, request_id FROM public.session_turns_hot t
+				UNION ALL
+				SELECT session_id, request_id FROM public.session_turns t
+			) st WHERE st.request_id = $1 LIMIT 1),
 			(SELECT rs.gateway_instance_id FROM public.request_state_transitions rs
 			  WHERE rs.request_id = $1 AND rs.gateway_instance_id IS NOT NULL LIMIT 1)
 	`, metric.RequestID).Scan(&sessionID, &gatewayInstance)
