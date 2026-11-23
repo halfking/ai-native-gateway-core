@@ -3,6 +3,8 @@
 Die Tabs „Board", „Sitzungsstatistik" und „Anbieter-Abgleich" fassen denselben Strom von Modellaufrufen unter **drei verschiedenen Berechnungsregeln** zusammen. Diese Seite beschreibt, wie jede Zahl berechnet wird, woher die Daten stammen und welches Zeitfenster sie abdeckt — samt **Aufschlüsselung nach Positionen** darüber, warum sich die Zahlen der drei Module nicht decken. Zweck: Daten abgleichen und Abweichungen selbst prüfen.
 
 > Messgrundlage: 2026-11-23 21:05 (Asia/Shanghai) im Produktivbetrieb gemessen. Alle Zahlen stammen aus **demselben Zeitpunkt** (innerhalb einer einzigen SQL-Abfrage), Fenster = `NOW()-7 Tage`; die Seite „Anbieter-Abgleich" wurde zusätzlich über den geschlossenen Kalendertagsbereich `2026-11-17 ~ 2026-11-23` gemessen und taggenau gegen die Faktentabelle abgeglichen.
+>
+> ★ Korrektur (Runde „Datumsbereich angleichen", 2026-11-23): Der Tab „Sitzungsstatistik" verwendet jetzt **denselben** Zeitbereich wie der Tab „Board" (gleiche Steuerung, gleicher Kalendertagsbereich) ⇒ die unten aufgeführten Werte der Sitzungsstatistik stammen noch aus dem **nicht angeglichenen** (rollierenden) Fenster und müssen im neuen Fenster neu gemessen werden; die Werte von Board und Anbieter-Abgleich sind nicht betroffen.
 
 ## Wie die drei Module zusammenhängen
 
@@ -10,7 +12,7 @@ Die Tabs „Board", „Sitzungsstatistik" und „Anbieter-Abgleich" fassen dense
 | --- | --- | --- | --- |
 | Zähleinheit | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**) | Eine Sitzung zählt als eine Zeile mit den **kumulierten Werten** dieser Sitzung (**auf Sitzungs-Ebene**) | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**, je Anbieter aggregiert) |
 | Quelle der Wahrheit | Anfrage-Faktentabelle `usage_facts` | Sitzungsübersicht `session_summaries` + Sitzungsuniversum | Tagessnapshot-Tabelle `report_snapshots` |
-| Zeitfenster | Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis jetzt | Rollierende N Tage (erste Anfrage in den letzten N Tagen) | **Geschlossener Kalendertagsbereich** (ganzer Tag, inklusive des vollen letzten Tages) |
+| Zeitfenster | Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis jetzt | **Derselbe Bereich wie das Board** (Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis Ende des letzten Tages; freier Start/Ende wählbar) | **Geschlossener Kalendertagsbereich** (ganzer Tag, inklusive des vollen letzten Tages) |
 | Probe-Verkehr | Ausgeschlossen über `traffic_class` (umschaltbar) | Ausgeschlossen über die Regeln des **Sitzungsuniversums** | **Nicht ausgeschlossen** (gesamter Verkehr, einschließlich „Nicht zugeordnet") |
 | Reifegrad | Echtzeit | Echtzeit | **T+1-Snapshot** (Tage, die noch nicht abgeschlossen sind, hinken hinterher) |
 
@@ -146,7 +148,7 @@ Die Anbieterzeilen der Abgleich-Seite (einschließlich „Nicht zugeordnet") **s
 
 ## Was tun, wenn die Zahlen nicht zusammenpassen
 
-1. **Zuerst das Fenster angleichen**: Board = ab Kalendertages-Mitternacht; Sitzungsstatistik-Panel = rollierende N Tage; Abgleichzeile = ganze Shanghai-Kalendertage; Anbieter-Abgleich = geschlossener Kalendertagsbereich. Auch bei gleicher Voreinstellung sind das vier verschiedene Fenster.
+1. **Zuerst das Fenster angleichen**: Board und Sitzungsstatistik-Panel = **derselbe Kalendertagsbereich** (Mitternacht von heute-(N-1); das Board zählt bis jetzt, das Panel bis Ende des letzten Tages ⇒ beide decken dieselben Daten ab und nutzen dieselbe Zeitbereichs-Steuerung); Abgleichzeile = ganze Shanghai-Kalendertage; Anbieter-Abgleich = geschlossener Kalendertagsbereich. Die letzten beiden sind weiterhin nicht dasselbe Fenster wie die ersten beiden.
 2. **Dann die Zähleinheit angleichen**: Anfragen mit Anfragen, Kosten mit Kosten vergleichen; Sitzungszahl nicht gegen Anfragenzahl stellen.
 3. **Dann die Probe-Berechnungsgrundlage angleichen**: Das Board lässt sich auf „Probes einschließen" umstellen; die Sitzungsstatistik schließt nach den Regeln des Sitzungsuniversums aus; **der Abgleich enthält immer die Probes**. Weichen die Anfragenzahlen stark ab, während die Kosten ähnlich bleiben ⇒ zuerst die Probes prüfen.
 4. **Dann den Reifegrad angleichen**: Der Abgleich ist ein T+1-Snapshot, **die Daten des laufenden Tages hinken zwingend hinterher**; vor dem Vergleich prüfen, bis zu welchem Tag der Snapshot reicht.

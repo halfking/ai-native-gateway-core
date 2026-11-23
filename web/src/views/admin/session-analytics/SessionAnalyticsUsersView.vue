@@ -23,7 +23,15 @@
         <div class="loading-spinner"></div>
         <span class="loading-text">{{ t('sessionAnalytics.state.loadingStats') }}</span>
       </div>
-      <SessionStatsPanel ref="statsPanelRef" style="margin-bottom: 24px;" />
+      <!-- ★ 2026-11-23 日期范围对齐轮：把本页的时间窗交给面板（受控）⇒
+           面板的会话统计与本页的 Top5 卡片**同一个区间**（此前面板自持
+           一个 days 滚动窗口，与本页的日历日窗口是两把尺）。 -->
+      <SessionStatsPanel
+        ref="statsPanelRef"
+        :range="range"
+        style="margin-bottom: 24px;"
+        @update:range="onApplyRange"
+      />
     </div>
 
     <!-- ★ 2026-11-23 审计轮：Top5 四件套（模型/供应商/用户/任务）——

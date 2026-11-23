@@ -22,6 +22,44 @@ export interface BoardTimeQuery {
 }
 
 import { systemTzDateStr, systemTzDayStartMs, systemTzNoonMs } from '@/components/ui/kxDatePresets'
+import type { KxDateRange } from '@/components/ui/kx-date-types'
+
+const DAY_MS = 86_400_000
+
+/**
+ * BoardTimeRange → KxDateRange（控件展示值）。
+ *
+ * ★ 2026-11-23 日期范围对齐轮：看板页与「会话与统计」页共用这一对映射，
+ *   两页的日期范围控件因此**形态与取值完全一致**（同一套预设 + 同一份状态）。
+ */
+export function boardRangeToKxRange(range: BoardTimeRange): KxDateRange {
+  const { startMs, endMs } = resolveBoardRangeMs(range)
+  return { start: systemTzDateStr(startMs), end: systemTzDateStr(endMs - 1) }
+}
+
+/**
+ * KxDateRange（控件选值）→ BoardTimeRange（共享状态）。
+ *
+ * 能对齐内置预设的按预设归位（保留 SSE 门控与偏好语义），其余一律 custom
+ * {start,end}（走既有 start/end 查询通道）——与看板既有行为逐字一致。
+ */
+export function boardRangeFromKxRange(range: KxDateRange): BoardTimeRange {
+  const todayMs = resolveBoardRangeMs({ preset: 'today', days: 1 }).startMs
+  const spanDays = Math.max(
+    1,
+    Math.round((Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / DAY_MS) + 1,
+  )
+  if (range.start === systemTzDateStr(todayMs) && range.end === systemTzDateStr(todayMs)) {
+    return { preset: 'today', days: 1 }
+  }
+  if (range.start === systemTzDateStr(todayMs - 6 * DAY_MS) && range.end === systemTzDateStr(todayMs)) {
+    return { preset: '7d', days: 7 }
+  }
+  if (range.start === systemTzDateStr(todayMs - 29 * DAY_MS) && range.end === systemTzDateStr(todayMs)) {
+    return { preset: '30d', days: 30 }
+  }
+  return { preset: 'custom', days: spanDays, start: range.start, end: range.end }
+}
 
 export function defaultBoardTimeRange(): BoardTimeRange {
   return { preset: 'today', days: 1 }

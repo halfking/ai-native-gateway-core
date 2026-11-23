@@ -3,6 +3,8 @@
 Le « Tableau de bord », les « Statistiques de session » et le « Rapprochement fournisseurs » résument le même flux d'appels de modèles selon **trois règles de calcul**. Cette page explique comment chaque nombre est obtenu, d'où viennent les données et quelle fenêtre temporelle ils couvrent, avec un **détail poste par poste** reliant chaque écart à sa cause. Objectif : aligner les données et vérifier soi-même les écarts.
 
 > Base de mesure : 2026-11-23 21:05 (Asia/Shanghai) en production. Tous les chiffres ont été relevés au **même instant** (dans une seule requête SQL), fenêtre = `NOW()-7 jours` ; le rapprochement fournisseurs a été mesuré séparément sur l'intervalle fermé de journées calendaires `2026-11-17 ~ 2026-11-23` et rapproché jour par jour de la table de faits.
+>
+> ★ Correction (tour d'alignement des plages de dates, 2026-11-23) : l'onglet « statistiques de session » utilise désormais **la même** plage de dates que l'onglet « tableau de bord » (même contrôle, même intervalle de journées calendaires) ⇒ les chiffres de statistiques de session ci-dessous ont été mesurés avec la fenêtre **d'avant alignement** (glissante) et doivent être remesurés sur la nouvelle fenêtre ; les chiffres du tableau de bord et du rapprochement fournisseurs ne changent pas.
 
 ## Comment les trois modules s'articulent
 
@@ -10,7 +12,7 @@ Le « Tableau de bord », les « Statistiques de session » et le « Rapprocheme
 | --- | --- | --- | --- |
 | Entité statistique | Un appel de modèle compte pour une ligne (**niveau requête**) | Une session compte pour une ligne portant ses valeurs **cumulées** (**niveau session**) | Un appel de modèle compte pour une ligne (**niveau requête**, agrégée par fournisseur) |
 | Source de vérité | Table de faits au niveau requête `usage_facts` | Table de résumé des sessions `session_summaries` + univers de sessions | Table d'instantanés quotidiens `report_snapshots` |
-| Fenêtre temporelle | Jours calendaires dans le fuseau du système : minuit de aujourd'hui-(N-1) à maintenant | N jours glissants (première requête dans les N derniers jours) | **Intervalle fermé de journées calendaires** (journée entière, y compris le dernier jour in extenso) |
+| Fenêtre temporelle | Jours calendaires dans le fuseau du système : minuit de aujourd'hui-(N-1) à maintenant | **Même intervalle que le tableau de bord** (journées calendaires dans le fuseau du système : minuit de aujourd'hui-(N-1) à la fin du dernier jour ; début/fin personnalisables) | **Intervalle fermé de journées calendaires** (journée entière, y compris le dernier jour in extenso) |
 | Trafic de sonde | Exclu via `traffic_class` (commutable) | Exclu via les règles de l'« univers de sessions » | **Non exclu** (tout le trafic, y compris « non attribué ») |
 | Maturité | Temps réel | Temps réel | **Instantané T+1** (les dates dont la journée n'est pas terminée ont du retard) |
 
@@ -146,7 +148,7 @@ Les lignes par fournisseur de la page de rapprochement (y compris « non attribu
 
 ## Que vérifier quand les chiffres ne concordent pas
 
-1. **Aligner d'abord la fenêtre** : tableau de bord = depuis un minuit calendaire ; panneau des statistiques de session = N jours glissants ; ligne d'alignement = journées calendaires complètes de Shanghai ; rapprochement fournisseurs = intervalle fermé de journées calendaires. Même avec le même préréglage, ce sont quatre fenêtres différentes.
+1. **Aligner d'abord la fenêtre** : tableau de bord et panneau des statistiques de session = **le même intervalle de journées calendaires** (minuit de aujourd'hui-(N-1) ; le tableau de bord compte jusqu'à maintenant, le panneau jusqu'à la fin du dernier jour ⇒ les deux couvrent les mêmes données et utilisent le même contrôle de plage de dates) ; ligne d'alignement = journées calendaires complètes de Shanghai ; rapprochement fournisseurs = intervalle fermé de journées calendaires. Les deux derniers ne sont toujours pas la même fenêtre que les deux premiers.
 2. **Aligner ensuite l'entité** : comparer requêtes avec requêtes, coût avec coût ; ne jamais confronter un nombre de sessions à un nombre de requêtes.
 3. **Aligner ensuite la base de sonde** : le tableau de bord permet de passer à « inclure la sonde » ; les statistiques de session excluent selon les règles de l'univers de sessions ; **le rapprochement inclut toujours les sondes**. Si le nombre de requêtes diverge fortement alors que les coûts se ressemblent ⇒ regardez d'abord les sondes.
 4. **Aligner ensuite la maturité** : le rapprochement est un instantané T+1, **les données du jour en cours ont nécessairement du retard** ; avant de comparer, vérifiez jusqu'à quelle date l'instantané couvre.

@@ -3,6 +3,8 @@
 El «Panel», las «Estadísticas de sesión» y la «Conciliación de proveedores» resumen el mismo flujo de llamadas a modelos con **tres reglas de cálculo distintas**. Esta página explica cómo se obtiene cada número, de dónde salen los datos y qué ventana temporal cubren, e incluye un **desglose punto por punto** de por qué los números de los tres módulos no cuadran. Sirve para alinear datos y comprobar desvíos por cuenta propia.
 
 > Base de la medición: 2026-11-23 21:05 (Asia/Shanghai) en producción. Todas las cifras se tomaron en el **mismo instante** (dentro de una única consulta SQL), ventana = `NOW()-7 días`; la conciliación de proveedores se midió aparte sobre el intervalo cerrado de días naturales `2026-11-17 ~ 2026-11-23` y se contrastó día a día con la tabla de hechos.
+>
+> ★ Corrección (ronda de alineación de rangos de fechas, 2026-11-23): la pestaña «estadísticas de sesión» usa ahora **el mismo** rango de fechas que la pestaña «panel» (mismo control, mismo intervalo de días naturales) ⇒ las cifras de estadísticas de sesión de abajo son medidas **previas a la alineación** (ventana móvil) y hay que volver a medirlas en la nueva ventana; las cifras del panel y de la conciliación no cambian.
 
 ## Cómo se relacionan los tres módulos
 
@@ -10,7 +12,7 @@ El «Panel», las «Estadísticas de sesión» y la «Conciliación de proveedor
 | --- | --- | --- | --- |
 | Entidad estadística | Una llamada a modelo cuenta como una fila (**nivel de solicitud**) | Una sesión cuenta como una fila con sus valores **acumulados** (**nivel de sesión**) | Una llamada a modelo cuenta como una fila (**nivel de solicitud**, agregada por proveedor) |
 | Fuente de verdad | Tabla de hechos a nivel de solicitud `usage_facts` | Tabla resumen de sesiones `session_summaries` + universo de sesiones | Tabla de instantáneas diarias `report_snapshots` |
-| Ventana temporal | Días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta ahora | N días móviles (primera solicitud dentro de los últimos N días) | **Intervalo cerrado de días naturales** (día completo, incluido el último día entero) |
+| Ventana temporal | Días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta ahora | **Mismo intervalo que el panel** (días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta el final del último día; inicio/fin personalizables) | **Intervalo cerrado de días naturales** (día completo, incluido el último día entero) |
 | Tráfico de sondeo | Excluido según `traffic_class` (conmutable) | Excluido según las reglas del **universo de sesiones** | **No se excluye** (todo el tráfico, incluido «sin asignar») |
 | Madurez | En vivo | En vivo | **Instantánea T+1** (las fechas cuyo día aún no ha terminado van con retraso) |
 
@@ -146,7 +148,7 @@ Las filas de proveedor de la página de conciliación (incluido «sin asignar»)
 
 ## Qué revisar cuando los números no cuadran
 
-1. **Alinee primero la ventana**: panel = desde la medianoche de un día natural; panel de estadísticas de sesión = N días móviles; fila de contraste = días naturales completos de Shanghái; conciliación de proveedores = intervalo cerrado de días naturales. Con el mismo preajuste siguen siendo cuatro ventanas distintas.
+1. **Alinee primero la ventana**: panel y panel de estadísticas de sesión = **el mismo intervalo de días naturales** (medianoche de hoy-(N-1); el panel cuenta hasta ahora, el de estadísticas hasta el final del último día ⇒ ambos cubren los mismos datos y usan el mismo control de rango de fechas); fila de contraste = días naturales completos de Shanghái; conciliación de proveedores = intervalo cerrado de días naturales. Los dos últimos siguen sin ser la misma ventana que los dos primeros.
 2. **Alinee después la entidad**: compare solicitudes con solicitudes y coste con coste; no compare número de sesiones con número de solicitudes.
 3. **Alinee después la base de sondeo**: el panel permite conmutar a «incluir sondeo»; las estadísticas de sesión excluyen según las reglas del universo de sesiones; **la conciliación siempre incluye el sondeo**. Si el número de solicitudes difiere mucho y el coste es parecido ⇒ revise primero el sondeo.
 4. **Alinee después la madurez**: la conciliación es una instantánea T+1, **los datos del día en curso van necesariamente con retraso**; antes de comparar, confirme hasta qué día llega la instantánea.
