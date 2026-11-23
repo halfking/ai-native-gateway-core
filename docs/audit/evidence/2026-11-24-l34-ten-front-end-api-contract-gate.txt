@@ -142,7 +142,16 @@ M3 复原                ⇒ 绿
   go test ./scripts/ursmcheck/ -run 'CICarrier|Pipefail|AgentsMdSize|SectionNumbering'
                                                           ⇒ ok（20.809s）
   make guards-sa-front-end-contracts                     ⇒ ok
-  全套 ursmcheck 的归因见报告 §7.41.1
+  ★★ 全套 `ursmcheck`（★ 墙钟 **481.708s** ★）⇒ ★ **红 12 条** ⇒ ★★ 比上一轮多 2 条：
+     `TestProactiveCleanupNeverDropsPartition` / `…EvenIfFlagSaysPlain`
+     ⇒ ★★ **那 2 条是【环境级】红因：磁盘 100% 满（Go 构建缓存 22 GB）★★
+     ⇒ ★★ 证法三步：① `df -h` ⇒ `/System/Volumes/Data` 100%、只剩 193 MiB
+     ｜② `go clean -cache`（★ 22 GB → 8 KB、★ 可再生 ★★）⇒ 可用空间 23 GiB
+     ｜③ ★★ **清盘后原地复跑 ⇒ ok（1.237s）★★ ⇒ ⇒ 判红完全由环境引起
+  ★★ **【对照实测】基线树（`85c38fc8a`、不含本轮任何改动）跑那 10 条 ⇒ 逐字同款 10 条全红
+     （★ 墙钟 20.701s ★★）⇒ ⇒ **失败集合差集为空 ⇒ 本轮零新增红** ★★
+  ★★ 通用式补强：「★ **归因的基线读数也会过期**——★ 环境红是【时变】的
+     （★ 本轮：磁盘满 ⇒ 多出 2 条红；★ 清盘 ⇒ 同一条变绿 ★★）⇒ ⇒ 归因必须【当场】对拍 ★★」
 
 ★ ★★ **零生产写 / 零 schema 变更 / 零在役切换 / 零迁移字节变更。**
 
