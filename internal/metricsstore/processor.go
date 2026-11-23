@@ -3,6 +3,7 @@ package metricsstore
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"math"
 	"os"
@@ -106,10 +107,27 @@ const selectUsageFactsSQL = `
 
 // enrichDimensionsSQL 查询会话/任务/协议/附件维度。
 //
-// ★ 列名以活库为准：request_logs 里**没有** session_id、没有 gateway_instance；
+// ★ 数据源是**双腿视图** request_logs_with_current_month（仓内 sqlreadguard 守卫指定的合法形态）：
 //
-//	会话键是 gw_session_id，任务键是 gw_task_id（早期版本写的 session_id/gateway_instance
+//	迁移 890 已把 v1 族 request_logs（含母表 request_logs / _request_logs）整体删除，
+//	⇒ 裸读 FROM request_logs 在生产上直接 42P01「relation does not exist」
+//	⇒ 整条增强静默失败（会话/任务/协议维度全空，而请求照进库、计数照涨
+//	⇒ 这是最难发现的一类坏：数据看着在涨，只是维度全没了）。
+//	⇒ 改读双腿视图：视图名跨版本稳定（pre-890=v1 三臂体、post-890=会话族两臂体）。
+//	★ 同时满足仓内守卫 internal/sqlreadguard（禁裸读 v1 母表）：
+//	其正则要求 request_logs 后紧跟词边界，视图名下个字符是 "_" ⇒ 不命中。
+//
+// ★ 列名以活库为准：
+//
+//	会话键是 gw_session_id、任务键是 gw_task_id（早期版本写的 session_id/gateway_instance
 //	会直接报「column does not exist」，于是整条增强静默失败 ⇒ session_id 永远写不进去）。
+//	★ 协议列：视图里是 **egress_protocol**（**没有** upstream_protocol）；
+//	  取值优先级 client_protocol（客户端协议）→ egress_protocol（出向协议）。
+//
+// ★ 语义边界：post-890 视图是「会话族两臂体」（session_turns_hot ∪ session_turns），
+//
+//	只有「进入了会话」的请求才有行 ⇒ 非会话类请求的 session_id 保持 NULL 是**语义正确**，
+//	不是缺陷。
 //
 // ★ ORDER BY ts DESC：同一 request_id 可能有多行（重试/多次记录），取最新的一条。
 const enrichDimensionsSQL = `
@@ -118,8 +136,8 @@ const enrichDimensionsSQL = `
 		rl.gw_task_id,
 		rl.attachment_count,
 		rl.client_protocol,
-		rl.upstream_protocol
-	FROM request_logs rl
+		rl.egress_protocol
+	FROM request_logs_with_current_month rl
 	WHERE rl.request_id = $1
 	ORDER BY rl.ts DESC
 	LIMIT 1
@@ -148,6 +166,9 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 	processed := 0
 	metrics := make([]*RequestMetric, 0, batchSize)
 	var scanErr error
+	// 维度增强失败计数（只影响维度、不影响计量 ⇒ 不阻断整批，但必须可见）
+	enrichFailures := 0
+	var firstEnrichErr error
 
 	for rows.Next() {
 		var metric RequestMetric
@@ -229,8 +250,12 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 
 		// 2. 增强维度（查询 session_id、payer_id、team_id 等）
 		if err := p.enrichDimensions(ctx, &metric); err != nil {
-			log.Printf("Error enriching dimensions for request %s: %v", metric.RequestID, err)
-			// 继续处理，不阻断整批
+			// ★ 只计数不逐行打印：失败 1000 行会刷 1000 条日志；
+			//   批末汇总一条（含首条原因）——「静默失败」正是这次事故的根因。
+			enrichFailures++
+			if firstEnrichErr == nil {
+				firstEnrichErr = err
+			}
 		}
 
 		// 3. 添加到批处理列表
@@ -248,6 +273,14 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 		if err := p.writer.BatchUpsertRequestMetrics(ctx, metrics); err != nil {
 			return 0, err
 		}
+	}
+
+	// ★ 维度增强失败汇总：这是「静默失败」类故障的唯一可见出口 ——
+	//   表/列被删（如 v1 族退役）时，请求照进库、计数照涨，只有维度全空，
+	//   数据上完全看不出坏了 ⇒ 必须有一条明确的日志。
+	if enrichFailures > 0 {
+		log.Printf("MetricsProcessor: 本批 %d/%d 条维度增强失败（首条原因：%v）⇒ 这些行的会话/任务/协议维度为空",
+			enrichFailures, processed, firstEnrichErr)
 	}
 
 	// ★ 扫描错误要往外报：调用方（后台循环）据此记日志/告警。
@@ -282,18 +315,18 @@ func (p *Processor) readWatermark(ctx context.Context) (watermark, error) {
 
 // enrichDimensions 增强维度信息
 func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric) error {
-	var sessionID, taskID, clientProtocol, upstreamProtocol sql.NullString
+	var sessionID, taskID, clientProtocol, egressProtocol sql.NullString
 	var attachmentCount sql.NullInt64
 
-	err := p.db.QueryRowContext(ctx, enrichDimensionsSQL, metric.RequestID).Scan(
+	scanErr := p.db.QueryRowContext(ctx, enrichDimensionsSQL, metric.RequestID).Scan(
 		&sessionID,
 		&taskID,
 		&attachmentCount,
 		&clientProtocol,
-		&upstreamProtocol,
+		&egressProtocol,
 	)
 
-	if err == nil {
+	if scanErr == nil {
 		if sessionID.Valid && sessionID.String != "" {
 			metric.SessionID = &sessionID.String
 		}
@@ -303,11 +336,11 @@ func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric)
 		if attachmentCount.Valid {
 			metric.AttachmentCount = int32(attachmentCount.Int64)
 		}
-		// 协议：优先客户端协议，回落到上游协议
+		// 协议：优先客户端协议，回落到出向协议（视图里**没有** upstream_protocol）
 		if clientProtocol.Valid && clientProtocol.String != "" {
 			metric.Protocol = &clientProtocol.String
-		} else if upstreamProtocol.Valid && upstreamProtocol.String != "" {
-			metric.Protocol = &upstreamProtocol.String
+		} else if egressProtocol.Valid && egressProtocol.String != "" {
+			metric.Protocol = &egressProtocol.String
 		}
 	}
 
@@ -330,6 +363,13 @@ func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric)
 	modality := deriveModality(metric.ImageTokens, metric.AudioTokens, metric.VideoTokens, metric.AttachmentCount)
 	metric.Modality = &modality
 
+	// ★ 增强失败必须往外报，**不能吞**。
+	//   静默吞掉的形态最坏：表/列被删（如 v1 族退役）⇒ 请求照进库、计数照涨，
+	//   只是所有会话/任务/协议维度全空 ⇒ 从数据上完全看不出坏了。
+	//   这里把错误返回给 ProcessBatch，由它记日志（行仍会落库，计量不丢）。
+	if scanErr != nil {
+		return fmt.Errorf("enrich dimensions for request %s: %w", metric.RequestID, scanErr)
+	}
 	return nil
 }
 
