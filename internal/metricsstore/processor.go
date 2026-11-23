@@ -367,7 +367,14 @@ func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric)
 	//   静默吞掉的形态最坏：表/列被删（如 v1 族退役）⇒ 请求照进库、计数照涨，
 	//   只是所有会话/任务/协议维度全空 ⇒ 从数据上完全看不出坏了。
 	//   这里把错误返回给 ProcessBatch，由它记日志（行仍会落库，计量不丢）。
-	if scanErr != nil {
+	//
+	// ★ 但「没有会话行」**不是失败**：post-890 的 canonical 视图是会话族两臂体
+	//   ⇒ 非会话类请求（探测流量 / 健康检查 / 非会话 API 调用）本来就查不到行，
+	//   维度留空是**语义正确** ⇒ ErrNoRows 不计入失败。
+	//   ★ 不区分的后果：良性情况每批都刷「维度增强失败」汇总日志 ⇒
+	//     而这条汇总日志是「真失败」的唯一可见出口 ⇒ 假警报把真警报淹没
+	//     （等于把「静默失败」换成「假警报淹没真警报」）。
+	if scanErr != nil && scanErr != sql.ErrNoRows {
 		return fmt.Errorf("enrich dimensions for request %s: %w", metric.RequestID, scanErr)
 	}
 	return nil
