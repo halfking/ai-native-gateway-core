@@ -204,20 +204,31 @@ func TestWriteNoCandidateWithCause_Envelopes(t *testing.T) {
 		name string
 		path string
 		alts ModelAlternativesResult
+		// ★ 2026-11-24 12h 修订审计轮：本用例原先对**所有**臂都断言 503，
+		//   而 owner 的 4xx 契约（540a3f763）把「**没有替代模型可给**」这一支
+		//   改成了按归因派生状态码 ⇒ 断言必须**分臂**：
+		//   · 无替代 ⇒ 永久性挡空 ⇒ 4xx（本例主因=配额耗尽 ⇒ 429）
+		//   · 有替代 ⇒ 还能换模型重试 ⇒ 仍 503（并附 alternatives）
+		wantStatus int
+		wantType   string // Anthropic 面的 error.type
 	}
 	arms := []arm{
-		{"openai 无替代", "/v1/chat/completions", ModelAlternativesResult{}},
-		{"openai 带替代", "/v1/chat/completions", alts},
-		{"anthropic 无替代", "/v1/messages", ModelAlternativesResult{}},
-		{"anthropic 带替代", "/v1/messages", alts},
+		{"openai 无替代", "/v1/chat/completions", ModelAlternativesResult{},
+			http.StatusTooManyRequests, ""},
+		{"openai 带替代", "/v1/chat/completions", alts,
+			http.StatusServiceUnavailable, ""},
+		{"anthropic 无替代", "/v1/messages", ModelAlternativesResult{},
+			http.StatusTooManyRequests, "rate_limit_error"},
+		{"anthropic 带替代", "/v1/messages", alts,
+			http.StatusServiceUnavailable, "overloaded_error"},
 	}
 	for _, a := range arms {
 		t.Run(a.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, a.path, nil)
 			w := httptest.NewRecorder()
 			writeNoCandidateWithAlternatives(context.Background(), w, r, "req-c", "m", a.alts, cause)
-			if w.Code != http.StatusServiceUnavailable {
-				t.Fatalf("status = %d, want 503", w.Code)
+			if w.Code != a.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, a.wantStatus)
 			}
 			errObj := decodeErrorObject(t, w)
 			if errObj["message"] != "MSG-TRUTHFUL" {
@@ -233,8 +244,8 @@ func TestWriteNoCandidateWithCause_Envelopes(t *testing.T) {
 				t.Errorf("retryable = %v, want false", errObj["retryable"])
 			}
 			anthropic := a.path == "/v1/messages"
-			if anthropic && errObj["type"] != "overloaded_error" {
-				t.Errorf("anthropic error.type = %v（本轮不改类型契约）", errObj["type"])
+			if anthropic && errObj["type"] != a.wantType {
+				t.Errorf("anthropic error.type = %v, want %v", errObj["type"], a.wantType)
 			}
 			if !anthropic && (errObj["code"] != "no_candidate" || errObj["kind"] != "no_candidate") {
 				t.Errorf("openai code/kind = %v/%v", errObj["code"], errObj["kind"])
