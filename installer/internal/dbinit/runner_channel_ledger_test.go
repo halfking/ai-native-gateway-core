@@ -133,7 +133,8 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//   ⇒ ★ ⇒ 交集 +1 是【★ 两个通道【都】能投递同一个文件 ★】的正常结果
 		//   （★ 此前 981/990 等大量迁移本就是双通道共有 ★）★★
 		//   ⇒ ★ ⇒ 本次更新是【★ 如实反映事实 ★】、★ 不是「把红抹掉」★★
-		wantBoth          = 331
+		// ★ 2026-11-24：★ 交集 331 → 332 ★（983_request_metrics 加入两条通道交集）
+		wantBoth          = 332
 		wantOnlyDeploy    = 26
 		wantOnlyInstaller = 62
 	)
