@@ -189,8 +189,22 @@ function applyDraft() {
              `:aria-label` ⇒ 打在**按钮**上的 data-testid 会被遮蔽 ⇒ 选不到。
              ⇒ ⇒ 锚点挪到**不带 title / aria-label 的内层元素**上（同款手法：
              **零属性删除、零 a11y 损失**）。
-             ★ 点这个 span 的中心 = 点按钮 ⇒ 事件冒泡到按钮 ⇒ 面板照样打开。 -->
-        <span class="kx-dr-trigger__label" data-testid="kx-dr-trigger">
+             ★ 点这个 span 的中心 = 点按钮 ⇒ 事件冒泡到按钮 ⇒ 面板照样打开。
+
+             ★★ 2026-11-24（E2E 第二轮·量具修正）：锚点**随「可交互」状态切换**
+             （disabled ⇒ `kx-dr-trigger-disabled`，否则 `kx-dr-trigger`）。
+             · 为什么：父级在加载数据时把控件置为 disabled（会话统计面板传
+               `:disabled="loading"`）⇒ 此刻按钮**点不动** ⇒ E2E 若在加载期
+               点击，面板不会打开 ⇒ **量具假红**（产品是好的）。
+             · 为什么不能靠「等待某个加载指示器消失」来绕：① 看板页没有那个
+               锚点；② 「等加载完」这件事本身应该由**控件自己的状态**表达。
+             · ⇒ 效果：E2E 用 `extendedWaitUntil: visible: id: kx-dr-trigger`
+               就会**一直等到控件可点**为止（找不到就继续等），点到的必然是
+               可交互态 ⇒ 不再有「点了个 disabled 按钮」的假红。 -->
+        <span
+          class="kx-dr-trigger__label"
+          :data-testid="disabled ? 'kx-dr-trigger-disabled' : 'kx-dr-trigger'"
+        >
           <span class="kx-dr-trigger__preset" :class="{ 'kx-dr-trigger__preset--set': !!modelValue }">{{ triggerPreset }}</span>
           <span v-if="triggerRange" class="kx-dr-trigger__range">{{ triggerRange }}</span>
         </span>

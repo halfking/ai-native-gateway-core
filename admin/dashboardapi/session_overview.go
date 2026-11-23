@@ -457,16 +457,19 @@ func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Conte
 		innerWhere := joinStrings(where, " AND ")
 		outerWhere := ""
 		var fromClause string
+		var cte string
 		if withUniverse {
 			if u := universeWhere(win.includeProbes); u != "" {
 				outerWhere = " WHERE " + u
 			}
-			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
+			var join string
+			cte, join = universeJoinFor(win)
+			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + join + outerWhere
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
 
-		query := `
+		query := cte + `
 		SELECT
 			COUNT(*) as total,
 			COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active,
@@ -588,16 +591,19 @@ func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params
 		// 与主腿同法：窗口/租户下推进子查询绑小 ss；宇宙合取留外层（53100 修复）。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
+		var cte string
 		if withUniverse {
 			outerWhere := ""
 			if u := universeWhere(win.includeProbes); u != "" {
 				outerWhere = " WHERE " + u
 			}
-			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
+			var join string
+			cte, join = universeJoinFor(win)
+			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + join + outerWhere
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
-		query := `
+		query := cte + `
 		SELECT COALESCE(SUM(ss.total_cost_usd), 0)
 		` + fromClause
 		return query, args
@@ -632,17 +638,20 @@ func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params Que
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var innerFrom string
+		var cte string
 		if withUniverse {
 			outerWhere := ""
 			if u := universeWhere(win.includeProbes); u != "" {
 				outerWhere = " WHERE " + u
 			}
-			innerFrom = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
+			var join string
+			cte, join = universeJoinFor(win)
+			innerFrom = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + join + outerWhere
 		} else {
 			innerFrom = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
 
-		query := `
+		query := cte + `
 		SELECT
 			model,
 			COUNT(*) as session_count,
@@ -724,12 +733,15 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
+		var cte string
 		if withUniverse {
 			outerWhere := ""
 			if u := universeWhere(win.includeProbes); u != "" {
 				outerWhere = " WHERE " + u
 			}
-			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
+			var join string
+			cte, join = universeJoinFor(win)
+			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + join + outerWhere
 		} else if withDim {
 			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + qualifySs(innerWhere)
 		} else {
@@ -743,7 +755,7 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 			clientExpr = "COALESCE(NULLIF(ss.client_models[1], ''), 'unknown')"
 		}
 
-		query := fmt.Sprintf(`
+		query := fmt.Sprintf(cte+`
 		SELECT
 			`+clientExpr+` as client_id,
 			COUNT(*) as session_count,
@@ -806,12 +818,15 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
+		var cte string
 		if withUniverse {
 			outerWhere := ""
 			if u := universeWhere(win.includeProbes); u != "" {
 				outerWhere = " WHERE " + u
 			}
-			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
+			var join string
+			cte, join = universeJoinFor(win)
+			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + join + outerWhere
 		} else if withDim {
 			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + qualifySs(innerWhere)
 		} else {
@@ -824,7 +839,7 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 			taskExpr = "'unknown'"
 		}
 
-		query := fmt.Sprintf(`
+		query := fmt.Sprintf(cte+`
 		SELECT
 			`+taskExpr+` as task_id,
 			COUNT(*) as session_count,
@@ -894,12 +909,15 @@ func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params 
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
+		var cte string
 		if withUniverse {
 			outerWhere := ""
 			if u := universeWhere(win.includeProbes); u != "" {
 				outerWhere = " WHERE " + u
 			}
-			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
+			var join string
+			cte, join = universeJoinFor(win)
+			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + join + outerWhere
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
@@ -913,7 +931,7 @@ func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params 
 		newFilter := win.clauseAt("ss.first_request_at", winArg)
 
 		// DATE(...) is OID 1082 binary; pgx v5 refuses *string ⇒ cast to text.
-		query := `
+		query := cte + `
 		SELECT
 			` + dayExpr + `::text as date,
 			COALESCE(SUM(ss.total_cost_usd), 0) as cost,
