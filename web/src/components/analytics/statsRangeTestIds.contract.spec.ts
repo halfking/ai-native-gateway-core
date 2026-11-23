@@ -48,17 +48,30 @@ const FRONTEND_FILES = [
 
 const flowText = readFileSync(FLOW, 'utf8')
 
-/** 前端源码里出现的所有 data-testid（静态字面量 + 动态模板串）。 */
+/** 前端源码里出现的所有 data-testid（静态字面量 + 动态模板串 + 状态三元）。 */
 const sourceTestIds = new Set<string>()
 /** 动态模板归一后的**模式**（`${…}` → `*`）。 */
 const sourceTestIdPatterns: string[] = []
 for (const rel of FRONTEND_FILES) {
   const source = readFileSync(join(REPO, rel), 'utf8')
-  for (const m of source.matchAll(/data-testid="([^"]+)"/g)) {
+  // ① 静态字面量（前面不是 ':' ⇒ 不是绑定表达式）。
+  for (const m of source.matchAll(/(?<!:)data-testid="([^"]+)"/g)) {
     sourceTestIds.add(m[1])
   }
+  // ② 绑定表达式之一：模板串（`:data-testid="`kx-dr-preset-${preset.id}`"`）
+  //    ⇒ 把 `${…}` 归一成 `*` 当作**模式**参与匹配。
   for (const m of source.matchAll(/:data-testid="`([^`]+)`"/g)) {
     sourceTestIdPatterns.push(m[1].replace(/\$\{[^}]+\}/g, '*'))
+  }
+  // ③ 绑定表达式之二：状态三元（`:data-testid="disabled ? 'a' : 'b'"`）
+  //    ⇒ 里面的**每一个**引号字面量都是合法的 testid ⇒ 全部收进来。
+  //    ★ 为什么要单列：触发器锚点随「可交互/不可交互」切换
+  //      （2026-11-24 E2E 第二轮：加载期控件 disabled ⇒ 点击点不动 ⇒ 假红），
+  //      两个值都必须在登记范围内，否则门会把「flow 用了可交互态锚点」误报成缺失。
+  for (const m of source.matchAll(/:data-testid="([^"`]+)"/g)) {
+    for (const lit of m[1].matchAll(/'([^']+)'|"([^"]+)"/g)) {
+      sourceTestIds.add(lit[1] ?? lit[2])
+    }
   }
 }
 
@@ -182,5 +195,17 @@ describe('统一轮 · flow 18 判据收敛契约', () => {
     for (const id of [...flowIds].filter((x) => x.startsWith('kx-dr-preset-'))) {
       expect(existsInFrontend(id), `动态模式没覆盖住档位锚点：${id}`).toBe(true)
     }
+  })
+
+  it('⑦ 触发器锚点随「可交互」状态切换（⇒ E2E 能等到可点再点）', () => {
+    // ★ 2026-11-24 E2E 第二轮（真机实测）：会话统计面板在加载期把日期控件置为
+    //   disabled ⇒ Maestro 点它**面板不会开** ⇒ 假红（产品是好的）。
+    //   ⇒ 锚点必须区分「可交互 / 不可交互」两个值，E2E 的
+    //   `extendedWaitUntil: visible: id: kx-dr-trigger` 才会一直等到可点为止。
+    const source = readFileSync(join(REPO, 'web/src/components/ui/KxDateRangePicker.vue'), 'utf8')
+    expect(source, '触发器锚点必须区分「不可交互」态').toMatch(/kx-dr-trigger-disabled/)
+    expect(source, '触发器锚点必须保留「可交互」态').toMatch(/'kx-dr-trigger'/)
+    expect(flowIds.has('kx-dr-trigger'), 'flow 必须用「可交互」态锚点').toBe(true)
+    expect(flowIds.has('kx-dr-trigger-disabled'), 'flow 不该断言「不可交互」态锚点').toBe(false)
   })
 })
