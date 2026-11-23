@@ -166,45 +166,73 @@ func legacyLivePairs(t *testing.T) []legacyLivePair {
 	t.Helper()
 	var pairs []legacyLivePair
 	seen := map[string]bool{}
-	for key, view := range crossSurfaceSelectStar(t) {
-		if _, ok := legacyCrossSurfaceSelectStar[view]; !ok {
+	// ★★ 上游 L34 八轮把 detector 改成了【语句级模型】★★：
+	// ★   键＝「<basename>|<视图名>」、★ 值＝`crossSurfaceStatement`
+	// ★   （★ `rels`＝分支关系、★ 顺序＝UNION ALL 出现顺序；★ `paths`＝同键语句所在的路径）★★
+	// ★ ⇒ ★ **静态那半与动态那半仍共用同一套解析** ⇒ ★ 不会口径分叉 ★★
+	for key, st := range crossSurfaceSelectStar(t) {
+		if _, ok := legacyCrossSurfaceSelectStar[key]; !ok {
 			continue // ★ 非登记表条目 ⇒ 归静态门（TestHotSurfaceViewsMustEnumerateColumns）
 		}
-		idx := strings.LastIndex(key, " @@ ")
-		if idx < 0 {
-			t.Fatalf("crossSurfaceSelectStar 的键形状变了（★ 缺 ' @@ '）：%q", key)
+		base := key
+		if i := strings.Index(key, "|"); i >= 0 {
+			base = key[:i]
 		}
-		stmt, path := strings.TrimSpace(key[:idx]), strings.TrimSpace(key[idx+4:])
-		base := filepath.Base(path)
 		ver := reLegacyFileRe.FindStringSubmatch(base)
 		if ver == nil {
 			continue // ★ 没有数字前缀 ⇒ 不参与版本台账判定
 		}
-		hot, parent, ok := legacyHotAndParent(stmt)
-		if !ok {
-			continue // ★ 不是「hot ＋ 父表」这一对（★ 例如 625 的统一视图）
+		if len(st.rels) < 2 {
+			continue // ★ 不是 union 形状
 		}
-		id := view + "@" + base
-		if seen[id] {
-			continue
+		// ★ 两条通道各自执行的那份字节（★ 部署通道＝canonical、★ 安装器＝embeddata 副本）
+		canonPath, embPath := "", ""
+		for _, p := range st.paths {
+			if strings.Contains(p, string(filepath.Separator)+"embeddata"+string(filepath.Separator)) {
+				if embPath == "" {
+					embPath = p
+				}
+				continue
+			}
+			if canonPath == "" {
+				canonPath = p
+			}
 		}
-		seen[id] = true
-		pair := legacyLivePair{view: view, file: base, version: ver[1], hot: hot, parent: parent, stmt: stmt}
-		// ★ 两条通道各自执行的那份字节的指纹（★ 部署通道＝canonical、★ 安装器＝embeddata 副本）
-		pair.shaCano = legacySHA256(t, path)
-		emb := filepath.Join("../../../installer/cmd/llm-gw-installer/embeddata/startup", base)
-		if _, err := os.Stat(emb); err == nil {
-			pair.shaEmb = legacySHA256(t, emb)
-		} else {
-			pair.shaEmb = pair.shaCano
+		if canonPath == "" && len(st.paths) > 0 {
+			canonPath = st.paths[0]
 		}
-		pairs = append(pairs, pair)
+		// ★★★ **逐分支比对（★ 本轮随上游改动一并升级）** ★★★：
+		// ★ 上游把登记表从 11 对扩到【含三路形状】（★ 父表 ∪ 当月分区 ∪ default）★★
+		// ★ ⇒ ★ **只比前两个分支就是「只核 2/3」那个洞**（★ 上游 AGENTS 里登记过这条）★★
+		// ★ ⇒ ★ 对**每一个分支**都比一次（★ 参考分支＝`rels[0]`）★★
+		ref := st.rels[0]
+		stmt := strings.Join(st.rels, " UNION ALL ")
+		for _, other := range st.rels[1:] {
+			id := key + "|" + other
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			pair := legacyLivePair{view: st.view, file: base, version: ver[1], hot: ref, parent: other, stmt: stmt}
+			if canonPath != "" {
+				pair.shaCano = legacySHA256(t, canonPath)
+			}
+			if embPath != "" {
+				pair.shaEmb = legacySHA256(t, embPath)
+			} else {
+				pair.shaEmb = pair.shaCano
+			}
+			pairs = append(pairs, pair)
+		}
 	}
 	sort.Slice(pairs, func(i, j int) bool {
 		if pairs[i].view != pairs[j].view {
 			return pairs[i].view < pairs[j].view
 		}
-		return pairs[i].file < pairs[j].file
+		if pairs[i].file != pairs[j].file {
+			return pairs[i].file < pairs[j].file
+		}
+		return pairs[i].parent < pairs[j].parent
 	})
 	return pairs
 }
