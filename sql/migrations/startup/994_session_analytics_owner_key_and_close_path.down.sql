@@ -1,9 +1,11 @@
--- 993 回滚：恢复 981 canonical 形态（owner 键 = NULLIF(s.owner_user,'') 单源），
+-- 994 回滚：恢复 981 canonical 形态（owner 键 = NULLIF(s.owner_user,'') 单源），
+-- ★ 本迁移原编 993，因 993 被 report_snapshots_exact_cost_cents 占用而重编为 994
+--   （见提交 feb d940ae「994 重编」）⇒ 注释里的迁移号已随之订正为 994。
 -- 删除 994 新增的 session_dim.stop_reason 列与 end_user_count 聚合列。
 --
 -- ⚠ 回滚语义注意：本 down 以「981 canonical 视图在场」为前提重建单源版视图。
 --   在 252（154/245 共享 PG）上 981 的视图从未建成——对此库跑本 down 会把
---   993 刚建好的视图替换回单源版而不是回到「不存在」。若确需回到「不存在」，
+--   994 刚建好的视图替换回单源版而不是回到「不存在」。若确需回到「不存在」，
 --   在该库手工 DROP 四视图（勿在共享库轻率执行）。
 SET lock_timeout = '5s';
 SET statement_timeout = '30min';

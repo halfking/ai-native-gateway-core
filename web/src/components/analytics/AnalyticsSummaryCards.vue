@@ -33,7 +33,11 @@ function formatLatency(n: number | undefined | null): string {
   <div class="summary-cards">
     <div class="summary-card">
       <div class="card-label">{{ $t('analytics.summary.totalRequests') }}</div>
-      <div class="card-value">{{ formatNumber(summary.total_requests) }}</div>
+      <!-- ★ data-testid：★ 探针（maestro/tools/assert-analytics-tenant.mjs）要
+           拿「页面显示的请求数」与「页面自己收到的响应」逐字对拍 ⇒ ★ 必须有
+           **唯一锚点**：★ 扫全页 innerText 的旧写法在 total_requests=0 时
+           恒真（★ 任何页面文本都含 "0"）⇒ ★ 判据形同虚设。 -->
+      <div class="card-value" data-testid="analytics-total-requests">{{ formatNumber(summary.total_requests) }}</div>
       <div class="card-sub">
         <span class="success">{{ formatNumber(summary.success_count) }} {{ $t('analytics.summary.success') }}</span>
         <span class="error">{{ formatNumber(summary.error_count) }} {{ $t('analytics.summary.errors') }}</span>

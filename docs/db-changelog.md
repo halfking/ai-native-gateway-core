@@ -11121,6 +11121,7 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 994 | `994_session_analytics_owner_key_and_close_path.sql` | `059f5f94020a9859da3fc36afae2a725cca9991a6c6a9c43d1d2176b0b157330` | applied+verified |
+| 994 | `994_session_analytics_owner_key_and_close_path.sql` | `1cb26a1ed3e502247767a2050eb349e960dbc6dfcc75792b9b173fef57585412` | applied+verified（★ 2026-11-23 12h 修订审计轮追认：★ canonical 因 `d587edc47`（05:32）补 `SET max_parallel_workers_per_gather = 0;` + 12 行 DSM 说明注释而**变更字节** ⇒ SHA 随之变为 `1cb26a1e…`；★ **原登记行 `059f5f94…` 保留**（★ 供已按旧字节应用过的库核对）⇒ ★ 本轮**实测** canonical / embeddata / installer up **三份逐字节一致**（★ sha 同为 `1cb26a1e…`）⇒ `TestMigration994OwnerKeyAndClosePathDelivered` 与 `TestAllMigrationCopiesAreByteIdentical` 复绿；★ **教训**：★ 台账 sha 随 canonical 变更**必须同步登记**（★ 否则 `verify-migration-checksums.sh` 判 MISMATCH ⇒ CI Unified Verification 失败）） |
 
 
 

@@ -377,6 +377,21 @@ for _dd_arg in ${ARGS[@]+"${ARGS[@]}"}; do
   esac
 done
 if [[ "$_DD_IS_DEPLOY" == "1" ]]; then
+# ★ 2026-11-23（12h 修订审计轮）：D3 部署前置门禁（deploy-pre-gate.sh）此前
+#   **零调用方**（`grep -rln "deploy-pre-gate" scripts/ deploy/` 只命中它自己）
+#   ⇒ 它自述的「失败时阻止部署继续」**从来不会发生**。
+#   现接入本脚本，但**默认不跑**（需 DD_RUN_PRE_GATE=1 **显式**启用）——
+#   ★ 理由：pre-gate 的 G2 需要 Maestro + ADMIN_PASSWORD、G3 需要 web/dist
+#   且 mtime<N 分钟，而实际部署流程是「产物随 tar 上树、部署机**不构建前端**」
+#   ⇒ 接成必跑会让不具备条件的部署机**恒红**，把门禁变成噪声。
+#   ⇒ 「是否把 D3 设为默认必跑」属 owner 决策（见
+#   docs/12小时内修订审计-2026-11-23-0707.md 的待决清单）。
+#   逃生舱语义与测试闸门一致：必须**显式**给，不允许默默跳过。
+if [[ "${DD_RUN_PRE_GATE:-0}" == "1" ]]; then
+  "${BASH:-bash}" "$SCRIPT_DIR/deploy-pre-gate.sh"
+else
+  echo "[deploy-211] DD_RUN_PRE_GATE 未开启 ⇒ 跳过 D3 部署前置门禁（★ 手工预检可用：bash scripts/deploy-pre-gate.sh）" >&2
+fi
 "${BASH:-bash}" "$SCRIPT_DIR/deploy-test-gate.sh"
 else
   echo "[deploy-211] 非部署模式（只读探测 / 停止）⇒ 跳过测试闸门（上线证据由真正部署的那次闸门负责）" >&2

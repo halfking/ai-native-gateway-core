@@ -130,6 +130,19 @@ func TestDeployGateSelectsGuardDomainPackages(t *testing.T) {
 			want:    "./sql/migrations/startup",
 		},
 		{
+			// ★ 这条是「正则里自带 '|'」的活体样本：★ 若按**第一个** '|' 切分
+			//   ⇒ 正则被劈成 `^installer/migrations/.*/(up` ⇒ 编译不过 ⇒ 这条规则
+			//   **永远不生效** ⇒ 而「改了离线迁移副本却没人跑三方门」正是 P1 的根因。
+			name:    "离线副本改动 ⇒ 必须选中三方门（★ 规则正则自带 '|'）",
+			changed: "installer/migrations/994_session_analytics_owner_key_and_close_path/up.sql",
+			want:    "./internal/sqlguard\n./sql/migrations/startup",
+		},
+		{
+			name:    "离线副本 down.sql 改动 ⇒ 必须选中三方门",
+			changed: "installer/migrations/994_session_analytics_owner_key_and_close_path/down.sql",
+			want:    "./internal/sqlguard",
+		},
+		{
 			name:    "部署脚本改动 ⇒ 必须选中部署脚本门（★ 该包只有 _test.go ⇒ .go 规则选不到）",
 			changed: "scripts/deploy-seamless-docker.sh",
 			want:    "./scripts/deploygate",
@@ -203,19 +216,19 @@ func TestGuardDomainTableHasNoDeadRules(t *testing.T) {
 	}
 	tracked := gitTrackedFiles(t)
 	for _, row := range rows {
-		parts := strings.SplitN(row, "|", 2)
-		if len(parts) != 2 {
+		re, _, ok := splitDomainRow(row)
+		if !ok {
 			t.Errorf("映射表条目格式不对（期望 \"<正则>|<门包>\"）: %q", row)
 			continue
 		}
-		re, err := regexp.Compile(parts[0])
+		compiled, err := regexp.Compile(re)
 		if err != nil {
-			t.Errorf("映射表里的正则编译不过: %q（%v）", parts[0], err)
+			t.Errorf("映射表里的正则编译不过: %q（%v）", re, err)
 			continue
 		}
 		hits := 0
 		for _, f := range tracked {
-			if re.MatchString(f) {
+			if compiled.MatchString(f) {
 				hits++
 			}
 		}
@@ -224,6 +237,21 @@ func TestGuardDomainTableHasNoDeadRules(t *testing.T) {
 				"它承诺的门永远不会因为对应改动而入选", row)
 		}
 	}
+}
+
+// splitDomainRow —— 把映射表的一行拆成「正则 | 门包」。
+//
+// ★★ 必须按**最后一个** '|' 拆（★ 不是第一个）：★ 正则里**自带** '|' 是合法的
+//   （★ 如 `^installer/migrations/.*/(up|down)\.sql$`）⇒ 按第一个拆会把正则
+//   从中间劈开（★ 实测：★ 正则变成 `^installer/migrations/.*/(up` ⇒ 编译不过
+//   ⇒ ★ 那条规则**永远不生效**、★ 门包名也变成错的 ⇒ 会选中一个不存在的包）。
+//   ⇒ ★ 门包路径里不会出现 '|' ⇒ 按最后一个拆必然拆对。
+func splitDomainRow(row string) (re string, pkg string, ok bool) {
+	i := strings.LastIndex(row, "|")
+	if i <= 0 || i == len(row)-1 {
+		return "", "", false
+	}
+	return row[:i], row[i+1:], true
 }
 
 // gitTrackedFiles —— 本仓 git 跟踪的文件清单（★ 改动清单的真正来源域）。
@@ -253,11 +281,10 @@ func TestGuardDomainPackagesExistAndHaveTests(t *testing.T) {
 	rows := gateDomainTable(t)
 	seen := map[string]bool{}
 	for _, row := range rows {
-		parts := strings.SplitN(row, "|", 2)
-		if len(parts) != 2 {
+		_, pkg, ok := splitDomainRow(row)
+		if !ok {
 			continue
 		}
-		pkg := parts[1]
 		dir := strings.TrimPrefix(pkg, "./")
 		if seen[pkg] {
 			continue

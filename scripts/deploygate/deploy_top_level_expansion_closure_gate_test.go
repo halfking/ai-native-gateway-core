@@ -1,9 +1,22 @@
-package ursm_test
+package deploygate_test
 
 // deploy_top_level_expansion_closure_gate_test.go —— 门：部署脚本的**顶层
 // 参数展开**必须全部闭合（`${VAR:-…}` 的右花括号成对）。
 //
 // 被测对象：scripts/deploy-seamless-docker.sh
+//
+// ── ★★★ 为什么这道门住在 `scripts/deploygate/`（★ 2026-11-23 12h 审计轮迁入）──
+//
+//	★ **门住 ≠ 会被跑**：★ 部署闸门（`scripts/deploy-test-gate.sh`）的选包判据
+//	  是「改动触及了哪个带 _test.go 的包」⇒ ★ `scripts/ursmcheck/` 是**重包**
+//	  （★ 185 个门文件）⇒ ★ 它**不在**闸门的守卫域映射里
+//	  ⇒ ★ 改了 `scripts/deploy-*.sh` 时闸门只选 `./scripts/deploygate`
+//	  ⇒ ★ 这道 brace 守卫住在 ursmcheck 里 ⇒ ★ **永远不被选中**
+//	  ⇒ ★ 即「门是好的、只是永不被选中」⇒ ★ 那类缺陷在部署路径上**结构性不可见**。
+//	⇒ ⇒ 迁到 `scripts/deploygate/` ⇒ ★ 闸门的规则
+//	  `^scripts/deploy-[^/]*\.sh$ → ./scripts/deploygate` **正好覆盖它**。
+//
+//	★ ★ **不要搬回 ursmcheck/**：★ 搬回去等于把它重新变成「永不被选中」的门。
 //
 // ── 为什么这道门存在（2026-11-23 211 部署中断实测）──────────────────────
 //

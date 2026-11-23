@@ -32,6 +32,26 @@
 - **耗时**: 252 实测视图级 SELECT 90s~197s ⇒ 文件自带
   `SET statement_timeout='30min'`（这正是 981 在 252 半途而废的机制）
 
+### ★ 并行 / DSM 地雷（本文件自带 `max_parallel_workers_per_gather=0`）
+
+- **触发条件**: 本迁移 Part 3 重建 `model_usage_aggregates` ⇒ 它是对
+  `request_logs_with_current_month` 的**大聚合** ⇒ PG 会选**并行计划** ⇒
+  并行 worker 需要 **resize DSM 共享内存段**（8MB/worker）。
+- **地雷**: 211 的 PG 容器 `/dev/shm` 只有 **64MB**，且长期滞留 DSM 孤儿段
+  （实测常态水位 35~43MB）⇒ 并行 worker 一 resize 就报
+  `could not resize shared memory segment … No space left on device`
+  （**SQLSTATE 53100**）⇒ 本迁移**直接 FATAL**。
+- **为什么这条特别危险**: `SET max_parallel_workers_per_gather=0` 之前，
+  `DROP MATERIALIZED VIEW` **已经执行** ⇒ 重建失败 ⇒ 生产上
+  `model_usage_aggregates` 视图**被 DROP 后重建失败、视图缺失**
+  （请求级读面挂）⇒ 且**不是偶发**（该地雷已在 request-logs 轮登记为 L1）。
+- **修法**: 关并行 ⇒ 该视图走**串行**计划、不再申请 DSM。代价＝重建慢一点，
+  可接受（视图是预聚合，不在请求路径上）。
+- ★ **本 README 必须与 canonical 同步**：★ canonical 在
+  `sql/migrations/startup/994_….sql`（★ 2026-11-23 05:32 的 `d587edc47`
+  才补上这行 SET）⇒ ★ 本 README 曾长期**未反映** DSM/并行改动
+  ⇒ ★ 三份副本（canonical / embeddata / 离线）的**注释与说明**也必须一致。
+
 ## 验证步骤
 
 ```sql
@@ -42,6 +62,13 @@ SELECT column_name FROM information_schema.columns
  WHERE table_name='session_dim' AND column_name='stop_reason';
 SELECT pg_get_viewdef('public.user_session_aggregates'::regclass, true);
 -- owner 表达式应含 COALESCE(s.owner_user, sd.api_key_owner_user)
+
+-- ★ 并行守卫：★ 关并行必须在 DROP/CREATE **之前**生效
+SELECT count(*) FROM pg_matviews WHERE matviewname='model_usage_aggregates';
+-- ★ 若重建后该视图缺失 ⇒ ★ 就是撞了 53100（★ 并行 worker 抢 DSM）
+SELECT extname FROM pg_extension WHERE extname IN ('pg_stat_statements');
+-- ★ DSM 孤儿段水位（★ 排查 53100 时看）
+SELECT * FROM pg_backend_memory_contexts WHERE name LIKE '%DSM%';
 ```
 
 ## 回滚

@@ -185,7 +185,7 @@ fi
 #   ③ severity 映射：★ medium=1、★ high=2、★ critical=3（★ 插件适配层）。
 #   ④ 链子拦不拦：★ `BlockThreshold`（★ 生产装配 2、★ boost=0）⇒ severity ≥ 阈值才拦。
 #   ⇒ ★ **形态 b ⇔ 存在某个 risk_level：★ deny 且 severity < BlockThreshold**。
-PI_REACH_RAW="$(ssh "$HOST" "docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -At -F':' -c \"select 'policy:'||tenant_id||':'||COALESCE(detection_mode,'observe')||':'||COALESCE(score_threshold_warn,6)||':'||COALESCE(score_threshold_block,10) from prompt_injection_policies where tenant_id='default' union all select 'matrix:'||severity_level||':'||COALESCE(observe_action::text,'log')||':'||COALESCE(enforce_action::text,'block') from severity_action_matrix\"" 2>/dev/null </dev/null | tr -d '\r')"
+PI_REACH_RAW="$(ssh "$HOST" "docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -At -F':' -c \"select 'policy:'||tenant_id||':'||COALESCE(detection_mode,'observe')||':'||COALESCE(score_threshold_warn,6)||':'||COALESCE(score_threshold_block,10) from prompt_injection_policies where tenant_id='default' union all select * from (select 'matrix:'||tenant_id||':'||severity_level||':'||COALESCE(observe_action::text,'log')||':'||COALESCE(enforce_action::text,'block') from severity_action_matrix where tenant_id='default' order by severity_level) m\"" 2>/dev/null </dev/null | tr -d '\r')"
 # ★ BlockThreshold 从**本地源码**取（★ 不写死 ⇒ 改代码不用改脚本）：
 #   ★ `cmd/gateway/main_pipeline.go` 里的 `interception.NewEngine(interception.EngineConfig{...})`
 ENGINE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/cmd/gateway/main_pipeline.go"
@@ -250,6 +250,10 @@ except Exception:
 pi_mode = ""
 pi_thresholds = ""
 matrix = {}
+# ★ 取矩阵的租户：★ 必须与权威判定方（domains/promptinjection/detector.go:1285
+#   的 `WHERE tenant_id = $1 AND severity_level = $2`）**同租户**。
+MATRIX_TENANT = "default"
+matrix_legacy_lines = 0
 for line in reach_raw.splitlines():
     line = line.strip()
     if not line or ":" not in line:
@@ -258,8 +262,15 @@ for line in reach_raw.splitlines():
     if parts[0] == "policy" and len(parts) >= 5:
         pi_mode = parts[2].strip()
         pi_thresholds = "warn=%s block=%s" % (parts[3].strip(), parts[4].strip())
-    elif parts[0] == "matrix" and len(parts) >= 4:
-        matrix[parts[1].strip().lower()] = (parts[2].strip(), parts[3].strip())
+    elif parts[0] == "matrix" and len(parts) >= 5:
+        # ★ 键含 tenant：★ `severity_action_matrix` 是**多租户表**
+        #   （sql/objects/tables/severity_action_matrix.sql:7 的 tenant_id NOT NULL）
+        #   ⇒ 只按 severity_level 建键 ⇒ **别的租户**的行会覆盖本租户的行。
+        matrix[(parts[1].strip(), parts[2].strip().lower())] = (parts[3].strip(), parts[4].strip())
+    elif parts[0] == "matrix" and len(parts) == 4:
+        # ★ 旧格式（★ 行里没有 tenant 段）⇒ ★ 计入 legacy 计数、★ **不静默**。
+        matrix_legacy_lines += 1
+        matrix[(MATRIX_TENANT, parts[1].strip().lower())] = (parts[2].strip(), parts[3].strip())
 
 # ★ severity 映射（★ 插件适配层 prompt_injection_enhanced.go）
 SEV = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -269,9 +280,10 @@ DENY_ACTIONS = ("block", "reject")
 reach_rows = []
 reach_b = False
 for lvl in ("medium", "high", "critical"):
-    if lvl not in matrix:
+    key = (MATRIX_TENANT, lvl)
+    if key not in matrix:
         continue
-    obs_act, enf_act = matrix[lvl]
+    obs_act, enf_act = matrix[key]
     # ★ observe ⇒ observe_action；★ enforce ⇒ enforce_action
     act = enf_act if pi_mode == "enforce" else obs_act
     deny = act in DENY_ACTIONS
@@ -406,6 +418,8 @@ if as_json:
         "governance_chain_enabled": gov_enabled,
         "pi_policy_mode": pi_mode,
         "pi_block_threshold": block_threshold,
+        "pi_matrix_tenant": MATRIX_TENANT,
+        "pi_matrix_legacy_lines": matrix_legacy_lines,
         "pi_divergence_shape_b_reachable": reach_b,
         "pi_divergence_shape_b_rows": [
             {"risk_level": r[0], "action": r[1], "severity": r[2],
@@ -476,6 +490,9 @@ else:
             print("  …… 另有 %d 条未列" % (len(stamps) - 50))
     print("")
     print("-- PI 分歧「形态 b」可达性（★ 「零分歧」是策略使然、★ 还是观测点失效）--")
+    if matrix_legacy_lines:
+        print("  ★★ 注意：%d 行动作矩阵是**旧格式**（★ 行里没有 tenant 段）⇒ ★ 已按 tenant='%s' 处理"
+              % (matrix_legacy_lines, MATRIX_TENANT))
     if not reach_rows:
         print("  （取不到策略/动作矩阵 ⇒ ★ 本次不给可达性结论）")
     else:
