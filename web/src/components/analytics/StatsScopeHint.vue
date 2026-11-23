@@ -51,11 +51,15 @@ const body = computed(() => t('sessions.stats.scopeNoticeBody', { days: props.da
         :title="t('sessions.stats.scopeHintLabel')"
       >
         <el-icon :size="14"><InfoFilled /></el-icon>
-        <span>{{ t('sessions.stats.scopeHintLabel') }}</span>
+        <!-- ★ 2026-11-24（统一轮 E2E 锚点）：Maestro 的 `id:` 优先级是
+             **aria-label > title > data-testid** ⇒ 按钮上这两个属性会把按钮自己的
+             testid 遮蔽 ⇒ 锚点放**不带 title / aria-label 的内层 span**上
+             （同款手法：零属性删除、零 a11y 损失）⇒ 点它 = 点按钮 ⇒ 弹出照开。 -->
+        <span data-testid="stats-scope-hint-label">{{ t('sessions.stats.scopeHintLabel') }}</span>
       </button>
     </template>
 
-    <div class="stats-scope-hint__body">
+    <div class="stats-scope-hint__body" data-testid="stats-scope-hint-body">
       <div class="stats-scope-hint__title">{{ t('sessions.stats.scopeNoticeTitle') }}</div>
       <p class="stats-scope-hint__line">{{ body }}</p>
       <p class="stats-scope-hint__line stats-scope-hint__line--muted">

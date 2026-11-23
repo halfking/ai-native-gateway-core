@@ -183,7 +183,14 @@ function applyDraft() {
           <rect x="1.5" y="2.5" width="13" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4" />
           <path d="M4 1v3M12 1v3M1.5 6h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
         </svg>
-        <span class="kx-dr-trigger__label">
+        <!-- ★★ 2026-11-24（统一轮 E2E 锚点）：Maestro 的 `id:` 匹配优先级是
+             **aria-label > title > data-testid**（仓内 L13 实测钉死，见
+             components/shell/UserMenuDropdown.vue 的同款说明）⇒ 触发按钮上带
+             `:aria-label` ⇒ 打在**按钮**上的 data-testid 会被遮蔽 ⇒ 选不到。
+             ⇒ ⇒ 锚点挪到**不带 title / aria-label 的内层元素**上（同款手法：
+             **零属性删除、零 a11y 损失**）。
+             ★ 点这个 span 的中心 = 点按钮 ⇒ 事件冒泡到按钮 ⇒ 面板照样打开。 -->
+        <span class="kx-dr-trigger__label" data-testid="kx-dr-trigger">
           <span class="kx-dr-trigger__preset" :class="{ 'kx-dr-trigger__preset--set': !!modelValue }">{{ triggerPreset }}</span>
           <span v-if="triggerRange" class="kx-dr-trigger__range">{{ triggerRange }}</span>
         </span>
@@ -191,7 +198,7 @@ function applyDraft() {
       </button>
     </template>
 
-    <div class="kx-dr-panel">
+    <div class="kx-dr-panel" data-testid="kx-dr-panel">
       <div class="kx-dr-panel__head">
         <span class="kx-dr-panel__title">{{ t('common.dateRange.title') }}</span>
       </div>
@@ -203,14 +210,15 @@ function applyDraft() {
           class="kx-dr-preset"
           :class="{ active: isPresetActive(preset) }"
           :aria-selected="isPresetActive(preset)"
+          :data-testid="`kx-dr-preset-${preset.id}`"
           @click="selectPreset(preset)"
         >
           {{ t(preset.labelKey) }}
         </button>
       </div>
       <div v-if="presets.length && !presetsOnly" class="kx-dr-divider" aria-hidden="true"></div>
-      <div v-if="!presetsOnly" class="kx-dr-inputs">
-        <div class="kx-dr-input">
+      <div v-if="!presetsOnly" class="kx-dr-inputs" data-testid="kx-dr-inputs">
+        <div class="kx-dr-input" data-testid="kx-dr-input-start">
           <label class="kx-dr-input__label">{{ t('common.dateRange.startDate') }}</label>
           <ElDatePicker
             v-model="draftStart"
@@ -224,7 +232,7 @@ function applyDraft() {
             @change="onDraftChange"
           />
         </div>
-        <div class="kx-dr-input">
+        <div class="kx-dr-input" data-testid="kx-dr-input-end">
           <label class="kx-dr-input__label">{{ t('common.dateRange.endDate') }}</label>
           <ElDatePicker
             v-model="draftEnd"
@@ -250,7 +258,7 @@ function applyDraft() {
           {{ t('common.dateRange.spanTooLong', { n: maxSpanDays }) }}
         </span>
         <span v-else class="kx-dr-hint" aria-hidden="true"></span>
-        <button type="button" class="kx-dr-apply" :disabled="!canApply" @click="applyDraft">
+        <button type="button" class="kx-dr-apply" :disabled="!canApply" data-testid="kx-dr-apply" @click="applyDraft">
           {{ t('common.button.apply') }}
         </button>
       </div>

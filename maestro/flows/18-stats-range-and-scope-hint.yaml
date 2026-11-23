@@ -1,0 +1,219 @@
+# 18-stats-range-and-scope-hint.yaml —— 「时间范围统一 + 统计说明收成提示符」真机验证
+#   （2026-11-24 统一轮交付）
+#
+# ★ 本 flow 要证明的**不是**「页面上有个日期选择器」，而是三条**交互契约**：
+#   ① 看板 / 「会话与统计」/ 「会话分析·用户」三页用的是**同一个**时间范围组件
+#      （判据：共享封装 StatsDateRangePicker 的壳 `stats-date-range-picker` 在三页都在）；
+#   ② 该组件有**固定档位**（今天/昨天/近7/14/30天/本月/上月）
+#      **且保留自定义起止**（判据：面板里 `.kx-dr-inputs` 渲染出来了 ⇒ presets-only 未开）；
+#   ③ 「统计说明」是**点击才展开的提示符**、挂在**刷新按钮旁**
+#      （判据：点击前正文不在 DOM 里、点击后才出现）。
+#
+# ★★ 为什么判据全是 data-testid（与仓内 L13 判据收敛同源）：
+#   文案判据在两个方向上都会假红：① **文案漂移**（断言值与 locale 键实际值对不上
+#   ⇒ 恒红而页面是好的）；② **locale 依赖**（应用 locale 取自 navigator.language
+#   并持久化在 localStorage ⇒ 浏览器语言一变中文断言全红）。
+#   ⇒ 本 flow **零 `text:` 选择器** ⇒ 换语种跑结果逐项相同。
+#   ★ 配套钉测：web/src/components/analytics/statsRangeTestIds.contract.spec.ts
+#     （flow 里每个 `id:` 都必须在前端源码里存在，反向漂移在 CI 就红）。
+#
+# ★★ 为什么锚点不在按钮本体上（★ 与 flow 16 头注②同款实测结论）：
+#   Maestro 的 `id:` 匹配优先级是 **aria-label > title > data-testid**
+#   ⇒ 触发按钮带 `:aria-label` ⇒ 打在按钮上的 data-testid **会被遮蔽** ⇒ 选不到。
+#   ⇒ ⇒ 锚点一律落在**不带 title / aria-label 的内层元素**上
+#   （`kx-dr-trigger` 落在按钮内的 label span；`stats-scope-hint-label` 落在按钮内的文字 span）
+#   ⇒ **零属性删除、零 a11y 损失**，点它 = 点按钮（事件冒泡）。
+#
+# ★ 视口：默认 1440x3600（runner 的 MAESTRO_SCREEN_SIZE）——
+#   真旋钮是 Maestro 的 `--screen-size`，不是 Chrome 的 `--window-size`。
+#
+# ★ 运行前提：**必须经 maestro/run-stats-range-picker.sh 运行**
+#   （它负责起全新 Chrome（带 --lang=zh-CN）、顺延端口、注入凭据与视口）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+# ★ 锚点来源：web/src/components/shell/UserMenuDropdown.vue
+#   → app-user-menu-name（显示名 span，不带 title/aria-label ⇒ data-testid 生效）
+#   → app-user-menu-logout（登出按钮）
+# ★ 保持 optional: true：runner 每次起**全新** Chrome ⇒ 本来就没有登录态
+#   ⇒ 这两步通常是空操作 ⇒ 若改成必选，「菜单不存在」会直接把 flow 判红。
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    id: "app-user-menu-name"
+    optional: true
+- tapOn:
+    id: "app-user-menu-logout"
+    optional: true
+#
+# ── ① 真实 UI 登录（共享 flow；三段判据见 _shared/login.yaml 头注）─────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+#
+# ═══ ② 看板页（/dashboard?tab=board）：基准页 ═══════════════════════════
+# ★ 基准页先跑：它证明「统一后的形态」本身是对的，后两页再与之对照。
+- openLink: ${BASE_URL}/dashboard?tab=board
+- extendedWaitUntil:
+    visible:
+      id: "stats-date-range-picker"
+    timeout: 30000
+# ① 三页共用的**同一个**组件（共享封装的壳）
+- assertVisible:
+    id: "stats-date-range-picker"
+# ② 打开面板（点触发器内层 span ⇒ 事件冒泡到按钮）
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 30000
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- assertVisible:
+    id: "kx-dr-panel"
+# ③ **固定档位**：七个档位逐个在（档位集合 = makeDateRangePresets('date')）
+- assertVisible:
+    id: "kx-dr-preset-today"
+- assertVisible:
+    id: "kx-dr-preset-yesterday"
+- assertVisible:
+    id: "kx-dr-preset-last7d"
+- assertVisible:
+    id: "kx-dr-preset-last14d"
+- assertVisible:
+    id: "kx-dr-preset-last30d"
+- assertVisible:
+    id: "kx-dr-preset-thisMonth"
+- assertVisible:
+    id: "kx-dr-preset-lastMonth"
+# ④ **自定义起止保留**：日期输入区渲染出来了（presets-only 未开 ⇒ 这是唯一可观察证据）
+- assertVisible:
+    id: "kx-dr-inputs"
+- assertVisible:
+    id: "kx-dr-input-start"
+- assertVisible:
+    id: "kx-dr-input-end"
+- assertVisible:
+    id: "kx-dr-apply"
+# 关掉面板（同一个触发器再点一次 ⇒ toggle 关闭）
+- tapOn:
+    id: "kx-dr-trigger"
+#
+# ═══ ③ 会话与统计页签（/dashboard?tab=stats）════════════════════════════
+# ★ 这一页有两件事：① 同一套时间范围；② 「统计说明」收成了提示符。
+- openLink: ${BASE_URL}/dashboard?tab=stats
+- extendedWaitUntil:
+    visible:
+      id: "stats-date-range-picker"
+    timeout: 30000
+- assertVisible:
+    id: "stats-date-range-picker"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 30000
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- assertVisible:
+    id: "kx-dr-preset-today"
+- assertVisible:
+    id: "kx-dr-preset-last7d"
+- assertVisible:
+    id: "kx-dr-preset-last30d"
+- assertVisible:
+    id: "kx-dr-preset-thisMonth"
+- assertVisible:
+    id: "kx-dr-preset-lastMonth"
+- assertVisible:
+    id: "kx-dr-inputs"
+- assertVisible:
+    id: "kx-dr-input-start"
+- assertVisible:
+    id: "kx-dr-input-end"
+- tapOn:
+    id: "kx-dr-trigger"
+#
+# ── ③.1 「统计说明」提示符：点击才展开 ───────────────────────────────────
+# ★ 判据顺序有讲究：**先断「点之前没有正文」**⇒ 再点 ⇒ 再断「点之后有正文」
+#   ⇒ 只断「点之后有」会把**常驻横幅**误判成提示符（常驻横幅一直都在）。
+- assertVisible:
+    id: "stats-scope-hint-label"
+- assertNotVisible:
+    id: "stats-scope-hint-body"
+- tapOn:
+    id: "stats-scope-hint-label"
+- extendedWaitUntil:
+    visible:
+      id: "stats-scope-hint-body"
+    timeout: 10000
+- assertVisible:
+    id: "stats-scope-hint-body"
+- tapOn:
+    id: "stats-scope-hint-label"
+#
+# ═══ ④ 会话分析·用户页（/admin/session-analytics/users）══════════════════
+# ★ 这一页本轮也做了同样的两件事：统一时间范围 + 提示符上移页头。
+- openLink: ${BASE_URL}/admin/session-analytics/users
+- extendedWaitUntil:
+    visible:
+      id: "sa-page-users"
+    timeout: 30000
+- assertVisible:
+    id: "sa-page-users"
+# ① 同一套时间范围（共享封装）
+- assertVisible:
+    id: "stats-date-range-picker"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 30000
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- assertVisible:
+    id: "kx-dr-preset-today"
+- assertVisible:
+    id: "kx-dr-preset-last7d"
+- assertVisible:
+    id: "kx-dr-preset-last30d"
+- assertVisible:
+    id: "kx-dr-preset-thisMonth"
+- assertVisible:
+    id: "kx-dr-preset-lastMonth"
+- assertVisible:
+    id: "kx-dr-inputs"
+- assertVisible:
+    id: "kx-dr-input-start"
+- assertVisible:
+    id: "kx-dr-input-end"
+- tapOn:
+    id: "kx-dr-trigger"
+# ② 提示符在页头（刷新按钮旁）且点击才展开
+- assertVisible:
+    id: "sa-refresh-btn"
+- assertVisible:
+    id: "stats-scope-hint-label"
+- assertNotVisible:
+    id: "stats-scope-hint-body"
+- tapOn:
+    id: "stats-scope-hint-label"
+- extendedWaitUntil:
+    visible:
+      id: "stats-scope-hint-body"
+    timeout: 10000
+- assertVisible:
+    id: "stats-scope-hint-body"
+- tapOn:
+    id: "stats-scope-hint-label"
