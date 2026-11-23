@@ -1,0 +1,133 @@
+==============================================================================
+L23 证据——252 共享 PG 的 994 迁移「已应用字节 ≠ 仓内 canonical」
+⇒ ① 154/245 部署被 checksum 对账拒绝（符号链接未切换，现役未受影响）
+⇒ ② 会话聚合 MV 在 211 与 252 上**定义不同** ⇒ 跨目标口径分叉
+采集时间：2026-11-23 10:28–10:55 CST
+采集方式：154 / 245 / 211 / 252 四台现场 **只读查询**（★ 取证阶段全程只读）
+★ 对生产的实际影响（不夸大也不缩小）：**零数据库写操作、零 schema 变更、零在役身份切换**；
+  ★ 245 主机收到过一次**未激活**的 release 上传（releases/3160-9d0af31c）与一次 .env 备份
+  （region=245，幂等同值）⇒ ★ **不精确地说「全程只读」是不对的**；★ 在役仍是 8d97cc17，锁已释放。
+==============================================================================
+
+── ① 事故现场：245 部署在迁移校验这一步中止（未切换符号链接）──────────────
+命令（在隔离 worktree /tmp/lgw-l9l10，工作树干净 @ 9d0af31c6）：
+    PATH=$HOME/sdk/bash5/bin:$PATH SSH_KEY_245=<本机密钥> PROBE_TIMEOUT_SECS=600 \
+      ~/sdk/bash5/bin/bash scripts/deploy-245.sh
+
+关键输出：
+    [seamless] [6.5/9] 切换前 pending 迁移 + db-changelog
+    [db] 已应用迁移 checksum 不匹配，拒绝继续：
+        994:994_session_analytics_owner_key_and_close_path.sql
+        recorded=796e3d8480c5c0bb64d5cd9f576ba5ce416acc266a54c45fb4ec405941335626
+        local=1cb26a1ed3e502247767a2050eb349e960dbc6dfcc75792b9b173fef57585412
+    ✗ DB 迁移失败，中止（未切换符号链接）
+
+★ 部署后复查（现役未受影响）：
+    245 /version ⇒ {"build_seq":3155,"git_sha":"8d97cc17","listen":":8782",
+                     "runtime_role":"traffic-only","version":"2.6.1-8d97cc17-20261122-3155"}
+    154 /version ⇒ {"build_seq":3154,"git_sha":"8d97cc17","listen":":8781",
+                     "runtime_role":"active","version":"2.6.1-8d97cc17-20261122-3154"}
+    245 远端锁 ⇒ （已释放）；current ⇒ /opt/llm-gateway-go/releases/3155-8d97cc17
+    ★ 失败点在 [6.5/9]「切换前」⇒ 新 release 目录已上传（3160-9d0af31c）但 symlink 未动
+      ⇒ **在役仍是旧身份**，无用户可见影响；残留的 release 目录未被激活（惰性）
+
+── ② 三个 sha 的来源（逐提交实测，非推测）────────────────────────────────
+文件：sql/migrations/startup/994_session_analytics_owner_key_and_close_path.sql
+  d587edc47  11-23 05:32  994 迁移关并行（修 DSM 扩容撞 /dev/shm ⇒ 视图被 DROP 后缺失）
+                      ⇒ 1cb26a1ed3e502247767a2050eb349e960dbc6dfcc75792b9b173fef57585412
+  af5a22298  11-23 05:17  补 agent 视图去重子查询缺失的 agent_name 列
+                      ⇒ 059f5f94020a9859da3fc36afae2a725cca9991a6c6a9c43d1d2176b0b157330
+  761e641ed  11-23 04:42  D2 去重修复——会话宇宙 JOIN sessions → DISTINCT ON 子查询
+                      ⇒ 847e1fe8f77962dab41d35af72ac31d315b06405b276e0806ee0035f359ec125
+  febd940ae  11-20 12:15  994 重编（原始版）
+                      ⇒ 796e3d8480c5c0bb64d5cd9f576ba5ce416acc266a54c45fb4ec405941335626  ← **252 记录的字节**
+  当前树（= origin/main tip 9d0af31c6）  ⇒ 1cb26a1e…（与 d587edc47 同）
+  installer 离线副本 up.sql               ⇒ 1cb26a1e…（与 canonical 逐字节一致 ✔）
+
+★ 机制：★ 252 上 994 **已 applied ⇒ 迁移框架永不重跑** ⇒ 252 的实际 schema 永远停在
+  2026-11-20 的原始字节 ⇒ ★ **任何含 d587edc47 的树（即当前 origin/main tip）都部署不到 154/245**
+  ⇒ ★ 154/245 现役 8d97cc17 **不含** d587edc47（并行线）⇒ 它们卡在「994 改写前」
+
+── ③ 仓内官方只读工具的读数（不是我的推断）──────────────────────────────
+工具：scripts/audit/migration_ledger_drift_report.py（只读、离线、输入是两个 TSV 转储）
+输入：252 共享 PG 的 llm_gateway_migration_checksums（495 行）与 schema_migrations（537 行）转储
+
+    == 迁移台账漂移报告（只读）==
+    边界 version >= 412；判定条目 = 485
+      OK                   = 480
+      MISSING_LEDGER       = 0
+      NAME_MISMATCH        = 0
+      CHECKSUM_MISMATCH    = 1
+      CANONICAL_UNRESOLVED = 4
+    -- CHECKSUM_MISMATCH --
+      994   994_session_analytics_owner_key_and_close_path.sql
+           | 796e3d8480c5c0bb64d5cd9f576ba5ce416acc266a54c45fb4ec405941335626
+           | ['APPLIED_BYTES_UNKNOWN', 'sql/migrations/startup/994_…sql']
+    漂移合计 = 5（OK = 480）
+
+★ ⇒ 252 的 checksum 漂移**有且只有 994 一条** ⇒ 挡住部署的就是它。
+★ 另 4 条 CANONICAL_UNRESOLVED：619/830 是「已退役」（部署侧按 `.retired`/`.skip` 声明跳过校验），
+  944/945 的 canonical 文件不在仓内 ⇒ **都不触发 checksum 拒绝**。
+
+★ ★ **为什么只有 154/245 撞到、211 不撞**（同一把尺子读两库）：
+    211（acc-pg17）的 llm_gateway_migration_checksums **只有 1 行**（几乎为空）
+    ⇒ 211 的 schema_migrations 152 行、252 是 537 行
+    ⇒ ⇒ **两条部署路径的迁移台账语义不同**：211 走 docker 路径（不维护该表 ⇒ 走不到这道对账），
+       154/245 走 seamless + db-changelog 对账路径（台账完整 ⇒ 必然对账 ⇒ 必然撞 994）
+
+── ④ 口径分叉（两库同名字段，定义不同）──────────────────────────────────
+查询：pg_get_viewdef('public.user_session_aggregates')
+  211（acc-pg17）  HAS_DISTINCT_ON=true   HAS_JOIN_SESSIONS=false  ⇒ **D2 去重修复已生效**
+  252（共享库）    HAS_DISTINCT_ON=false  HAS_JOIN_SESSIONS=true   ⇒ **D2 去重修复未生效**
+  两库 session_dim.stop_reason 均存在（=1）
+★ ⇒ ★★ 同一份数据、两个库给出不同的会话数 ⇒ **跨目标对拍不可比**
+
+★ 量级（252，同库只读）：sessions 表的 (session_id, tenant_id) 重复度
+    SESSIONS_ROWS=1,087,168   DISTINCT_SESSION_TENANT=1,086,682   ⇒ 重复 486 行 ≈ **0.045%**
+★ ⇒ 旧口径的会话数**虚增约 0.045%**（★ 不是数量级差异，但**精确对拍仍不可做**）
+★ ⇒ 另：252 上「同口径聚合查询」在 240s statement_timeout 下**超时**（与 981 记录的
+  90–197s 视图级 SELECT 量级一致）⇒ 共享 PG 的会话分析查询本身就很重（★ 已知性能债）
+
+── ⑤ 复现命令（只读，任何人可重跑）────────────────────────────────────────
+    # 导出 252 台账/已应用清单
+    ssh -p 25022 root@115.29.212.252 'docker exec -i pg-252-pg17 psql -U llm_gateway -d llm_gateway -tA' \
+      > ledger.tsv <<'SQL'
+    select version || chr(9) || migration_name || chr(9) || checksum from llm_gateway_migration_checksums order by version;
+    SQL
+    # 同上取 schema_migrations（version, description）⇒ applied.tsv
+    # 跑仓内只读报告器
+    python3 scripts/audit/migration_ledger_drift_report.py \
+      --repo-root . --applied applied.tsv --ledger ledger.tsv --boundary 412
+
+── ⑥ ★★★ 决定性先例：上游 2026-11-23 就是在 211 上「手工重跑过 994」（d587edc47 原文）──
+★ 提交 d587edc47（fix(sql): 994 迁移关并行……）的说明末行逐字写着：
+    "★ 生产已手工补回：四个视图重建成功（110/124/176/928 行）+ 16 个索引建齐 + 台账自登记。"
+★ ⇒ ★★ **上游在 211 上做过同一件事**：① 994 的 DROP 成功、CREATE 失败（DSM 撞 /dev/shm）
+  ⇒ 视图缺失、迁移未登记 ⇒ 每次启动重放 ⇒ 反复踩 ⇒ ★ **手工重跑 + 台账自登记**修掉。
+★ ⇒ ★★ 这条先例同时解释了三件事：
+  ① **为什么 211 的 llm_gateway_migration_checksums 只有 1 行** ⇒ 那 1 行就是这次「台账自登记」；
+  ② **为什么 211 的 MV 是新定义**（有 DISTINCT ON）⇒ 手工补跑用的是**当时的 canonical**（1cb26a1e…）；
+  ③ **为什么 252 的 MV 是旧定义** ⇒ 252 上 994 已 applied、**永不重跑** ⇒ 分叉由此产生。
+★ ⇒ ★★ **⇒ 方案 A 不是「新发明的非常规操作」，而是「复刻上游 2026-11-23 已在 211 上做过的一次处置」**
+  ⇒ ⇒ ★★ **处置的风险等级因此显著下调**（见下段 shm 对照）。
+
+── ⑦ ★★★ 两库 PG 容器的 /dev/shm 对照（★ A3 的关键前置）──────────────────────
+    252 共享库（pg-252-pg17）：/dev/shm = **1.0G**，已用 43M（5%），69 个文件，2 个 DSM 段
+    211（acc-pg17）            ：/dev/shm = **64M**，已用 44M（68%），68 个文件
+★ ⇒ ★★ **252 的 shm 是 211 的 16 倍** ⇒ ⇒ ★ **在 252 上重建大聚合视图不会重演 211 的
+  「并行 worker resize DSM ⇒ could not resize shared memory segment ⇒ SQLSTATE 53100」**
+  ⇒ ★★ **双保险**：① shm 充裕；② 当前 canonical 已带 `SET max_parallel_workers_per_gather = 0;`
+  （`d587edc47`）⇒ 重建走串行计划、不申请 DSM 段
+★ ⇒ ★★ ⇒ **A3 的技术风险只剩「窗口内 154/245 的会话分析端点 42P01」**（只影响会话分析域的读面，
+  **不是 API 网关本身**；★ 蓝绿在役旧实例读 `session_owners` 旧锚、不受影响）
+★ ⇒ ★ 顺带：★ **L19 登记的「211 的 /dev/shm 仅 64M」在 211 上仍成立**（44M/68%）⇒ 与 L19 口径一致。
+
+── ⑧ 逐个 MV 的定义差异（211 vs 252，pg_get_viewdef 逐条对拍）────────────────
+    agent_usage_aggregates    差异 10 行  ⇒ ★ 252 **缺 `agent_name` 修复**（af5a22298）
+    model_usage_aggregates    差异  0 行  ⇒ ★ **完全一致** ✔（唯一没分叉的那个）
+    project_task_aggregates   差异  9 行  ⇒ ★ 252 **缺 D2 去重修复**（761e641ed）
+    user_session_aggregates   差异  9 行  ⇒ ★ 252 **缺 D2 去重修复**（761e641ed）
+★ ⇒ ★★ **4 个 MV 里 3 个分叉**，且分叉**逐条对应上游那三笔 canonical 改写**（关并行只改 SET、不改定义
+  ⇒ 不体现为定义差异 ✔）⇒ ⇒ **分叉范围被精确锁定，没有"其它意外差异"**。
+★ ⇒ ★ 两库的 4 份定义原文已分别存档（可重放）⇒ ★ **这就是 A3 的回滚材料**：
+  若 A3 后需回退 ⇒ 用 252 的旧定义逐个重建即可（纯文本、可重放）。

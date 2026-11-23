@@ -36,6 +36,18 @@ func selfRegistrationViolations(dir string) ([]string, error) {
 	allowlist := map[string]string{
 		"957_self_check_error_type_kind_closure_rate_limit_observed.sql": "字节冻结；记账由 960 守卫回填",
 		"958_market_platform_registry.sql":                               "字节冻结；记账由 960 守卫回填",
+		// ★★ 2026-11-23（L20 修红轮）：981（会话分析基础设施）—— 同款断层，
+		//   但成因不同：981 的文件从落地起就**没有**自登记 INSERT。
+		//   ★ 实测（211 / acc-pg17，只读）：public.schema_migrations 的版本号
+		//     序列是 …979, 980, **【无 981】**, 990, 991… ⇒ 独缺 '981'；
+		//     而 981 的产物【全部在场】（4 个物化视图 + session_dim/session_owners
+		//     两张表 + 3 个函数）⇒ ⇒ **它确实跑过、只是没记账**。
+		//   ★ 处置同 957/958：**字节冻结 + 由守卫式回填迁移修复** —— 981 在
+		//     211/252 都已 applied 且 252 台账 checksum 与磁盘逐字一致
+		//     ⇒ 改 981 的字节即 L23 同款分叉 ⇒ 只能另立 989
+		//     （989_migration_ledger_session_analytics_981_repair.sql，
+		//     守卫 = 981 的头产物全部在场才记账 + 自身自登记）。
+		"981_session_analytics_foundation.sql": "字节冻结（252 台账 checksum 4b6c5fc3… 与磁盘逐字一致 ⇒ 改字节即 L23 同款分叉）；记账由 989 守卫回填",
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {

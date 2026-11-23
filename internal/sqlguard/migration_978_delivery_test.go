@@ -76,7 +76,7 @@ const (
 
 // pi978ExpectedTSVIndex 是 978 在 installed_startup_migrations.tsv 里的
 // **应用序**下标（0 起）。
-const pi978ExpectedTSVIndex = 377
+const pi978ExpectedTSVIndex = 378
 
 // pi978CanonicalRuleNames ＝ canonical 规则集（25 条）的规则名。
 //
@@ -228,8 +228,8 @@ func TestMigration978DeliverySixPointsAreInPlace(t *testing.T) {
 	if pi978ExpectedTSVIndex >= len(tsvLines) {
 		t.Fatalf("tsv 只有 %d 条，期望 978 在下标 %d", len(tsvLines), pi978ExpectedTSVIndex)
 	}
-	if got := tsvLines[pi978ExpectedTSVIndex]; got != "377\t"+pi978UpFile {
-		t.Errorf("tsv 下标 %d 应为 %q，实际 %q", pi978ExpectedTSVIndex, "377\t"+pi978UpFile, got)
+	if got := tsvLines[pi978ExpectedTSVIndex]; got != "378\t"+pi978UpFile {
+		t.Errorf("tsv 下标 %d 应为 %q，实际 %q", pi978ExpectedTSVIndex, "378\t"+pi978UpFile, got)
 	}
 
 	// deploy 通道：files 数组 + ledger_artifact_probe

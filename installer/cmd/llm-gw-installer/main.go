@@ -1820,6 +1820,20 @@ var sessionAnalyticsFoundation981 []byte
 //go:embed embeddata/startup/981_session_analytics_foundation.down.sql
 var sessionAnalyticsFoundation981Down []byte
 
+// ★ 925（2026-11-23 981 断链修复轮，★ 排在 981 之前）：
+//
+//	给 session_summaries 补 total_credits_charged 列。
+//	★ 为什么需要它：981 的视图/查询读该列 ⇒ 而该列的**首次创建者**是 990
+//	  ⇒ ★ 全新安装按序执行时 981 先于 990 ⇒ 列不存在 ⇒ 42P03（列不存在）
+//	  ⇒ 981 断链。★ 存量库能装上是**遗留 schema 早就有该列**的巧合。
+//	★ 与 990 逐字同形 ⇒ 990 之后重放是 no-op。
+//
+//go:embed embeddata/startup/925_session_summaries_total_credits_charged.sql
+var sessionSummariesTotalCreditsCharged925 []byte
+
+//go:embed embeddata/startup/925_session_summaries_total_credits_charged.down.sql
+var sessionSummariesTotalCreditsCharged925Down []byte
+
 // ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
 //
 //	teams / user_teams / api_keys.team_id / team_budgets 四件套。
@@ -1939,6 +1953,17 @@ var sessionSummaryLayers999 []byte
 //go:embed embeddata/startup/999_session_summary_layers.down.sql
 var sessionSummaryLayers999Down []byte
 
+// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件缺
+//
+//	schema_migrations 自登记行 ⇒ 211 的记账链在 980 与 990 之间断一格。
+//	守卫式回填（981 头产物在场才记账）+ 自登记（≥952 约定）。
+//
+//go:embed embeddata/startup/989_migration_ledger_session_analytics_981_repair.sql
+var migrationLedgerSessionAnalytics981Repair989 []byte
+
+//go:embed embeddata/startup/989_migration_ledger_session_analytics_981_repair.down.sql
+var migrationLedgerSessionAnalytics981Repair989Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -1978,6 +2003,24 @@ var passiveModelFingerprints955 []byte
 
 //go:embed embeddata/startup/955_passive_model_fingerprints.down.sql
 var passiveModelFingerprints955Down []byte
+
+// ★ 918（2026-11-23 956 断链修复轮，★ 排在 956 之前）：
+//
+//	把 minimax-m3.1-flash 播种进 models_canonical 的**标准目录**集合
+//	（source='seed-standard-rollout'）。
+//	★ 为什么需要它：956 只 UPDATE `featured = true` ⇒ 它要求这一行**已经存在**
+//	  ⇒ 而这一行的**唯一创建者**是 sql/schema/02-seed.sql ⇒ ★ 新装库里
+//	  956 先于种子执行时这一行不存在 ⇒ 956 是 no-op ⇒ 956 断链。
+//	★ 这不是新增产品口径：sql/schema/02-seed.sql 头注自述「迁移文件才是真源、
+//	  种子只镜像迁移链的前提」⇒ 播种＝让种子追上已发布迁移的断言。
+//	★ 生产上是纯 no-op：ON CONFLICT (canonical_name) DO NOTHING
+//	  ⇒ 不覆盖 discovery 同步进来的那行。
+//
+//go:embed embeddata/startup/918_models_canonical_minimax_m31_seed.sql
+var modelsCanonicalMinimaxM31Seed918 []byte
+
+//go:embed embeddata/startup/918_models_canonical_minimax_m31_seed.down.sql
+var modelsCanonicalMinimaxM31Seed918Down []byte
 
 // ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
 //   判据 = 实测有 24h 真实业务流量（110 次）的免费模型（免费面 24h 有流量的
@@ -2565,6 +2608,9 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：视图口径对齐。
 	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
 	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
+	// ★ 925（2026-11-23 981 断链修复轮）：session_summaries.total_credits_charged。
+	"startup/925_session_summaries_total_credits_charged.sql":      sessionSummariesTotalCreditsCharged925,
+	"startup/925_session_summaries_total_credits_charged.down.sql": sessionSummariesTotalCreditsCharged925Down,
 	// ★ 981（2026-11-19 会话分析系统基础轮）：元数据列 + 物化视图。
 	"startup/981_session_analytics_foundation.sql":      sessionAnalyticsFoundation981,
 	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
@@ -2599,9 +2645,15 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/998_session_summaries_task_association.down.sql": sessionSummariesTaskAssociation998Down,
 	"startup/999_session_summary_layers.sql":                  sessionSummaryLayers999,
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
+	// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复（981 自登记回填）。
+	"startup/989_migration_ledger_session_analytics_981_repair.sql":      migrationLedgerSessionAnalytics981Repair989,
+	"startup/989_migration_ledger_session_analytics_981_repair.down.sql": migrationLedgerSessionAnalytics981Repair989Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
+	// ★ 918（2026-11-23 956 断链修复轮）：minimax-m3.1-flash 播种进标准目录。
+	"startup/918_models_canonical_minimax_m31_seed.sql":      modelsCanonicalMinimaxM31Seed918,
+	"startup/918_models_canonical_minimax_m31_seed.down.sql": modelsCanonicalMinimaxM31Seed918Down,
 	// ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
 	"startup/956_minimax_m31_flash_featured.sql":      minimaxM31FlashFeatured956,
 	"startup/956_minimax_m31_flash_featured.down.sql": minimaxM31FlashFeatured956Down,

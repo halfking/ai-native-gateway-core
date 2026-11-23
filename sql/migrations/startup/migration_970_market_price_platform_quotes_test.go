@@ -87,7 +87,7 @@ func TestMigration970ByteIdenticalEmbeddata(t *testing.T) {
 func TestMigration970TsvAndRegistrations(t *testing.T) {
 	root := mig951Tree(t)
 	tsv := mig970Read(t, root, filepath.Join("sql", "schema", "installed_startup_migrations.tsv"))
-	if !strings.Contains(tsv, "370\t970_market_price_platform_quotes.sql") {
+	if !strings.Contains(tsv, "371\t970_market_price_platform_quotes.sql") {
 		t.Fatalf("tsv must register 970 at position 370")
 	}
 	runner := mig970Read(t, root, filepath.Join("installer", "internal", "dbinit", "runner.go"))

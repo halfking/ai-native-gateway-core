@@ -232,3 +232,25 @@ stages:
               name: maestro-id-selector-shadow-gate
               script: |
                 bash scripts/checks/maestro-id-selector-shadow-gate.sh
+
+            # ★★★ 2026-11-23（会话分析域 L10 复核轮）：README 路由口径清单 ↔ 当前树
+            # 对拍门接进**真正在跑的载体** ★★★
+            #
+            # ★ 起因：★ L10 首版把 `maestro/README.md` 的路由清单做成「**手工核对的产物**」
+            #   ⇒ **过期是静默的**：2026-11-23 复核轮实测，上游 `41fb572f3`
+            #   （团队层级管理前端切片落地）新增 `/admin/teams` 与 `/admin/teams/:id`
+            #   ⇒ README §1.1 的 **129 / 134 / 22 / 117 / 54** 五个数**全部过期**，
+            #   而**没有任何一处会红** ⇒ 「清单过期」只有等有人想起来重跑才发现。
+            # ⇒ 本门用**可复跑的对拍**把清单钉在当前树上（7 条判据：D1/D2 算式自洽、
+            #   D3/D4/D5 标题数 vs 表内行数、D6 幽灵路由、D7 未登记路由）。
+            #
+            # ★ 运行时依赖：**只有 python3**（零第三方依赖；AST 那把尺子需要
+            #   `web/node_modules` ⇒ 只在本地跑，不进载体 —— 见工具 docstring 的分工表）。
+            #
+            # ★ 判据写在这条**非注释行**上是有意的：
+            #   `tests/gate_scripts_caller_registry_test.sh` 要求「门脚本必须有可执行调用方」
+            #   ⇒ 注释里写不算 ⇒ 必须在**真载体**里出现非注释行。
+            - step: shell
+              name: maestro-readme-route-stats-gate
+              script: |
+                bash scripts/checks/maestro-readme-route-stats-gate.sh

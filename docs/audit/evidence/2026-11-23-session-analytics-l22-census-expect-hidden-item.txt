@@ -1,0 +1,67 @@
+==============================================================================
+L22 施工单证据 —— ★★★「修法 B 不改 census 口径 ⇒ 缺货棘轮会破」这条隐藏项的实测复核
+日期：2026-11-23　仓：/tmp/lgw-l9l10　基线提交：5ec738819（origin/main tip）
+对应主档：docs/audit/2026-11-20-会话分析系统前端实施报告.md §7.28
+==============================================================================
+
+--- ① expect 集的口径（★ 从 canonical 反解 ⇒ 与「canonical 留不留」直接相关）---
+22:        ★ 从仓内 `sql/migrations/startup/*.sql` 反解「每个迁移声明建了哪些索引」
+
+--- ② expect 集里 teams 迁移声明的索引（★ 实测 7 条）------------------------
+$ grep -c "\t055_|\t056_|\t057_|\t058_" scripts/audit/asset/db-object-expect.tsv
+0
+
+
+--- ③ reachability 台账里 teams 行（★ 实测 0 ⇒ 缺口在 reachability 侧【隐形】）----
+$ grep -c "\t055_|\t056_|\t057_|\t058_" scripts/audit/asset/installer-reachability.tsv
+0
+★ ⇒ 「不在台账里」既可能是「它不存在」，也可能是「它被当成了合法退役」
+★ ⇒ 靠 reachability 台账发现这类缺口，永远发现不了（★ 「假死亡证明」的机制现场）
+
+--- ④ reachability 棘轮基线（新装缺口 13 条）----------------------------------
+55:	"new-install-gap": 13,
+125:		return "new-install-gap"
+443:	if counts["new-install-gap"] == 0 {
+
+--- ⑤ 055-058 的落面现状（★ canonical 有、embeddata 有、投递链四面全无）---------
+canonical：
+sql/migrations/startup/055_teams_table.sql
+sql/migrations/startup/056_user_teams.sql
+sql/migrations/startup/057_api_keys_team_id.sql
+sql/migrations/startup/058_team_budgets.sql
+embeddata 副本：
+installer/cmd/llm-gw-installer/embeddata/startup/055_teams_table.sql
+installer/cmd/llm-gw-installer/embeddata/startup/056_user_teams.sql
+installer/cmd/llm-gw-installer/embeddata/startup/057_api_keys_team_id.sql
+installer/cmd/llm-gw-installer/embeddata/startup/058_team_budgets.sql
+★ 投递链四面【应含但实缺】：
+  installer/internal/dbinit/runner.go → StartupFiles：
+★ 0 命中（缺）
+  sql/schema/installed_startup_migrations.tsv：
+0
+★ 0 命中（缺）
+  scripts/apply-db-revision-sequence.sh → files=()：
+0
+★ 0 命中（缺）
+  docs/db-changelog.md：
+0
+★ 0 命中（缺）
+
+--- ⑥ 「从未 applied」⇒ 字节冻结约束对本批不适用（★ 对修法 A 有利）-----------
+★ 生产侧记账行：211/252 上「无记账行」⇒ 这四个迁移**从未 applied**
+★ ⇒ 「已 applied 迁移字节冻结」（R189）约束对它们【不适用】
+★ ⇒ 修法 A 不必另立迁移号（★ 但编号是否满足仓内守卫规则，仍须施工前实跑核对）
+
+--- ⑦ 本轮的结论（★ 写实）---------------------------------------------------
+① 修法 B（不上）若只做「canonical 豁免 ＋ 删 embeddata 副本」⇒
+   expect 集仍含 teams 的 7 条索引 ⇒ 新装环境一个都没有 ⇒
+   ⇒ gap 台账 fresh 段会多出缺口 ⇒ ⇒ 【缺货棘轮会破】⇒
+   ⇒ 修法 B 必须让 census 的 expect 口径同步排除这 7 条（★ 新增一处改造）
+② 修法 A（上）⇒ 055-058 进投递链 ⇒ 新装环境【会】有它们 ⇒ expect 与 fresh 一致
+   ⇒ ⇒ 【L20 剩余 3 条台账可诚实重生成】⇒ ⇒ 「上」比「不上」多解锁一样东西
+③ 「上」的附带条件：api_keys.team_id 的写入路径必须同批补（★ 否则是把「永远不
+   报警的团队预算门」放进生产）
+
+★ 本轮零生产写 / 零 schema 变更 / 零在役身份切换 / 零代码改动（纯文档）
+★ 211 现役不变 2.6.1-42ae8b70-20261123-211（build_seq 3241）；154/245 不变 8d97cc17
+==============================================================================

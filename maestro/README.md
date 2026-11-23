@@ -31,47 +31,63 @@
 > ★ **2026-11-23 口径重算（L10 复核轮）**：本表的数字**改由工具产出**，不再是手工抄的。
 > ⇒ 复核命令（输出即本表全部数字）：
 > ```bash
-> node maestro/tools/audit-route-coverage.mjs --json
+> node maestro/tools/audit-route-coverage.mjs --json     # 机读 JSON
+> node maestro/tools/audit-route-coverage.mjs --check    # ★ 与本表对拍，漂移即红（退出码 1）
 > ```
-> ⇒ ★ **工具口径的可信度已被自证**：把同一工具指向本表上一次更新所在提交
->   （`bd8d39757`）的 `router.ts`，12 个统计量与当时的公布值**逐项相等**
->   ⇒ 当前树上的新数是**同一把尺子量出来的**，不是「另一套口径的另一组数」。
+> ⇒ ★ **工具口径的可信度已被两点自证**：
+>   ① 把同一工具指向本表**上一次（上一轮之前）**更新所在提交（`bd8d39757`）的 `router.ts`
+>      ⇒ 12 个统计量与**那时**的公布值**逐项相等**（125/5/130/19/19/2/17/113 + 53/47/11/2）；
+>   ② 把同一工具指向本表**上一轮**更新所在提交（`8e0baf950`）的 `router.ts`
+>      ⇒ 12 个统计量与**上一版的**公布值**逐项相等**（129/5/134/20/22/2/17/117 + 54/50/11/2）。
+>   ⇒ ⇒ **两个基准点都复现** ⇒ 当前树上的新数是**同一把尺子量出来的**，
+>     不是「另一套口径的另一组数」。
 >   详见 `maestro/L10-uncovered-routes.md` §2（含逐项对照表与复现命令）。
 >
-> ★ **数字为什么变（不是口径漂移，是树真的多了路由）**：上游 2026-11-20/21 新增了
->   4 条路由（`/admin/error-playbook`、`/admin/error-playbook/:id`、
->   `/admin/analytics/:dimension/:id`、`/admin/board-operational/:dimension`），
->   2026-11-23 审计轮把 `/admin/session-analytics` 由「总览页」改成**重定向**
->   ⇒ path 条目 125→129、运行时 130→134、纯 redirect 19→20、动态段 19→22。
+> ★ **数字为什么变（不是口径漂移，是树真的多了路由）**：**两次**上游漂移，逐条归因：
+>   ① **第一次**（2026-11-20/21）：上游新增 4 条路由
+>      （`/admin/error-playbook`、`/admin/error-playbook/:id`、
+>      `/admin/analytics/:dimension/:id`、`/admin/board-operational/:dimension`），
+>      2026-11-23 审计轮把 `/admin/session-analytics` 由「总览页」改成**重定向**
+>      ⇒ path 条目 125→129、运行时 130→134、纯 redirect 19→20、动态段 19→22。
+>   ② **第二次**（2026-11-23，上游 `41fb572f3`「团队层级管理前端切片落地」）：
+>      新增 `/admin/teams` 与 `/admin/teams/:id`（两条都带 `meta: { requiresAuth: true }`）
+>      ⇒ path 条目 129→**131**、运行时 134→**136**、动态段 22→**23**、
+>        需要登录 117→**119**、任意登录用户档 54→**56**
+>        （纯 redirect 仍 20、公开仍 17 ⇒ 这两项不变）。
 
 | 指标 | 数值 | 来源 |
 |---|---|---|
-| `path:` 条目 | **129** | `web/src/router.ts` 的 `routes:` 数组（行 237–453）**AST 逐条计数**。★ 不能用正则数：`redirect: { path: '/x' }` 里的 `path:` 也会被数上；且 dev-only 的 3 条是 `...(import.meta.env.DEV ? [...] : [])` 条件展开，正则与朴素 AST 都会漏 |
+| `path:` 条目 | **131** | `web/src/router.ts` 的 `routes:` 数组（行 241–468）**AST 逐条计数**。★ 不能用正则数：`redirect: { path: '/x' }` 里的 `path:` 也会被数上；且 dev-only 的 3 条是 `...(import.meta.env.DEV ? [...] : [])` 条件展开，正则与朴素 AST 都会漏 |
 | `externalMaintainRedirect(...)` 调用 | **5** | `router.ts`（`/ops/licenses`、`/ops/faults`、`/ops/autoupdate`、`/ops/center`、`/ops`） |
-| **运行时路由总数** | **134** | 129 + 5 |
+| **运行时路由总数** | **136** | 131 + 5 |
 | 其中纯 redirect（没有自己的组件，只跳走） | **20** | 数组内带 `redirect:` 的条目（其中 1 条是 catch-all `/:pathMatch(.*)*`）。★ 含 6 条**箭头函数形态**的 redirect（`/catalog`、`/maas/*` 族） |
-| 其中带命名动态段（`:param`，不含 glob） | **22** | 见 §1.3 |
+| 其中带命名动态段（`:param`，不含 glob） | **23** | 见 §1.3 |
 | 其中 glob 兜底（`:pathMatch(.*)*`） | **2** | `/maintain/:pathMatch(.*)*`、`/:pathMatch(.*)*` |
 | **不需要登录** | **17** | 12 条 `meta.public === true`（含 3 条 dev-only `/dev/*`）+ 5 条「自身无 `meta`、但重定向到公开页」的路由（见下方口径说明） |
-| **需要登录** | **117** | 134 − 17 |
+| **需要登录** | **119** | 136 − 17 |
 
-需要登录的 117 条，按 `router.ts` 的 `beforeEach` 再分档：
+需要登录的 119 条，按 `router.ts` 的 `beforeEach` 再分档：
 
 | 档位 | 条数 | 守卫出处 |
 |---|---|---|
-| 任意登录用户（目标路由无 `meta` 权限位，**或**显式 `requiresAuth`） | **54** | `router.ts` 的 `isAuthed()` 早退（无 meta 的 35 + `requiresAuth` 族的 19） |
+| 任意登录用户（目标路由无 `meta` 权限位，**或**显式 `requiresAuth`） | **56** | `router.ts` 的 `isAuthed()` 早退（无 meta 的 35 + `requiresAuth` 族的 21） |
 | `requiresSuper`（仅 super_admin） | **50** | `router.ts` 的 super 闸 |
 | `requiresPlatformOps`（super_admin + default 租户） | **11** | `router.ts` 的 platformOps 闸 |
 | `requiresProviderConsole`（super_admin 或 default 租户 tenant_admin） | **2** | `router.ts` 的 providerConsole 闸 |
 
-> 54 + 50 + 11 + 2 = **117** ✔ 与「需要登录 117」自洽（可作口径自检）。
+> 56 + 50 + 11 + 2 = **119** ✔ 与「需要登录 119」自洽（可作口径自检）。
 
 > ★ **计数口径（重要，和「直接看 `meta`」会差 5 条）**：
 > vue-router 4 在 `pushWithRedirect()` 里**先**执行 `handleRedirectRecord()`、**后**才跑导航守卫
-> （`web/node_modules/vue-router/dist/vue-router.mjs:1282-1296`），
-> 所以一条 `redirect:` 路由**由它跳转到的目标路由的 `meta` 决定**要不要登录 —— `router.ts:241-246` 的注释也是这么写的。
+> （`web/node_modules/vue-router/dist/vue-router.mjs:1282-1296`，★ `handleRedirectRecord` 的定义在 1262），
+> 所以一条 `redirect:` 路由**由它跳转到的目标路由的 `meta` 决定**要不要登录
+> —— ★ **仓内判据**就是 `beforeEach` 里的这一行：`router.ts:556` 的 `if (!to.meta.public && !isAuthed())`
+> （★ **复核轮订正**：原写的「`router.ts:241-246` 的注释」**在任何提交上都不存在**
+>   ⇒ 同属「手抄行号」那类缺陷 ⇒ **行号要么逐条核验，要么别给**）。
 > 于是 5 条「自身无 `meta`、但重定向到公开页」的路由实际**不需要登录**：
-> `/customer/site`、`/customer/activate`、`/customer/license`、`/customer/agreement`（→ `/customer/update-activate`）与 `/:pathMatch(.*)*`（→ `/`）。
+> `/customer/site`、`/customer/activate`、`/customer/license`、`/customer/agreement`
+> （→ `/customer/update-activate`，★ 当前树 `router.ts:436-439`）与 `/:pathMatch(.*)*`
+> （→ `/`，★ `router.ts:467`）。
 > 这 5 条被放进了 `01-public-guest.yaml`（不登录的 flow）。
 >
 > 另外：`/ops/*` 那 5 条**不是** `redirect:` 路由，而是 `externalMaintainRedirect()` 造的
@@ -84,32 +100,40 @@
 
 ### 1.2 纯 redirect 路由（20 条）
 
-这 19 条**没有自己的组件**，断言点落在它们跳转到的目标页面上（这样「跳对了」和「目标页渲染出来了」是同一条证据）。
+这 20 条**没有自己的组件**，断言点落在它们跳转到的目标页面上（这样「跳对了」和「目标页渲染出来了」是同一条证据）。
 
-| 源路由 | 跳转目标 | router.ts 行 |
+> ★ **2026-11-23 复核轮修正**：① 本节「router.ts 行」列此前是**手抄**的，
+>   抄自 2026-10-18 前后的某个快照 ⇒ **在任何提交上都对不上**
+>   （逐提交扫描 `web/src/router.ts` 的历史：`/catalog` 只在 `d82a9fb06` 是 220，
+>   而同一次扫描里 catch-all 是 374、不是本节写的 435 ⇒ 两个值来自**不同时期**）
+>   ⇒ 现已全部改为**当前树**的 `path:` 字面量所在行；② 正文原写「这 **19** 条」，
+>   与标题「20 条」自相矛盾 ⇒ catch-all `/:pathMatch(.*)*`（`{ path: ..., redirect: '/' }`）
+>   **也没有自己的组件** ⇒ 正确值是 **20**。
+
+| 源路由 | 跳转目标 | router.ts 行（当前树 `path:` 行） |
 |---|---|---|
-| `/catalog` | `/models` | 220 |
-| `/probe-health` | `/routing-v2/credentials` | 226 |
-| `/system-monitor` | `/dashboard` | 230 |
-| `/routing-v2/annotations` | `/routing-v2/auto-ops` | 239 |
-| `/routing-v2/annotations/stats` | `/routing-v2/auto-ops` | 240 |
-| `/routing-v2/task-profile` | `/routing-v2/auto-ops` | 247 |
-| `/routing-v2/auto-tuning` | `/routing-v2/auto-ops` | 248 |
-| `/maas/models` | `/tenant/models` | 272 |
-| `/maas/account` | `/tenant/account` | 273 |
-| `/maas/pricing` | `/tenant/pricing` | 274 |
-| `/maas/orders/:id` | `/tenant/orders/:id` | 275 |
-| `/maas/usage` | `/tenant/usage` | 276 |
-| `/routing` | `/routing-v2` | 281 |
-| `/admin/session-analytics` | `/admin/session-analytics/users` | 369（★ 2026-11-23 审计轮：原「会话分析总览页」按 owner 指令取消，内容已重组迁入 users 页 ⇒ 路由改为重定向，收藏链接兼容） |
-| `/operations/price-compare` | `/model-pricing` | 380（2026-11-19 合并轮：价格对比面并入比较与定价页） |
-| `/customer/site` | `/customer/update-activate` | 343 |
-| `/customer/activate` | `/customer/update-activate` | 344 |
-| `/customer/license` | `/customer/update-activate` | 345 |
-| `/customer/agreement` | `/customer/update-activate` | 346 |
-| `/:pathMatch(.*)*` | `/` | 435 |
+| `/catalog` | `/models` | 270 |
+| `/probe-health` | `/routing-v2/credentials` | 276 |
+| `/system-monitor` | `/dashboard` | 280 |
+| `/routing-v2/annotations` | `/routing-v2/auto-ops` | 289 |
+| `/routing-v2/annotations/stats` | `/routing-v2/auto-ops` | 290 |
+| `/routing-v2/task-profile` | `/routing-v2/auto-ops` | 297 |
+| `/routing-v2/auto-tuning` | `/routing-v2/auto-ops` | 298 |
+| `/maas/models` | `/tenant/models` | 324 |
+| `/maas/account` | `/tenant/account` | 325 |
+| `/maas/pricing` | `/tenant/pricing` | 326 |
+| `/maas/orders/:id` | `/tenant/orders/:id` | 327 |
+| `/maas/usage` | `/tenant/usage` | 328 |
+| `/routing` | `/routing-v2` | 334 |
+| `/admin/session-analytics` | `/admin/session-analytics/users` | 373（★ 2026-11-23 审计轮：原「会话分析总览页」按 owner 指令取消，内容已重组迁入 users 页 ⇒ 路由改为重定向，收藏链接兼容） |
+| `/operations/price-compare` | `/model-pricing` | 412（2026-11-19 合并轮：价格对比面并入比较与定价页） |
+| `/customer/site` | `/customer/update-activate` | 436 |
+| `/customer/activate` | `/customer/update-activate` | 437 |
+| `/customer/license` | `/customer/update-activate` | 438 |
+| `/customer/agreement` | `/customer/update-activate` | 439 |
+| `/:pathMatch(.*)*` | `/` | 467 |
 
-### 1.3 带命名动态段的路由（22 条）
+### 1.3 带命名动态段的路由（23 条）
 
 每条在 flow 里都用**一个具体的样例 id** 占位，占位值可用环境变量覆盖（对照表见 §5）。
 
@@ -137,6 +161,7 @@
 | `/admin/request-registry/journey/:requestId` | `requestId` | `/admin/request-registry/journey/${REQUEST_ID}` |
 | `/admin/connection-registry/:credentialId/recovery` | `credentialId/recovery` | `/admin/connection-registry/${CREDENTIAL_ID}/recovery` |
 | `/dev/live-request-preview/:requestId` | `requestId` | `/dev/live-request-preview/${REQUEST_ID}` |
+| `/admin/teams/:id` | `id` | （★ 2026-11-23 上游 `41fb572f3`「团队层级管理前端切片落地」新增；**当前无 flow 覆盖**，且 `appNav.ts` 未挂菜单入口 ⇒ 见 §3.13） |
 
 ---
 
@@ -430,17 +455,25 @@ node maestro/tools/assert-stage-tree.mjs \
   —— 对拍基准是**页面自己收到的那份响应**（CDP Network 域 + getResponseBody），
   而不是探针另发一次 API（活流量下必然假红）⇒ 严格相等、无需容差。
 
-### 3.13 已知缺口：**未被任何 flow 的 `openLink` 直接打开**的 18 条路由
+### 3.13 已知缺口：**未被任何 flow 的 `openLink` 直接打开**的 20 条路由
 
 ★ 2026-11-23（L10 复核轮）补记。清单由
   `node maestro/tools/audit-route-coverage.mjs` 实测产出（**可复跑**），
   完整分析见 `maestro/L10-uncovered-routes.md` §3。
+
+★ ★ **本清单的条数随树走**（可复跑 ⇒ 必然如此）：
+  基准提交 `bd8d39757` 时是 **15** 条 → L10 首轮回填时是 **18** 条
+  → 2026-11-23 复核轮（上游 `41fb572f3` 新增团队层级管理 2 条）是 **20** 条。
+  ⇒ **每次上游加路由，都要重跑本清单** ⇒ `--check` 模式就是为这件事准备的。
 
 ★ ★ **口径边界（先读，否则会误判）**：本清单数的是「**flow 用 `openLink`
   直接打开过**」，**不含「在页面里点击进入」的路由** ⇒
   - 静态工具**无法**判定点击可达性（Maestro 的 `tapOn` 不携带 URL）；
   - ⇒ 被点击进入的路由会**落进本清单**，但它们**其实已被覆盖**。
   ⇒ 本清单按「证据强度」分三档，**不要把 B/C 档当成「完全没验过」**。
+  ★ ★ **与 `maestro/L10-uncovered-routes.md` §3.1 的分档关系**：那边分**四档**（A/B/C/D），
+    本节把它的 **C 与 D 两档合并**成「C 真实缺口」（并按处置优先级标 P1/P2/P3）
+    ⇒ ⇒ ★ **两文档的路由集合逐条相同**，只是**分档粒度不同**（读哪边都不矛盾）。
 
 | 路由 | 类别 | 说明 / 处置 |
 |---|---|---|
@@ -459,6 +492,8 @@ node maestro/tools/assert-stage-tree.mjs \
 | `/admin/plugin-settings` | C 真实缺口 | P3（super 档；菜单归属待产品确认） |
 | `/simple/keys` / `/tenant/bills` | C 真实缺口 | P3（简易模式密钥签发 / 月账单） |
 | `/operations/price-compare` | C 真实缺口 | P3（重定向到 `/model-pricing` ⇒ 只需断言「跳转到位」） |
+| `/admin/teams` | C 真实缺口 | P3（★ 2026-11-23 上游 `41fb572f3`「团队层级管理前端切片落地」新增；`appNav.ts` **无菜单入口** ⇒ 上游自己已在 `web/src/config/navCoverage.test.ts` 把它登记为**孤儿路由**（菜单归属待产品确认）⇒ 与 `/admin/plugin-settings` 同族口径） |
+| `/admin/teams/:id` | C 真实缺口 | P3（★ 详情页**只能从列表页点击**到达（上游注释：详情页用路径字面量 `/admin/teams/${teamId}`）⇒ 静态工具不可判定；★ 但**列表页本身也没有任何 flow** ⇒ 团队层级这族两条路由**都没有 flow 覆盖**） |
 
 ★ 「缺口」是**事实登记**，不是**红门**：本 README 不对覆盖率判红
   （哪些路由值得写 flow 属产品优先级，见 `maestro/L10-uncovered-routes.md` §3.1）。
@@ -511,6 +546,47 @@ CI 上跑的必须是零依赖的这把。
 | 对照臂 | 注入一个**仓内不存在**的会话分析视图名 ⇒ 工具**必须红**；且必须**红在幽灵条目上**（否则「随便红一下」也算过） |
 
 ---
+
+### 3.15 ★★ flow 断言点 × 现役渲染闭包（四方对拍，L14 复核轮新增，2026-11-23）
+
+> ★★ §3.1–§3.14 全部按**路径**核对（flow 打开过哪些 URL、README 登记了哪些 URL）。
+> ★★ **本节按「断言点」核对**：★ **flow 打开某个 URL 后，断言的那个字/那个 testid，
+> 在那个 URL 的【现役渲染闭包】里到底还在不在？**
+>
+> ```bash
+> node maestro/tools/audit-flow-assertions.mjs            # Markdown 报告
+> node maestro/tools/audit-flow-assertions.mjs --json     # 机读
+> node maestro/tools/audit-flow-assertions.mjs --flow 13   # 只看某个 flow（文件名前缀）
+> ```
+>
+> ★ **它补的是第四个维度**（前三维已被存量工具占满）：
+>
+> | 维度 | 谁在判 | 为什么看不见 L14 |
+> | --- | --- | --- |
+> | ① | `navCoverage.test.ts` | 判**路由**可达性 ⇒ 组件被 import 却没路由，它看不见 |
+> | ② | `pageHelpRegistry.test.ts` | 判**存在性** ⇒ 正文与页面形态是否一致不在判据里 |
+> | ③ | `maestro/tools/audit-route-coverage.mjs` | 判**路径**三方对拍 ⇒ **同一个 URL 换了组件、断言随之失效，它看不见** |
+> | ④ | ★ **本工具** | 判**断言点 × 该 URL 的现役渲染闭包** | —— |
+>
+> ★ **四档判定**：`reachable`（可达）｜`not-found`（★ **仓内确实存在、但该页渲染不出** ⇒ **强候选**）｜
+> `regex-mismatch`（★ 字面量**就在页面上**、但断言把它**写成了正则** ⇒ **该断言恒红**）｜
+> `undecidable`（运行期数据 / `${ENV}` 占位符 / 跨 token 正则 ⇒ **不作为候选**）。
+>
+> ★ **强弱候选分区**：★ 页面闭包里若出现**真正的动态组件解析**（`defineAsyncComponent` /
+> `resolveComponent` / `Vue.component` / **glob 组件**）⇒ ★ 静态闭包不完整 ⇒
+> 「渲染不出」的推论**证据强度较低** ⇒ ★ 这类候选单列为「弱候选」。
+>
+> ★★ **本工具是只读的事实登记工具，★ 不判红绿、★ 不进 CI 载体**
+> （★ 与同族 `audit-route-coverage.mjs` 同口径；★ 误报率尚未量化 ⇒ ★ 按仓内纪律
+> 「门自己的误报比没门更坏」⇒ ★ **升级为红门之前必须先人工过一遍候选清单**）。
+>
+> ★★ **当前树的实测产出**（★ 全文见 `docs/audit/evidence/2026-11-23-session-analytics-l14-flow-assertion-sweep.txt`）：
+> 全仓 **29 条 flow / 128 条路由**扫完 ⇒ `not-found` 候选 **68**（★ **其中 17 条指向
+> `/admin/session-analytics/users`** ⇒ ★★ **L14 家族＝4 条 flow**：`13-session-analytics-users` /
+> `06-keys-requests` / `14-stats-consistency-test` / `14-user-analytics-enhancement`）、
+> `regex-mismatch` **2**、`undecidable` **46**、其它（无路由/无组件）**21**。
+> ⇒ ★★ **「只重写 flow 13 段」口径不足** ⇒ 要么按 flow 族一起改、要么恢复路由让它们一起转绿。
+> 详见主档 `docs/audit/2026-11-20-会话分析系统前端实施报告.md` §7.26。
 
 ## 4. 前置条件
 

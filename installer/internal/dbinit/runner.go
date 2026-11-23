@@ -1815,6 +1815,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// provider_models.raw_model_name 变体 —— 探针侧三门都只比裸名，
 			// 而免费供应商 raw 名多带命名空间前缀（z-ai/…、minimaxai/…）
 			// ⇒ 只标裸 canonical 名对 namespaced 免费对零效果。
+			// ★ 918（2026-11-23 新装链断链修复轮）：把 minimax-m3.1-flash 镜像进
+			//   【基线标准目录】——★ 956 的守卫要求这一行 active，而基线 seed 的
+			//   seed-standard-rollout 集合里没有它 ⇒ ★ 新装链必在 956 中止
+			//   （★ 实测报错：migration 956 aborted: canonical_name=minimax-m3.1-flash
+			//   does not exist or is not active）⇒ ★★ 之后 957+ 全拿不到。
+			//   ★ 顺序要求：★ **必须排在 956 之前**（★ 这是 956 的前提）。
+			"918_models_canonical_minimax_m31_seed.sql",
 			"956_minimax_m31_flash_featured.sql",
 			// 957（2026-11-11 闭集门第三次复发轮）：self_check_runs.error_type 的
 			// CHECK 闭集补 `rate_limit_observed`（errorsx 新 kind 的镜像面）——
@@ -1963,6 +1970,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   创建 4 个物化视图（user_session_aggregates, project_task_aggregates,
 			//   agent_usage_aggregates, model_usage_aggregates），创建刷新函数。
 			//   列名已修正为真实 schema：owner_user, total_tokens, total_cost_usd, total_turns。
+			// ★ 925（2026-11-23 新装链断链修复轮）：在 981 **之前**补齐
+			//   session_summaries.total_credits_charged ——★ 981 的 4 个物化视图都
+			//   SELECT SUM(ss.total_credits_charged)，★ 而仓内这一列是 990 才加的
+			//   ⇒ 981 < 990 ⇒ ★ 新装库跑到 981 时列还不存在 ⇒ 42P03
+			//   （★ 实测报错：column ss.total_credits_charged does not exist）。
+			//   ★ 生产能跑过是因为生产是遗留 schema（★ 那一列早于 9xx 链就在）。
+			//   ★ 形态与 990 逐字同形 ⇒ ★ 990 之后本列变 no-op ⇒ 零冲突。
+			//   ★ 顺序要求：★ **必须排在 981 之前**。
+			"925_session_summaries_total_credits_charged.sql",
 			"981_session_analytics_foundation.sql",
 			// ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
 			//   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
@@ -2035,6 +2051,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"983_user_teams.sql",
 			"984_api_keys_team_id.sql",
 			"985_team_budgets.sql",
+			// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 ——
+			//   981 的文件**缺 schema_migrations 自登记行** ⇒ 211 的记账链在
+			//   980 与 990 之间**断一格**（实测：211 有 '980' 与 '990'、独缺 '981'，
+			//   而 981 的产物全部在场 ⇒ 它确实跑过、只是没记账）。
+			//   ★ 另立迁移而非改 981 字节：981 在 211/252 都已 applied 且
+			//     252 台账 checksum 与磁盘逐字一致 ⇒ 改字节即 L23 同款分叉
+			//     （914/928 教训同款）。
+			//   ★ 守卫式回填（981 头产物在场才记账）+ 自身自登记（≥952 约定）。
+			//   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix
+			//     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 的台账行记过同款）。
+			"989_migration_ledger_session_analytics_981_repair.sql",
 		},
 	}
 }

@@ -34,7 +34,7 @@ var sessionSummaryDeliverySpecs = []migrationDeliverySpec{
 		downFile:     "997_tasks_dimension_table.down.sql",
 		mapGoVar:     "tasksDimensionTable997",
 		mapGoVarDown: "tasksDimensionTable997Down",
-		tsvIndex:     "388",
+		tsvIndex:     "390",
 	},
 	{
 		version:      "998",
@@ -42,7 +42,7 @@ var sessionSummaryDeliverySpecs = []migrationDeliverySpec{
 		downFile:     "998_session_summaries_task_association.down.sql",
 		mapGoVar:     "sessionSummariesTaskAssociation998",
 		mapGoVarDown: "sessionSummariesTaskAssociation998Down",
-		tsvIndex:     "389",
+		tsvIndex:     "391",
 	},
 	{
 		version:      "999",
@@ -50,7 +50,7 @@ var sessionSummaryDeliverySpecs = []migrationDeliverySpec{
 		downFile:     "999_session_summary_layers.down.sql",
 		mapGoVar:     "sessionSummaryLayers999",
 		mapGoVarDown: "sessionSummaryLayers999Down",
-		tsvIndex:     "390",
+		tsvIndex:     "392",
 	},
 }
 

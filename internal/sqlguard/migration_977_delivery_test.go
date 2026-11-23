@@ -79,7 +79,7 @@ const (
 // pi977ExpectedTSVIndex 是 977 在 installed_startup_migrations.tsv 里的
 // **应用序**下标（0 起）——该文件是 installer StartupFiles 的机器可读镜像，
 // 两边必须逐条一致（installer/internal/dbinit 的门在比）。
-const pi977ExpectedTSVIndex = 376
+const pi977ExpectedTSVIndex = 377
 
 // pi977UpdateRe 抽取「UPDATE public.prompt_injection_rules SET pattern = '…'
 // WHERE rule_name = '…'」⇒ (pattern, rule_name)。

@@ -2597,6 +2597,13 @@ files=(
   # ★ 955（2026-11-09 模型指纹验证增强轮）：passive_model_fingerprints ——
   #   被动式模型指纹基线表（真实流量聚合的 TTFT/ITT/吞吐/Token 签名）。
   "$ROOT_DIR/sql/migrations/startup/955_passive_model_fingerprints.sql"
+  # ★ 918（2026-11-23 956 断链修复轮，★ 排在 956 之前）：
+  #   把 minimax-m3.1-flash 播种进 models_canonical 的标准目录集合。
+  #   ★ 为什么必须投：956 的守卫要求这一行**已存在** ⇒ 而它的唯一创建者是
+  #     基线 02-seed.sql ⇒ ★ 种子不投这一行 ⇒ 956 在新装库上必中止。
+  #   ★ 生产上是纯 no-op（ON CONFLICT (canonical_name) DO NOTHING ⇒ 不覆盖
+  #     discovery 同步进来的那行）⇒ 零风险。
+  "$ROOT_DIR/sql/migrations/startup/918_models_canonical_minimax_m31_seed.sql"
   # ★ 956（2026-11-10 上游恢复检测及时性轮）：把 minimax-m3.1-flash 标 featured。
   #   判据 = 实测有 24h 真实业务流量（110 次）的免费模型 —— 免费面 24h 有流量的
   #   canonical 只有 glm-5.3-flash（585 次，953 已标）与本项两个。
@@ -2771,6 +2778,13 @@ files=(
   #   ★ 底座是 session_summaries / session_dim / sessions（真库实测），
   #     不是 sessions 裸表；日桶用 (ts AT TIME ZONE 'Asia/Shanghai')::date（CST）。
   #   ★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。
+  # ★ 925（2026-11-23 981 断链修复轮，★ 必须排在 981 **之前**）：
+  #   session_summaries 补 total_credits_charged 列（列定义与 990 逐字同形）。
+  #   ★ 为什么必须投：981 的 4 个物化视图都读 SUM(ss.total_credits_charged)
+  #     ⇒ 而该列在仓内由 990 才 ADD COLUMN ⇒ ★ 981 < 990 ⇒ 新装库跑到 981 时
+  #     列不存在 ⇒ 42P03 ⇒ **新装链在 981 中止** ⇒ 982 之后的全部迁移拿不到。
+  #   ★ 生产上是无害 no-op（ADD COLUMN IF NOT EXISTS ⇒ 列早已存在）。
+  "$ROOT_DIR/sql/migrations/startup/925_session_summaries_total_credits_charged.sql"
   "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
   # ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
   #   teams / user_teams / api_keys.team_id / team_budgets 四件套。
@@ -2842,6 +2856,16 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/997_tasks_dimension_table.sql"
   "$ROOT_DIR/sql/migrations/startup/998_session_summaries_task_association.sql"
   "$ROOT_DIR/sql/migrations/startup/999_session_summary_layers.sql"
+  # ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件
+  #   **缺 schema_migrations 自登记行** ⇒ 211 的记账链在 980 与 990 之间
+  #   **断一格**（实测：211 的 public.schema_migrations 有 '980' 与 '990'、
+  #   独缺 '981'；而 981 的产物【全部在场】⇒ 它确实跑过、只是没记账）。
+  #   ★ 守卫式回填（981 头产物在场才记账 ⇒ 幂等、可重放、fail-safe）+ 自身自登记。
+  #   ★ 新迁移而非改 981 字节：981 在 211/252 都已 applied 且 252 台账 checksum
+  #     与磁盘逐字一致 ⇒ 改字节即 L23 同款分叉（914/928 教训同款）。
+  #   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix 钉死
+  #     ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 台账行记过同款）。
+  "$ROOT_DIR/sql/migrations/startup/989_migration_ledger_session_analytics_981_repair.sql"
 )
 
 
@@ -3489,6 +3513,13 @@ ledger_artifact_probe "955_passive_model_fingerprints.sql" \
 #   重复重放安全 ⇒ 幂等）。
 ledger_artifact_probe "956_minimax_m31_flash_featured.sql" \
   "EXISTS (SELECT 1 FROM public.models_canonical WHERE canonical_name = 'minimax-m3.1-flash' AND featured = TRUE)"
+# ★ 918（2026-11-23 956 断链修复轮）：产物 = models_canonical 里存在
+#   canonical_name='minimax-m3.1-flash' 的行。
+#   ★ 只判「行在场」不判 source：★ 生产那行是 discovery 同步进来的
+#     （source='discovery'）⇒ 若断言 source='seed-standard-rollout'
+#     ⇒ 生产上会假红（★ 那不是迁移没做，是来源本来就不同）。
+ledger_artifact_probe "918_models_canonical_minimax_m31_seed.sql" \
+  "EXISTS (SELECT 1 FROM public.models_canonical WHERE canonical_name = 'minimax-m3.1-flash')"
 # ★ 957（2026-11-11 闭集门第三次复发轮）：产物 = self_check_runs 的
 #   error_type CHECK 确实覆盖 `rate_limit_observed`（迁移体内自带
 #   「已覆盖全闭集就跳过」的幂等守卫 ⇒ 重放安全）。
@@ -3640,6 +3671,8 @@ ledger_artifact_probe "978_pi_canonical_rule_set.sql" \
 #   ★ 唯一索引必须是**纯列**索引：PG 的 findCommittedUniqueIndex 跳过带表达式的索引
 #     ⇒ 表达式索引不算数（这是 981 首跑实测踩到的：表达式唯一索引让 CONCURRENTLY
 #     刷新失败，报 "Create a unique index with no WHERE clause on one or more columns"）。
+ledger_artifact_probe "925_session_summaries_total_credits_charged.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name='total_credits_charged')"
 ledger_artifact_probe "981_session_analytics_foundation.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regprocedure('public.refresh_session_analytics_view(text)') IS NOT NULL AND to_regprocedure('public.refresh_all_session_analytics_views()') IS NOT NULL AND to_regprocedure('public.session_analytics_is_probe(text,text,text)') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='sessions' AND column_name IN ('project','task','task_category','is_probe')) = 4 AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4"
 # ★ 994 的产物 = 四视图在场（重建后）+ 唯一索引仍为 4（REFRESH CONCURRENTLY 硬前提）
@@ -3686,6 +3719,12 @@ ledger_artifact_probe "984_api_keys_team_id.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
 ledger_artifact_probe "985_team_budgets.sql" \
   "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
+# ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
+#   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
+#   '981' 行已存在（两件事都成立才算记账修好了）。
+#   ★ 与 960 同款：960 的产物也是记账行（950/951/957/958 的回填）。
+ledger_artifact_probe "989_migration_ledger_session_analytics_981_repair.sql" \
+  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regclass('public.session_dim') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '981') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

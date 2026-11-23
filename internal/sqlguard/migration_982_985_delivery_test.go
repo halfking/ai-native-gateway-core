@@ -126,10 +126,10 @@ var teamMigs982 = []struct {
 	mainVar string
 	table   string // ★ 该迁移作用到的表名（★ RLS 判据按语句形态点名）
 }{
-	{teamBase982, "982", "391", "teamsTable982", "teams"},
-	{teamBase983, "983", "392", "userTeams983", "user_teams"},
-	{teamBase984, "984", "393", "apiKeysTeamId984", "api_keys"},
-	{teamBase985, "985", "394", "teamBudgets985", "team_budgets"},
+	{teamBase982, "982", "393", "teamsTable982", "teams"},
+	{teamBase983, "983", "394", "userTeams983", "user_teams"},
+	{teamBase984, "984", "395", "apiKeysTeamId984", "api_keys"},
+	{teamBase985, "985", "396", "teamBudgets985", "team_budgets"},
 }
 
 func TestMigration982to985TeamFoundationDelivered(t *testing.T) {

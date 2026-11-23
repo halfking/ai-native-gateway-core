@@ -6,10 +6,10 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-23T01:37:56+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=395 package_up=395 rows=959
-# ★ ★★ census_bundled_at=2026-11-08T23:15:30+00:00 census_env_sha256=local:c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d,fresh:9cf37dfbe147cd4f0c775aee54bbc652d8e22bb396cbc296ec8e1ea82a7ccce0,252:b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55,211:550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 143, "reachable-and-present": 423, "reachable-but-missing-in-fresh": 2, "unreachable-and-missing": 49}
+# ★ generated_at=2026-11-23T06:27:46+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=398 package_up=398 rows=959
+# ★ ★★ census_bundled_at=2026-11-23T06:27:23+00:00 census_env_sha256=local:c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d,fresh:51ba1898ec7549b30e6e42fa0bdd9fbabb93e079d279e2b9dfc84b5740fd0384,252:b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55,211:550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 74, "reachable-and-present": 494, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -897,75 +897,75 @@ idx_sqs_quote	sales_quote_shares	948	948_sales_quote_shares.sql	yes	fresh,252,21
 idx_armor_judgments_created_at	armor_judgments	951	951_armor_judgments_created_at_idx.sql	yes	fresh,252,211	local	reachable-and-present	none	
 idx_model_price_versions_timeline	model_price_versions	952	952_model_price_versions.sql	yes	fresh,211		reachable-and-present	none	
 uq_model_price_versions_current	model_price_versions	952	952_model_price_versions.sql	yes	fresh,211		reachable-and-present	none	
-idx_models_canonical_featured	models_canonical	953	953_models_canonical_featured.sql	yes			reachable-and-legitimately-retired	none	
-idx_passive_model_fingerprints_model	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes			reachable-and-legitimately-retired	none	
-idx_passive_model_fingerprints_updated	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes			reachable-and-legitimately-retired	none	
-idx_market_platform_registry_is_ours	market_platform_registry	958	958_market_platform_registry.sql	yes			reachable-and-legitimately-retired	none	
-idx_market_platform_registry_region	market_platform_registry	958	958_market_platform_registry.sql	yes			reachable-and-legitimately-retired	none	
-idx_akcm_key_minute	api_key_concurrency_minute	965	965_api_key_concurrency_minute.sql	yes			reachable-and-legitimately-retired	none	
-idx_auth_id_mapping_external	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
-idx_auth_id_mapping_internal	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
-idx_auth_id_mapping_provider	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
-idx_auth_id_mapping_tenant	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
-idx_auth_id_mapping_username	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
-idx_plugin_config_updated	plugin_config	968	968_plugin_config.sql	yes			reachable-and-legitimately-retired	none	
-idx_casdoor_mapping_casdoor_task	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
-idx_casdoor_mapping_session	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
-idx_casdoor_mapping_status	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
-idx_casdoor_mapping_tenant	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_queue_error_hash	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_queue_error_type	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_queue_status_priority	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_queue_tenant	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_results_auto_applied	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_results_category	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_results_false_positive	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_results_queue	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_results_severity	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
-idx_mppq_canon	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes			reachable-and-legitimately-retired	none	
-idx_mppq_platform	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes			reachable-and-legitimately-retired	none	
-idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975	975_pricing_suggestion_audit.sql	yes			reachable-and-legitimately-retired	none	
-idx_mppq_canon_region	market_price_platform_quotes	976	976_market_price_platform_quote_region.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_analysis_results_queue_uniq	error_analysis_results	977	977_pi_error_analysis_semantics.sql	yes			reachable-and-legitimately-retired	none	
-idx_sessions_is_probe	sessions	981	981_session_analytics_foundation.sql	yes			reachable-and-legitimately-retired	none	
-idx_sessions_project	sessions	981	981_session_analytics_foundation.sql	yes			reachable-and-legitimately-retired	none	
-idx_sessions_task_category	sessions	981	981_session_analytics_foundation.sql	yes			reachable-and-legitimately-retired	none	
-idx_teams_owner_id	teams	982	982_teams_table.sql	yes			reachable-and-legitimately-retired	none	
-idx_teams_tenant_id	teams	982	982_teams_table.sql	yes			reachable-and-legitimately-retired	none	
-idx_user_teams_team_id	user_teams	983	983_user_teams.sql	yes			reachable-and-legitimately-retired	none	
-idx_user_teams_user_id	user_teams	983	983_user_teams.sql	yes			reachable-and-legitimately-retired	none	
-idx_api_keys_team_id	api_keys	984	984_api_keys_team_id.sql	yes		local,fresh,252,211	reachable-but-missing-in-fresh	installer-bug	
-idx_api_keys_tenant_team	api_keys	984	984_api_keys_team_id.sql	yes		local,fresh,252,211	reachable-but-missing-in-fresh	installer-bug	
-idx_team_budgets_team_id	team_budgets	985	985_team_budgets.sql	yes			reachable-and-legitimately-retired	none	
-idx_agent_usage_agg_agent	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_agent_usage_agg_pk	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_agent_usage_agg_tenant	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_model_usage_agg_model	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_model_usage_agg_pk	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_model_usage_agg_provider	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_model_usage_agg_tenant	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_project_task_agg_owner	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_project_task_agg_pk	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_project_task_agg_project	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_project_task_agg_tenant	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_user_session_agg_date	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_user_session_agg_owner	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_user_session_agg_pk	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_user_session_agg_tenant	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_playbook_entries_enabled	error_playbook_entries	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_playbook_entries_last_hit	error_playbook_entries	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_playbook_exec_entry	error_playbook_executions	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
-idx_error_playbook_exec_type	error_playbook_executions	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
-uq_error_playbook_type_pattern	error_playbook_entries	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
-idx_tasks_project	tasks	997	997_tasks_dimension_table.sql	yes			reachable-and-legitimately-retired	none	
-idx_tasks_tags	tasks	997	997_tasks_dimension_table.sql	yes			reachable-and-legitimately-retired	none	
-idx_tasks_tenant_status	tasks	997	997_tasks_dimension_table.sql	yes			reachable-and-legitimately-retired	none	
-idx_tasks_work_type	tasks	997	997_tasks_dimension_table.sql	yes			reachable-and-legitimately-retired	none	
-idx_session_summaries_canonical	session_summaries	998	998_session_summaries_task_association.sql	yes			reachable-and-legitimately-retired	none	
-idx_session_summaries_dedup_candidates	session_summaries	998	998_session_summaries_task_association.sql	yes			reachable-and-legitimately-retired	none	
-idx_session_summaries_layered_pending	session_summaries	998	998_session_summaries_task_association.sql	yes			reachable-and-legitimately-retired	none	
+idx_models_canonical_featured	models_canonical	953	953_models_canonical_featured.sql	yes	fresh		reachable-and-present	none	
+idx_passive_model_fingerprints_model	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes	fresh		reachable-and-present	none	
+idx_passive_model_fingerprints_updated	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes	fresh		reachable-and-present	none	
+idx_market_platform_registry_is_ours	market_platform_registry	958	958_market_platform_registry.sql	yes	fresh		reachable-and-present	none	
+idx_market_platform_registry_region	market_platform_registry	958	958_market_platform_registry.sql	yes	fresh		reachable-and-present	none	
+idx_akcm_key_minute	api_key_concurrency_minute	965	965_api_key_concurrency_minute.sql	yes	fresh		reachable-and-present	none	
+idx_auth_id_mapping_external	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes	fresh		reachable-and-present	none	
+idx_auth_id_mapping_internal	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes	fresh		reachable-and-present	none	
+idx_auth_id_mapping_provider	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes	fresh		reachable-and-present	none	
+idx_auth_id_mapping_tenant	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes	fresh		reachable-and-present	none	
+idx_auth_id_mapping_username	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes	fresh		reachable-and-present	none	
+idx_plugin_config_updated	plugin_config	968	968_plugin_config.sql	yes	fresh		reachable-and-present	none	
+idx_casdoor_mapping_casdoor_task	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes	fresh		reachable-and-present	none	
+idx_casdoor_mapping_session	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes	fresh		reachable-and-present	none	
+idx_casdoor_mapping_status	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes	fresh		reachable-and-present	none	
+idx_casdoor_mapping_tenant	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_queue_error_hash	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_queue_error_type	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_queue_status_priority	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_queue_tenant	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_results_auto_applied	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_results_category	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_results_false_positive	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_results_queue	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_results_severity	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	fresh		reachable-and-present	none	
+idx_mppq_canon	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes	fresh		reachable-and-present	none	
+idx_mppq_platform	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes	fresh		reachable-and-present	none	
+idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975	975_pricing_suggestion_audit.sql	yes	fresh		reachable-and-present	none	
+idx_mppq_canon_region	market_price_platform_quotes	976	976_market_price_platform_quote_region.sql	yes	fresh		reachable-and-present	none	
+idx_error_analysis_results_queue_uniq	error_analysis_results	977	977_pi_error_analysis_semantics.sql	yes	fresh		reachable-and-present	none	
+idx_sessions_is_probe	sessions	981	981_session_analytics_foundation.sql	yes	fresh		reachable-and-present	none	
+idx_sessions_project	sessions	981	981_session_analytics_foundation.sql	yes	fresh		reachable-and-present	none	
+idx_sessions_task_category	sessions	981	981_session_analytics_foundation.sql	yes	fresh		reachable-and-present	none	
+idx_teams_owner_id	teams	982	982_teams_table.sql	yes	fresh		reachable-and-present	none	
+idx_teams_tenant_id	teams	982	982_teams_table.sql	yes	fresh		reachable-and-present	none	
+idx_user_teams_team_id	user_teams	983	983_user_teams.sql	yes	fresh		reachable-and-present	none	
+idx_user_teams_user_id	user_teams	983	983_user_teams.sql	yes	fresh		reachable-and-present	none	
+idx_api_keys_team_id	api_keys	984	984_api_keys_team_id.sql	yes	fresh	local,252,211	reachable-and-present	none	
+idx_api_keys_tenant_team	api_keys	984	984_api_keys_team_id.sql	yes	fresh	local,252,211	reachable-and-present	none	
+idx_team_budgets_team_id	team_budgets	985	985_team_budgets.sql	yes	fresh		reachable-and-present	none	
+idx_agent_usage_agg_agent	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_agent_usage_agg_pk	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_agent_usage_agg_tenant	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_model_usage_agg_model	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_model_usage_agg_pk	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_model_usage_agg_provider	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_model_usage_agg_tenant	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_project_task_agg_owner	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_project_task_agg_pk	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_project_task_agg_project	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_project_task_agg_tenant	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_user_session_agg_date	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_user_session_agg_owner	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_user_session_agg_pk	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_user_session_agg_tenant	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
+idx_error_playbook_entries_enabled	error_playbook_entries	995	995_error_playbook.sql	yes	fresh		reachable-and-present	none	
+idx_error_playbook_entries_last_hit	error_playbook_entries	995	995_error_playbook.sql	yes	fresh		reachable-and-present	none	
+idx_error_playbook_exec_entry	error_playbook_executions	995	995_error_playbook.sql	yes	fresh		reachable-and-present	none	
+idx_error_playbook_exec_type	error_playbook_executions	995	995_error_playbook.sql	yes	fresh		reachable-and-present	none	
+uq_error_playbook_type_pattern	error_playbook_entries	995	995_error_playbook.sql	yes	fresh		reachable-and-present	none	
+idx_tasks_project	tasks	997	997_tasks_dimension_table.sql	yes	fresh		reachable-and-present	none	
+idx_tasks_tags	tasks	997	997_tasks_dimension_table.sql	yes	fresh		reachable-and-present	none	
+idx_tasks_tenant_status	tasks	997	997_tasks_dimension_table.sql	yes	fresh		reachable-and-present	none	
+idx_tasks_work_type	tasks	997	997_tasks_dimension_table.sql	yes	fresh		reachable-and-present	none	
+idx_session_summaries_canonical	session_summaries	998	998_session_summaries_task_association.sql	yes	fresh		reachable-and-present	none	
+idx_session_summaries_dedup_candidates	session_summaries	998	998_session_summaries_task_association.sql	yes	fresh		reachable-and-present	none	
+idx_session_summaries_layered_pending	session_summaries	998	998_session_summaries_task_association.sql	yes	fresh		reachable-and-present	none	
 idx_session_summaries_task	session_summaries	998	998_session_summaries_task_association.sql	yes	local,fresh,252,211		reachable-and-present	none	
-idx_summary_layers_created	session_summary_layers	999	999_session_summary_layers.sql	yes			reachable-and-legitimately-retired	none	
-idx_summary_layers_hash	session_summary_layers	999	999_session_summary_layers.sql	yes			reachable-and-legitimately-retired	none	
-idx_summary_layers_session	session_summary_layers	999	999_session_summary_layers.sql	yes			reachable-and-legitimately-retired	none	
-idx_summary_layers_type	session_summary_layers	999	999_session_summary_layers.sql	yes			reachable-and-legitimately-retired	none	
+idx_summary_layers_created	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
+idx_summary_layers_hash	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
+idx_summary_layers_session	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
+idx_summary_layers_type	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
