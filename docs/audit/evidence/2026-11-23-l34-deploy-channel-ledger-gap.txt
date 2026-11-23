@@ -1,0 +1,123 @@
+================================================================================
+2026-11-23 L33 三轮（L34 取证轮）—— 「部署通道不认安装器的账」hermetic 真库实测
+================================================================================
+
+★ 起因：★ L33 轮登记「部署通道不认安装器的账」时，★ 证据只有仓里
+  installer/cmd/llm-gw-installer/embeddata/startup/931_userscript_capture_family.sql
+  的注释自陈（★ 属「读码推断」）⇒ ★ 本轮把它升级为**真库实测**。
+
+★ 纪律：★ 全程**只碰自己起的一次性容器**（★ 零生产写、★ 零 schema 变更、
+  ★ 零在役切换、★ 零迁移字节变更）★★ ⇒ ★ 部署通道脚本**不改一行** ★
+  ⇒ ★ 臂 E 的「喂账」是**只改数据**（★ 只在一次性容器上）★★
+
+--------------------------------------------------------------------------------
+㉶ 臂 D（基线）：★ 新装库 ⇒ 直接跑部署通道 ⇒ **实测中止**
+--------------------------------------------------------------------------------
+★ 容器：l34-deploy-on-fresh（★ 一次性、★ kx-citus-pg17:offline-arm64、
+  ★ --shm-size=1g、★ 口令随机不落盘、★ 退出时按【自己的容器 ID】删）
+★ 安装：cmd/e2e-bootstrap（★ 同一段 InitSchema、★ 同一份 StartupFiles 392 条、
+  ★ 同一份 embeddata）
+
+  INSTALL_EXIT=0   wall=149s
+  public 表数 = 576
+  schema_migrations 行数 = 396 ／ 最大版本 = 999
+  gateway_db_revision_sequences 是否存在 = 0     ← ★ 部署通道那本账【连表都没有】
+
+★ 部署通道（★ LLM_GATEWAY_PSQL_TRANSPORT=container ⇒ 必须走 container 通道：
+  ★ 宿主 ~/.local/bin/psql 是【会丢掉 host/port 的 shim】⇒ ★ 会连到别的集群）★
+
+  DEPLOY_EXIT=3   wall=18s
+  applying sql/migrations/startup/563_session_summary_trigger_on_hot.sql
+  psql:<stdin>:151: NOTICE:  relation "request_logs_hot" does not exist, skipping
+  psql:<stdin>:156: ERROR:  relation "request_logs_hot" does not exist
+  （★ 部署通道台账此时只有 12 行 ⇒ ★ 它从零重放到第 13 个文件就炸了 ★）
+
+--------------------------------------------------------------------------------
+㉷ 臂 E（反证）：★ 把「安装器确实应用过、且部署通道也投递」的文件
+     按部署通道自己的 marker 口径种进它的账 ⇒ **跳过成功、但断点前移**
+--------------------------------------------------------------------------------
+★ 种账：★ sequence_name = "session-summary-and-integrity-2026-09:<文件名>"、
+  ★ content_sha256 = 文件指纹（★ 与部署通道自己的 sha256_file 同口径 ★）
+  ★ 种入文件 = 两通道交集 **330** 条（★ 交集口径见下表 ★）
+
+  SEED_EXIT=0 ｜ 台账行数 = 330
+  DEPLOY_EXIT=3   wall=17s
+  already applied: …（★ 跳过 53 条 ⇒ ★ 「重放」这条因果链被坐实 ★）
+  applying sql/migrations/startup/661_session_summary_token_ratio_reassert.sql
+  --- 5. CREATE VIEW supplier_errors_unified ---
+  psql:<stdin>:237: ERROR:  cannot change name of view column "id" to "source"
+
+★ ⇒ 三句结论：
+  ① 台账不互通确实是第一道断点（★ 喂账后开始跳过 ⇒ 因果链坐实 ★）；
+  ② 但它**没有因此走通** ⇒ ★ 部署通道去应用那 **26 条「部署通道独有」的文件**
+     ⇒ ★ 第 6 条（661）撞上**空库新装 schema 的假设不成立** ★；
+  ③ ⇒ **「让部署通道也认安装器的账」是必要条件、★ 不是充分条件** ★
+     ⇒ 「新装 ⇒ 升级」这条路要打通，需要【账互通】＋【26 条在空库上可应用】同批。
+
+--------------------------------------------------------------------------------
+㉸ 两通道文件集合差异（★ 实测、★ 按 Go 门同口径：去重 ＋ 跳过 .down.sql ★）
+--------------------------------------------------------------------------------
+  安装器 StartupFiles          = 392
+  部署通道 files=()            = 356
+  交集                         = 330
+  仅部署通道有                 = 26
+  仅安装器有                   = 62
+★ 仅部署通道有的 26 条：
+  044_health_source_probe_now.sql
+  357_session_analytics_aggregation_views.sql        ← 会话分析域
+  358_session_ownership.sql                          ← 会话分析域
+  394_request_stats_minute.sql
+  407_request_context_attrs.sql
+  487b_request_logs_hot_system_fingerprint.sql
+  487c_request_logs_hot_raw_model_name.sql
+  513_schema_unification_and_session_turns_dual_write.sql
+  538_node_probe_runs_trigger_kind_unified_queue.sql
+  578_candidate_binding_scope_filter_disabled.sql
+  661_session_summary_token_ratio_reassert.sql       ← ★ 臂 E 的炸点 ★
+  666_llm_hourly_stats_direct_trigger.sql
+  680b_request_logs_helper_view_column_resync.sql
+  682b_model_offers_context_window_columns_prelude.sql
+  683b_session_dim_table_prelude.sql
+  706b_session_turns_hot_prelude.sql
+  707b_session_bodies_hot_prelude.sql
+  727_sql_audit_slow_query_indexes.sql
+  728_sql_audit_request_logs_credential_model_index.sql
+  729_sql_audit_session_turns_credential_ts_index.sql
+  744_sql_audit_partial_indexes.sql
+  749_usage_facts_occurred_at_index.sql
+  810_heap_partitions_toastless_heal.sql
+  811_partition_bounds_shanghai_midnight_repair.sql
+  812_model_probe_runs_partitions_heap.sql
+  820_audio_modality_backfill.sql
+★ ★ 与 L22 的关系：★ 055–058 teams 族属「仅安装器/仅部署通道」之外的另一类
+  （★ 两条通道都没投递 ⇒ ★ 新装库上它们不存在 ⇒ ★ 正是 L22 的议题 ★）
+
+--------------------------------------------------------------------------------
+㉹ 本轮落地：★ 把这条口径钉成**可执行断言**（★ 两道门 ＋ 双向变异自证 ★）
+--------------------------------------------------------------------------------
+★ 新增 installer/internal/dbinit/runner_channel_ledger_test.go（★ 走 installer-ci 快路径 ★）
+  ① TestDeployChannelSkipsOnlyByItsOwnLedger
+     ⇒ ★ 部署通道**不得**用 psql_query/psql_stream 查安装器那张账
+       （★ ⇒ 它的跳过判据只认 public.gateway_db_revision_sequences ★）
+     ⇒ ★ 按【调用点】判、★ 不按文本判（★ 脚本里出现 schema_migrations 的合法用法是
+       ★★ 产物探针 ledger_artifact_probe ★★ ⇒ 按文本判会误报 ★★）
+  ② TestChannelFileSetBaseline
+     ⇒ ★ 集合差异基线：★ 交集 330 / 仅部署 26 / 仅安装 62 ⇒ ★ 变了就红 ★
+
+★ 双向变异自证（★ 本轮实测）：
+  M6  注入「部署通道用 psql_query 查 public.schema_migrations」（★ 模拟方案 A ★）
+      ⇒ ★★ 红（EXIT=1）★★、★ 精确点名到行与语句 ★★
+  M7  从安装器 StartupFiles 去掉一条（★ 模拟投递链缺口 ★）
+      ⇒ ★★ 红（EXIT=1）★★、★ 报出新的集合差异与「仅部署通道有」的完整清单 ★★
+  M8  复原 ⇒ ★★ 绿（EXIT=0）★★
+★ ⇒ 这两道门是**棘轮**：★ 它们钉的是**今天的现状** ⇒ ★ 若有人落了方案 A
+  （★ 部署通道改读 schema_migrations ★）★ **门会红** ⇒ ★★ 这是刻意的：
+  ★★ 请连同本门与报告 §7.31 一起更新（★ 别让口径悄悄漂掉）★★
+
+--------------------------------------------------------------------------------
+㉺ 授权轴（★ 本轮**零执行**、★ 不代做 ★）
+--------------------------------------------------------------------------------
+★ 方案 A（部署通道也认 schema_migrations）⇒ **触及生产升级路径 ⇒ owner 轴**
+★ 方案 A′（A ＋ 安装器也投递那 26 条）⇒ **对既有生产库＝新增 schema 变更 ⇒ owner 轴**
+★ 方案 C（只加前置断言门、★ 不改行为）⇒ ★ **可在本仓自主落地** ★
+★ ★★ 结论：★ 在 A′ 落地之前，★ 「新装库 ⇒ 部署通道」这条路仍然是断的（★ 且断在**两处**）★★
