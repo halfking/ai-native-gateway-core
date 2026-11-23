@@ -1972,12 +1972,6 @@ var providerCallAttempts982 []byte
 //go:embed embeddata/startup/982_provider_call_attempts.down.sql
 var providerCallAttempts982Down []byte
 
-//go:embed embeddata/startup/1000_request_metrics.sql
-var requestMetrics1000 []byte
-
-//go:embed embeddata/startup/1000_request_metrics.down.sql
-var requestMetrics1000Down []byte
-
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2659,8 +2653,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/982_provider_call_attempts.sql":                             providerCallAttempts982,
 	"startup/982_provider_call_attempts.down.sql":                        providerCallAttempts982Down,
 	// ★ 1000（2026-11-23 合并轮九 · 代上游补接线）：★ 上游 `b8f2935f4` 的统计专用分区表。
-	"startup/1000_request_metrics.sql":                             requestMetrics1000,
-	"startup/1000_request_metrics.down.sql":                        requestMetrics1000Down,
+	// ★★ 2026-11-24 合并轮十：★ 上游把该迁移【重编号】为 `983_request_metrics`
+	//   （★ 见 §9.30 ㉒-2）⇒ ★ 1000 的两件拷贝已随之删除 ⇒ ★★ **本映射表的
+	//   1000 两行必须在同一次改动里删掉** ⇒ ★ 否则 `//go:embed` 会指向
+	//   **不存在的文件** ⇒ ★★ **整个 installer 主包编译失败**（★ 上游重编号
+	//   那笔自己就漏了这两行 ⇒ ★ `origin/main` 上当场编译不过 ★★）。
+	// ★ ⇒ ★ 现只保留 983 的两行（★ 983 的 embed 声明见上）。
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
