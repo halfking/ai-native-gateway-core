@@ -107,6 +107,18 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "domains/modelcredibility/store_passive_realdb_test.go",
 		guard: modelCredibilityPassiveGuardProblems,
 	},
+	// 2026-11-23（211 配置优化执行报告 §9.24 轮 / N4）：maas 租户预算门真库腿
+	// （maas/tenant_budget_gate_realdb_test.go）。
+	// ★ 守卫形态与 maasBills 同款：current_database() 的 `_test` 后缀检查 ⇒
+	//   事实源统一下发的通用 DSN（产品库 llm_gateway）必被拒绝 ⇒ 必须用专用名
+	//   （已登记进 scripts/audit/dsn_exclusive_registry.tsv 与
+	//   scripts/ursmcheck/pg_test_env_registry.tsv）。
+	// ★ 登记为「非注入车道」是为了不让本门的扫描器反向要求
+	//   `TEST_MAAS_BUDGET_GATE_DATABASE_URL="$GATE_URL"`。
+	"TEST_MAAS_BUDGET_GATE_DATABASE_URL": {
+		path:  "maas/tenant_budget_gate_realdb_test.go",
+		guard: maasBudgetGateGuardProblems,
+	},
 }
 
 // modelCredibilityPassiveGuardProblems 断言 modelcredibility 被动指纹基线真库腿的
@@ -169,6 +181,21 @@ func maasBillsGuardProblems(body string) []string {
 	}
 	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
 	require(strings.Contains(body, `t.Fatalf("refusing to write maas tables`), "guard fails loudly instead of skipping")
+	return problems
+}
+
+// maasBudgetGateGuardProblems 断言 maas 租户预算门真库腿的自守卫仍然有牙
+// （形态与 maasBillsGuardProblems 同款，但 Fatal 文案不同 ⇒ 各用各的尺 ——
+// 共用尺会让其中一条腿的文案改动误伤另一条）。
+func maasBudgetGateGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
+	require(strings.Contains(body, `t.Fatalf("refusing to write tenant_budgets in`), "guard fails loudly instead of skipping")
 	return problems
 }
 
