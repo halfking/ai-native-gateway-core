@@ -10,6 +10,14 @@ ABS_SESSIONS_DIR	component	会话快照目录（路径），与「连哪个库�
 AI_SESSION_MANAGER_MANIFEST	component	Controller 真实子进程夹具读取的插件 manifest 文件路径；不选择 PG 目标、不取消连库保护
 AI_SESSION_MANAGER_PLUGIN_SOCKET	component	Controller 真实子进程夹具的 HTTP Unix socket 路径；不选择 PG 目标、不取消连库保护
 AUTO_USE_CHANNEL_QUALITY_ROUTING	component	特性开关（布尔），不改变连库目标
+CASDOOR_APPLICATION	component	Casdoor 插件的 OIDC application 名（cmd/gateway/plugin_init.go 读 CASDOOR_ENDPOINT/CLIENT_ID/CLIENT_SECRET/ORGANIZATION 作外部依赖接线；★ 本名只被 pkg/authplugin/casdoor/integration_test.go 读）⇒ ★ 是**外部系统接线参数**，★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_CERTIFICATE	component	Casdoor 插件的客户端证书（外部依赖接线参数）⇒ ★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_CLIENT_ID	component	Casdoor 插件的 OIDC client id（cmd/gateway/plugin_init.go 读它作外部依赖接线）⇒ ★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_CLIENT_SECRET	component	Casdoor 插件的 OIDC client secret（cmd/gateway/plugin_init.go 读它作外部依赖接线）⇒ ★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_ENDPOINT	component	Casdoor 插件的 OIDC endpoint（cmd/gateway/plugin_init.go 读它作外部依赖接线）⇒ ★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_ORGANIZATION	component	Casdoor 插件的 OIDC organization（cmd/gateway/plugin_init.go 读它作外部依赖接线）⇒ ★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_TEST_PASSWORD	component	Casdoor 集成腿的测试账号口令（仅 pkg/authplugin/casdoor/integration_test.go 读）⇒ ★ 是**夹具参数**，★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+CASDOOR_TEST_USERNAME	component	Casdoor 集成腿的测试账号名（仅 pkg/authplugin/casdoor/integration_test.go 读）⇒ ★ 是**夹具参数**，★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
 FREEDISCOVERY_DEFINITELY_UNSET_VAR_2	component	哨兵变量：用来断言某变量「确实未被设置」
 GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive	canonical fixture 的专用 DSN：除主库外还必须连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值（否则把「连本地库」的前提给了一个通用库 ⇒ 产品守卫正确拒绝 ⇒ 门禁得到假红）
 GATEWAY_CANONICAL_TEST_LOCAL_ONLY	dangerous	授权开关：=yes 才允许 canonical fixture 连本地库（不给则 t.Fatal 而非 SKIP）；打开即授予「连本地库」的权限
@@ -26,11 +34,14 @@ K2_MIGRATE_SHORT_APPLY_HELPER	component	同上：短路径 apply 的 helper 标�
 K2_PREFLIGHT_HELPER	component	同上：preflight 的 helper 标记
 K2_PREFLIGHT_SHORT_APPLY_HELPER	component	同上：preflight 短路径 helper 标记
 KEEP_SLOG	component	保留 slog 调试文件（布尔），不选库
+KILL_CIRCUIT_DEGRADATION	dangerous	★ **生产代码读它**（settings/feature_switches.go：★ 设 1 ⇒ ★ 关掉 circuit breaker + credential degraded）⇒ ★ 是**取消保护**的开关 ⇒ ★ 事实源必须不下发、★ 官方 runner 的 env 块也绝不能出现（★ 实测：run-integration-gate.sh 里没有它）⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
 LAUNCHER_E2E_GATEWAY_IMAGE	component	镜像名（E2E 用的 gateway 镜像），不是库
 LAUNCHER_TEST_MOCK_IMAGE	component	镜像名（mock backend），不是库
 LGW_MEMORY_BYTES	component	大请求内存验收子进程的 RAW 字节数（整数夹具参数）；不选择 PG 目标，也不取消连库保护
 LGW_MEMORY_CONCURRENCY	component	大请求内存验收子进程的并发数（整数夹具参数）；不选择 PG 目标，也不取消连库保护
 LLM_GATEWAY_API_KEY	component	外部服务 API key，与真库腿无关
+LLM_GATEWAY_BREAKER_SWITCH_EXPECT	component	breaker 特性开关腿的**父子进程约定**（★ 告诉子进程它该看到「开」还是「关」；★ 常量 breakerSwitchExpectEnv）⇒ ★ 只有 _test.go 读、★ 生产代码不读 ⇒ ★ 是**夹具参数**，★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+LLM_GATEWAY_BREAKER_SWITCH_SUBPROCESS	component	breaker 特性开关腿的**父子进程约定**（★ 标记「我是被父进程拉起来的子进程」；★ 常量 breakerSwitchSubprocessMarker）⇒ ★ 只有 _test.go 读、★ 生产代码不读 ⇒ ★ 是**夹具参数**，★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
 LLM_GATEWAY_COOKIE_DOMAIN	component	会话 cookie 的 Domain 覆盖（auth_cookie_domain_test.go 读它做往返断言），与「连哪个库」无关
 LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK	component	特性开关：打开旧版自检
 LLM_GATEWAY_FEATURE_STATS_TEST_DSN	dsn_exclusive	feature-stats 破坏性腿的专用 DSN：TRUNCATE 三张表 + 库名守卫只放行 itgate|scratch|test|tmp|bench|pg_ ⇒ 通用 DSN（llm_gateway）必被拒绝 ⇒ 事实源注入它只是一条死腿 ⇒ 不能与通用 DSN 同值（R86 轮移出事实源）
@@ -41,14 +52,15 @@ LLM_GATEWAY_LIVE_XIAOMI_BASE	component	外部服务 base URL（线上音频）
 LLM_GATEWAY_LIVE_XIAOMI_KEY	component	外部服务 key（线上音频）
 LLM_GATEWAY_MODEL_ALIAS_PREFIX	component	模型别名前缀（配置），不选库
 LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED	component	特性开关：成本对账
+LLM_GATEWAY_REALDB_ALLOW_ANY_DSN	dangerous	授权开关：=1 才允许 sales realdb 腿连任意 DSN（一次性容器）；缺省时库名守卫 fail-closed 只认 test/scratch/realdb（2026-11-08 报价审计轮 W1 腿登记）
 LLM_GATEWAY_REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 LLM_GATEWAY_RUN_LIVE_OBSERVATION	component	允许打线上观测（布尔），与真库腿无关
 LLM_GATEWAY_SSOT_DRAFT	component	草稿文件路径（SSOT 导入用）
 LLM_GATEWAY_TESTDB_SIGNAL_CHILD	component	子进程模式标记（=1 时该进程走「建一次性库并阻塞等信号」分支，是父进程 spawn 出来的夹具参数）：不决定连哪个库、不取消任何保护 ⇒ 既非 DSN 也非隔离开关
 LLM_GATEWAY_USE_NEW_PROBE_MODE	component	特性开关：新探针模式
 MEMORA_REPO_PATH	component	外部仓库路径（memora 记忆仓的本地 checkout 路径）；不是 DSN，是拼装型外部依赖路径
-NODE_PROBE_AUDIT_TEST_DSN	dsn_exclusive	legacy runOne 真库审计腿：只允许 loopback 且库名以 _test 结尾，每测独立 schema 建删 node_probe_state/node_probe_runs；禁止向共享产品库注入
 NATIVEPAIR_OFFSWITCH_CHILD	component	子进程自识别哨兵（offswitch_test.go 重跑自身时置 1），与连库目标无关
+NODE_PROBE_AUDIT_TEST_DSN	dsn_exclusive	legacy runOne 真库审计腿：只允许 loopback 且库名以 _test 结尾，每测独立 schema 建删 node_probe_state/node_probe_runs；禁止向共享产品库注入
 O5_FALLBACK_FILE_EVIDENCE	component	取证文件路径（降级读文件的真实样本）
 ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与 PG 无关）
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）
@@ -71,12 +83,14 @@ TEST_CONTENT_ARRAY_REQUEST_IDS	component	夹具参数：指定 request_id 清单
 TEST_CONTENT_ARRAY_SAMPLE	component	夹具参数：真库读数的采样行数（整数，默认 20000）⇒ 不决定连哪个库，也不取消任何保护
 TEST_DUAL_FULL_PGURL	dsn_exclusive	双模全量腿的 PG 连接串，必须与通用 DSN 区分（否则会打到共享库）
 TEST_DUAL_FULL_REDISURL	component	双模全量腿的 Redis 连接串，绝不能填 PG DSN
+TEST_MAAS_BILLS_DATABASE_URL	dsn_exclusive	maas 月账单真库 e2e 的专用 DSN：会写 maas_monthly_bills / maas_credit_consumption_buckets 并建删测试租户 ⇒ 必须指向 _test 结尾的一次性库，库名不合规即 Fatal ⇒ 不能与通用 DSN 同值，故不进事实源（2026-10-31 实施包审计 §8 新增）
+TEST_MAAS_BUDGET_GATE_DATABASE_URL	dsn_exclusive	maas 租户预算门真库腿的专用 DSN：守卫读 current_database() 并要求库名以 _test 结尾（不合规即 Fatal）⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（死腿）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-23 211 配置优化执行报告 §9.24 轮）
+TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL	dsn_exclusive	被动指纹真库腿的专用 DSN（2026-11-11 48h 审计第二轮登记；来源=11-10/11 被动指纹轮新增 domains/modelcredibility/store_passive_realdb_test.go）：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿写被动指纹基线表 ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（与同包 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL 同款先例）
+TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL	dsn_exclusive	modelcredibility rollup 真库腿的专用 DSN：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿会写 provider_model_credibility ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-01 12h 审计 P0 修复引入）
 TEST_PG_CONTRACTS_ISOLATED	isolation	隔离声明：该腿跑在隔离库上；必须与 DSN 成对设置，不能默认开
 TEST_REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 TEST_REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
 TEST_SESSION_INGEST_DATABASE_URL	dsn_exclusive	session-ingest 夹具的专用 DSN：守卫要求库名以 _test 结尾且配 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝（假红）⇒ 不能与通用 DSN 同值（R86 轮移出事实源）
-TEST_MAAS_BILLS_DATABASE_URL	dsn_exclusive	maas 月账单真库 e2e 的专用 DSN：会写 maas_monthly_bills / maas_credit_consumption_buckets 并建删测试租户 ⇒ 必须指向 _test 结尾的一次性库，库名不合规即 Fatal ⇒ 不能与通用 DSN 同值，故不进事实源（2026-10-31 实施包审计 §8 新增）
-TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL	dsn_exclusive	modelcredibility rollup 真库腿的专用 DSN：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿会写 provider_model_credibility ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-01 12h 审计 P0 修复引入）
 TEST_SESSION_INGEST_ISOLATED	isolation	隔离声明：该腿允许对隔离库做 schema 变更；必须与 DSN 成对设置，不能默认开
 TEST_SESSION_INGEST_PG_CONTAINER	component	PG 容器标识（testcontainers 实例名）
 TEST_SESSION_INGEST_RECONCILE_SQL	component	对账 SQL 文件路径（夹具覆盖）
@@ -96,6 +110,3 @@ VAPEUR_API_KEY	component	外部服务 key（provider 线上探测）
 WA877_ALLOW_ANY_DSN	dangerous	允许任意 DSN（迁移 877 门）；打开即取消「只连门禁库」的约束
 XIAOMI_API_KEY	component	外部服务 API key（发现逻辑）
 XIAOMI_BASE_URL	component	外部服务 base URL（发现逻辑）
-LLM_GATEWAY_REALDB_ALLOW_ANY_DSN	dangerous	授权开关：=1 才允许 sales realdb 腿连任意 DSN（一次性容器）；缺省时库名守卫 fail-closed 只认 test/scratch/realdb（2026-11-08 报价审计轮 W1 腿登记）
-TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL	dsn_exclusive	被动指纹真库腿的专用 DSN（2026-11-11 48h 审计第二轮登记；来源=11-10/11 被动指纹轮新增 domains/modelcredibility/store_passive_realdb_test.go）：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿写被动指纹基线表 ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（与同包 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL 同款先例）
-TEST_MAAS_BUDGET_GATE_DATABASE_URL	dsn_exclusive	maas 租户预算门真库腿的专用 DSN：守卫读 current_database() 并要求库名以 _test 结尾（不合规即 Fatal）⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（死腿）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-23 211 配置优化执行报告 §9.24 轮）

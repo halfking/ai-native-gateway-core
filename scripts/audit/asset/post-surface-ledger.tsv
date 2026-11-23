@@ -27,6 +27,7 @@
 #gen_append	2026-11-16 数据初始化轮 —— 补 10 条新增路由（★ 本轮 3 条 data-init + 并发会话 plugin/Casdoor 7 条；★ 无探测观测 ⇒ 裁决按静态分级推导；既有 702 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 714 行逐字保留，含人工改判）
 #gen_append	2026-11-18 12h 审计轮 —— 补 3 条定价路由（/api/admin/market/pricing-suggestions|pricing-apply|pricing-batches，2026-11-17 定价完善轮注册）；★ 无探测观测 ⇒ 裁决按静态分级推导（既有 714 行逐字保留，含人工改判）；★ ★ 其中 pricing-apply 按 handler 源码**改判 class=write**（ApplyPricingSuggestions ⇒ insertPricingSuggestionBatch(dryRun=false) + updatePricingSuggestionBatch + upsert 本地零售价）⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 裁决 not-probed-writes；★ 另两条（pricing-suggestions 纯读 152 行无写调用 / pricing-batches 仅 GET）源码复核维持 read
+#gen_append	2026-10-29 审计轮 —— 补 10 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 717 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -51,6 +52,7 @@
 /agents	POST	mcp/control.go:129	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /agents/{id}	DELETE	mcp/control.go:130	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/	ANY	cmd/gateway/main.go:7499	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/analytics/{dimension}/{identifier}	ANY	admin/handler.go:1278	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/annotations	ANY	admin/handler.go:1524	write	r.Body			not-probed-writes	★ 静态分级：写库
 /api/admin/annotations/	ANY	admin/handler.go:1523	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/admin/annotations/batch	ANY	admin/handler.go:1522	write	r.Body			not-probed-writes	★ 静态分级：写库
@@ -100,6 +102,7 @@
 /api/admin/backups/{filename}	ANY	admin/handler.go:1274	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/backups/{filename}/recover	ANY	admin/handler.go:1278	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/backups/{filename}/validate	ANY	admin/handler.go:1275	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/basic-config	ANY	admin/basic_config.go:63	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/bodies/{body_ref...}	ANY	admin/handler.go:1056	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/cache-metrics/summary	ANY	admin/cache_metrics_handler.go:24	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/cache-metrics/timeline	ANY	admin/cache_metrics_handler.go:25	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -348,6 +351,7 @@
 /api/admin/session-analytics/tasks/	ANY	admin/handler.go:1224	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-analytics/users	ANY	admin/handler.go:1227	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-analytics/users/	ANY	admin/handler.go:1228	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/session-analytics/users/usage-matrix	ANY	admin/handler.go:1372	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-approvals	ANY	admin/handler.go:1300	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-approvals/	ANY	admin/handler.go:1301	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-archive/stats	ANY	admin/session_archive_handler.go:22	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -395,6 +399,7 @@
 /api/admin/system-monitor/stop-all	ANY	admin/systemmonitor_handlers.go:668	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/system-monitor/stream	ANY	admin/systemmonitor_handlers.go:680	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/system-monitor/submit	ANY	admin/systemmonitor_handlers.go:666	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/system-timezone	ANY	admin/settings_timezone.go:71	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/task-profile	GET	taskprofile/handler.go:129	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/task-profile/apply-tier-config	POST	taskprofile/handler.go:134	read	r.Body	200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/task-profile/corrections	POST	taskprofile/handler.go:130	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -402,6 +407,12 @@
 /api/admin/task-profile/corrections/import	POST	taskprofile/handler.go:133	read	r.Body	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/task-profile/corrections/stats	GET	taskprofile/handler.go:131	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/task-profile/reload	POST	taskprofile/handler.go:135	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/teams	ANY	admin/team_handlers.go:19	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/teams/	ANY	admin/team_handlers.go:20	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/teams/budget	ANY	admin/team_handlers.go:27	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/teams/budget/stats	ANY	admin/team_handlers.go:28	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/teams/members/add	ANY	admin/team_handlers.go:23	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/teams/members/remove	ANY	admin/team_handlers.go:24	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/tenant-approval-config/	ANY	cmd/gateway/main.go:7935	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tenant-settings/	ANY	admin/settings.go:26	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tenants	ANY	admin/handler.go:1028	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
