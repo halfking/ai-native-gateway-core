@@ -360,8 +360,11 @@ bash scripts/checks/deploy-ledger-coverage-gate.test.sh
 # ★★ legacy 跨面 `SELECT * UNION ALL` 视图的**运行时列序对拍门**（★ 2026-11-24 新增 · 慢门 ★★）★★
 #   ★ 起因：★ **L32 那道缺口的【运行时那半】**——★ 仓里**早有静态那半**
 #     （★ `sql/migrations/startup/hot_surface_select_star_contract_test.go`：★ 禁止新建跨面
-#     ★ `SELECT *` 视图、★ 并把历史写法登记进 `legacyCrossSurfaceSelectStar`（★ 11 条 ★★）★★
-#   ★ ⇒ ★★ **但「登记表里这 11 对、★ 在今天这台库上两侧的列序是否仍然对齐」从来没人核对过** ★★
+#     ★ `SELECT *` 视图、★ 并把历史写法登记进 `legacyCrossSurfaceSelectStar`
+#     ★（★ ★★ L34 八轮起＝**语句级台账**（★ 30 条 ★★）★★）★★
+#   ★ ⇒ ★★ **但「登记表里那些跨面视图的各个分支、★ 在今天这台库上列序是否仍然对齐」从来没人核对过** ★★
+#   ★ ★★ L34 八轮：★ 本门与静态门**共用同一张台账**（★ 分支序列直接取自台账 ★★）
+#     ★   ⇒ ★★ 两张门在结构上不可能分叉 ★★；★ 比对从两路扩到 **N 路** ★★
 #   ★ ⇒ ★★ 机制：★ `UNION ALL` **逐位置比类型** ⇒ ★★ 两侧列数相同但顺序不同 ⇒ 视图重建必炸 ★★
 #   ★ 本门**只读**（★ 一律 SELECT ★★）★ 三态：★ 没给 DB 地址 ⇒ **显式 SKIP**（rc=0、★
 #     ★ 不伪装成通过 ★）；★ 量具自身坏了 ⇒ **ABORT**（rc=2）；★ 有列序漂移 ⇒ FAIL（rc=1）。
@@ -370,10 +373,10 @@ bash scripts/checks/deploy-ledger-coverage-gate.test.sh
 echo "[verify] legacy select-star column-order gate (slow gate: read-only; cross-surface view column order)"
 bash scripts/checks/legacy-select-star-column-order-gate.sh
 
-# ★★ 列序对拍门**自身**的夹具测试（★ 八臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
+# ★★ 列序对拍门**自身**的夹具测试（★ ★★ 十二臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
 #   ★ 判据是【两串列序的比对】⇒ ★★ **不需要真的连上 PG** ⇒ ★★ ⇒ 进 **CI 快门族** ★★
-#   ★ 八臂：★ 无地址（⇒ SKIP）/ 全对齐 / 列序漂移 / 列数不同 / 两侧都不在场（⇒ 绿 ★）/
-#   ★ ★ 只有一侧在场 / 登记表解析面坏（⇒ ABORT）/ **查询面坏（⇒ ABORT）** ★★★。
+#   ★ 十二臂：★ 无地址（⇒ SKIP）/ 全对齐 / 列序漂移 / 列数不同 / 各分支都不在场（⇒ 绿 ★）/
+#   ★ ★ 只有部分分支在场 / 登记表解析面坏（⇒ ABORT）/ **查询面坏（⇒ ABORT）** ★★★。
 echo "[verify] legacy select-star column-order gate selftest (fast gate: eight fixture arms, no PG needed)"
 bash scripts/checks/legacy-select-star-column-order-gate.test.sh
 

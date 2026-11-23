@@ -9,18 +9,26 @@
 #   ★★ **用假 psql**（★ 读预置夹具、★ 不碰任何真实数据库 ★★）★★
 #   ★ ⇒ ★★ **判据逻辑的可测性不依赖 docker / 不依赖 PG** ★★
 #
+# ★★ ★★ L34 八轮：★ 夹具**从台账派生**（★ 不再写死 11 对 ★★）★★
+#   ★ 台账升级为**语句级**（★ 30 条、★ 分支数 2～3 不等 ★★）⇒ ★
+#   ★ ★★ 夹具若写死关系名 ⇒ ★ 台账一改就**悄悄失真** ⇒ ★★ ⇒ ★
+#   ★ ★★ 本夹具**直接解析仓内那份台账** ⇒ ★★ **夹具与台账永远同步** ★★
+#
 # ★★ 臂（★ 每一条都断言**真实退出码**、★ 不看输出长相 ★★）★★
 #   A 无 DB 地址 ⇒ SKIP（EXIT=0、★ 但输出必须写明「不是通过」★★）
-#   B 全部对齐 ⇒ PASS（EXIT=0）★ 且**对齐数 == 11**（★ 登记表条数 ★★）
+#   B 全部对齐 ⇒ PASS（EXIT=0）★ 且**对齐数 == 台账条数**（★ 现算 ★★）
 #   C 一对**列序漂移**（★ 同列数、★ 位置类型不同 ★★）⇒ 红（EXIT=1）＋ 点名该视图
 #   D 一对**列数不同** ⇒ 红（EXIT=1）＋ 报「列数不同」
-#   E 两侧**都不在场** ⇒ 报出但**绿**（EXIT=0）（★ 不许恒红 ★★）
-#   F **只有一侧在场** ⇒ 报出但**绿**（EXIT=0）
-#   G 登记表**解析面为空**（★ 合成仓 ★★）⇒ ABORT（EXIT=2）（★ 门坏了 ≠ 判据红 ★★）
+#   E 各分支**都不在场**（★ 如 request_logs 族被 890 下线 ★★）⇒ 报出但**绿**
+#   F **只有部分分支在场** ⇒ 报出但**绿**
+#   G 台账**解析面为空**（★ 合成仓 ★★）⇒ ABORT（EXIT=2）（★ 门坏了 ≠ 判据红 ★★）
+#   H **查询面坏**（★ 有关系、★ 而列序查询 0 行 ★★）⇒ ABORT（EXIT=2）
+#   I **三路漂移**（★ 340 那一族：★ 父表 ∪ 月分区 ∪ default ★★）⇒ 红（EXIT=1）
+#   J **三路里缺一路** ⇒ 报出但**绿**（EXIT=0）
 #
 # ★★ 变异自证（★ 本门自己也要证明「它能咬住东西」 ★★）★★
-#   ★ 臂 C／D 就是**注入真实漂移** ⇒ ★ **门必须变红** ★★
-#   ★ 臂 G 是**注入解析面损坏** ⇒ ★ **门必须 ABORT 而不是判红** ★★
+#   ★ 臂 C／D／I 就是**注入真实漂移** ⇒ ★ **门必须变红** ★★
+#   ★ 臂 G／H 是**注入解析面损坏** ⇒ ★ **门必须 ABORT 而不是判红** ★★
 # =====================================================================
 set -uo pipefail
 
@@ -28,6 +36,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 GATE="scripts/checks/legacy-select-star-column-order-gate.sh"
+REG_GO="sql/migrations/startup/hot_surface_select_star_contract_test.go"
 FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/select-star-order-fixture.XXXXXX")"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
 
@@ -37,29 +46,38 @@ note() { printf '%s\n' "$*"; }
 ok()  { PASS=$((PASS+1)); printf '  ✔ %s\n' "$*"; }
 bad() { FAIL=$((FAIL+1)); printf '  ✘ %s\n' "$*" >&2; }
 
-# ★★ 11 对视图（★ 形态＝`SELECT * FROM <hot> UNION ALL SELECT * FROM <parent>` ★★）★★
-PAIRS="request_logs_with_current_month request_logs_hot request_logs
-usage_ledger_with_current_month usage_ledger_hot usage_ledger
-request_wal_with_current_month request_wal_hot request_wal
-routing_decision_log_with_current_month routing_decision_log_hot routing_decision_log
-credential_model_index_with_current_month credential_model_index_hot credential_model_index
-tool_usage_stats_with_current_month tool_usage_stats_hot tool_usage_stats
-credit_ledger_with_current_month credit_ledger_hot credit_ledger
-request_logs_bodies_with_current_month request_logs_bodies_hot request_logs_bodies
-model_probe_runs_with_current_month model_probe_runs_hot model_probe_runs
-candidate_failure_logs_with_current_month candidate_failure_logs_hot candidate_failure_logs
-session_bodies_unified session_bodies_hot session_bodies"
+# ★★ 台账解析（★ ★★ 与门同口径 ★★）★★
+reg_entries() {
+  awk '
+    /^var legacyCrossSurfaceSelectStar = map\[string\]string\{/ { inmap = 1; next }
+    inmap && /^\}/ { inmap = 0; next }
+    inmap {
+      line = $0
+      if (line !~ /^[[:space:]]*"/) next
+      if (match(line, /^[[:space:]]*"[^"]+"/) == 0) next
+      key = substr(line, RSTART, RLENGTH); gsub(/"/, "", key)
+      sub(/^[[:space:]]+/, "", key)
+      rest = substr(line, RSTART + RLENGTH)
+      if (match(rest, /"[^"]*"/) == 0) next
+      val = substr(rest, RSTART, RLENGTH); gsub(/"/, "", val)
+      if (index(key, "|") == 0) next
+      print key "\t" val
+    }
+  ' "$REG_GO"
+}
+reg_entries >"$FIXTURE_DIR/reg.tsv"
+REG_COUNT="$(wc -l <"$FIXTURE_DIR/reg.tsv" | tr -d ' ')"
+# ★★ 台账里出现过的**全部关系**（★ 夹具要给每一个都造列 ★★）★★
+cut -f2 "$FIXTURE_DIR/reg.tsv" | tr ',' '\n' | sed '/^$/d' | sort -u >"$FIXTURE_DIR/rels.txt"
+REL_COUNT="$(wc -l <"$FIXTURE_DIR/rels.txt" | tr -d ' ')"
+note "台账：${REG_COUNT} 条｜涉及关系 ${REL_COUNT} 个（★ 从仓内台账现算 ★★）"
 
 # ★★ 假 psql（★ 读预置夹具、★ **不碰任何真实数据库** ★★）★★
-# ★★ 它要答**两个**查询（★ ★★ 门里有【查询面自证】★★）：★★
-# ★★   ① 「public schema 里有多少个关系」⇒ ★ 答计数 ★★
-# ★★   ② 「public schema 的列序全表」⇒ ★ 答列序夹具 ★★
 make_fake_psql() {
   local cols_fixture="$1"
   local total="${2:-600}"
   cat >"$FIXTURE_DIR/fake-psql" <<FAKEPSQL
 #!/usr/bin/env bash
-# ★ 假 psql：★ 忽略全部参数、★ 按 SQL 里的标记分答（★ -- select-total / -- select-columns ★★）
 case "\$*" in
   *select-total*) printf '%s\n' "${total}" ;;
   *) cat "${cols_fixture}" ;;
@@ -68,20 +86,18 @@ FAKEPSQL
   chmod +x "$FIXTURE_DIR/fake-psql"
 }
 
-# ★★ 造一份「全部对齐」的列序夹具（★ 每对两侧各 3 列、★ 完全一致 ★★）★★
+# ★★ 造一份「全部对齐」的列序夹具（★ 每个关系 3 列、★ 完全一致 ★★）★★
 make_aligned_fixture() {
   local out="$1"
   : >"$out"
-  printf '%s\n' "$PAIRS" | while read -r view a b; do
-    [ -n "$view" ] || continue
-    for rel in "$a" "$b"; do
-      {
-        printf '%s\t1\tid\tbigint\n' "$rel"
-        printf '%s\t2\tcreated_at\ttimestamp with time zone\n' "$rel"
-        printf '%s\t3\tpayload\ttext\n' "$rel"
-      } >>"$out"
-    done
-  done
+  while read -r rel; do
+    [ -n "$rel" ] || continue
+    {
+      printf '%s\t1\tid\tbigint\n' "$rel"
+      printf '%s\t2\tcreated_at\ttimestamp with time zone\n' "$rel"
+      printf '%s\t3\tpayload\ttext\n' "$rel"
+    } >>"$out"
+  done <"$FIXTURE_DIR/rels.txt"
 }
 
 run_gate() {
@@ -107,15 +123,15 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-note "★ 臂 B：两侧列序**全部对齐** ⇒ ★ 期望绿（EXIT=0）＋ 对齐数 == 11"
+note "★ 臂 B：各分支列序**全部对齐** ⇒ ★ 期望绿（EXIT=0）＋ 对齐数 == 台账条数"
 make_aligned_fixture "$FIXTURE_DIR/aligned.tsv"
 make_fake_psql "$FIXTURE_DIR/aligned.tsv"
 run_gate
 if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "PASS" \
-   && printf '%s' "$GATE_OUT" | grep -q "对齐 11 对"; then
-  ok "臂 B 绿（EXIT=0）且对齐数 == 11"
+   && printf '%s' "$GATE_OUT" | grep -q "对齐 ${REG_COUNT} 对"; then
+  ok "臂 B 绿（EXIT=0）且对齐数 == ${REG_COUNT}"
 else
-  bad "臂 B 期望 EXIT=0 + 对齐 11 对；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+  bad "臂 B 期望 EXIT=0 + 对齐 ${REG_COUNT} 对；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -166,37 +182,37 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-note "★ 臂 E：某对**两侧都不在场**（★ 如 request_logs 族被 890 下线 ★★）⇒ ★ 报出但**绿**"
+note "★ 臂 E：各分支**都不在场**（★ 如 request_logs 族被 890 下线 ★★）⇒ ★ 报出但**绿**"
 awk -F'\t' '$1 ~ /^request_logs(_hot)?$/ { next } { print }' "$FIXTURE_DIR/aligned.tsv" >"$FIXTURE_DIR/absent.tsv"
 make_fake_psql "$FIXTURE_DIR/absent.tsv"
 run_gate
-if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "两侧都不在场"; then
-  ok "臂 E 绿（EXIT=0）且把「两侧都不在场」报出来了（★ 不判红 ⇒ 免得恒红 ★★）"
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "都不在场"; then
+  ok "臂 E 绿（EXIT=0）且把「都不在场」报出来了（★ 不判红 ⇒ 免得恒红 ★★）"
 else
-  bad "臂 E 期望 EXIT=0 + 「两侧都不在场」；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+  bad "臂 E 期望 EXIT=0 + 「都不在场」；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-note "★ 臂 F：**只有一侧在场** ⇒ ★ 报出但**绿**（EXIT=0）"
+note "★ 臂 F：**只有部分分支在场** ⇒ ★ 报出但**绿**（EXIT=0）"
 awk -F'\t' '$1 == "credit_ledger_hot" { next } { print }' "$FIXTURE_DIR/aligned.tsv" >"$FIXTURE_DIR/half.tsv"
 make_fake_psql "$FIXTURE_DIR/half.tsv"
 run_gate
-if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "只有一侧在场"; then
-  ok "臂 F 绿（EXIT=0）且把「只有一侧在场」报出来了"
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "只有部分分支在场"; then
+  ok "臂 F 绿（EXIT=0）且把「只有部分分支在场」报出来了"
 else
-  bad "臂 F 期望 EXIT=0 + 「只有一侧在场」；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+  bad "臂 F 期望 EXIT=0 + 「只有部分分支在场」；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-note "★ 臂 G：★ **解析面坏**（★ 合成仓里登记表为空 ★★）⇒ ★ 期望 **ABORT（EXIT=2）**"
+note "★ 臂 G：★ **解析面坏**（★ 合成仓里台账为空 ★★）⇒ ★ 期望 **ABORT（EXIT=2）**"
 note "  ⇒ ★ 这一臂钉的是「门坏了」与「判据红」必须**分得开**"
 FAKEROOT="$FIXTURE_DIR/fakerepo"
 mkdir -p "$FAKEROOT/scripts/checks" "$FAKEROOT/sql/migrations/startup"
 cp "$GATE" "$FAKEROOT/scripts/checks/legacy-select-star-column-order-gate.sh"
 # ★★ 合成仓也要有**共享库**（★ L34 七轮起、★ 投递面解析搬进了 scripts/lib/deploy-surface.sh ★★）★★
 mkdir -p "$FAKEROOT/scripts/lib" && cp "$REPO_ROOT/scripts/lib/deploy-surface.sh" "$FAKEROOT/scripts/lib/deploy-surface.sh"
-# ★ 登记表**故意留空** ⇒ ★ 解析面为空 ⇒ ★ 门必须 ABORT 而不是判红 ★
-printf 'package startup\n\n// 故意留空的登记表\n' >"$FAKEROOT/sql/migrations/startup/hot_surface_select_star_contract_test.go"
+# ★ 台账**故意留空** ⇒ ★ 解析面为空 ⇒ ★ 门必须 ABORT 而不是判红 ★
+printf 'package startup\n\n// 故意留空的台账\n' >"$FAKEROOT/sql/migrations/startup/hot_surface_select_star_contract_test.go"
 rc=0
 SELECT_STAR_GATE_DATABASE_URL="postgres://fixture/fixture" \
 SELECT_STAR_GATE_PSQL_BIN="$FIXTURE_DIR/fake-psql" \
@@ -218,6 +234,35 @@ if [ "$GATE_RC" = "2" ] && printf '%s' "$GATE_OUT" | grep -q "查询面坏了"; 
   ok "臂 H ABORT（EXIT=2）且点名「查询面坏了」（★ 恒绿形态被当场掐住 ★★）"
 else
   bad "臂 H 期望 EXIT=2 + 「查询面坏了」；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+note "★ 臂 I：★ **三路漂移**（★ 340 那一族：父表 ∪ 月分区 ∪ default ★★）⇒ ★ 期望红"
+note "  ⇒ ★ 这一臂钉的是 ★★「N 路比对」★★（★ ★★ 两路比对看不见第三路 ★★）★"
+awk -F'\t' '
+  $1 == "request_wal_default" && $3 == "created_at" { print $1 "\t" $2 "\t" $3 "\ttext"; next }
+  { print }
+' "$FIXTURE_DIR/aligned.tsv" >"$FIXTURE_DIR/drift3.tsv"
+make_fake_psql "$FIXTURE_DIR/drift3.tsv"
+run_gate
+if [ "$GATE_RC" = "1" ] \
+   && printf '%s' "$GATE_OUT" | grep -q "340_create_partition_query_views.sql" \
+   && printf '%s' "$GATE_OUT" | grep -q "request_wal_default"; then
+  ok "臂 I 红（EXIT=1）且点名了**三路里的第三路**（★ request_wal_default ★）"
+else
+  bad "臂 I 期望 EXIT=1 + 点名 340 族 + request_wal_default；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -6 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+note "★ 臂 J：★ **三路里缺一路**（★ default 分支不在场 ★★）⇒ ★ 报出但**绿**（EXIT=0）"
+awk -F'\t' '$1 == "request_wal_default" { next } { print }' "$FIXTURE_DIR/aligned.tsv" >"$FIXTURE_DIR/halfn.tsv"
+make_fake_psql "$FIXTURE_DIR/halfn.tsv"
+run_gate
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "只有部分分支在场" \
+   && printf '%s' "$GATE_OUT" | grep -q "request_wal_default"; then
+  ok "臂 J 绿（EXIT=0）且把「只有部分分支在场」报出来了（★ ★★ 缺场那一支本身就没法并 ★★）★"
+else
+  bad "臂 J 期望 EXIT=0 + 「只有部分分支在场」+ 点名 request_wal_default；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -5 | tr '\n' ' ')"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -625,9 +625,12 @@ guards-deploy-ledger-selftest: ## 部署通道覆盖门的夹具测试（★ 七
 # ★ 2026-11-24 L34 五轮新增：★ 补的是 **L32 那道缺口的【运行时那半】** ★
 #   ★ 仓里**早有静态那半**：★ `sql/migrations/startup/hot_surface_select_star_contract_test.go`
 #     ★ 它禁止**新建**跨面 `SELECT * UNION ALL` 视图、★ 并把**历史写法**登记进
-#     ★ `legacyCrossSurfaceSelectStar`（★ 11 条 ★★）★★
-#   ★ ⇒ ★★ **但那只是【静态那半】：★ 「登记表里这 11 对、★ 在今天这台库上两侧的
+#     ★ `legacyCrossSurfaceSelectStar`（★ ★★ L34 八轮起＝**语句级台账**（★ 30 条 ★★）★★）
+#   ★ ⇒ ★★ **但那只是【静态那半】：★ 「登记表里那些跨面视图的各个分支、★ 在今天这台库上
 #     ★★ 列序是否仍然对齐」从来没人核对过** ★★ ⇒ ★★ ⇒ ★★ **那才是会炸的那一半** ★★
+#   ★ ★★ L34 八轮：★ 台账升级为**语句级**（★ 分支序列直接取自台账、★ 本门不再自己解析 SQL ★★）
+#     ★   ⇒ ★★ **与静态门共用同一张表** ⇒ ★★ **两张门在结构上不可能分叉** ★★
+#     ★ 比对从**两路**扩到 **N 路**（★ `340` 那一族是三路：父表 ∪ 月分区 ∪ default ★★）
 #   ★ 机制：★ `UNION ALL` **逐位置比类型** ⇒ ★★ 两侧列数相同但顺序不同 ⇒ 视图重建必炸 ★★
 #   ★ 三态：★ 没给 DB 地址 ⇒ **显式 SKIP**（rc=0、★ 不伪装成通过 ★）；
 #     ★ 量具自身坏了 ⇒ **ABORT**（rc=2）；★ 有列序漂移 ⇒ FAIL（rc=1）；★ 否则 PASS（rc=0）。
@@ -636,14 +639,14 @@ guards-deploy-ledger-selftest: ## 部署通道覆盖门的夹具测试（★ 七
 guards-select-star-order: guards-select-star-order-selftest ## legacy 跨面 SELECT * 视图的运行时列序对拍门（★ 只读 · 慢门：需要一个可读的 PG 地址）
 	@bash scripts/checks/legacy-select-star-column-order-gate.sh
 
-# ★★ 列序对拍门**自身**的夹具测试（★ 八臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
+# ★★ 列序对拍门**自身**的夹具测试（★ ★★ 十二臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
 # ★ ★★ 它的判据是【两串列序的比对】⇒ ★★ **不需要真的连上 PG** ⇒ ★★ ⇒ ★ ⇒
 # ★★ **判据逻辑可以在没有 docker 的机器上验证** ⇒ ★★ ⇒ ★ ⇒ 进 **CI 快门族** ★★
-# ★ 八臂：★ 无地址（⇒ SKIP ★ 不伪装成通过 ★）/ 全对齐 / 列序漂移 / 列数不同 /
-# ★ ★ 两侧都不在场（⇒ 绿 ★ 不恒红 ★）/ 只有一侧在场 / 登记表解析面坏（⇒ ABORT ★）/
+# ★ 十二臂：★ 无地址（⇒ SKIP ★ 不伪装成通过 ★）/ 全对齐 / 列序漂移 / 列数不同 /
+# ★ ★ 各分支都不在场（⇒ 绿 ★ 不恒红 ★）/ 只有部分分支在场 / 登记表解析面坏（⇒ ABORT ★）/
 # ★ ★ **查询面坏（⇒ ABORT ★）★ ＝ 本轮真跑时撞到的那类恒绿形态** ★★。
 .PHONY: guards-select-star-order-selftest
-guards-select-star-order-selftest: ## 列序对拍门的夹具测试（★ 八臂 · 快门 · 零外部依赖 · 进 CI 快门族）
+guards-select-star-order-selftest: ## 列序对拍门的夹具测试（★ 十二臂 · 快门 · 零外部依赖 · 进 CI 快门族）
 	@bash scripts/checks/legacy-select-star-column-order-gate.test.sh
 
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
