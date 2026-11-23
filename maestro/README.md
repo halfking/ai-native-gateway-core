@@ -132,7 +132,7 @@
 | `/maas/orders/:id` | `/tenant/orders/:id` | 327 |
 | `/maas/usage` | `/tenant/usage` | 328 |
 | `/routing` | `/routing-v2` | 334 |
-| `/admin/session-analytics` | `/admin/session-analytics/users` | 373（★ 2026-11-23 审计轮：原「会话分析总览页」按 owner 指令取消，内容已重组迁入 users 页 ⇒ 路由改为重定向，收藏链接兼容） |
+| `/admin/session-analytics` | `/admin/session-analytics/users/overview` | 373（★ 2026-11-23 审计轮：原「会话分析总览页」按 owner 指令取消，内容已重组迁入【整合页】⇒ 路由改为重定向，收藏链接兼容；★ ★ L30 轮·补②④：★ L14 轮把整合页迁到 `/users/overview` 后，本重定向随之改指 —— ★ 否则旧 URL 落到【列表页】、且打断 `16-session-analytics-system.yaml` 的 3 条断言） |
 | `/operations/price-compare` | `/model-pricing` | 412（2026-11-19 合并轮：价格对比面并入比较与定价页） |
 | `/customer/site` | `/customer/update-activate` | 436 |
 | `/customer/activate` | `/customer/update-activate` | 437 |
@@ -445,7 +445,7 @@ node maestro/tools/assert-stage-tree.mjs \
 
 | 路由 path | 需要登录 | flow 文件 | 断言点（data-testid） | 源码位置 |
 |---|---|---|---|---|
-| `/admin/session-analytics` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | ★ **重定向落点**：Top10 表头 `sa-users-col-rank`（表头出现＝数据到位）+ `sa-page-users` / `sa-range-label` / `sa-refresh-btn` / `sa-top5-section` / `sa-users-table` | web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue（路由 `web/src/router.ts:369` 重定向到 `/admin/session-analytics/users`） |
+| `/admin/session-analytics` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | ★ **重定向落点**：Top10 表头 `sa-users-col-rank`（表头出现＝数据到位）+ `sa-page-users` / `sa-range-label` / `sa-refresh-btn` / `sa-top5-section` / `sa-users-table` | web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue（★ 路由 `web/src/router.ts:373` 重定向到 `/admin/session-analytics/users/overview` —— ★ ★ 2026-11-23 L30 轮·补②④：★ L14 轮把整合页迁到 `/users/overview` 后、★ 本重定向随之改指，★ **旧 URL 的行为与 L14 之前一致**、★ 且 `16-session-analytics-system.yaml` 的 3 条断言恢复可达） |
 | `/admin/session-analytics/user-ranking` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | 排名列头 `sa-user-ranking-col-rank` + `sa-page-user-ranking` / `sa-user-ranking-filters` | web/src/views/admin/session-analytics/SessionAnalyticsUserRankingView.vue |
 | `/admin/session-analytics/user-ranking/:owner` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | 指标卡 `sa-metric-rank`（+ `sa-user-detail-identity` / `sa-back-btn` / `sa-metric-session-count`） | web/src/views/admin/session-analytics/SessionAnalyticsUserDetailView.vue |
 | `/admin/session-analytics/agent-ranking` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | 排名列头 `sa-agent-ranking-col-rank` + `sa-page-agent-ranking` | web/src/views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue |

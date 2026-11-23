@@ -387,7 +387,8 @@ const loadPage = async (url) => {
   const menu = JSON.parse(await js(`(async () => {
     const triggers = [...document.querySelectorAll('.app-topbar__group-trigger')]
     // ★ 2026-11-23（L15 复核轮）：上游把「/admin/session-analytics」总览页**取消**
-    //   （路由改为重定向到 /admin/session-analytics/users）⇒ 菜单里的入口路径
+    //   （★ 2026-11-23 L30 轮·补②④：★ 那条重定向现已改指 /admin/session-analytics/users/overview，
+    //   ★ ★ 但**菜单入口**仍是 /admin/session-analytics/users ⇒ ★ 本处要找的链接不变）⇒ 菜单里的入口路径
     //   随之变成 users ⇒ 旧的 a[href="/admin/session-analytics"] 永远查不到 ⇒ 假红。
     const findLink = () => document.querySelector('a[href="/admin/session-analytics/users"]')
     for (const t of triggers) {

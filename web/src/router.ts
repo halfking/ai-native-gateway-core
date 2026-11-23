@@ -383,7 +383,15 @@ export const router = createRouter({
     { path: '/admin/error-playbook/:id', name: 'error-playbook-detail', component: ErrorPlaybookDetailView, meta: { requiresSuper: true } },
     // 会话分析（2026-11-20）：总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行
     // 2026-11-23：重定向 overview 到整合后的 users 页面（整合任务：将 overview 内容移到 /admin/session-analytics/users）
-    { path: '/admin/session-analytics', redirect: '/admin/session-analytics/users', meta: { requiresAuth: true } },
+    // ★ 2026-11-23 L30 轮·补②④：★ 重定向目标由 `/admin/session-analytics/users`
+    //   改为 **`/admin/session-analytics/users/overview`**（★ 整合页的现居址）。
+    //   ★ 缘由：★ 这条重定向的**原意**是「旧书签 ⇒ 整合页」（★ 原会话分析总览页按
+    //   owner 指令取消后、内容迁入整合页）⇒ ★ L14 轮把整合页迁到 /users/overview、
+    //   而这条重定向仍指向 /users ⇒ ★★ **⇒ 旧 URL 落到【列表页】而不是【整合页】**
+    //   ⇒ ★★★ **⇒ 连带打断 `16-session-analytics-system.yaml` 的 3 条断言**
+    //   （★ `sa-page-users` / `sa-top5-section` / `sa-users-col-rank` ⇒ ★ 它们住在
+    //   整合页里、★ 列表页没有）⇒ ★ 改指后 ⇒ **旧 URL 的行为与 L14 之前一致**。
+    { path: '/admin/session-analytics', redirect: '/admin/session-analytics/users/overview', meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/user-ranking', name: 'session-analytics-user-ranking', component: SessionAnalyticsUserRankingView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/user-ranking/:owner', name: 'session-analytics-user-detail', component: SessionAnalyticsUserDetailView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/agent-ranking', name: 'session-analytics-agent-ranking', component: SessionAnalyticsAgentRankingView, meta: { requiresAuth: true } },
