@@ -383,3 +383,39 @@ $ docker exec acc-pg17 psql -U llm_gateway -d llm_gateway -Atc \
   ⇒ ★★ **L20 的 fresh 侧解锁**；★ ★ **但 expect 侧那 7 条 teams 索引仍取决于 L22 的裁定**
   ⇒ ★★ **⇒ 两者不一致的根因从「fresh 装不出来」收敛为「teams 没进投递链」**（★ 这正是 L22 的议题）
   ⇒ ★★ **⇒ 台账重生成仍是 owner 授权轴（L20）＋ L22 前置 ⇒ ★ 本轮不擅自重生成**
+
+--------------------------------------------------------------------------------
+⑰ ★★ 新增「逐依赖顺序门」＋ 双向变异自证 ＋ 顺带关闭仓里一个开着的口子
+--------------------------------------------------------------------------------
+★ 新增文件：installer/internal/dbinit/runner_990_order_test.go
+  ★ 依赖清单 startupDependency（★ 每一对都写明消费者读的是前者的哪个产物）：
+      541_candidate_binding_scope_revision.sql → 568_credential_priority_flag.sql
+        （★ 568 索引 541 建的那张表）
+      990_stats_consistency_fixes.sql → 981_session_analytics_foundation.sql
+        （★ 981 的会话分析物化视图读 session_summaries.total_credits_charged，★ 该列由 990 添加）
+  ★ TestStartupFilesHonourDeclaredDependencies        —— 安装器通道
+  ★ TestDeployChannelHonoursDeclaredDependencies      —— 部署通道（解析 files=()，★ 首次出现位置）
+  ★ 缺席即跳过（★ 例：568 不在部署通道 ⇒ 541/568 这对在部署侧不适用）
+
+★ 为什么**不**写「两通道顺序逐条全等」的门（★ 实测）：
+    安装器 392 条 / 部署通道 356 条 / 公共 330 条
+    ★ 公共文件的相邻相对次序里，★ 有 38 对在两通道中相反
+      （例：392/470、472/456、486/485、510/532、542/543、517/534、536/537、540/541 …）
+    ⇒ 全等门会一次报 38 条 ⇒ ⇒ 它是假红工厂 ⇒ ⇒ 收敛成【逐依赖】钉
+
+★ 双向变异自证（★ 两个方向各注入一次坏顺序）：
+  M1 把安装器 StartupFiles 的 990 移回 981 之后
+     ⇒ ✘ StartupFiles order wrong: "990_stats_consistency_fixes.sql" is at 381
+        but must precede "981_session_analytics_foundation.sql" at 380
+  M2 把部署通道 files=() 的 990 移回 981 之后
+     ⇒ ✘ 部署通道顺序错："990_stats_consistency_fixes.sql" 在 345，
+        但必须早于 "981_session_analytics_foundation.sql" 的 344
+  恢复（两次 git checkout）⇒ ✔ ok github.com/kaixuan/llm-gateway-go/installer/internal/dbinit
+
+★ 顺带关闭仓里一个开着的口子（★ runner_541_order_test.go 尾注）：
+  ★ 那条尾注记着「★ 两处 genuine 倒置（560 在 655 之后、704 在 713 之后）★ 留待专项复核」
+  ⇒ ★ 本轮的空库全链安装（392 条全绿）**就是那次专项复核**
+     （★ 真依赖会当场炸 —— 同一轮里 956/981 两处真依赖就真的炸了）
+  ⇒ ★★ 那两处倒置被**实测排除**（不是阻断点）⇒ ★ 仍不钉它们
+     （★ 钉住＝把「当前的无害排列」固化成不变式）
+  ⇒ ★★ 「待专项复核」这个开着的口子以**实测**关闭（★ 不是以推断关闭）

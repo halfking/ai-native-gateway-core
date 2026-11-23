@@ -73,3 +73,16 @@ func TestStartupFilesExistInEmbeddata(t *testing.T) {
 //
 //	560_session_summaries_tenant_uniqueness.sql after 655_session_summaries_schema_reconcile.sql
 //	704_plan_quota_probe_backoff.sql            after 713_session_turns_cost_precision.sql
+//
+// ★★★ 2026-11-23 L29 轮（真库空库实测）★★★：**这两处倒置已被实测排除**。
+//
+// ★ 怎么排除的：★ 用**安装器真实路径**在**全新空库**上真装了**全部 392 条**
+// （★ 87.6s / 576 张表 / PROBE OK）⇒ ★★ **凡是真依赖，都会当场炸**
+// （★ 参照：★ 同一轮里 956 与 981 两处真依赖就真的炸了）⇒ ★★ **⇒ 560/655 与
+// 704/713 这两处倒置不是阻断点** ⇒ ★ **仍不钉它们**（★ 钉住＝把「当前的无害排列」
+// 固化成不变式，★ 而无害与否取决于数据与对象、★ 不取决于顺序）⇒ ★★ **⇒ 但
+// 「待专项复核」这个开着的口子 hereby 关闭**（★ 以实测关闭，★ 而不是以推断关闭）。
+//
+// ★★ 顺带：★ 同一轮还实测出**第三处真倒置**并已修掉 —— ★ 981/990
+// （★ 见 runner_990_order_test.go：★ 981 的会话分析物化视图读
+// ★ `session_summaries.total_credits_charged`，★ 该列由 990 添加）。
