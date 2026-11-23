@@ -35,6 +35,14 @@ const props = defineProps<{
   endDate: string
   loading?: boolean
   error?: string | null
+  /**
+   * ★ 2026-11-23 审计轮（P2-2）：**逐维度**的加载失败文案。
+   *   键 = 维度（models / providers / users / tasks）。
+   *   ★ 为什么必须逐维度：此前失败维度被写成空数组 ⇒ 卡片显示「无结果」
+   *   ⇒ 把「接口挂了」伪装成「这段时间没有数据」（用户会去查业务，
+   *   而真相是这一腿没取到）⇒ 失败维度必须显式呈现为加载失败。
+   */
+  dimensionErrors?: Partial<Record<'models' | 'providers' | 'users' | 'tasks', string>>
 }>()
 
 const { t } = useI18n()
@@ -116,7 +124,20 @@ function openTask(task: string) {
       <!-- Top5 模型 -->
       <section class="sa-top5__card" data-testid="sa-top5-models">
         <h3 class="sa-top5__title">{{ t('sessionAnalytics.top5.models') }}</h3>
+        <!-- ★ 2026-11-23（P2-2）：这一维度加载失败 ⇒ 显式报失败，不画成「无结果」。 -->
+        <div
+          v-if="props.dimensionErrors?.models"
+          class="sa-top5__error"
+          role="alert"
+          data-testid="sa-top5-models-error"
+        >
+          {{ props.dimensionErrors.models }}
+          <button type="button" class="sa-top5__retry" @click="emit('retry')">
+            {{ t('sessionAnalytics.action.retry') }}
+          </button>
+        </div>
         <DataTable
+          v-else
           :loading="loading"
           :empty="models.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultOverview')"
@@ -159,7 +180,20 @@ function openTask(task: string) {
       <!-- Top5 供应商 -->
       <section class="sa-top5__card" data-testid="sa-top5-providers">
         <h3 class="sa-top5__title">{{ t('sessionAnalytics.top5.providers') }}</h3>
+        <!-- ★ 2026-11-23（P2-2）：这一维度加载失败 ⇒ 显式报失败，不画成「无结果」。 -->
+        <div
+          v-if="props.dimensionErrors?.providers"
+          class="sa-top5__error"
+          role="alert"
+          data-testid="sa-top5-providers-error"
+        >
+          {{ props.dimensionErrors.providers }}
+          <button type="button" class="sa-top5__retry" @click="emit('retry')">
+            {{ t('sessionAnalytics.action.retry') }}
+          </button>
+        </div>
         <DataTable
+          v-else
           :loading="loading"
           :empty="providers.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultOverview')"
@@ -196,7 +230,20 @@ function openTask(task: string) {
       <!-- Top5 用户 -->
       <section class="sa-top5__card" data-testid="sa-top5-users">
         <h3 class="sa-top5__title">{{ t('sessionAnalytics.top5.users') }}</h3>
+        <!-- ★ 2026-11-23（P2-2）：这一维度加载失败 ⇒ 显式报失败，不画成「无结果」。 -->
+        <div
+          v-if="props.dimensionErrors?.users"
+          class="sa-top5__error"
+          role="alert"
+          data-testid="sa-top5-users-error"
+        >
+          {{ props.dimensionErrors.users }}
+          <button type="button" class="sa-top5__retry" @click="emit('retry')">
+            {{ t('sessionAnalytics.action.retry') }}
+          </button>
+        </div>
         <DataTable
+          v-else
           :loading="loading"
           :empty="users.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultOverview')"
@@ -238,7 +285,20 @@ function openTask(task: string) {
       <!-- Top5 任务 -->
       <section class="sa-top5__card" data-testid="sa-top5-tasks">
         <h3 class="sa-top5__title">{{ t('sessionAnalytics.top5.tasks') }}</h3>
+        <!-- ★ 2026-11-23（P2-2）：这一维度加载失败 ⇒ 显式报失败，不画成「无结果」。 -->
+        <div
+          v-if="props.dimensionErrors?.tasks"
+          class="sa-top5__error"
+          role="alert"
+          data-testid="sa-top5-tasks-error"
+        >
+          {{ props.dimensionErrors.tasks }}
+          <button type="button" class="sa-top5__retry" @click="emit('retry')">
+            {{ t('sessionAnalytics.action.retry') }}
+          </button>
+        </div>
         <DataTable
+          v-else
           :loading="loading"
           :empty="tasks.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultOverview')"

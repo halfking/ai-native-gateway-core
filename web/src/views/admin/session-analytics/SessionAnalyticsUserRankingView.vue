@@ -150,7 +150,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
 import DataTable from '../../../components/ui/DataTable.vue'
 import PaginationBar from '../../../components/ui/PaginationBar.vue'
@@ -160,6 +160,7 @@ import type { KxDateRange, KxDateRangePreset } from '../../../components/ui/kx-d
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
+import { rangeFromQuery } from './saQueryParams'
 import {
   getUserRanking,
   type UserRankingRow,
@@ -168,9 +169,15 @@ import {
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const { loading, error, stale, run } = useSessionAnalyticsLoader()
 
-const range = ref<KxDateRange>(rangeFromSpanDays(7))
+// ★ 2026-11-23 审计轮（P2-5）：**优先读 URL 上的 start_date / end_date**。
+//   Top5 排行卡片点击跳过来时带的就是这两个参数（SaTop5Rankings.openUser），
+//   而此前本页写死 rangeFromSpanDays(7) ⇒ 用户点的那段区间被**静默忽略**，
+//   看到的还是「最近 7 天」⇒ 深链等于没带。
+//   ⇒ 缺省 / 非法时才回退 7 天窗口（口径见 saQueryParams.ts）。
+const range = ref<KxDateRange>(rangeFromQuery(route.query) ?? rangeFromSpanDays(7))
 const draftRange = ref<KxDateRange>(range.value)
 
 const projectFilter = ref('')

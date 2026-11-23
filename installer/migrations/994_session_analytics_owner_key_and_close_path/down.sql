@@ -1,4 +1,6 @@
--- 993 回滚：恢复 981 canonical 形态（owner 键 = NULLIF(s.owner_user,'') 单源），
+-- 994 回滚：恢复 981 canonical 形态（owner 键 = NULLIF(s.owner_user,'') 单源），
+-- ★ 本迁移原编 993，因 993 被 report_snapshots_exact_cost_cents 占用而重编为 994
+--   （见提交 feb d940ae「994 重编」）⇒ 注释里的迁移号已随之订正为 994。
 -- 删除 994 新增的 session_dim.stop_reason 列与 end_user_count 聚合列。
 --
 -- ⚠ 回滚语义注意：本 down 以「981 canonical 视图在场」为前提重建单源版视图。

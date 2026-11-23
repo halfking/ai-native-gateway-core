@@ -649,3 +649,257 @@ func TestMemoizedGuardConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// ---- 半开单探针（2026-11-23，12 小时内变更审计轮）----
+
+// halfOpenKV 是「进到后端就阻塞」的假后端：用来把半开期的探测钉在飞行中，
+// 从而观察半开窗口里到底有几个调用真的进了后端。
+//
+// ★ 为什么要能阻塞：不阻塞的话探测瞬间返回，「并发撞闸」根本观测不到
+// ——旧实现的钉测之所以假绿，正是因为它只走了**串行**路径（一次一个调用
+// 本来就只有一个在途，闸有没有都看不出差别）。
+//
+// ★ 计数口径只算 Get/Set（数据面）；UsedMemory 是控制面的水位线探针，
+// 不计入「进入下游」的次数。
+type halfOpenKV struct {
+	mu       sync.Mutex
+	entered  int // 累计进入后端（Get/Set）的次数
+	inFlight int // 当前在后端里的调用数
+	maxSeen  int // 历史最大并发
+	gate     chan struct{}
+	failAll  bool
+}
+
+func (b *halfOpenKV) enter() {
+	b.mu.Lock()
+	b.entered++
+	b.inFlight++
+	if b.inFlight > b.maxSeen {
+		b.maxSeen = b.inFlight
+	}
+	gate := b.gate
+	b.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	b.mu.Lock()
+	b.inFlight--
+	b.mu.Unlock()
+}
+
+func (b *halfOpenKV) Get(context.Context, string) (string, bool, error) {
+	b.enter()
+	if b.failing() {
+		return "", false, errors.New("redis stalled")
+	}
+	return "", false, nil
+}
+
+func (b *halfOpenKV) Set(context.Context, string, string, time.Duration) error {
+	b.enter()
+	if b.failing() {
+		return errors.New("redis stalled")
+	}
+	return nil
+}
+
+func (b *halfOpenKV) UsedMemory(context.Context) (int64, error) { return 0, nil }
+
+func (b *halfOpenKV) failing() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failAll
+}
+
+func (b *halfOpenKV) setFail(v bool) {
+	b.mu.Lock()
+	b.failAll = v
+	b.mu.Unlock()
+}
+
+func (b *halfOpenKV) setGate(g chan struct{}) {
+	b.mu.Lock()
+	b.gate = g
+	b.mu.Unlock()
+}
+
+func (b *halfOpenKV) stats() (entered, maxSeen int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.entered, b.maxSeen
+}
+
+func (b *halfOpenKV) reset() {
+	b.mu.Lock()
+	b.entered, b.inFlight, b.maxSeen = 0, 0, 0
+	b.mu.Unlock()
+}
+
+// waitForBackendEntries 等到假后端累计进入次数达到 want（最多 2 秒）。
+func waitForBackendEntries(t *testing.T, kv *halfOpenKV, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, _ := kv.stats(); n >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	n, _ := kv.stats()
+	t.Fatalf("假后端进入次数未达到 %d（当前 %d）", want, n)
+}
+
+// TestTieredVerdictMemoHalfOpenSingleProbe —— 半开只放**一个**探测。
+//
+// ★ 为什么必须并发测：旧实现里 probing 只写不读，且冷却期满时把
+// openUntil 清零（⇒ 下一个调用直接看到「闭合」）⇒ 本仓实测 16 个 goroutine
+// 并发打同一个半开熔断器，**16 个全部进了下游**（审计轮报的是 3 个；差异
+// 来自它的并发编排，结论一致：闸没生效）。串行路径看不出问题（一次一个
+// 调用本来就只有一个在途），必须让 N 个 goroutine 同时撞上去才暴露。
+//
+// ★ 观测口径：假后端在「进到后端」时把计数加一 ⇒ 半开窗口内的进入数与
+// 最大并发都必须为 1；其余调用必须**立即**按「熔断中」返回，不得进入下游。
+func TestTieredVerdictMemoHalfOpenSingleProbe(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	kv := &halfOpenKV{failAll: true}
+	m := NewHistoryVerdictMemo(HistoryMemoConfig{Shared: kv, SharedTTL: time.Hour, now: func() time.Time { return now }})
+
+	// ① 连续失败达到阈值 ⇒ 熔断打开。
+	for i := 0; i < sharedMemoFailThreshold; i++ {
+		m.Lookup(ctx, [32]byte{byte(i)})
+	}
+	if m.Stats().BreakerOpens != 1 {
+		t.Fatalf("应打开一次熔断: stats=%+v", m.Stats())
+	}
+
+	// ② 冷却期满 ⇒ 半开；把探测钉在后端里（gate 未关前不返回）。
+	now = now.Add(sharedMemoCooldown + time.Second)
+	gate := make(chan struct{})
+	kv.setGate(gate)
+	kv.reset()
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+
+	// ③ N 个 goroutine 同时撞上同一个半开熔断器。
+	const n = 16
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			m.Lookup(ctx, [32]byte{byte(100 + i)})
+		}(i)
+	}
+	close(start)
+
+	// 等探测进到后端（半开后必须**有**一个进到）。
+	waitForBackendEntries(t, kv, 1)
+	// 给其余 goroutine 撞闸的时间：它们必须快速失败、**不得**进后端。
+	time.Sleep(200 * time.Millisecond)
+	entered, maxSeen := kv.stats()
+	if entered != 1 {
+		t.Errorf("半开窗口内进入后端的调用数 = %d，期望 1（其余必须按「熔断中」快速失败，不得进入下游）", entered)
+	}
+	if maxSeen != 1 {
+		t.Errorf("半开窗口内后端最大并发 = %d，期望 1", maxSeen)
+	}
+
+	// ④ 放行探测（后端已恢复）⇒ 探测成功 ⇒ 熔断闭合 ⇒ 共享层恢复可用。
+	kv.setFail(false)
+	release()
+	wg.Wait()
+	before, _ := kv.stats()
+	m.Lookup(ctx, [32]byte{byte(200)})
+	if after, _ := kv.stats(); after != before+1 {
+		t.Errorf("探测成功后应闭合: 后端进入数 %d → %d（期望 +1）", before, after)
+	}
+}
+
+// TestTieredVerdictMemoHalfOpenSerialCallBlocked —— 串行路径：半开期的
+// 第二个调用也必须被闸住（不必并发才观测得到：第一个调用作为探测钉在
+// 后端里，第二个**串行**调用必须立刻返回且不进后端）。
+//
+// ★ 同时钉住「串行路径行为不变」：闭合状态下串行调用逐个进后端（这道闸
+// 不影响正常路径），半开探测成功后读写恢复。
+func TestTieredVerdictMemoHalfOpenSerialCallBlocked(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+
+	// ① 闭合态：串行调用逐个进后端（无闸）。
+	ok := &halfOpenKV{}
+	m0 := NewHistoryVerdictMemo(HistoryMemoConfig{Shared: ok, SharedTTL: time.Hour})
+	for i := 0; i < 5; i++ {
+		m0.Lookup(ctx, [32]byte{byte(i)})
+	}
+	if n, _ := ok.stats(); n != 5 {
+		t.Fatalf("闭合态串行调用应逐个进后端: entered=%d, want 5", n)
+	}
+
+	// ② 打开熔断 ⇒ 冷却期满 ⇒ 半开。
+	kv := &halfOpenKV{failAll: true}
+	m := NewHistoryVerdictMemo(HistoryMemoConfig{Shared: kv, SharedTTL: time.Hour, now: func() time.Time { return now }})
+	for i := 0; i < sharedMemoFailThreshold; i++ {
+		m.Lookup(ctx, [32]byte{byte(i)})
+	}
+	if m.Stats().BreakerOpens != 1 {
+		t.Fatalf("应打开一次熔断: stats=%+v", m.Stats())
+	}
+	now = now.Add(sharedMemoCooldown + time.Second)
+	gate := make(chan struct{})
+	kv.setGate(gate)
+	kv.reset()
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+
+	// ③ 第一个调用成为唯一的探测，钉在后端里（放协程里，否则会挡住本测试
+	//    后续的断言）。
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		m.Lookup(ctx, [32]byte{byte(200)})
+	}()
+	waitForBackendEntries(t, kv, 1)
+
+	// ④ 串行的第二个调用：必须**立刻**返回、不触后端。
+	//
+	// ★ 为什么要放在协程里 + 带超时：半开闸失效时（旧实现）这个调用会
+	// **进入下游**并阻塞在故障后端上（假后端就是「卡住」的形态）⇒ 直接
+	// 同步调用会把测试挂死。带超时的 select 让它变成一条**明确的失败**，
+	// 而不是「跑到 go test 的 10 分钟总超时」。
+	before, _ := kv.stats()
+	started := time.Now()
+	resCh := make(chan bool, 1)
+	go func() {
+		_, ok := m.Lookup(ctx, [32]byte{byte(201)})
+		resCh <- ok
+	}()
+	select {
+	case hit := <-resCh:
+		if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+			t.Errorf("半开期第二个调用应快速失败，耗时 %v", elapsed)
+		}
+		if hit {
+			t.Error("半开期第二个调用不应命中共享层")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("半开期第二个调用迟迟不返回（它进了下游并阻塞在故障后端上）—— 半开闸没生效")
+	}
+	if after, _ := kv.stats(); after != before {
+		t.Errorf("半开期第二个调用不得进后端: entered %d → %d", before, after)
+	}
+
+	// ⑤ 放行探测 ⇒ 成功 ⇒ 闭合 ⇒ 共享层恢复可用。
+	kv.setFail(false)
+	release()
+	<-probeDone
+	before, _ = kv.stats()
+	m.Lookup(ctx, [32]byte{byte(202)})
+	if after, _ := kv.stats(); after != before+1 {
+		t.Errorf("探测成功后应闭合: entered %d → %d（期望 +1）", before, after)
+	}
+}

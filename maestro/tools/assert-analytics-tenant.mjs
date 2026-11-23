@@ -134,14 +134,31 @@ async function main() {
   console.log('\n=== 4. 页面数字与同源响应对拍 ===')
   if (captured.apiBody?.summary) {
     const s = captured.apiBody.summary
-    const pageText = await evaluate(cdp, sessionId, `document.body.innerText`)
-    const totalStr = (s.total_requests ?? 0).toLocaleString('en-US')
-    const hit = pageText.includes(totalStr) || pageText.includes(String(s.total_requests))
-    record('页面显示的请求数与响应一致', hit, `响应 total_requests=${s.total_requests}，页面含 "${totalStr}": ${hit}`)
+    // ★★ 判据用**唯一锚点**（★ data-testid="analytics-total-requests"）读取，
+    //   ★ **不再扫全页 innerText**：
+    //   ★ 修前是 `pageText.includes(totalStr) || pageText.includes(String(total))`
+    //   ★ ⇒ total_requests=0 ⇒ totalStr="0" ⇒ ★ **几乎任何页面文本都含 "0"**
+    //   ★ ⇒ 判据**恒真** ⇒ 伪绿（★ 1~9 也极易巧合命中）。
+    const shown = await evaluate(cdp, sessionId,
+      `document.querySelector('[data-testid="analytics-total-requests"]')?.textContent?.trim() || ''`)
+    const expected = (s.total_requests ?? 0).toLocaleString('en-US')
+
+    record('页面存在请求数锚点（data-testid=analytics-total-requests）', shown !== '',
+      shown !== '' ? `读到 "${shown}"` : '★ 锚点不存在 ⇒ 下面的对拍**无法判定**（★ 不得默认通过）')
+    record('页面显示的请求数与响应逐字一致', shown !== '' && shown === expected,
+      `响应 total_requests=${s.total_requests} → 期望 "${expected}" / 页面 "${shown}"`)
+
     if (baseline) {
-      record('页面响应与直连基线同构（total_requests 同为数值）',
-        typeof captured.apiBody.summary.total_requests === typeof baseline.summary.total_requests,
-        `页面=${captured.apiBody.summary.total_requests} 直连=${baseline.summary.total_requests}`)
+      // ★ 比**值**（★ 修前是 `typeof a === typeof b` ⇒ 对 number vs number **恒绿**）
+      // ★ 允许**小容差**：★ 页面请求与直连请求相隔数秒、★ 期间可能有流量
+      //   ⇒ ★ 容差 = max(1, 基线 × 10%) ⇒ ★ 数量级不同（★ 例如串了别的租户）必红。
+      const pageVal = Number(s.total_requests)
+      const baseVal = Number(baseline.summary?.total_requests)
+      const tol = Math.max(1, Math.abs(baseVal) * 0.1)
+      const delta = Math.abs(pageVal - baseVal)
+      record('页面响应与直连基线同量（total_requests 值在容差内）',
+        Number.isFinite(pageVal) && Number.isFinite(baseVal) && delta <= tol,
+        `页面=${pageVal} 直连=${baseVal} 差=${delta} 容差=${tol.toFixed(1)}`)
     }
   } else if (captured.apiBody) {
     console.log('   响应体:', JSON.stringify(captured.apiBody).slice(0, 300))

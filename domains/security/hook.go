@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/governance"      // Verdict 类型
@@ -16,10 +17,18 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
+// securityConfigTTL 是配置缓存的刷新间隔。
+//
+// ★ 2026-11-23（12h 变更审计 B）：与 v1 hook（domains/hooks/security/hook.go
+// 的 securityConfigTTL）**同值**，刻意不另立口径 —— 两处读的是同一批
+// security.* 配置，TTL 不一致会让「改了配置什么时候生效」出现两种答案。
+const securityConfigTTL = 5 * time.Second
+
 // SecurityHook 把 Registry 接入 Pipeline。
 //
 // 行为：
-//   - Enabled: env != nil
+//   - Enabled: env != nil 且 security.enabled（配置按 TTL 热加载，见
+//     maybeReloadConfig）
 //   - Execute: 调 Registry.RunAll 并把所有 verdict 写入 env.EnsureGovernance()
 //   - OnError: 吞掉 error（verdict 已写入，interception 引擎接管决策；
 //     若某 plugin 直接 return error，Registry.RunAll 已把错误转 verdict）
@@ -28,6 +37,8 @@ import (
 //
 // 2026-07-10: 集成模块执行器，支持 Check-Execute-Record 模式。
 // 2026-11-23: 添加 settings 支持，让 security.enabled 和 security.mode 配置生效。
+// 2026-11-23（12h 变更审计 B）: 补热加载 —— 此前配置只在构造时快照一次，
+// 运行时改 settings 不生效（而 spec 声明 HotReload:true）。
 type SecurityHook struct {
 	registry *Registry
 	scope    Scope
@@ -35,21 +46,70 @@ type SecurityHook struct {
 	settings *settings.Registry   // 配置访问器
 	enabled  atomic.Bool          // security.enabled 配置缓存
 	mode     atomic.Value         // security.mode 配置缓存 ("enforce" or "observe")
+	// reloadAtUnixNano 是下一次允许重新加载配置的时间点（UnixNano）。
+	reloadAtUnixNano atomic.Int64
+	// reloading 保证同一时刻只有一个后台刷新在跑。
+	reloading atomic.Bool
+	// now 是时钟（测试可注入）；构造后不再改 ⇒ 并发读安全。
+	now func() time.Time
 }
 
 // NewSecurityHook 构造 hook。
 // settings 可选（nil 时默认启用）。
 func NewSecurityHook(registry *Registry, scope Scope, settingsReg *settings.Registry) *SecurityHook {
+	return newSecurityHook(registry, scope, settingsReg, time.Now)
+}
+
+// newSecurityHook 是带可注入时钟的构造（生产走 NewSecurityHook；测试用它把
+// TTL 语义钉住，不必真等 5 秒）。
+func newSecurityHook(registry *Registry, scope Scope, settingsReg *settings.Registry, now func() time.Time) *SecurityHook {
 	if registry == nil {
 		registry = NewRegistry()
+	}
+	if now == nil {
+		now = time.Now
 	}
 	h := &SecurityHook{
 		registry: registry,
 		scope:    scope,
 		settings: settingsReg,
+		now:      now,
 	}
+	// ★ 构造时同步加载一次 ⇒ 「构造后立刻请求」用的是**当前**配置（不是等
+	// 一个 TTL 周期）。
 	h.loadConfig()
+	h.reloadAtUnixNano.Store(h.now().Add(securityConfigTTL).UnixNano())
 	return h
+}
+
+// maybeReloadConfig 在 TTL 到期时异步触发一次配置刷新（v1 同款范式）。
+//
+// ★ 2026-11-23（12h 变更审计 B）：v1 hook（domains/hooks/security/hook.go:
+// currentConfig）已经用「TTL 节流 + 无锁 atomic Load + 后台刷新」这套做法，
+// v2 沿用它而不是另造一套：读 settings 后端可能有 I/O ⇒ 绝不放在请求热路径
+// 上同步做。
+//
+// 语义（与 v1 一致）：**触发刷新的那一次请求仍然用旧值**（刷新在后台跑）⇒
+// 配置变更从「TTL 到期后的下一次请求」起生效。
+func (h *SecurityHook) maybeReloadConfig() {
+	if h == nil || h.settings == nil {
+		return // 没有 settings 后端 ⇒ 没有可刷新的配置（保持构造时的快照）
+	}
+	now := h.now()
+	deadline := h.reloadAtUnixNano.Load()
+	if now.UnixNano() < deadline {
+		return // TTL 未到
+	}
+	if !h.reloadAtUnixNano.CompareAndSwap(deadline, now.Add(securityConfigTTL).UnixNano()) {
+		return // 别的请求已经抢到这次刷新
+	}
+	if !h.reloading.CompareAndSwap(false, true) {
+		return // 已有刷新在途
+	}
+	go func() {
+		defer h.reloading.Store(false)
+		h.loadConfig()
+	}()
 }
 
 // loadConfig 从 settings 读取 security.enabled 和 security.mode 配置。
@@ -108,15 +168,23 @@ func (h *SecurityHook) Priority() int { return 100 }
 //
 // 2026-11-23 修复：增加 security.enabled 配置检查。
 // 当 security.enabled = false 时，跳过所有安全检测（落地 spec 承诺）。
+//
+// ★ 2026-11-23（12h 变更审计 B）：这里顺带触发 TTL 热加载（不阻塞请求），
+// 使运行时改 security.enabled 能在 TTL 内生效（见 maybeReloadConfig）。
 func (h *SecurityHook) Enabled(_ context.Context, env *domain.PipelineRequest) bool {
 	if env == nil {
 		return false
 	}
+	h.maybeReloadConfig()
 	return h.enabled.Load()
 }
 
 // Execute 调 Registry.RunAll 并写入 env.Governance。
 func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
+	// ★ 2026-11-23（12h 变更审计 B）：Execute 也触发一次 TTL 热加载 ——
+	// security.mode 是 observe/enforce 的来源，只在 Enabled 里刷新的话，
+	// 绕过 Enabled 直接调 Execute 的路径会一直用旧 mode。
+	h.maybeReloadConfig()
 	// 2026-07-10: 通过执行器执行安全扫描，结果会被缓存
 	if h.executor != nil && env.SessionID != "" {
 		return h.executeWithCache(ctx, env)

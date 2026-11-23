@@ -257,7 +257,9 @@ export default {
   module: '模組',
   no: '否',
   refresh: '重新整理',
+  remove: '刪除',
   time: '時間',
+  warning: '警訊',
   yes: '是',
   view: '檢視',
   // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.

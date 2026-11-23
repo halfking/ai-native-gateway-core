@@ -221,6 +221,15 @@ DD_GUARDED_DOMAINS=(
   "^installer/cmd/llm-gw-installer/embeddata/startup/.*\.sql$|./sql/migrations/startup"
   # ★ 部署脚本 ⇒ 部署脚本门（★ 相对路径 / 顶层展开闭合）
   "^scripts/deploy-[^/]*\.sh$|./scripts/deploygate"
+  # ★ ★ 2026-11-23（12h 修订审计轮）补规两条 —— ★ 这两条是**实测出来的盲区**：
+  #   ① 离线升级副本 `installer/migrations/**/up.sql` —— ★ 原映射**无任何规则命中**
+  #      （实测：用闸门自身的判据函数原样跑，`changed=installer/migrations/994_*/up.sql`
+  #      ⇒ **无输出**）⇒ 而仓内三方门（internal/sqlguard/migration_994_delivery_test.go）
+  #      恰恰就是比「canonical vs offline 副本」的 ⇒ ★ 它在部署路径上**结构性不可见**。
+  #   ② `./internal/sqlguard` —— ★ 承载三方门（+ 迁移通道/注册表连续性门）的包，
+  #      ★ 全仓 grep 命中 0 处 ⇒ ★ 改了迁移却不会跑迁移门。
+  "^installer/migrations/.*/(up|down)\.sql$|./internal/sqlguard"
+  "^installer/migrations/.*/up\.sql$|./sql/migrations/startup"
 )
 
 # dd_guard_domain_packages <changed_files>：★ 改动文件 ⇒ 该被谁看的门包。
@@ -228,7 +237,19 @@ DD_GUARDED_DOMAINS=(
 # ★ 判据面：**所有**非 .go 的改动（★ .go 改动由上面的目录规则负责）。
 dd_guard_domain_packages() {
   local changed="${1:-}" line re pkg
-  while IFS='|' read -r re pkg; do
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    # ★★ 分隔符按**最后一个** '|' 切（★ 不是第一个）。
+    #
+    # ★ 为什么：★ 正则里**自带** '|' 是合法的（★ 如 `/(up|down)\.sql$`）
+    #   ⇒ 按第一个切会把正则从中间劈开（★ 实测：★ 规则4 被切成
+    #   正则=`^installer/migrations/.*/(up` / 门包=`down)\.sql$|./internal/sqlguard`
+    #   ⇒ 正则编译不过 ⇒ ★ **那条规则永远不生效** ⇒ ★ 而门包是错的
+    #   ⇒ ⇒ 选了它就会「go test 一个不存在的包」⇒ 把部署**判死**。
+    #   ⇒ ★ 门包路径里**不会出现** '|' ⇒ 按最后一个切必然切对。
+    [[ "$line" == *"|"* ]] || continue
+    re="${line%|*}"
+    pkg="${line##*|}"
     [[ -n "$re" && -n "$pkg" ]] || continue
     if printf '%s\n' "$changed" | grep -E "$re" >/dev/null 2>&1; then
       printf '%s\n' "$pkg"
@@ -483,6 +504,43 @@ red_names() {
   } | sort -u
 }
 
+# ── 基线红豁免表（★ 2026-11-23 12h 修订审计轮新增）────────────────────────
+#
+# ★ 为什么要有它（形态）：闸门此前对「基线本来就红」一律**只告警不拦**
+#   （`new_reds` 为空即 exit 0）⇒ ★ **一旦某个红被并进 main，它就永远不拦路**。
+#   实测：994 三方门（internal/sqlguard/migration_994_delivery_test.go）在
+#   origin/main 上**实测为红** ⇒ 即使把 ./internal/sqlguard 选进包里，
+#   它也**不会**阻断部署 ⇒ 副本分叉这类问题可以静悄悄地留在主干上。
+#
+# ★ 收紧后的语义：**基线红必须已被显式认领**——
+#   · 在豁免表内且未过期 ⇒ 放行（并打印认领人/过期日/原因）；
+#   · 不在表内 ⇒ **仍 die**（⇒ 基线红不会随合并而永久静音）；
+#   · 在表内但**已过期** ⇒ 视同未认领 ⇒ 仍 die（⇒ 防止「一次认领、永久静音」）。
+#
+# ★ 表格式：TSV，每行 `<红测试名>\t<认领人>\t<过期日 YYYY-MM-DD|N/A>\t<原因>`，
+#   '#' 开头为注释。红测试名的形态取自 red_names()（`TestXxx` 或 `pkg.TestXxx`）。
+EXEMPTION_FILE="${SCRIPT_DIR}/deploygate/baseline_red_exemptions.tsv"
+
+# is_exempted_red <红测试名>：在豁免表内且未过期 ⇒ 返回 0。
+is_exempted_red() {
+  local want="$1"
+  [[ -f "$EXEMPTION_FILE" ]] || return 1
+  local line name owner expiry reason today
+  today="$(date +%Y-%m-%d)"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ "${line:0:1}" == "#" ]] && continue
+    IFS=$'\t' read -r name owner expiry reason <<< "$line"
+    [[ "$name" == "$want" ]] || continue
+    if [[ -n "$expiry" && "$expiry" != "N/A" && "$expiry" < "$today" ]]; then
+      err "★ 豁免已过期（${expiry} < 今天 ${today}）：${want} ⇒ 需重新认领 ★"
+      return 1
+    fi
+    return 0
+  done < <(grep -v '^#' "$EXEMPTION_FILE" 2>/dev/null || true)
+  return 1
+}
+
 # assert_full_coverage <outfile> <native|docker> <tree> <subdir> [packages...]
 # 每个被选中的包都必须有结果行，缺任何一行 ⇒ 失败。
 # ★ 这是伪绿的主闸：runner 半途夭折（OOM/超时/断连）时「已有行」都是绿的 ⇒
@@ -630,7 +688,24 @@ new_reds="$(comm -23 <(printf '%s\n' "$current_reds") <(printf '%s\n' "$base_red
 
 if [[ -n "$base_reds" ]]; then
   log "★ 基线（${base_commit}）**本来就红**：$(printf '%s' "$base_reds" | tr '\n' ' ')★"
-  log "★   ⇒ 这些红灯**不是**本次改动带来的（★ 告警，不拦）★"
+  log "★   ⇒ 这些红灯**不是**本次改动带来的 ★"
+  # ★ 2026-11-23（12h 修订审计轮）：从「一律告警放行」收紧为
+  #   「**必须已被豁免表显式认领**」⇒ 未认领的基线红 **die**（否则基线红会随
+  #   合并永久静音，★ 实测 994 三方门在 origin/main 上就是这么红的）。
+  unclaimed=""
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
+    if is_exempted_red "$r"; then
+      log "★   ✓ ${r} ⇒ 已被豁免表认领（表：${EXEMPTION_FILE}）★"
+    else
+      unclaimed="${unclaimed}${r}"$'\n'
+    fi
+  done <<< "$base_reds"
+  if [[ -n "$unclaimed" ]]; then
+    printf '%s' "$unclaimed" >&2
+    die "★ 基线红里存在**未被豁免表认领**的红灯（★ 见上）⇒ 拒绝上线 ★"
+    die "★   认领方式：把该红测试名写进 ${EXEMPTION_FILE}（<名字>\\t<认领人>\\t<过期日>\\t<原因>）★"
+  fi
 fi
 
 if [[ -z "$new_reds" ]]; then

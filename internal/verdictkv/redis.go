@@ -8,6 +8,7 @@ package verdictkv
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -18,6 +19,21 @@ import (
 // 用 SCAN 按前缀盘点/清理，也避免与其它键空间撞名。
 const KeyPrefix = "llmgw:histmemo:"
 
+// KV 是共享层后端的最小接口（Get / 带 TTL 的 Set / 内存水位）。
+//
+// ★ 2026-11-23（12h 变更审计 A）：它是 sanitize.VerdictKV 的结构化副本。
+// sanitize 的**测试**文件 import 本包 ⇒ 本包不能 import sanitize（否则测试
+// 二进制成环）⇒ 接口在这里另起一份（Go 接口按方法集匹配，赋值时自动满足
+// sanitize.VerdictKV）。
+type KV interface {
+	// Get 返回键的值；键不存在时返回 ("", false, nil)。
+	Get(ctx context.Context, key string) (val string, ok bool, err error)
+	// Set 写入键值并设置过期。
+	Set(ctx context.Context, key, val string, ttl time.Duration) error
+	// UsedMemory 返回后端已用内存字节数（用于水位线保护）。
+	UsedMemory(ctx context.Context) (int64, error)
+}
+
 // RedisKV 用 Redis 实现 sanitize.VerdictKV（结构化实现：本包不 import
 // sanitize，避免环）。它只是个薄适配器，无状态。
 type RedisKV struct {
@@ -25,14 +41,45 @@ type RedisKV struct {
 	prefix string
 }
 
-// NewRedis 用一个 Redis 客户端构造共享层后端。prefix 为空 ⇒ 用 KeyPrefix。
-// client 为 nil ⇒ 返回 nil。
+// IsNilClient 报告 client 是否**不可用**：接口本身是 nil，或接口里装的是
+// nil 指针（类型化 nil）。
 //
-// ★ 调用方把它当接口用时注意类型化 nil：`var kv sanitize.VerdictKV = NewRedis(nil, "")`
-// 会得到一个「不等于 nil」的接口 ⇒ 先判返回值再赋给接口（cmd/gateway 的装配
-// 是这么写的）。
-func NewRedis(client redis.UniversalClient, prefix string) *RedisKV {
+// ★ 2026-11-23（12h 变更审计 A）：`client == nil` 只挡住「接口本身是 nil」。
+// Redis 客户端是以**具体指针类型**（*redis.Client）被装进接口的 ⇒ 一个 nil 的
+// *redis.Client 装进接口后，接口值 ≠ nil，但底下是空指针 ⇒ 两道 `== nil` 闸
+// 都放行 ⇒ 首次请求 client.Get(...) 空指针 panic（实测链条：
+// cmd/gateway/history_guard_memo_init.go 装配 ⇒ internal/verdictkv/redis.go
+// 构造 ⇒ 守卫在 sessioncontext 的 worker 协程里调用）。
+// ⇒ 判据必须是**双重**：接口为 nil **或**其底层指针为 nil。
+func IsNilClient(client redis.UniversalClient) bool {
 	if client == nil {
+		return true
+	}
+	v := reflect.ValueOf(client)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+// errNoClient 是「后端没有可用客户端」的错误。
+//
+// ★ 2026-11-23（12h 变更审计 A）：共享层出错时，sanitize 侧按「未命中」
+// 处理（结论不变）⇒ 用错误而不是 panic 表达「后端不可用」。
+var errNoClient = errors.New("verdictkv: redis client is nil")
+
+// NewRedis 用一个 Redis 客户端构造共享层后端。prefix 为空 ⇒ 用 KeyPrefix。
+// client 不可用（nil 接口或类型化 nil）⇒ 返回**真 nil 接口**。
+//
+// ★ 2026-11-23（12h 变更审计 A）：返回类型从 *RedisKV 改成接口 KV ——
+// 返回具体指针时，「失败路径返回 nil」落到调用方眼里会变成一个**类型化 nil**
+// （`var kv sanitize.VerdictKV = NewRedis(nil, "")` 得到一个「不等于 nil」的
+// 接口）⇒ 下游两道 `== nil` 闸都放行 ⇒ 首次请求空指针 panic。
+// 返回接口后，失败路径的 nil 就是**真 nil 接口**，赋给任何接口字段仍是 nil。
+func NewRedis(client redis.UniversalClient, prefix string) KV {
+	if IsNilClient(client) {
 		return nil
 	}
 	if prefix == "" {
@@ -41,8 +88,24 @@ func NewRedis(client redis.UniversalClient, prefix string) *RedisKV {
 	return &RedisKV{client: client, prefix: prefix}
 }
 
+// usableClient 返回后端客户端；不可用时返回 errNoClient 而不是让调用方踩
+// 空指针。
+//
+// ★ 2026-11-23（12h 变更审计 A）：RedisKV 的字段虽未导出，但外部可以写
+// `&verdictkv.RedisKV{}`（零值 ⇒ client 为 nil）⇒ 每个方法都要自检。
+func (k *RedisKV) usableClient() (redis.UniversalClient, error) {
+	if k == nil || IsNilClient(k.client) {
+		return nil, errNoClient
+	}
+	return k.client, nil
+}
+
 func (k *RedisKV) Get(ctx context.Context, key string) (string, bool, error) {
-	val, err := k.client.Get(ctx, k.prefix+key).Result()
+	c, err := k.usableClient()
+	if err != nil {
+		return "", false, err
+	}
+	val, err := c.Get(ctx, k.prefix+key).Result()
 	if err == redis.Nil {
 		return "", false, nil
 	}
@@ -53,14 +116,22 @@ func (k *RedisKV) Get(ctx context.Context, key string) (string, bool, error) {
 }
 
 func (k *RedisKV) Set(ctx context.Context, key, val string, ttl time.Duration) error {
-	return k.client.Set(ctx, k.prefix+key, val, ttl).Err()
+	c, err := k.usableClient()
+	if err != nil {
+		return err
+	}
+	return c.Set(ctx, k.prefix+key, val, ttl).Err()
 }
 
 func (k *RedisKV) UsedMemory(ctx context.Context) (int64, error) {
-	// 先只要 memory 段（响应小）；后端不认分段（如测试用的 miniredis）时回退到全量。
-	info, err := k.client.Info(ctx, "memory").Result()
+	c, err := k.usableClient()
 	if err != nil {
-		if info, err = k.client.Info(ctx).Result(); err != nil {
+		return 0, err
+	}
+	// 先只要 memory 段（响应小）；后端不认分段（如测试用的 miniredis）时回退到全量。
+	info, err := c.Info(ctx, "memory").Result()
+	if err != nil {
+		if info, err = c.Info(ctx).Result(); err != nil {
 			return 0, err
 		}
 	}

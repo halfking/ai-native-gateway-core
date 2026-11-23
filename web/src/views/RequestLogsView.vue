@@ -31,6 +31,14 @@ import StatCard from '../components/ui/StatCard.vue'
 import { usePagination } from '../composables/usePagination'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+// ★ 2026-11-23 审计轮（P1-1）：「页码越界」与「服务端扫描故障」的判定口径
+//   （与后端 admin/logs.go:1133 的三项判据逐项对齐；纯函数，判定逻辑见
+//   utils/requestLogsScanOutcome.ts 的头注释）。
+import {
+  isBackendScanFailure,
+  resolveLogsPageOverflow,
+  scanFailureCount,
+} from '../utils/requestLogsScanOutcome'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -251,6 +259,9 @@ const activeFilterCount = computed(() => {
   if (errorKindFilter.value !== '') count++
   if (usageSourceFilter.value !== '') count++
   if (modelFilter.value !== '') count++
+  // ★ 2026-11-23 审计轮（P2-4）：owner 也是**真在筛**的维度（转发给
+  //   /api/logs 的 owner_user）⇒ 不计数就是「筛了但界面说没筛」。
+  if (ownerUserFilter.value.trim() !== '') count++
   if (keyword.value.trim() !== '') count++
   if (gwSessionFilter.value.trim() !== '') count++
   if (gwTaskFilter.value.trim() !== '') count++
@@ -329,6 +340,28 @@ function deepLinkQuery(): Record<string, string | undefined> {
   return out
 }
 
+// ★ 2026-11-23 审计轮（P2-4）：本页从 **URL** 读到的过滤键**全集**
+//   （onMounted 逐项读的，见「★ 排行六维深链」那段与时间范围兼容那段）。
+//   ★ 「清除全部筛选」必须把这些键**一起**从 URL 摘掉：本地 state 清了但
+//   URL 还在 ⇒ 一刷新 onMounted 又把它们读回来 ⇒ 用户看到「清掉了、
+//   刷新又回来了」（与深链维度那个缺陷同族）。
+//   ★ 深链五维（client_model / end_user_id / api_key_prefix /
+//     application_code / task_type）不在这个表里 —— 它们由 deepLinkFilters
+//     单独持有（见 clearAllFilters）。
+const URL_FILTER_KEYS = [
+  'success',
+  'error_kind',
+  'api_key_id',
+  'preset',
+  'hours',
+  'from',
+  'to',
+  'owner_user',
+  'gw_session_id',
+  'gw_task_id',
+  'model',
+] as const
+
 // 一键清空全部条件：重置到默认 h24 并重载。
 function clearAllFilters() {
   apiKeyId.value = ''
@@ -339,6 +372,9 @@ function clearAllFilters() {
   usageSourceFilter.value = ''
   modelFilter.value = ''
   keyword.value = ''
+  // ★ 2026-11-23（P2-4）：owner 也是过滤键（可由 URL 带入、可转发给 /api/logs）
+  //   ⇒ 此前「清除全部筛选」漏掉了它 ⇒ 清完还能看到按 owner 筛过的列表。
+  ownerUserFilter.value = ''
   gwSessionFilter.value = ''
   gwTaskFilter.value = ''
   // ★ 排行深链维度也要能一键清掉（否则用户只能手改 URL）。
@@ -346,6 +382,12 @@ function clearAllFilters() {
   const deepKeys = Object.keys(deepLinkFilters.value)
   for (const key of deepKeys) deepLinkFilters.value[key] = ''
   stripDeepLinkFromQuery(deepKeys)
+  // ★ 2026-11-23（P2-4）：再把 URL 里**其余**过滤键（model / 时间范围
+  //   preset,hours,from,to / owner_user / success / error_kind / api_key_id /
+  //   gw_session_id / gw_task_id）一并摘掉 ⇒ 「清除全部筛选」名副其实。
+  //   ★ 两次 replace 的键集是**包含关系**（第二次是超集）⇒ 即便第二次调用
+  //   读到的 route.query 还是旧的（router.replace 异步生效），最终 URL 也对。
+  stripDeepLinkFromQuery([...deepKeys, ...URL_FILTER_KEYS])
   resetTimeFilter()
 }
 
@@ -1052,60 +1094,92 @@ const bodyCacheTitle = computed(
     `/api/logs/{id} 详情 body 抓取的进程内缓存（LRU ${bodyCache.value?.cap ?? '—'} × TTL 5min）。未命中走热分区（亚毫秒）或列存冷路径（秒级）；条目指当前缓存内 request 数。`,
 )
 
+// 请求日志列表的查询参数（页码/页大小也在这里 ⇒ 越界重取时复用同一份口径）。
+//
+// ★ 深链五维（...deepLinkQuery()）**留在调用点**展开：既有深链契约门
+//   （views/RequestLogsView.deepLinkFilters.contract.spec.ts）钉的就是
+//   「getRequestLogs({ … …deepLinkQuery() … })」这个形状 ⇒ 收进本函数会让那道门
+//   失配（门红 = 契约形状被改动的信号，不是可以顺手改掉的噪音）。
+function logsQueryParams(range: { from: string; to: string }) {
+  return {
+    api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
+    provider_id: providerFilter.value === '' ? undefined : Number(providerFilter.value),
+    credential_id: credentialFilter.value === '' ? undefined : Number(credentialFilter.value),
+    from: range.from,
+    to: range.to,
+    q: keyword.value.trim() || undefined,
+    owner_user: ownerUserFilter.value.trim() || undefined,
+    request_status: successFilter.value === '' ? undefined : successFilter.value,
+    error_kind: errorKindFilter.value.trim() || undefined,
+    model: modelFilter.value || undefined,
+    usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
+    gw_session_id: gwSessionFilter.value.trim() || undefined,
+    gw_task_id: gwTaskFilter.value.trim() || undefined,
+    include_probe: includeProbe.value || undefined,
+    chrono: traceMode.value || undefined,
+    page: page.value,
+    page_size: pageSize.value,
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = null
   void loadBodyCache()
   try {
     const range = timeRange()
-    const resp: RequestLogsResponse = await getRequestLogs({
-      api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
-      provider_id: providerFilter.value === '' ? undefined : Number(providerFilter.value),
-      credential_id: credentialFilter.value === '' ? undefined : Number(credentialFilter.value),
-      from: range.from,
-      to: range.to,
-      q: keyword.value.trim() || undefined,
-      owner_user: ownerUserFilter.value.trim() || undefined,
-      request_status: successFilter.value === '' ? undefined : successFilter.value,
-      error_kind: errorKindFilter.value.trim() || undefined,
-      model: modelFilter.value || undefined,
-      usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
-      gw_session_id: gwSessionFilter.value.trim() || undefined,
-      gw_task_id: gwTaskFilter.value.trim() || undefined,
+    let resp: RequestLogsResponse = await getRequestLogs({
+      ...logsQueryParams(range),
       // ★ 排行深链维度（用量趋势页六张排行卡片点击跳转而来）——**必须转发**，
       //   否则点卡片过来看到的是未筛选的全量（这正是本轮修的缺陷）。
       ...deepLinkQuery(),
-      include_probe: includeProbe.value || undefined,
-      chrono: traceMode.value || undefined,
-      page: page.value,
-      page_size: pageSize.value,
     })
+    // ★ 2026-11-23 审计轮（P1-1）：判据与后端 admin/logs.go:1133 **逐项对齐**。
+    //   后端的扫描故障判据是三项：items 空 **且** count>0 **且** scanErrCount>0；
+    //   而第三项只在服务端可见（真发生时后端直接回 500，不会回 200）
+    //   ⇒ 200 响应上「count>0 且本页没有行」只能是**页码越界**
+    //   （后端不钳制页码：admin/logs.go:1058 offset=(page-1)*pageSize 原样进 SQL
+    //   ⇒ OFFSET 越过末页 ⇒ 0 行，但 count 仍是命中总数）。
+    //   ★ 旧判据（items 空 && count>0 ⇒ 「服务端数据格式问题」）把它误报成故障
+    //   ⇒ 用户看到红色告警，真相只是「你在第 7 页，而这个筛选只有 3 页」。
+    //   ⇒ 这里跳回最后一个有数据的页并重取；**真**扫描故障由 catch 分支按
+    //   服务端的 500 判定（isBackendScanFailure），不放过去。
+    const overflowPage = resolveLogsPageOverflow({
+      itemsLength: resp.items.length,
+      count: resp.count,
+      page: page.value,
+      pageSize: pageSize.value,
+    })
+    if (overflowPage != null) {
+      page.value = overflowPage
+      resp = await getRequestLogs({
+        ...logsQueryParams(range),
+        // ★ 同上：深链维度必须在请求里转发（与首次请求同一口径）。
+        ...deepLinkQuery(),
+      })
+    }
     rows.value = resp.items
     total.value = resp.count
     aggregate.value = resp.aggregate ?? null
     // 服务端显式回传当前探测口径（2026-11-21 对齐轮）：徽标披露认响应值，
     // 不认本地开关状态（两者只在正常链路一致；降级/参数被吞时以响应为准）。
     trafficLane.value = resp.traffic_lane ?? ''
-    // 2026-11-22 fix: 检测「有 count 但 items 为空」的数据扫描错误。
-    // 根因：后端数据库行扫描失败（如 JSONB 字段格式问题），导致所有行被跳过，
-    // 但 COUNT 查询成功。此时应明确告知用户这是服务端错误，而非真的无数据。
-    if (resp.items.length === 0 && resp.count > 0) {
-      console.error('[RequestLogs] Backend scanning error detected:', {
-        count: resp.count,
-        itemsLength: resp.items.length,
-        requestParams: { from: range.from, to: range.to, page: page.value, pageSize: pageSize.value },
-      })
-      // ★ 2026-11-23 审计轮：去掉 `default` 插值参数。
-      //   vue-i18n v9 的 `default` 是**保留键**（消息回退链），当普通插值参数传
-      //   进去既不会显示（没有语种文案里有 {default}），又会被
-      //   callSitePlaceholderCoverage 门禁判成「死参数」。原意图（附一句兜底
-      //   中文说明）已由 requests.list.error.scanningFailed 的 8 语种文案承担。
-      error.value = t('requests.list.error.scanningFailed', {
-        count: resp.count,
-      })
-    }
+    // ★ 2026-11-23 审计轮（P1-1）：**这里不再**用「items 空 && count>0」判扫描故障。
+    //   后端该项判据还差第三项 scanErrCount>0（admin/logs.go:1133），而该项只在
+    //   服务端可见 ⇒ 200 响应上这个组合**只说明页码越界**（已在上面处理）。
+    //   ⇒ 真扫描故障由 catch 分支按服务端的 500 判定，不再在这里猜。
   } catch (e: unknown) {
-    error.value = surfaceError(e)
+    // ★ 服务端**明确**回 500「data scanning failed」⇒ 真正的行扫描故障
+    //   （admin/logs.go:1133-1140）⇒ 用这一族专有文案，并带上服务端回传的
+    //   命中记录数（从消息里取；取不到就退回通用错误文案，**不编数字**）。
+    const scanCount = scanFailureCount(e)
+    if (isBackendScanFailure(e) && scanCount != null) {
+      error.value = t('requests.list.error.scanningFailed', {
+        count: scanCount,
+      })
+    } else {
+      error.value = surfaceError(e)
+    }
   } finally {
     loading.value = false
   }

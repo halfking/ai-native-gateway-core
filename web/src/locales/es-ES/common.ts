@@ -251,7 +251,9 @@ export default {
   module: 'Módulo',
   no: 'No',
   refresh: 'Actualizar',
+  remove: 'Eliminar',
   time: 'Hora',
+  warning: 'Advertencia',
   yes: 'Sí',
   view: 'Ver',
   // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.

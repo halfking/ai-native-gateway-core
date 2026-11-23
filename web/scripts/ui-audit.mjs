@@ -778,6 +778,8 @@ const NAME_SORT_EXEMPT = {
   'views/admin/session-analytics/SessionAnalyticsUsersView.vue': '用户排行榜（Top用户列表），按使用量倒序',
   'views/ModelIntegrityView.vue': '首列是「检测时间」，异常事件流水按时间倒序才对（复核更正：原写的'
     + '「排序会连带改筛选分组语义」不成立 —— 该表行源是 events，不走 useModelCatalogFilters）',
+  'views/TeamListView.vue': '团队列表（name / display_name / description / tenant_id / 操作）—— **无日期列、无模型维度**（团队不是模型实体）⇒ 契约 C 的「日期控件 / 模型控件 / 名称排序」三条都不适用；团队按名称排序无业务意义',
+  'views/TeamDetailView.vue': '单个团队的详情（表格是团队成员列表）—— 同样是**成员**实体，不是用户/模型列表 ⇒ 契约 C 不适用',
 }
 const stillUnsorted = needNameSort.filter((r) => !exemptHit(NAME_SORT_EXEMPT, r.file))
 const exempted = needNameSort.filter((r) => exemptHit(NAME_SORT_EXEMPT, r.file))

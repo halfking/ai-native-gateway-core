@@ -118,8 +118,13 @@ func envPositiveInt(getenv func(string) string, key string) (int, bool) {
 
 // newHistoryVerdictMemo 按 env 构造缓存；关闭 ⇒ nil。
 //
-// ★ 类型化 nil：verdictkv.NewRedis(nil, …) 返回 (*RedisKV)(nil)，直接赋给
-// 接口会得到一个「不等于 nil」的接口 ⇒ 先判返回值再赋值。
+// ★ 2026-11-23（12h 变更审计 A）：rc 是**接口**参数，装进来的是
+// `*redis.Client`（具体指针）⇒ 调用方传一个 nil 客户端时，接口值 ≠ nil 但
+// 底下是空指针（类型化 nil）⇒ `rc != nil` 拦不住 ⇒ 会一路装进共享层 ⇒
+// 首次请求 client.Get(...) 空指针 panic；该守卫又跑在 sessioncontext 的
+// worker 协程里（无 recover）⇒ 直接升级成进程级崩溃。
+// ⇒ 这里用 verdictkv.IsNilClient：接口为 nil **或**底层指针为 nil 的双重
+// 判据（即便将来有人再写出 typed-nil 也不会走到 panic 那一步）。
 func newHistoryVerdictMemo(cfg historyMemoEnv, rc redis.UniversalClient) *sanitize.TieredVerdictMemo {
 	if cfg.Disabled {
 		return nil
@@ -130,7 +135,10 @@ func newHistoryVerdictMemo(cfg historyMemoEnv, rc redis.UniversalClient) *saniti
 		SharedMaxUsedBytes:     cfg.SharedMaxUsedBytes,
 		SharedMaxWritesPerHour: cfg.SharedMaxWrites,
 	}
-	if cfg.SharedTTL > 0 && rc != nil {
+	if cfg.SharedTTL > 0 && !verdictkv.IsNilClient(rc) {
+		// ★ NewRedis 现在返回**接口**：失败路径是真 nil 接口 ⇒ `kv != nil` 是
+		// 诚实的判据（此前返回 *RedisKV 时判据虽也诚实，但「nil 指针塞进
+		// 接口」这一步把坑留给了调用方）。
 		if kv := verdictkv.NewRedis(rc, verdictkv.KeyPrefix); kv != nil {
 			hc.Shared = kv
 		}
@@ -165,7 +173,7 @@ func installHistoryGuardMemoWithEnv(h *streaming.ChatHandler, d *sanitize.Patter
 		h.SetHistoryGuardConcurrencySafe(d != nil)
 	}
 	shared := "off"
-	if memo != nil && cfg.SharedTTL > 0 && rc != nil {
+	if memo != nil && cfg.SharedTTL > 0 && !verdictkv.IsNilClient(rc) {
 		shared = "on ttl=" + cfg.SharedTTL.String()
 	}
 	slog.Info("history guard verdict memo configured",
