@@ -204,6 +204,33 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 			"补注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
 		"999": "applied(211/252)；字节冻结（checksum 3f374cd0… 与磁盘逐字一致）；预算段已过（statement_timeout=10min）；" +
 			"「实测」已在真库发生（211/252 均跑完、4 条索引建在本文件新建的空表 public.session_summary_layers 上 ⇒ 无存量扫描）；补注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
+		// ★★ 2026-11-23（合并轮六 · 代上游认领）：★ 982_provider_call_attempts
+		// （★ 上游 aac6602ab、★ 供应商逐次调用落库）★ 本门判红：★ 文件里有 3 条
+		// **非并发** CREATE INDEX（idx_provider_call_attempts_sent /
+		// _unconfirmed / _request）⇒ 命中「全表扫描类 DDL」字面判据 ⇒ 但文件头
+		// **没有「实测」注释** ⇒ 判红。
+		//
+		// ★ 为什么按「字节冻结」豁免（★ 与 981/997/998/999 同款处置）**：
+		//   ① ★ **211 已 applied**（★ 只读取证：★ `schema_migrations` 记
+		//      `982|per-attempt supplier call evidence`）⇒ ★★ 改字节就是 L23 同款
+		//      分叉（★ 已 applied 的迁移永不重跑 ⇒ 库里旧、仓内新 ⇒ 部署被内容
+		//      指纹 fail-closed 拦下）⇒ ★★ **处置只能走本表豁免**。
+		//   ② ★★ **「实测」已在真库发生**（★ 与 997/998/999 的措辞同款）：★
+		//      211 实测 `public.provider_call_attempts` **表在位**、★ **4 个索引在位**
+		//      （★ 3 条 CREATE INDEX ＋ 主键）、★ **0 行**（★ 文件头明载
+		//      「No historical attempts are inferred here」⇒ 无历史回填）★
+		//      ⇒ ★ 三条非并发索引建在**本文件新建的空表**上 ⇒ **无存量扫描**
+		//      ⇒ ★★ 无 914 型「拍小了中止部署」的风险；★ 且文件已显式
+		//      `SET statement_timeout='10min'` ⇒ **预算段已过**。
+		//   ③ ★ **诚实边界**：★ 本条**不是**「我方量过秒数」的实测数字
+		//      （★ 我方未对该表灌存量再计时）⇒ ★ 豁免依据是
+		//      「★ 真实部署已在真库跑通 ＋ 索引建在空表上 ⇒ 无存量扫描 ★」这一
+		//      **结构性论证**，★ 而非新造的测速数字。
+		// ★ ⇒ ★ **代上游认领**（★ 上游基线 dd89c6bb6 上这条红就在、★ 上游未认领）
+		// ★ ⇒ ★ 不改上游已 applied 的迁移字节、★ 只在门内登记表里如实写明理由。
+		"982": "applied(211)；字节冻结（211 schema_migrations 记 982|per-attempt supplier call evidence）；预算段已过（statement_timeout=10min）；" +
+			"「实测」已在真库发生（211 跑完、provider_call_attempts 表在位且 4 个索引在位、0 行 ⇒ 3 条非并发索引建在本文件新建的空表上 ⇒ 无存量扫描）；" +
+			"补注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
 	}
 	// 全表扫描类 DDL 的形态。
 	validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)

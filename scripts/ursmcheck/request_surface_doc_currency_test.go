@@ -266,7 +266,14 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 9086, to: 9091,
+		// ★★ 2026-11-23（合并轮六）重钉：★ 原锚 [9086,9091] ⇒ ★ 上游在
+		// ★ 「Middleware stack」注释块里插了 2 行（★ SecurityHeadersMiddleware
+		// ★ 那段说明变长）⇒ ★ R49-A1 那条自陈注释从 9091 漂到 **9093** ⇒
+		// ★ 本门按现状重钉为 [9091,9098]（★ 覆盖注释块 9093-9098 六行）★。
+		// ★ 漂移归属：★ 上游 aac6602ab 轮改 cmd/gateway/main.go ⇒ ★ **上游
+		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 dd89c6bb6 上就在（★ 上游基线
+		// ★ 自带红）⇒ ★ 我方只改对拍表、★ 不动上游代码。
+		file: "cmd/gateway/main.go", from: 9091, to: 9098,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
