@@ -322,6 +322,8 @@ note "★ 臂 J：缺口那条**文件名无数字版本号** ⇒ ★ 不可判�
 FAKEROOT="$FIXTURE_DIR/fakerepo"
 mkdir -p "$FAKEROOT/scripts/checks" "$FAKEROOT/sql/migrations/startup"
 cp "$GATE" "$FAKEROOT/scripts/checks/deploy-ledger-coverage-gate.sh"
+# ★★ 合成仓也要有**共享库**（★ L34 七轮起、★ 投递面解析搬进了 lib ★★）★★
+mkdir -p "$FAKEROOT/scripts/lib" && cp "$REPO_ROOT/scripts/lib/deploy-surface.sh" "$FAKEROOT/scripts/lib/deploy-surface.sh"
 cat >"$FAKEROOT/scripts/apply-db-revision-sequence.sh" <<'FAKEDEPLOY'
 #!/usr/bin/env bash
 files=(
@@ -369,6 +371,8 @@ note "★ 臂 L：投递面里有个文件**磁盘上不在场** ⇒ ★ 期望�
 FAKEROOT2="$FIXTURE_DIR/fakerepo2"
 mkdir -p "$FAKEROOT2/scripts/checks" "$FAKEROOT2/sql/migrations/startup"
 cp "$GATE" "$FAKEROOT2/scripts/checks/deploy-ledger-coverage-gate.sh"
+# ★★ 合成仓也要有**共享库**（★ L34 七轮起、★ 投递面解析搬进了 lib ★★）★★
+mkdir -p "$FAKEROOT2/scripts/lib" && cp "$REPO_ROOT/scripts/lib/deploy-surface.sh" "$FAKEROOT2/scripts/lib/deploy-surface.sh"
 cat >"$FAKEROOT2/scripts/apply-db-revision-sequence.sh" <<'FAKEDEPLOY'
 #!/usr/bin/env bash
 files=(

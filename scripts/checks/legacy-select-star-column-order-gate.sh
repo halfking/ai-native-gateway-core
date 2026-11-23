@@ -55,6 +55,7 @@ cd "$REPO_ROOT" || exit 1
 
 REGISTRY_GO="sql/migrations/startup/hot_surface_select_star_contract_test.go"
 SQL_DIR="sql/migrations/startup"
+DEPLOY_SCRIPT="scripts/apply-db-revision-sequence.sh"
 
 SKIP=0
 FAIL=0
@@ -62,6 +63,12 @@ note() { printf '%s\n' "$*"; }
 skip() { printf 'SKIP: %s\n' "$*"; SKIP=1; }
 bad()  { printf 'FAIL: %s\n' "$*" >&2; FAIL=$((FAIL+1)); }
 abort() { printf 'ABORT: %s\n' "$*" >&2; exit 2; }
+
+# ★★ 共享库：★ 「部署通道投递面」解析的**唯一真源**（★ 见 scripts/lib/deploy-surface.sh ★★）★★
+# ★★ ⇒ ★★ 本门与「覆盖门」**共用同一份投递面解析** ⇒ ★★ **口径不可能分叉** ★★
+# ★★ （★ 仓内既有教训：★ 「同一条规定写了两份」⇒ ★ 门与门开始互相矛盾 ★★）★★
+# shellcheck source=scripts/lib/deploy-surface.sh
+. "$REPO_ROOT/scripts/lib/deploy-surface.sh"
 
 DB_URL="${SELECT_STAR_GATE_DATABASE_URL:-}"
 PG_CONTAINER="${SELECT_STAR_GATE_PG_CONTAINER:-}"
@@ -244,12 +251,37 @@ fi
 note "  ℹ public schema 关系数 ${total_relations}｜列序读取 ${col_rows} 行（★ 只读、★ 一律 SELECT ★★）"
 
 # ═══════════════════════════════════════════════════════════════════════
+# ── 投递面位次（★ 2026-11-24 L34 七轮新增 ★★）────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 为什么需要它（★ 这道门从「有漂移」升级成「**这次部署会在第几条炸**」 ★★）★★
+# ★ 门原本只回答「哪些跨面视图的两侧列序已经漂移」⇒ ★★ 而操作者真正要回答的是
+# ★★ 「**我这次部署会不会撞上它、★ 会撞在第几条**」 ★★ ⇒ ★★ ⇒ 差一个「投递面位次」
+# ★★ 与「该迁移在不在投递面里」 ⇒ ★★ **这两条一补上、★ 门就直接可执行了** ★★
+surface_file="$(mktemp "${TMPDIR:-/tmp}/select-star-surface.XXXXXX")"
+trap 'rm -f "${registry_file:-}" "${pairs_file:-}" "${cols_file:-}" "${surface_file:-}"' EXIT
+surface_rc=0
+deploy_surface_extract "$DEPLOY_SCRIPT" "$surface_file" || surface_rc=$?
+if [ "$surface_rc" -ne 0 ]; then
+  # ★★ 拿不到投递面**只影响「位次」这一句**、★ 不影响漂移判据 ⇒ ★★ ⇒ **不 ABORT**
+  # ★★ （★ 与「解析面自证」的处置不同：★ 那一半坏了会**掏空判据**、★ 这一半坏了只是**少一句话** ★★）★★
+  note "  ℹ 拿不到部署通道投递面（★ ${DEPLOY_SCRIPT} 缺失或解析出 0 条 ★）⇒ ★ **位次未知**（★ 漂移判据不受影响 ★★）"
+  : >"$surface_file"
+else
+  note "  ℹ 部署通道投递面 $(wc -l <"$surface_file" | tr -d ' ') 条（★ 解析自 ${DEPLOY_SCRIPT} · ★ 与覆盖门**共用同一份解析** ★★）"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
 # ── 判据：★ 逐对比对两侧的列序（★ 按位置比类型、★ 与 UNION ALL 的语义一致 ★★）
 # ═══════════════════════════════════════════════════════════════════════
 aligned=0
 absent=0
 half=0
 drift=0
+# ★★ 会炸的文件与位次（★ L34 七轮：★ 让门回答「这次会在第几条炸」 ★★）★★
+blast_positions=""
+blast_files=""
+blast_min=""
+blast_min_file=""
 
 while IFS="$(printf '\t')" read -r view a b file; do
   [ -n "$view" ] || continue
@@ -286,7 +318,23 @@ while IFS="$(printf '\t')" read -r view a b file; do
       print "列数不同：" na " ↔ " nb
     }
   ' A="$a" B="$b" "$cols_file")"
-  bad "跨面视图 ${view} 的两侧**列序已漂移**（★ ${a} ↔ ${b} ★）⇒ ★★ **\`UNION ALL\` 按位置比类型 ⇒ 重建该视图必炸**（★ 典型报错：\`UNION types integer and text cannot be matched\` ★★）★★ ★★ 而这些迁移**大多不自记账** ⇒ ★★ **⇒ 下一次增量部署就会重跑它** ⇒ ★★ ⇒ ★★ ${first_diff}"
+  # ★★ 投递面位次（★ L34 七轮：★ 把「有漂移」变成「**这次会在第几条炸**」 ★★）★★
+  pos=""
+  if [ -s "$surface_file" ]; then
+    pos="$(deploy_surface_position "$surface_file" "$file")"
+  fi
+  if [ -n "$pos" ]; then
+    blast_positions="${blast_positions}${pos} "
+    blast_files="${blast_files}${file}(第${pos}条) "
+    if [ -z "$blast_min" ] || [ "$pos" -lt "$blast_min" ]; then
+      blast_min="$pos"
+      blast_min_file="$file"
+    fi
+    blast_hint="★ 该迁移在部署通道投递面里排第 ${pos} 条 ⇒ ★★ **若本次部署重放它、★ 就会在第 ${pos} 条炸**（★ 单事务 ⇒ 回滚 ⇒ 无损坏、★ 但部署被挡住 ★★）★★"
+  else
+    blast_hint="★ 该迁移**不在**部署通道投递面里 ⇒ ★★ **本次部署不会重放它 ⇒ 没有即时风险**（★ 但它仍在登记表里、★ 将来一旦被投递就会炸 ★★）★★"
+  fi
+  bad "跨面视图 ${view} 的两侧**列序已漂移**（★ ${a} ↔ ${b} ★）⇒ ★★ **\`UNION ALL\` 按位置比类型 ⇒ 重建该视图必炸**（★ 典型报错：\`UNION types integer and text cannot be matched\` ★★）★★ ★★ 而这些迁移**大多不自记账** ⇒ ★★ **⇒ 下一次增量部署就会重跑它** ⇒ ★★ ⇒ ★★ ${first_diff} ★★ ★★ ${blast_hint} ★★"
 done <"$pairs_file"
 
 note ""
@@ -294,8 +342,14 @@ note "汇总：对齐 ${aligned} 对｜列序漂移 ${drift} 对｜只有一侧�
 
 if [ "$drift" -gt 0 ]; then
   note ""
-  note "FAIL: ★★ ${drift} 对 legacy 跨面视图的**列序已漂移** ⇒ ★★ **下一次增量部署重跑它们时必炸**（★ 这不是「可能」：★「UNION ALL」的位置比对是确定性的 ★★）★★"
-  note "  ⇒ ★★ 处置：★ ① **先查这两张表的历史**（★ 谁在什么时候加过列、★ 加在哪一侧 ★★）★ ② 要么把两侧列序**对齐回去**（★ owner 轴：★ schema 变更 ★★）★ ③ 要么把那几条迁移改成**逐列枚举**（★ 改**已 applied** 迁移的字节 ⇒ ★ 分叉风险 ★★）★★"
+  if [ -n "$blast_min" ]; then
+    note "FAIL: ★★ ${drift} 对 legacy 跨面视图的**列序已漂移** ⇒ ★★ **下一次增量部署重跑它们时必炸**（★ 这不是「可能」：★「UNION ALL」的位置比对是确定性的 ★★）★★"
+    note "  ⇒ ★★ **会炸的文件与位次**：★ ${blast_files}★★（★ **最早的一条＝第 ${blast_min} 条（${blast_min_file}）** ★★）★★"
+    note "  ⇒ ★★ 处置：★ ① **先查这两张表的历史**（★ 谁在什么时候加过列、★ 加在哪一侧 ★★）★ ② 要么把两侧列序**对齐回去**（★ owner 轴：★ schema 变更 ★★）★ ③ 要么把那几条迁移改成**逐列枚举**（★ 改**已 applied** 迁移的字节 ⇒ ★ 分叉风险 ★★）★ ④ **或先让通道认到那本账**（★ 方案 A：★ 账里有的就跳过 ⇒ ★ 那这条就不会被重放 ★★）★★"
+  else
+    note "FAIL: ★★ ${drift} 对 legacy 跨面视图的**列序已漂移** ⇒ ★★ **下一次增量部署重跑它们时必炸**（★ 这不是「可能」：★「UNION ALL」的位置比对是确定性的 ★★）★★"
+    note "  ⇒ ★★ 处置：★ ① **先查这两张表的历史**（★ 谁在什么时候加过列、★ 加在哪一侧 ★★）★ ② 要么把两侧列序**对齐回去**（★ owner 轴：★ schema 变更 ★★）★ ③ 要么把那几条迁移改成**逐列枚举**（★ 改**已 applied** 迁移的字节 ⇒ ★ 分叉风险 ★★）★★"
+  fi
   exit 1
 fi
 
