@@ -278,7 +278,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-select-star-order guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-maestro-flow-anchor ## 运行全部审计守卫（快速、无外部依赖；含 **Maestro flow 锚点存在性门**；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
+guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-select-star-order guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-maestro-flow-anchor guards-sa-front-end-contracts ## 运行全部审计守卫（快速、无外部依赖；含 **Maestro flow 锚点存在性门**；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -673,6 +673,39 @@ guards-select-star-order-selftest: ## 列序对拍门的夹具测试（★ 十�
 .PHONY: guards-maestro-flow-anchor
 guards-maestro-flow-anchor: ## Maestro flow 锚点存在性门（★ 快门 · 纯 python3 · 零外部依赖 · 进 CI 快门族）
 	@bash scripts/checks/maestro-flow-anchor-gate.sh
+
+# ── 会话分析「前端 API 路径 × 后端真实路由」交叉对拍门（L34 十轮新增）────
+#
+# ★ 这是**会话分析 E2E 离线半的第二层**（★ 第一层＝L34 九轮的锚点存在性 ★★）：
+#   ★ 前端实际发出的每条会话分析 API 路径 ⇒ 必须在**生产同形 mux**上真的被路由到 ★
+#
+# ★ 为什么必须有它（★ 实测查清的两处结构性缺口 ★）：
+#   ① 前端侧：★ `web/src/api/sessionAnalytics.test.ts` 是一份**很认真**的 URL 契约锁
+#      （★ 它写着「这些断言派生自 Go handlers」 ★★）⇒ ★★ 但它断言的是**手抄的 URL 字面量**
+#      ⇒ ★★ 抄错了没有任何东西会红 ⇒ ★★ 而「抄」本身就是漂移源 ★★；
+#   ② 后端侧：★ `RoutePaths` 只有 **6 条静态路由** ⇒ ★★ 而前端实际调用 **20 条**
+#      （★ 含 5 条**动态子路由** ★★）⇒ ★★ 那 5 条子路由**没有任何可达性钉测** ★★。
+#   ⇒ ★★ 两边都绿、★ 而它们之间**没有交集校验** ⇒ ★★ 任一侧改路径 ⇒ 另一侧不红
+#      ⇒ ★★ 运行时 404 ⇒ ★★ **只有真机 E2E 才能发现**（★ 而真机 E2E 不在 CI 里 ★★）。
+#
+# ★ 为什么不用「再抄一份清单对一次」：★ 那只会多一份会漂移的清单。
+#   本门**从两个源头各自抽事实**、再求交集：
+#     · 前端：**实际发出的 URL 模板**（★ 从 TS 源码里抽、★ 不是手挑 ★★）
+#     · 后端：**生产同形 mux**（★ 仓内真实注册路径逐条注册进去 ★★）
+#   ⇒ ★★ 读数直接来自**真实 mux 的路由结果**、★ 不是文本比对 ★★
+#   ⇒ ★★ 归属判定用 Go 的 `ServeMux.Handler(req)`（★ 直接返回**匹配到的模式串** ★★）
+#      ⇒ ⇒ 「这条路径归不归会话分析包管」是**运行时的既成事实** ★★
+#
+# ★ 判据的三个事实：★ ① 谁接住了（pattern 串）★ ② 本包自己能不能接住 ★ ③ 真发的状态码
+#   ⇒ ★★ **不看状态码是不够的**：★ 家族里有一条**兜底子树** `/api/admin/session-analytics/`
+#     （★ main.go 注册 ★★）⇒ ★★ **它让 404 检测失效**（★ 任何多段路径都能落进它 ★★）
+#     ⇒ ⇒ 必须直接看「谁接住了」 ★★
+#
+# ★ 运行时依赖：**只有 Go**（★ 零外部依赖、★ 不连任何数据库 ★★）
+#   ⇒ 实测墙钟 **≈7s**（★ 缓存热；★ 冷编译另计 ★★）
+.PHONY: guards-sa-front-end-contracts
+guards-sa-front-end-contracts: ## 会话分析前端 API 路径 × 后端路由 交叉对拍门（★ 慢门 · 纯 Go · 不连库）
+	@$(GO) test ./cmd/gateway/ -run 'TestSessionAnalyticsFrontEndPath' -count=1 -timeout=600s
 
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
 #
