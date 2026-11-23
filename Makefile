@@ -729,7 +729,7 @@ guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scrip
 #     对棘轮登记册 ⇒ 读数必须确定）；shell 门扫「已跟踪 ∪ 未跟踪未忽略」
 #     ⇒ 新写好还没 git add 的脚本也在视野里 ⇒ 本门无登记册 ⇒ 宽面不引入不确定性。
 .PHONY: guards-shell guards-shell-vacuous
-guards-shell: guards-shell-vacuous guards-shell-mktemp ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）＋ **判据恒真 shell 门**（★ 2026-11-23 L33 二轮新增）
+guards-shell: guards-shell-vacuous guards-shell-mktemp guards-shell-backtick ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）＋ **判据恒真 shell 门**（★ 2026-11-23 L33 二轮新增）＋ **反引号命令替换门**（★ 2026-11-24 L34 四轮新增）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 # ★★ 2026-11-23 L33 二轮新增：★ 「判据恒真」shell 门 ★★
 #   ★ 起因：★ 本轮给「空库新装烟测门」扩第三阶段时，★ 写出了
@@ -755,6 +755,16 @@ guards-shell-vacuous: ## 「判据恒真」shell 门（★ `|| true` 落在 if/e
 .PHONY: guards-shell-mktemp
 guards-shell-mktemp: ## 「mktemp 模板」跨平台门（★ GNU coreutils 要求 ≥3 个 X、★ macOS 不要求 ⇒ 只在 Linux 上暴露）
 	@bash scripts/guards/check-shell-mktemp-template.sh
+
+# ★★ 2026-11-24 L34 四轮新增：★ 「反引号命令替换」shell 门 ★★
+#   ★ 起因：★ **双引号串里的反引号会被 shell 真执行** ⇒ ★★ 报错文案里随手写一个
+#   ★   反引号包裹的标识符 ⇒ ★★ **它会被真的执行**（★ 本轮实测：★ 在生产 211 上
+#   ★   报 `sha256_file: command not found` ★★）⇒ ★ ⇒ 同一类缺陷连着两轮踩到 ⇒ 本门钉住
+#   ★ 与「mktemp 模板」门**同族**：★ 同在 `guards-shell` 目标、★ 同进 CI 快门族 ★
+#   ★ 纯 awk 实现（★ **不依赖 python3** ★★）⇒ codeup 载体（★ alpine、★ 无 python3 ★★）也能跑 ★
+.PHONY: guards-shell-backtick
+guards-shell-backtick: ## 「反引号命令替换」shell 门（★ 双引号串里的反引号会被 shell 真执行 ⇒ 报错文案里踩过两次）
+	@bash scripts/guards/check-shell-backtick-substitution.sh
 
 # scripts/ursmcheck 的门文件（**数量实时取**，见文件头 URSMCHECK_GATE_COUNT；
 # 比主门慢一个量级 ⇒ 独立 timeout）

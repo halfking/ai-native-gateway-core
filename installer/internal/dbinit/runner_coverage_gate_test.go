@@ -45,6 +45,9 @@ const coverageGateScriptPath = "../../../scripts/checks/deploy-ledger-coverage-g
 // coverageGateFixturePath = 覆盖门的夹具测试脚本（★ 判据的自证臂都在它里面 ★★）。
 const coverageGateFixturePath = "../../../scripts/checks/deploy-ledger-coverage-gate.test.sh"
 
+// coverageChannelScriptPath = 部署通道脚本相对本测试文件的路径（★ 口径比对的另一头 ★★）。
+const coverageChannelScriptPath = "../../../scripts/apply-db-revision-sequence.sh"
+
 // TestCoverageGateIsReadOnly 把「覆盖门只读」钉成可执行断言。
 //
 // ★ 判据：★ 脚本里**任何**写库动词（★ INSERT / UPDATE / DELETE / CREATE /
@@ -232,6 +235,47 @@ func TestCoverageGateFixtureCoversNewJudgementArms(t *testing.T) {
 				"★ ⇒ ★ 少了它、★ 「门变绿」就可能只是「判据被删了」★★",
 				a.marker, a.why)
 		}
+	}
+}
+
+// TestCoverageGateUsesChannelFingerprintChain 把「门的内容指纹口径必须与通道一致」钉住。
+//
+// ★★★ 为什么这条重要（★ 2026-11-24 L34 四轮、★ 实测坐实的**盲区** ★★★）：
+// ★★★ 通道的跳过判据**不是「账里有这个文件」**、★ 而是**「账里的指纹 == 当前文件的指纹」** ★★
+// ★★★ ⇒ ★★ **⇒ 账里有、★ 而指纹过期的文件、★ 通道会【内容重放】** ★★
+// ★★★ ⇒ ★★ 而第一版覆盖门只看「账里有没有这个 marker」⇒ ★★ **把过期指纹当成了「覆盖」**
+// ★★★ ⇒ ★★ **那是一个盲区**（★ 门看不见「这次部署会重放这些」 ★★）★★★
+// ★★★ ⇒ ★★ **⇒ 门必须自己算当前指纹、★ 且算法必须与通道逐字一致** ★★★
+// ★★★   （★ 通道的 `sha256_file` ＝ `sha256sum` → `shasum -a 256` 的回退链、★ 取文件
+// ★★★   **原始字节**的 sha256 ★★）★★★ ⇒ ★★ **⇒ 口径一旦漂移、★ 门的判定就失真** ★★★
+func TestCoverageGateUsesChannelFingerprintChain(t *testing.T) {
+	gateRaw, err := os.ReadFile(coverageGateScriptPath)
+	if err != nil {
+		t.Fatalf("读取覆盖门脚本失败（%s）：%v", coverageGateScriptPath, err)
+	}
+	channelRaw, err := os.ReadFile(coverageChannelScriptPath)
+	if err != nil {
+		t.Fatalf("读取部署通道脚本失败（%s）：%v", coverageChannelScriptPath, err)
+	}
+	gateText := string(gateRaw)
+	channelText := string(channelRaw)
+
+	// ★ 两条链的**每一环**都要在两边同时出现（★ 缺一环 ⇒ 口径就可能不一致 ★★）
+	for _, frag := range []string{"sha256sum", "shasum -a 256"} {
+		if !strings.Contains(channelText, frag) {
+			t.Errorf("★ 部署通道里找不到指纹链的一环 %q（★ 门要跟它逐字一致 ★★）", frag)
+		}
+		if !strings.Contains(gateText, frag) {
+			t.Errorf("★ 覆盖门里找不到指纹链的一环 %q ⇒ ★ ⇒ ★ 门算出来的指纹可能与通道算的**不是同一个** ⇒ ★\n"+
+				"★ ⇒ ★ 于是「指纹过期 ⇒ 通道会重放」这条判据会失真 ⇒ ★\n"+
+				"★ ⇒ ★ 请照抄通道 `sha256_file` 的回退链（★ sha256sum → shasum -a 256 ★★）★★",
+				frag)
+		}
+	}
+	// ★★ 而且门必须**真的算出**当前指纹（★ 而不是只在注释里说 ★★）⇒ ★★ 判据位看得到证据 ★★
+	if !strings.Contains(gateText, "sha_map_file") {
+		t.Errorf("★ 覆盖门没有把当前指纹落到对照表（★ `sha_map_file` ★★）⇒ ★ ⇒ ★ 它没有在做「指纹比对」★\n"+
+			"★ ⇒ ★ 那么「账里有、★ 而指纹过期 ⇒ 通道会重放」这条判据就**缺失** ★★（★ 盲区 ★★）★★")
 	}
 }
 

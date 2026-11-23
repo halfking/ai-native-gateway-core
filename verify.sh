@@ -367,6 +367,14 @@ bash scripts/checks/deploy-ledger-coverage-gate.test.sh
 echo "[verify] shell mktemp template gate (fast gate: >=3 X required by GNU coreutils)"
 bash scripts/guards/check-shell-mktemp-template.sh
 
+# ★★ 「反引号命令替换」shell 门（★ 2026-11-24 新增 ★ 快门：纯静态、★ 纯 awk、★ 约 1~2s ★）★★
+#   ★ 起因：★ **双引号串里的反引号会被 shell 真执行** ⇒ ★★ 报错文案里随手写一个
+#   ★   反引号包裹的标识符 ⇒ ★★ **它会被真的执行** ⇒ ★ 本轮实测：★ 在生产 211 上
+#   ★   报 `sha256_file: command not found` ★★ ⇒ ★ ⇒ 同一类缺陷连着两轮踩到 ⇒ 本门钉住 ★
+#   ★ 与「mktemp 模板」门**同族**：★ 同在 `guards-shell` 目标、★ 同进 CI 快门族 ★。
+echo "[verify] shell backtick substitution gate (fast gate: no unescaped backticks)"
+bash scripts/guards/check-shell-backtick-substitution.sh
+
 # ★★ 「判据恒真」shell 门（★ 2026-11-23 L33 二轮新增 ★ 快门：纯静态、★ 约 1~2s ★）★★
 #   ★ 起因：★ 本轮扩「空库新装烟测门」第三阶段时写出了
 #     `if (grep -q "…" "$LOG" || true); then` ⇒ ★★ **`if` 条件恒为真** ⇒ ★★

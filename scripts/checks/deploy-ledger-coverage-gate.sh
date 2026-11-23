@@ -278,26 +278,76 @@ rows=$(q "select concat_ws(chr(9), sequence_name, coalesce(content_sha256, '<NUL
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-# ── 判据 ② 之第一遍：★ 投递面 ↔ 权威账（★ covered / legacy / missing ★★）
+# ── 判据 ⑤：★ 投递文件的**当前内容指纹**（★ 与通道 `sha256_file` **同口径** ★★）──
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 为什么需要它（★ 2026-11-24 L34 四轮、★ **实测坐实的盲区** ★★）：★★
+# ★★ 通道的跳过判据**不是「账里有这个文件」**、★ 而是**「账里的指纹 == 当前文件的指纹」** ★★
+# ★★ ⇒ ★★ **⇒ 账里有、★ 而指纹过期的文件、★ 通道会【内容重放】**（★ 通道脚本自己的注释：
+# ★★ 「★ 文件在应用后被内容加固过 ⇒ 按契约（★ 每个迁移幂等 ★★）兜底重放安全性 ★★」）★★
+# ★★ ⇒ ★★ **⇒ 而旧口径把它算成「覆盖」（★ 不判红 ★★）⇒ ★★ ⇒ ★★ **那是一个盲区** ★★
+# ★★ ★★ 口径纪律：★ 指纹算法必须与通道**逐字一致**（★ 通道用 `sha256sum` → `shasum -a 256`
+# ★★ ★★ 的回退链、★ 取的是**文件原始字节**的 sha256 ★★）⇒ ★★ ⇒ ★★ 本门照抄那条链 ★★
+SQL_DIR="${REPO_ROOT}/sql/migrations/startup"
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA_CMD="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA_CMD="shasum -a 256"
+else
+  abort "找不到 sha256sum / shasum ⇒ ★ 门无法计算内容指纹（★ 通道用的是同一条回退链 ★★）"
+fi
+sha_map_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-shas.XXXXXX")"
+present_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-present.XXXXXX")"
+absent_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-absent.XXXXXX")"
+trap 'rm -f "${plan_file:-}" "${ledger_markers_file:-}" "${class_file:-}" "${missing_file:-}" "${class2_file:-}" "${installer_version_file:-}" "${sha_map_file:-}" "${present_file:-}" "${absent_file:-}"' EXIT
+: >"$present_file"
+: >"$absent_file"
+while IFS= read -r base; do
+  [ -n "$base" ] || continue
+  path="${SQL_DIR}/${base}"
+  if [ -f "$path" ]; then
+    printf '%s\n' "$path" >>"$present_file"
+  else
+    printf '%s\n' "$base" >>"$absent_file"
+  fi
+done <"$plan_file"
+: >"$sha_map_file"
+if [ -s "$present_file" ]; then
+  # ★ 一次算完（★ 356 个文件一次 sha256sum ⇒ 比逐文件快两个数量级 ★★）
+  xargs $SHA_CMD <"$present_file" 2>/dev/null | awk -v d="${SQL_DIR}/" '
+    { p = $2; if (index(p, d) == 1) { b = substr(p, length(d) + 1) } else { b = p }; print b "\t" $1 }
+  ' >"$sha_map_file"
+fi
+sha_count=$(wc -l <"$sha_map_file" | tr -d ' ')
+absent_count=$(wc -l <"$absent_file" | tr -d ' ')
+note "  ℹ 内容指纹：${sha_count} 条已算（★ 口径＝通道的 \`sha256_file\` ★★）｜磁盘上不在场 ${absent_count} 条"
+
+# ═══════════════════════════════════════════════════════════════════════
+# ── 判据 ② 之第一遍：★ 投递面 ↔ 权威账（★ covered / legacy / stale / missing / absent ★★）
 # ═══════════════════════════════════════════════════════════════════════
 # ★★ 为什么改成「两遍」而不是「一遍到底」★★：
-# ★★   第一遍只做【投递面 ↔ 权威账】的集合判定（★ 不需要任何别的信息 ★★）
+# ★★   第一遍只做【投递面 ↔ 权威账 ＋ 当前指纹】的集合判定（★ 不需要任何别的信息 ★★）
 # ★★   第二遍只对【missing 的那些】做【是不是断层】的判定（★ 需要安装器那本账 ★★）
 # ★★ ⇒ ★★ **⇒ 没有缺口时压根不用去查第二本账**（★ 少一次只读查询 ★★）★★
 awk '
   BEGIN { FS = "\t" }
-  FILENAME == ARGV[1] { state[$1] = $2; next }
+  FILENAME == ARGV[1] { cur[$1] = $2; next }
+  FILENAME == ARGV[2] { stored[$1] = $2; next }
+  FILENAME == ARGV[3] { gone[$1] = 1; next }
   {
     base = $0
-    if (!(base in state)) { print base "\tmissing\t"; next }
-    if (state[base] == "<NULL>") { print base "\tlegacy\t"; next }
-    print base "\tcovered\t"
+    if (base in gone) { print base "\tabsent\t投递面文件在磁盘上不在场 ⇒ 通道跑到它会直接失败"; next }
+    if (!(base in stored)) { print base "\tmissing\t"; next }
+    if (stored[base] == "<NULL>") { print base "\tlegacy\t"; next }
+    if ((base in cur) && stored[base] == cur[base]) { print base "\tcovered\t"; next }
+    print base "\tstale\t账里指纹与当前文件不一致 ⇒ 通道会按当前内容重放"
   }
-' "$ledger_markers_file" "$plan_file" >"$class_file"
+' "$sha_map_file" "$ledger_markers_file" "$absent_file" "$plan_file" >"$class_file"
 
 covered=$(awk -F'\t' '$2=="covered"{c++} END{print c+0}' "$class_file")
 legacy=$(awk -F'\t' '$2=="legacy"{c++} END{print c+0}' "$class_file")
 missing=$(awk -F'\t' '$2=="missing"{c++} END{print c+0}' "$class_file")
+stale=$(awk -F'\t' '$2=="stale"{c++} END{print c+0}' "$class_file")
+absent=$(awk -F'\t' '$2=="absent"{c++} END{print c+0}' "$class_file")
 awk -F'\t' '$2=="missing"{print $1}' "$class_file" >"$missing_file"
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -369,14 +419,18 @@ else
   pending_list=""
 fi
 
-note "  ℹ 投递面 ${plan_count} 条 ｜ 权威账有记录（含指纹）${covered} 条 ｜ legacy 记账行（★ 无指纹、★ 非断层）${legacy} 条 ｜ 缺口 ${missing} 条 ⇒ ★ **断层 ${fault} 条** ｜ 待部署 ${pending} 条"
+note "  ℹ 投递面 ${plan_count} 条 ｜ 覆盖（★ 指纹一致、★ 通道会跳过 ★）${covered} 条 ｜ legacy 行（★ 无指纹 ★）${legacy} 条 ｜ **内容加固重放（★ 指纹过期、★ 通道按设计重放 ★★）${stale} 条** ｜ 缺口 ${missing} 条 ⇒ ★ **断层 ${fault} 条** ｜ 待部署 ${pending} 条 ｜ 磁盘不在场 ${absent_count} 条"
 
-if [ "${fault:-0}" -gt 0 ]; then
+# ★★ 「文件不在场」也是红（★ 通道跑到它会**直接失败**、★ 那不是重放风险 ★★）★★
+absent_list="$(awk -F'\t' '$2=="absent"{print "      · " $1 "（" $3 "）"}' "$class_file")"
+fault_total=$((fault + absent_count))
+
+if [ "${fault_total:-0}" -gt 0 ]; then
   # ★★ 判红（★ 这就是断层 ★★）：★ 「通道将要投递的文件里、★ 有 N 个**已被别的路径
   # ★★ 应用过**（★ 而权威账不知道 ★★）」⇒ ★★ ⇒ ★ **通道会重放它们** ⇒ ★★ ⇒ ★ 而
   # ★★ §7.31 实测：★ 重放在新装库上会炸（★ 臂 D 第 13 个文件 ⇒ `relation
   # ★★ "request_logs_hot" does not exist` ★★）★★ ⇒ ★★ ⇒ ★ **这道红就是那道闸门** ★★。
-  bad "★★ 部署通道投递面有 ${fault} 条**判为断层**（★ 要么【版本在安装器那本账 public.schema_migrations 里 ⇒ 已被别处应用过 ⇒ 通道会重放】、★ 要么【不可判定 ⇒ 保守计入】 ★★）⇒ ★★ ⇒ ★ 而 §7.31 实测：★ 重放在新装库上**必炸**（★ 臂 D：★ 第 13 个文件 ⇒ relation \"request_logs_hot\" does not exist）★★ ⇒ ★★ ⇒ ★ **处置**：★ ① 先按报告 §7.31 的授权轴定方案（A／A′ ⇒ owner 轴）★ ② 或确认这台库**本就该**由部署通道从头铺（★ 那就该由通道自己建账、★ 而不是本门红）★★"
+  bad "★★ 部署通道投递面有 ${fault_total} 条**判为断层**（★ 要么【版本在安装器那本账 public.schema_migrations 里 ⇒ 已被别处应用过 ⇒ 通道会重放】、★ 要么【投递面文件在磁盘上不在场 ⇒ 通道跑到它会直接失败】 ★★）⇒ ★★ ⇒ ★ 而 §7.31 实测：★ 重放在新装库上**必炸**（★ 臂 D：★ 第 13 个文件 ⇒ relation \"request_logs_hot\" does not exist）★★ ⇒ ★★ ⇒ ★ **处置**：★ ① 先按报告 §7.31 的授权轴定方案（A／A′ ⇒ owner 轴）★ ② 或确认这台库**本就该**由部署通道从头铺（★ 那就该由通道自己建账、★ 而不是本门红）★★"
   # ★★ 打印前 20 条：★ **不用 `head`、★ 改用 awk**（★ 2026-11-24 L34 三轮 ★★）
   # ★★ 根因：★ `head -20` 会**提前关闭读端** ⇒ ★★ 写端挨 EPIPE ⇒ ★★ 写端退出码
   # ★★ 变 141 ⇒ ★★ 而本脚本 `set -o pipefail` ⇒ ★★ **管道状态取 141** ⇒ ★★ ⇒ ★★
@@ -387,8 +441,9 @@ if [ "${fault:-0}" -gt 0 ]; then
   # ★★ 押在「它恰好小于 64 KiB」上** ⇒ ★★ ⇒ ★★ **⇒ 改用 `awk 'NR<=20'`**（★ awk
   # ★★ 会把输入读完、★ **不提前关管道** ⇒ ★★ 写端永不挨 EPIPE ⇒ ★★ 与体量无关 ★★★）
   printf '%s\n' "$fault_list" | awk 'NR<=20 { print "  " $0 }'
-  if [ "${fault:-0}" -gt 20 ]; then
-    printf '      · ……（★ 其余 %d 条省略）\n' "$((fault - 20))"
+  printf '%s\n' "$absent_list" | awk 'NR<=20 { print "  " $0 }'
+  if [ "${fault_total:-0}" -gt 20 ]; then
+    printf '      · ……（★ 其余 %d 条省略）\n' "$((fault_total - 20))"
   fi
 else
   if [ "${pending:-0}" -gt 0 ]; then
@@ -399,6 +454,15 @@ else
     fi
   else
     note "  ✔ 投递面每一条都在权威账里有记录 ⇒ ★ **无断层**（★ ⇒ 这台库上重放不会因「账不互通」而炸）"
+  fi
+fi
+
+if [ "${stale:-0}" -gt 0 ]; then
+  # ★★ 这**不是**断层（★ 通道**自己知道**、★ 它主动选择重放 ★★）⇒ ★★ 报出来、★ 不判红 ★★
+  note "  ℹ 另有 **${stale} 条**【内容加固型】：★ 权威账里有记录、★ 但**指纹与当前文件不一致** ⇒ ★★ 通道会**按当前内容重放**它们（★ 这是通道**设计内**的行为、★ 它的契约是「每个迁移幂等」 ★★）⇒ ★★ **⇒ 不判红**（★ 报出来是为了让人知道「这次部署会重放这 ${stale} 条」 ★★）★★"
+  awk -F'\t' '$2=="stale"{print "      · " $1 "（" $3 "）"}' "$class_file" | awk 'NR<=20 { print "  " $0 }'
+  if [ "${stale:-0}" -gt 20 ]; then
+    printf '      · ……（★ 其余 %d 条省略）\n' "$((stale - 20))"
   fi
 fi
 
