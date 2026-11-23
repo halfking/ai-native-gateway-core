@@ -165,6 +165,38 @@ const js = async (expr) => {
   }
 }
 
+// ★★ 条件等待（2026-11-23 L16 复跑轮新增）：★ **固定等待会把「慢」判成「空」**
+//   实测（浏览器内）：`/user-ranking/:owner/api-keys` 在 **t+7.1s** 才返回，
+//   而探针点完 tab **固定只等 2.5s** 就取样 ⇒ 取样早于响应 ⇒
+//   看到「无表、无空态、无横幅」⇒ **假红**（把「还在路上」当成「没有数据」）。
+//   ⇒ 判据改成：**等「目标表出现」或「空态/错误/陈旧横幅出现」**（须连续两次命中，
+//     避免切 tab 那一瞬旧区块还在）；
+//   ⇒ 超过上限仍未定 ⇒ `settled=false` ⇒ 调用方判 **量具失效**（退出码 2），
+//     **不判产品红**（★ 环境慢不是页面缺陷 —— 这正是 L15 轮的老教训）。
+//   ★ markers 是**全部命中**才算目标表（任务表用 ['任务','请求数']：
+//     只用 '任务' 会撞上项目表里的「任务数」列）。
+const SETTLE_FN = `const __settle = async (markers, maxMs) => {
+  const t0 = Date.now()
+  let hit = 0
+  while (Date.now() - t0 < maxMs) {
+    const hasTable = [...document.querySelectorAll('table.sa-table')].some(t => {
+      const hs = [...t.querySelectorAll('thead th')].map(h => (h.textContent||'').trim())
+      return markers.every(m => hs.some(h => h.includes(m)))
+    })
+    const empty = !!document.querySelector('.app-empty-state')
+    const err = !!document.querySelector('.sa-banner--error')
+    const stale = !!document.querySelector('.sa-banner--stale')
+    if (hasTable || empty || err || stale) {
+      hit += 1
+      if (hit >= 2) return { settled: true, waitedMs: Date.now() - t0 }
+    } else {
+      hit = 0
+    }
+    await new Promise(r => setTimeout(r, 200))
+  }
+  return { settled: false, waitedMs: Date.now() - t0 }
+}`
+
 // ── 0. 登录（API 落 HttpOnly cookie ⇒ SPA 与服务端同源）───────────────────
 await goto(`${BASE}/`, 4000)
 
@@ -493,11 +525,12 @@ if (!owner) {
   //   ★ 空态判据用**结构类名** `.app-empty-state`（`web/src/components/EmptyState.vue`），
   //     不用中文文案（文案随 locale 变 ⇒ 换语种后找不到 ⇒ 假红）。
   const drill = JSON.parse(await js(`(async () => {
+    ${SETTLE_FN}
     const btn = document.querySelector('table.sa-table tbody tr td button.sa-link')
     if (!btn) return JSON.stringify({ ok: false, why: 'NO_PROJECT_ROW' })
     const project = btn.textContent.trim()
     btn.click()
-    await new Promise(r => setTimeout(r, 3500))
+    const settleRes = await __settle(['任务', '请求数'], 25000)
     const tables = [...document.querySelectorAll('table.sa-table')].map(t => ({
       headers: [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()),
       rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
@@ -505,12 +538,15 @@ if (!owner) {
     const tabs = [...document.querySelectorAll('.sa-tab')].map(b => (b.textContent||'').trim() + (b.classList.contains('sa-tab--active') ? '(active)' : ''))
     return JSON.stringify({
       ok: true, project, tables, tabs,
+      settled: settleRes.settled, waitedMs: settleRes.waitedMs,
       hasEmptyState: !!document.querySelector('.app-empty-state'),
       projectsGone: !document.querySelector('table.sa-table'),
     })
   })()`))
   if (!drill.ok) {
     gauge('人员详情页：点项目行下钻到任务列表', drill.why || '无项目行')
+  } else if (drill.settled === false) {
+    gauge('人员详情页：任务列表 tab 的页面层断言', `25s 内 tab 状态未定（waitedMs=${drill.waitedMs}）⇒ 取样早于数据到达 ⇒ 不判产品红`)
   } else {
     const taskTable = drill.tables.find(t => t.headers.some(h => h.includes('任务')) && t.headers.includes('请求数'))
     check('人员详情页：点项目行 ⇒ 切到「任务列表」tab',
@@ -542,21 +578,25 @@ if (!owner) {
 
   // ── 4.1 人员详情页 - 模型用量 tab ────────────────────────────────────
   const modelsTab = JSON.parse(await js(`(async () => {
+    ${SETTLE_FN}
     const tab = [...document.querySelectorAll('.sa-tab')].find(b => (b.textContent||'').includes('模型用量'))
     if (!tab) return JSON.stringify({ ok: false, why: 'NO_MODELS_TAB' })
     tab.click()
-    await new Promise(r => setTimeout(r, 2500))
+    const settleRes = await __settle(['模型', '成功率'], 25000)
     const tables = [...document.querySelectorAll('table.sa-table')].map(t => ({
       headers: [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()),
       rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
     }))
     return JSON.stringify({
       ok: true, tables,
+      settled: settleRes.settled, waitedMs: settleRes.waitedMs,
       hasEmptyState: !!document.querySelector('.app-empty-state'),
     })
   })()`))
   if (!modelsTab.ok) {
     check('人员详情页：模型用量 tab 存在', false, modelsTab.why || '找不到模型用量 tab')
+  } else if (modelsTab.settled === false) {
+    gauge('人员详情页：模型用量 tab 的页面层断言', `25s 内 tab 状态未定（waitedMs=${modelsTab.waitedMs}）⇒ 取样早于数据到达 ⇒ 不判产品红`)
   } else {
     const modelsTable = modelsTab.tables.find(t => t.headers.includes('模型'))
     const needHeaders = ['模型', '请求数', 'Token 数', '成功率', '缓存命中率', '平均响应时间']
@@ -581,16 +621,18 @@ if (!owner) {
 
   // ── 4.2 人员详情页 - API Key 统计 tab ──────────────────────────────
   const apiKeysTab = JSON.parse(await js(`(async () => {
+    ${SETTLE_FN}
     const tab = [...document.querySelectorAll('.sa-tab')].find(b => (b.textContent||'').includes('API Key'))
     if (!tab) return JSON.stringify({ ok: false, why: 'NO_APIKEYS_TAB' })
     tab.click()
-    await new Promise(r => setTimeout(r, 2500))
+    const settleRes = await __settle(['Key别名'], 25000)
     const tables = [...document.querySelectorAll('table.sa-table')].map(t => ({
       headers: [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()),
       rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
     }))
     return JSON.stringify({
       ok: true, tables,
+      settled: settleRes.settled, waitedMs: settleRes.waitedMs,
       hasEmptyState: !!document.querySelector('.app-empty-state'),
       // ★ 2026-11-23（L16）：**错误横幅**也要采样 ⇒ 才能区分
       //   「端点失败被渲染成空态」与「端点失败被渲染成错误态」。
@@ -600,6 +642,8 @@ if (!owner) {
   })()`))
   if (!apiKeysTab.ok) {
     check('人员详情页：API Key 用量 tab 存在', false, apiKeysTab.why || '找不到 API Key 用量 tab')
+  } else if (apiKeysTab.settled === false) {
+    gauge('人员详情页：API Key 用量 tab 的页面层断言', `25s 内 tab 状态未定（waitedMs=${apiKeysTab.waitedMs}）⇒ 取样早于数据到达 ⇒ 不判产品红`)
   } else {
     // ★★★ 2026-11-23（L16）：**先按 HTTP 状态码定性，再按页面定性** ★★★
     // ★ 旧写法只断「空态 vs 有表」⇒ ★ 把「端点 500」误判成「前端没渲染空态」
