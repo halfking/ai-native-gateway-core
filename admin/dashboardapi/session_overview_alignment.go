@@ -208,11 +208,16 @@ JOIN universe s ON s.session_id = ss.session_key AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd ON sd.session_key = ss.session_key AND sd.tenant_id = ss.tenant_id`
 
 // universeWhere 返回会话宇宙 WHERE 合取项（排除探测时）。
+//
+// ★ 2026-11-24 P1：第三个参数是 **ssAlias**（session_summaries 别名）——
+//   探测排除项现在带「真实计费豁免」，要读 ss.total_cost_usd。
+//   调用点全部是 `FROM (SELECT * FROM session_summaries WHERE …) ss` 的外层
+//   ⇒ ss 在作用域内（与 s./sd. 同一层）。
 func universeWhere(includeProbes bool) string {
 	if includeProbes {
 		return ""
 	}
-	return analytics.SessionUniverseWhere("s", "sd")
+	return analytics.SessionUniverseWhere("s", "sd", "ss")
 }
 
 // isUniverseUnavailableErr 判定「宇宙 join 的依赖缺失」（sessions/session_dim

@@ -172,17 +172,17 @@ func TestProcessBatch_PassesCompositeCursorAndWritesEnrichedValues(t *testing.T)
 // writeArgMatchers 构造写入参数的匹配器：除关键列外一律 AnyArg，
 // 关键列（会话/任务/模态/协议/附件数/费用/来源）逐一钉死。
 func writeArgMatchers() []driver.Value {
-	matchers := make([]driver.Value, 42)
+	matchers := make([]driver.Value, 43)
 	for i := range matchers {
 		matchers[i] = sqlmock.AnyArg()
 	}
-	matchers[14] = "sess-1"          // session_id ← gw_session_id
-	matchers[15] = "task-1"          // task_id ← gw_task_id
-	matchers[20] = "multimodal"      // modality（派生：带附件）
-	matchers[21] = "openai"          // protocol ← client_protocol
-	matchers[22] = int64(2)          // attachment_count
-	matchers[32] = int64(115)        // cost_cents ← round(1.15 * 100)
-	matchers[41] = "async_processor" // source
+	matchers[15] = "sess-1"          // session_id ← gw_session_id
+	matchers[16] = "task-1"          // task_id ← gw_task_id
+	matchers[21] = "multimodal"      // modality（派生：带附件）
+	matchers[22] = "openai"          // protocol ← client_protocol
+	matchers[23] = int64(2)          // attachment_count
+	matchers[33] = int64(115)        // cost_cents ← round(1.15 * 100)
+	matchers[42] = "async_processor" // source
 	return matchers
 }
 

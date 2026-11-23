@@ -1955,6 +1955,15 @@ var requestMetrics983 []byte
 //go:embed embeddata/startup/983_request_metrics.down.sql
 var requestMetrics983Down []byte
 
+// ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」
+//   —— 有真实计费的会话不再因 owner 名字命中探测正则而被剔（根因：
+//   (^deployment-gate) 正则误杀真实 agent 流量）。四个物化视图重建 + 15 索引重建。
+//go:embed embeddata/startup/984_session_universe_cost_aware_probe_scope.sql
+var sessionUniverseCostAwareProbeScope984 []byte
+
+//go:embed embeddata/startup/984_session_universe_cost_aware_probe_scope.down.sql
+var sessionUniverseCostAwareProbeScope984Down []byte
+
 // ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件缺
 //
 //	schema_migrations 自登记行 ⇒ 211 的记账链在 980 与 990 之间断一格。
@@ -2647,6 +2656,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
 	"startup/983_request_metrics.sql":                         requestMetrics983,
 	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
+	// ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」。
+	"startup/984_session_universe_cost_aware_probe_scope.sql":      sessionUniverseCostAwareProbeScope984,
+	"startup/984_session_universe_cost_aware_probe_scope.down.sql": sessionUniverseCostAwareProbeScope984Down,
 	// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复（981 自登记回填）。
 	"startup/989_migration_ledger_session_analytics_981_repair.sql":      migrationLedgerSessionAnalytics981Repair989,
 	"startup/989_migration_ledger_session_analytics_981_repair.down.sql": migrationLedgerSessionAnalytics981Repair989Down,
