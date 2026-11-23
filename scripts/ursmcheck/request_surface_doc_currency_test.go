@@ -273,6 +273,14 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 漂移归属：★ 上游 aac6602ab 轮改 cmd/gateway/main.go ⇒ ★ **上游
 		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 dd89c6bb6 上就在（★ 上游基线
 		// ★ 自带红）⇒ ★ 我方只改对拍表、★ 不动上游代码。
+		// ★★ 2026-11-24 第二十三次重钉：★ 原锚 [9091,9098] ⇒ ★ 上游
+		// ★ `41d1eca87`（request_metrics 集成轮）在 `func main()` **早期**插了
+		// ★ 18 行 ⇒ ★ R49-A1 那条自陈注释从 9091 漂到 **9111** ⇒
+		// ★ 本门按现状重钉为 [9109,9116]（★ 覆盖注释块 9111-9116 六行）★。
+		// ★ 漂移归属：★ 上游 `41d1eca87` 轮改 cmd/gateway/main.go ⇒ ★ **上游
+		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 `41d1eca87` 上就在（★ ★★ 基线
+		// ★ 隔离 worktree 上逐字复现、★ 同 4 个子例、★ RC=1）⇒ ★ 我方只改
+		// ★ 对拍表、★ 不动上游代码。
 		file: "cmd/gateway/main.go", from: 9109, to: 9116,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
