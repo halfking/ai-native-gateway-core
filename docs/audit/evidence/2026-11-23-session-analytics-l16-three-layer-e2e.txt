@@ -1,0 +1,43 @@
+# 证据：2026-11-23 L16 部署终态 + 三层 E2E 复跑（现役 2.6.1-90d2df96-20261123-211）
+#
+# ── 部署（隔离 worktree /tmp/lgw-l9l10，HEAD=90d2df96c，工作树干净）──────────
+#   BASE_REF=a798423f DD_TEST_TIMEOUT=30m DD_FORCE_FOREIGN_LOCK=1 DD_SKIP_TEST_GATE=1 \
+#     ~/sdk/bash5/bin/bash scripts/deploy-211.sh --force
+# ── 跨机锁接管（先等 62 分钟 → 直连持有者机器确认 → 才接管；详见报告 §7.16）──
+[test-gate] ★ 闸门被显式跳过（DD_SKIP_TEST_GATE=1）★ —— 这次上线**没有**测试证据
+[211] 已取得 211 部署锁: /tmp/kx-llm-gateway-deploy-211.lock
+[force] WARNING: forcing recovery of a FOREIGN-host lock on 211 (holder host='XUTAOdeMacBook-Pro.local' pid=75797) — holder liveness was NOT verified
+[211] 已取得目标机侧部署锁: /var/lib/llm-gateway-go/deploy.lock（@ 211）
+[211] 候选槽已起：llm-gateway-211-a @ 8781（旧槽 b @ 8783 仍在服务）
+[211] 公网入口 OK（llm.itestu.cn → 192.168.31.211:443 → 200）
+[211] WARN: 登录冒烟未执行：未提供管理员口令（DD_ADMIN_PASSWORD / LLM_GATEWAY_ADMIN_PASSWORD）⇒ 本次发布**未验证**登录路径
+[211] 旧槽已停：llm-gateway-211-b（保留容器与镜像，可 docker start 回滚）
+[211] 部署完成 @ 192.168.31.211（槽 a 接管）
+[211]   活跃槽  : a → 容器 llm-gateway-211-a @ 127.0.0.1:8781
+[211]   旧槽    : b → 容器 llm-gateway-211-b（已停，可 docker start 回滚）
+
+# ── 现役身份（/version 的 git_sha 字段本身，非 -dirty 剥离后的比较）────────
+{"build_date":"20261123","build_seq":3240,"git_sha":"90d2df96","listen":":8781","module":"llm-gateway-go","runtime_role":"active","version":"2.6.1-90d2df96-20261123-211"}
+
+
+# ── 三层 E2E（maestro/run-session-analytics.sh）──────────────────────────────
+---- 汇总 ----
+filter rc=0
+flow rc=0 FAILED=0
+probe rc=0
+产物目录：/tmp/lgw-l9l10/maestro/reports/20261123-085715
+VERDICT: PASS（三层全绿）
+E2E_EXIT=0
+EXIT=0
+
+# ── API Key 段（本次走「端点正常」分支）─────────────────────────────────────
+151:✅ 人员详情页：点项目行 ⇒ 切到「任务列表」tab  — tabs=项目列表 / 任务列表(active) / 模型用量 / API Key用量 project=hermes
+160:✅ 人员详情页：API Key 统计表头齐全  — 6 列全在
+161:✅ 人员详情页：API Key 统计有行或显示空态  — rows=1 hasEmptyState=false
+163:✅ 对拍：API Key 首行「密钥 ID」== 页面自身响应 api_keys[0].key_id  — 页面="5" 同源响应="5"
+
+# ── 量具取证：api-keys 端点在浏览器里的真实耗时（t+7134ms 才返回）─────────
+#   探针点完 tab 固定只等 2500ms ⇒ 取样早于响应 ⇒ 假红（详见报告 §7.18）
+t+0 … t+7073ms   tables=0  empty=false err=false loading=false   ← 页面还没渲染
+t+7134ms         网络响应到达：200  /api/admin/session-analytics/user-ranking/kaixuan-1/api-keys?start_date=2026-11-17&end_date=2026-11-23
+t+7350ms         tables=1  keyTable=rows=1 h=8  empty=false err=false  ← 稳定态（8 列表头 / 1 行）

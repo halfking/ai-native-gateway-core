@@ -1,1 +1,4 @@
 node_modules/
+# ★ 符号链接形态的 node_modules（`node_modules/` 只匹配目录 ⇒ 符号链接漏网 ⇒
+#   本机绝对路径的符号链接会被误提交进主干）。2026-11-23 L16 轮实测踩到。
+node_modules
