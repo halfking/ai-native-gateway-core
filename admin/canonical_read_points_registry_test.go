@@ -1068,6 +1068,19 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "requestLogsSource(_ int) 恒返回 canonical 视图（2026-11-11 从 v1 双臂收敛，与 maas 同名切换层同款）⇒ 源由切换层决定 ⇒ 调用点改不动；别名在拼接侧（rl）"},
 		},
 	},
+	// ★★★ 2026-11-24（合并轮十一 · ★★ 代上游登记 ★★）：★ 上游把统计侧的维度
+	// 增强查询改成直读 canonical 双腿视图（★ `internal/metricsstore/processor.go` ★）
+	// ★★ 但**没登记进本登记簿** ⇒ ★★ ⇒ **`origin/main` 上 `admin` 包当场判红**
+	// （★ `TestCanonicalReadPointRegistryCoversEveryMentionedFile` ★★）⇒ ★★★
+	// ⇒ **代上游登记**（★ 形态 / 分类**人工核定**、★ 不让规则替我方决定 ★★）。
+	"internal/metricsstore/processor.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "统计增强的维度查询（会话键 / 任务键 / 附件数 / 客户端协议 / 出向协议）",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"attachment_count:base", "client_protocol:base", "egress_protocol:base", "gw_session_id:expr", "gw_task_id:detail", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "统计增强的维度查询（会话键 / 任务键 / 附件数 / 客户端协议 / 出向协议）；本读点读 attachment_count:base,client_protocol:base,egress_protocol:base,gw_session_id:expr,gw_task_id:detail,request_id:base,ts:base ⇒ 引用了 734 details 腿的列（gw_task_id）⇒ 窄投影须带上 details LEFT JOIN；★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
+		},
+	},
 }
 
 // ─────────────────────── 扫描器 ───────────────────────
