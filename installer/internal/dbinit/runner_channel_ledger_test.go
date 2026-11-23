@@ -123,7 +123,19 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		}
 	}
 	const (
-		wantBoth          = 330
+		// ★★ 2026-11-23 L32 轮更新（★ 本分支把 055–058 teams 族重编号为 982-985
+		// ★★ 并同时登记进【两条投递通道】⇒ ★ 交集 +4）：★ 实测对照（★ 同一套口径
+		// ★ 分别在 origin/main 与本分支树上各取一次）：
+		//
+		//	origin/main：★ installer 392 / deploy 356 / 交集 330 / 仅部署 26 / 仅安装器 62
+		//	本分支：      ★ installer 396 / deploy 360 / 交集 334 / 仅部署 26 / 仅安装器 62
+		//
+		// ★★ **差值恰好是 982_teams_table / 983_user_teams / 984_api_keys_team_id /
+		// 985_team_budgets 这 4 条**（★ 交集新增清单逐条核对、★ 其余三个集合**逐条无差**）
+		// ⇒ ⇒ ★ **这是本分支的预期效应、★ 不是漂移** ⇒ ★ **只更新交集基线**，
+		// ★★ 「仅部署 26 / 仅安装器 62」**一字不动**（★ ★ 动了它们就等于把
+		// ★★ 「两本账不互通」这个现状偷偷改掉 ⇒ ★ 那属于上游方案 A 的范畴）。
+		wantBoth          = 334
 		wantOnlyDeploy    = 26
 		wantOnlyInstaller = 62
 	)
