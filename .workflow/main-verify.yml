@@ -254,3 +254,32 @@ stages:
               name: maestro-readme-route-stats-gate
               script: |
                 bash scripts/checks/maestro-readme-route-stats-gate.sh
+
+            # ★★★ 2026-11-24（会话分析域 L34 九轮）：Maestro flow「锚点存在性」门
+            # 接进**真正在跑的载体** ★★★
+            #
+            # ★ 起因：★ **会话分析 E2E 的「离线半」在 CI 上是零覆盖** ⇒ ★ 这是 Goal 侧
+            #   「会话分析 E2E 进 CI」目前**唯一能落地的那一半**（在线半要 node + 浏览器
+            #   + 在跑的网关 ⇒ 载体里跑不了）。
+            #   ★ 锚点存在性的判据**只以 vitest 钉测的形式存在两份**
+            #     （`saTestIds.contract.spec.ts` / `statsRangeTestIds.contract.spec.ts`）
+            #     ⇒ ★★ ① 只覆盖 **2 个 flow**；★★ ② 要 node ⇒ ★ **载体里没有 node**
+            #     ⇒ ★★ ⇒ **在 CI 上等于零覆盖** ⇒ ★★ 且那两份钉测是**手挑前端文件清单**的
+            #     ⇒ ⇒ **flow 加了新锚点、前端改了名，两边都可能对不上而没人红** ★。
+            #   ★ 实测坐实的缺陷：★ `maestro/flows/17-live-gateway-core-display.yaml`
+            #     断言 `id: "gateway-core-canvas"` ⇒ ★ 该锚点**在前端树上不存在**
+            #     （真实锚点是 `gateway-core-box`）⇒ 且那条带 `optional: true`
+            #     ⇒ ⇒ **断言恒真**（★ 静默：真机上表现为「找不到元素」，
+            #       极易被误判成「页面坏了」）★★。
+            #
+            # ★ 运行时依赖：**只有 python3**（零第三方依赖；★ codeup 镜像自带 ⇒ 见本文件
+            #   2026-11-02 第二十四轮那段「缺的是时间不是工具」的更正）。
+            #
+            # ★ 判据写在这条**非注释行**上是有意的：
+            #   `tests/gate_scripts_caller_registry_test.sh` 要求「门脚本必须有可执行调用方」
+            #   ⇒ 注释里写不算 ⇒ 必须在**真载体**里出现非注释行。
+            #   （★ 本门同时接在 Makefile 的 `guards` / `guards-fast` ⇒ 本地也跑得到。）
+            - step: shell
+              name: maestro-flow-anchor-gate
+              script: |
+                bash scripts/checks/maestro-flow-anchor-gate.sh

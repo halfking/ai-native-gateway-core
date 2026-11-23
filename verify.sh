@@ -413,6 +413,24 @@ bash scripts/guards/check-shell-backtick-substitution.sh
 echo "[verify] shell vacuous-assertion gate (|| true must not sit in an if/elif/while condition)"
 bash scripts/guards/check-shell-vacuous-assertion.sh
 
+# ★★ 「Maestro flow 锚点存在性」门（★ 2026-11-24 L34 九轮新增 · 快门 · 纯 python3 · 约 1~2s）★★
+#   ★ 起因：★ **会话分析 E2E 的「离线半」在 CI 上是零覆盖** ⇒ ★ Goal 侧
+#     「E2E 进 CI」目前**唯一能落地的那一半**。
+#     ★ 锚点存在性判据**只以 vitest 钉测的形式存在两份**（`saTestIds.contract.spec.ts`
+#       / `statsRangeTestIds.contract.spec.ts`）⇒ ★ 只覆盖 **2 个 flow**，
+#       ★ 且要 node ⇒ ★ **codeup 载体里没有 node** ⇒ ★★ ⇒ **在 CI 上等于零覆盖**。
+#   ★ 实测坐实的缺陷：★ `maestro/flows/17-live-gateway-core-display.yaml` 断言
+#     `id: "gateway-core-canvas"` ⇒ ★ 该锚点**在前端树上不存在** ⇒ 且带
+#     `optional: true` ⇒ ⇒ **断言恒真**（静默：真机上表现为「找不到元素」）。
+#   ★ 本门判【存在性】；既有那道遮蔽门判【可命中性】⇒ ★★ **两件事、必须同轮一起跑**
+#     （★ 本轮实测：把幽灵锚点换成真实存在的 `gateway-core-box` 后，★ 遮蔽门当场红了
+#       ——那个 `<section>` 带 `:aria-label` ⇒ `id:` 选不到 ⇒ ★★ 等于把一个静默故障
+#       换成另一个静默故障 ⇒ ⇒ 最终锚点选 `gw-flow-in`：存在且不被遮蔽 ★★）。
+#   ★ 门内含四条对照臂（真幽灵 / 三种真实锚点不假红 / 原生 flow 排除 / 白名单棘轮）
+#     ⇒ ★ 判据不是「看起来对」，而是**被变异臂咬过**。
+echo "[verify] maestro flow anchor existence gate (fast gate: python3 only, no external deps)"
+bash scripts/checks/maestro-flow-anchor-gate.sh
+
 echo "[verify] session storage audit gate decision contracts"
 bash tests/session_storage_audit_gate_test.sh
 echo "[verify] session storage audit integration suite (required coherence)"

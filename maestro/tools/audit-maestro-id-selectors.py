@@ -48,17 +48,31 @@ audit-maestro-id-selectors.py —— 扫全仓 Maestro flow 的 `id:` 选择器�
 
 * 本工具：**flow 的 `id:` 选择器 ↔ 前端 `data-testid` 元素**的**选择器语义**对拍。
 * `audit-route-coverage.mjs`：**路由 ↔ flow 的 `openLink:` ↔ README §3** 的**覆盖**对拍。
+
+## ★ 2026-11-24（L34 九轮）：锚点索引抽成共享库
+
+★ 原先本工具自己扫前端建索引（**只认静态 `data-testid`**）⇒ 而同一条规定
+（「flow 的 `id:` 在前端从哪来」）现在有**两个消费者**：本工具（遮蔽）
+与新工具 `audit-flow-anchor-existence.py`（存在性）⇒ ⇒ 写两份必然漂移。
+⇒ 索引规则抽到 `maestro/tools/flow_anchors.py`（**同一条规定只写一份**），
+  两个工具共用。
+
+★ 顺带订正本工具 `unknown` 的**口径**：原先「前端没有这个 data-testid」
+  就算 unknown ⇒ ★ **把 HTML `id=` 与动态模板串锚点误判成 unknown**
+  （实测 17 个「unknown」里 **10 个是假阳性**：3 个 HTML `id=`、
+  7 个动态档位锚点）⇒ ★ 换成共享库后口径才准（现在 **0 个**）。
 """
 
-import glob
 import json
 import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import flow_anchors  # noqa: E402  (path must be set first)
+
 REPO_ROOT_DEFAULT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FLOW_GLOB_REL = "maestro/flows/**/*.yaml"
-VUE_GLOB_REL = "web/src/**/*.vue"
 
 
 def repo_root():
@@ -79,37 +93,6 @@ def strip_comment_lines(text):
     return "\n".join(l for l in text.split("\n") if not re.match(r"^\s*#", l))
 
 
-def build_testid_index(root):
-    """data-testid → (文件, 开始标签原文)。"""
-    index = {}
-    for path in glob.glob(os.path.join(root, VUE_GLOB_REL), recursive=True):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                src = fh.read()
-        except OSError:
-            continue
-        # 开始标签：<tag ... >（允许跨行，不含 > 前出现 '<' 的情况）
-        for m in re.finditer(r"<[A-Za-z][^<>]*?>", src, re.S):
-            tag = m.group(0)
-            for tid in re.findall(r'data-testid\s*=\s*"([^"]+)"', tag):
-                index.setdefault(tid, (os.path.relpath(path, root).replace(os.sep, "/"), tag))
-    return index
-
-
-def collect_flow_selectors(root):
-    """[(flow 文件相对路径, id)]，注释已剥离。"""
-    out = []
-    for path in sorted(glob.glob(os.path.join(root, FLOW_GLOB_REL), recursive=True)):
-        rel = os.path.relpath(path, root).replace(os.sep, "/")
-        if os.path.basename(rel).startswith("_tmp-"):
-            continue  # 临时探针不入账
-        with open(path, encoding="utf-8") as fh:
-            code = strip_comment_lines(fh.read())
-        for tid in sorted(set(re.findall(r'\bid:\s*"?([A-Za-z0-9_-]+)"?', code))):
-            out.append((rel, tid))
-    return out
-
-
 def shadow_reason(tag):
     reasons = []
     if re.search(r"(?<![\w-])(:)?title\s*=", tag):
@@ -121,15 +104,25 @@ def shadow_reason(tag):
 
 def run():
     root = repo_root()
-    index = build_testid_index(root)
-    selectors = collect_flow_selectors(root)
+    index = flow_anchors.build_anchor_index(root)
+    selectors, _skipped_native = flow_anchors.collect_flow_selectors(root)
 
     shadowed = []
     unknown = []
+    unshadowable = 0
     for flow, tid in selectors:
-        entry = index.get(tid)
+        entry = index["data_testid"].get(tid)
         if entry is None:
-            unknown.append({"flow": flow, "id": tid})
+            # ★ 2026-11-24：不是「没有这个锚点」，而是「这个锚点不由静态
+            #   data-testid 提供」⇒ 须再问一次「它到底存不存在」：
+            #   · 存在（HTML id / 绑定表达式 / 动态模板）⇒ 只是**没法做静态遮蔽判定**
+            #     ⇒ 不算 unknown（原口径把它算成 unknown ⇒ 17 个里 10 个是假阳性）；
+            #   · 不存在 ⇒ 真幽灵 ⇒ 由 `audit-flow-anchor-existence.py` 负责判红。
+            ok, _source = flow_anchors.resolve_anchor(tid, index)
+            if ok:
+                unshadowable += 1
+            else:
+                unknown.append({"flow": flow, "id": tid})
             continue
         file, tag = entry
         reasons = shadow_reason(tag)
@@ -144,14 +137,15 @@ def run():
     if "--json" in sys.argv:
         print(json.dumps({
             "scannedSelectors": len(selectors),
-            "scannedTestIds": len(index),
+            "scannedTestIds": len(index["data_testid"]),
             "shadowed": shadowed,
             "unknown": unknown,
+            "notStaticTestId": unshadowable,
             "pass": not shadowed,
         }, ensure_ascii=False, indent=2))
     else:
         print("# Maestro flow 的 `id:` 选择器遮蔽审计（L13 补轮）")
-        print("扫描：flow 选择器 %d 个 / 前端 data-testid %d 个\n" % (len(selectors), len(index)))
+        print("扫描：flow 选择器 %d 个 / 前端 data-testid %d 个\n" % (len(selectors), len(index["data_testid"])))
         if shadowed:
             print("❌ 被 title/aria-label 遮蔽（⇒ `id:` 必然找不到 ⇒ **恒假红**）：")
             for s in shadowed:
@@ -160,8 +154,13 @@ def run():
         else:
             print("✅ 没有被遮蔽的 id 选择器")
         if unknown:
-            print("\n（未在前端源码里找到对应 data-testid 的 id：%d 个 —— 另有「flow↔testid」门负责）"
+            print("\n（前端树里**根本不存在**的 id：%d 个 —— 由 "
+                  "`maestro/tools/audit-flow-anchor-existence.py`（门："
+                  "`scripts/checks/maestro-flow-anchor-gate.sh`）负责判红）"
                   % len(unknown))
+        if unshadowable:
+            print("（另有 %d 个锚点不是静态 data-testid（HTML id / 动态模板）⇒ "
+                  "静态遮蔽判定不适用，但它们**存在**）" % unshadowable)
         print("\nRESULT: %s" % ("PASS" if not shadowed else "FAIL（%d 处恒假红隐患）" % len(shadowed)))
     return 0 if not shadowed else 1
 
