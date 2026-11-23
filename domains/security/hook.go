@@ -366,13 +366,20 @@ func (h *SecurityHook) OnError(_ context.Context, _ *domain.PipelineRequest, err
 // Registry 返回内部 registry（用于测试与 telemetry）。
 func (h *SecurityHook) Registry() *Registry { return h.registry }
 
-// applyObserveMode 在 observe 模式下将所有 deny verdict 转为 allow。
+// applyObserveMode 在 observe 模式下实施分级防护策略。
 //
-// 背景（2026-11-23）：security.mode = "observe" 时，所有安全检测继续运行
-// 但不拦截请求，只在日志中记录威胁信息。这允许在生产环境中：
-//   1. 保持安全监控能力
-//   2. 收集威胁情报
-//   3. 不影响正常业务
+// 背景（2026-11-23）：security.mode = "observe" 时，根据威胁严重程度分级处理：
+//   - Severity >= 10（高危威胁，如 jailbreak）：继续拦截
+//   - Severity < 10（低危威胁）：只观察不拦截
+//
+// 这种分级策略允许在生产环境中：
+//   1. 保持对高危威胁的防护能力
+//   2. 对低危威胁收集数据而不影响业务
+//   3. 在观察模式下仍然能拦截真正的攻击
+//
+// 判据：Severity >= 10 的威胁保持原判决（拦截），< 10 的转为观察。
+const severityThresholdForObserve = 10
+
 func (h *SecurityHook) applyObserveMode(verdicts []*governance.Verdict) []*governance.Verdict {
 	mode := h.mode.Load()
 	if mode == nil {
@@ -384,11 +391,19 @@ func (h *SecurityHook) applyObserveMode(verdicts []*governance.Verdict) []*gover
 		return verdicts
 	}
 
-	// observe 模式：将所有 deny 改为 allow，但保留原因说明
+	// observe 模式：分级处理
+	// - Severity >= 10: 保持拦截（高危威胁如 jailbreak）
+	// - Severity < 10: 转为观察（低危威胁）
 	for _, v := range verdicts {
 		if !v.Allow {
-			v.Allow = true
-			v.Reason = fmt.Sprintf("[observe] %s", v.Reason)
+			if v.Severity >= severityThresholdForObserve {
+				// 高危威胁：保持拦截，标注为 observe 模式下的拦截
+				v.Reason = fmt.Sprintf("[observe:blocked] %s", v.Reason)
+			} else {
+				// 低危威胁：转为观察
+				v.Allow = true
+				v.Reason = fmt.Sprintf("[observe:allowed] %s", v.Reason)
+			}
 		}
 	}
 	return verdicts
