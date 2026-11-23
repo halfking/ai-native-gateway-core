@@ -1,19 +1,32 @@
 # Berechnungsregeln für Board und Sitzungsstatistik
 
-Die Tabs „Board" und „Sitzungsstatistik" fassen denselben Strom von Modellaufrufen unter **zwei verschiedenen Berechnungsregeln** zusammen. Diese Seite beschreibt, wie jede Zahl der beiden Tabs berechnet wird, woher sie stammt und welches Zeitfenster sie abdeckt — samt Gegenüberstellung, warum sich die Zahlen unterscheiden. Zweck: Daten abgleichen und Abweichungen selbst prüfen.
+Die Tabs „Board", „Sitzungsstatistik" und „Anbieter-Abgleich" fassen denselben Strom von Modellaufrufen unter **drei verschiedenen Berechnungsregeln** zusammen. Diese Seite beschreibt, wie jede Zahl berechnet wird, woher die Daten stammen und welches Zeitfenster sie abdeckt — samt **Aufschlüsselung nach Positionen** darüber, warum sich die Zahlen der drei Module nicht decken. Zweck: Daten abgleichen und Abweichungen selbst prüfen.
 
-> Messgrundlage: 2026-11-23 02:27 (Asia/Shanghai) im Produktivbetrieb gemessen und gegen die Produktionsdatenbank (nur lesend) abgeglichen.
+> Messgrundlage: 2026-11-23 21:05 (Asia/Shanghai) im Produktivbetrieb gemessen. Alle Zahlen stammen aus **demselben Zeitpunkt** (innerhalb einer einzigen SQL-Abfrage), Fenster = `NOW()-7 Tage`; die Seite „Anbieter-Abgleich" wurde zusätzlich über den geschlossenen Kalendertagsbereich `2026-11-17 ~ 2026-11-23` gemessen und taggenau gegen die Faktentabelle abgeglichen.
 
-## Wie die beiden Tabs zusammenhängen
+## Wie die drei Module zusammenhängen
 
-| | Board | Sitzungsstatistik |
+| | Board | Sitzungsstatistik | Anbieter-Abgleich |
+| --- | --- | --- | --- |
+| Zähleinheit | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**) | Eine Sitzung zählt als eine Zeile mit den **kumulierten Werten** dieser Sitzung (**auf Sitzungs-Ebene**) | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**, je Anbieter aggregiert) |
+| Quelle der Wahrheit | Anfrage-Faktentabelle `usage_facts` | Sitzungsübersicht `session_summaries` + Sitzungsuniversum | Tagessnapshot-Tabelle `report_snapshots` |
+| Zeitfenster | Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis jetzt | Rollierende N Tage (erste Anfrage in den letzten N Tagen) | **Geschlossener Kalendertagsbereich** (ganzer Tag, inklusive des vollen letzten Tages) |
+| Probe-Verkehr | Ausgeschlossen über `traffic_class` (umschaltbar) | Ausgeschlossen über die Regeln des **Sitzungsuniversums** | **Nicht ausgeschlossen** (gesamter Verkehr, einschließlich „Nicht zugeordnet") |
+| Reifegrad | Echtzeit | Echtzeit | **T+1-Snapshot** (Tage, die noch nicht abgeschlossen sind, hinken hinterher) |
+
+**Fazit vorab**: Die Zahlen der drei Module **sollen nicht gleich sein** — andere Zähleinheit, anderes Zeitfenster, andere Probe-Ausschlussregeln, anderer Reifegrad. Ein modulübergreifender Vergleich muss diese vier Punkte zuerst angleichen; einfaches Subtrahieren führt in die Irre.
+
+### Das Wichtigste: Probe-Verkehr ist praktisch kostenlos
+
+Probe-Verkehr (Health-Check / Selbsttest) steht in der Faktentabelle separat als `traffic_class='probe'`:
+
+| Berechnungsgrundlage (gleiches Fenster) | Anfragen | Kosten |
 | --- | --- | --- |
-| Zähleinheit | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**) | Eine Sitzung zählt als eine Zeile mit den **kumulierten Werten** dieser Sitzung (**auf Sitzungs-Ebene**) |
-| Quelle der Wahrheit | Anfrage-Faktentabelle `usage_facts` (Redis-Cache-Baseline + Live-Differenz) | Sitzungsübersicht `session_summaries` (Live-Abfrage) + materialisierte Sichten (Cache-Fläche) |
-| Zeitfenster | Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis jetzt | Panel = rollierende N Tage (erste Anfrage in den letzten N Tagen); Abgleichzeile = ganze Shanghai-Kalendertage |
-| Probe-Verkehr | Ausgeschlossen über die Verkehrsklasse der Anfrage-Faktentabelle | Ausgeschlossen über die Sitzungs-Regeln der „Sitzungsuniversum"-Seite |
+| Ohne Probes | 81.265 | $8.854,70 |
+| Mit Probes | 189.534 | $8.856,87 |
+| **Probe-Anteil** | **108.271** | **$2,17** |
 
-**Fazit vorab**: Die Zahlen der beiden Tabs **sollen nicht gleich sein** — andere Zähleinheit (Anfrage vs. Sitzung), anderes Zeitfenster, andere Ausschlussregeln. Ein tabellenübergreifender Vergleich muss diese drei Punkte zuerst angleichen; einfaches Subtrahieren führt in die Irre.
+⇒ **Die Anfragenzahlen unterscheiden sich um den Faktor 2,3, die Kosten aber nur um $2,17.** Wer „viel mehr Anfragen, aber ähnlich hohe Kosten" sieht, sollte zuerst die Probe-Berechnungsgrundlage prüfen — nicht die Datenrechnung.
 
 ## Board: wie jede Zahl entsteht
 
@@ -69,45 +82,83 @@ Eine Sitzung zählt nur, wenn alle drei Bedingungen zutreffen:
 2. Sie hat einen Besitzer (Benutzerschlüssel oder API-Key-Besitzerschlüssel; sind beide leer, zählt sie nicht);
 3. Sie ist keine Probe-Sitzung: weder manuell als Probe markiert noch per Muster „Besitzer / Client-Typ / Titel" als Self-Check, Deployment-Gate, Test oder Verifikation erkannt.
 
-### Warum die Kosten hier kleiner sind als im Board
+## Vollständige Aufschlüsselung der Kostendifferenz (gemessen 2026-11-23, gleicher Zeitpunkt)
 
-Regel 3 des Sitzungsuniversums wirft **echte Geschäftssitzungen** weg, die als Probe eingestuft werden. Messung in der Produktionsdatenbank (gleiches 7-Tage-Fenster, 2026-11-23):
+Die 81.265 Anfragen / $8.854,70 des Boards (ohne Probes), **aufgeschlüsselt in jeden Block der Sitzungsstatistik** (die sechs Positionen unten ergeben zusammen die Board-Summe, die Kosten schließen auf den Cent genau):
 
-- Die 15.898 vom Sitzungs-Teil ausgeschlossenen Sitzungen haben ihre Hauptanfrage in der Anfrage-Faktentabelle zu **100 % als Geschäftsverkehr** eingestuft, zusammen $6.452,73;
-- im selben Zeitfenster summiert sich der in der Anfrage-Faktentabelle tatsächlich als Probe klassifizierte Verkehr auf nur **$1,81**.
+| # | Bestandteil | Anfragen | Kosten (USD) | Zuordnung |
+| --- | --- | --- | --- | --- |
+| C | Im Sitzungsuniversum **beibehaltene** Sitzungen | 58.180 | 1.551,41 | Sitzungsstatistik (das ist der Block, den die Seite zeigt) |
+| D1 | Ausgeschlossen · **manuell markierte Probes** | 12.364 | 5.145,16 | Lücke der Sitzungsstatistik |
+| D2 | Ausgeschlossen · **per Muster erkannte Probes** | 5.946 | 1.876,67 | Lücke der Sitzungsstatistik |
+| D3 | Ausgeschlossen · **ohne Besitzer** | 1.202 | 0,08 | Lücke der Sitzungsstatistik |
+| E | **Sitzungen über das Fenster hinaus** (erste Anfrage außerhalb, im Fenster noch aktiv) | 3.191 | 281,38 | Lücke der Sitzungsstatistik |
+| F | **Ohne Sitzungsbezug** (direkte API-Aufrufe, Skriptaufrufe) | 381 | 0,00 | Nur Board |
+| | **Summe** | **81.263** | **8.854,70** | |
 
-Beide Tabs behaupten also, Probe-Verkehr auszuschließen, **schließen aber nicht dieselben Anfragen aus**. Das ist der Hauptgrund, warum die Kosten der Sitzungsstatistik deutlich unter denen des Boards liegen.
+⇒ **Die Differenz zwischen Sitzungsstatistik und Board liegt nicht primär an den „Sitzungen über das Fenster hinaus", sondern an den Probe-Ausschlussregeln des Sitzungsuniversums (D1+D2).**
 
-## Gegenüberstellung der Zahlen (gemessen 2026-11-23, 7-Tage-Fenster)
+### Schlüsselmessung: Alles Ausgeschlossene ist echter Geschäftsverkehr
 
-| Kennzahl | Board | Sitzungsstatistik (Panel) | Sitzungsstatistik (Abgleichzeile) |
+Die Anfragen der ausgeschlossenen D1/D2/D3-Sitzungen im Fenster, klassifiziert nach `origin_stage` im Anfrageprotokoll:
+
+| Ausschlussgrund | Anfragen | Kosten (USD) | davon `origin_stage='business'` | Anteil |
+| --- | --- | --- | --- | --- |
+| Manuell markierte Probes | 12.364 | 5.145,16 | 12.364 | **100 %** |
+| Per Muster erkannte Probes | 5.946 | 1.876,67 | 5.946 | **100 %** |
+| Ohne Besitzer | 1.202 | 0,08 | 1.202 | **100 %** |
+
+⇒ Die auf der Sitzungsseite ausgeschlossenen 19.512 Anfragen bzw. $7.021,91 Kosten sind im Anfrageprotokoll **zu 100 % Geschäftsverkehr (`origin_stage='business'`)** — keine einzige ist eine Probe. **Das ist der Hauptgrund, warum die Sitzungsstatistik unter dem Board liegt, und zugleich die derzeit größte Einzelabweichung.**
+
+## Gegenüberstellung der Zahlen der drei Module (gemessen 2026-11-23)
+
+| Kennzahl | Board (ohne Probes) | Sitzungsstatistik (Panel) | Anbieter-Abgleich |
 | --- | --- | --- | --- |
-| Zähleinheit | Anfragen | Sitzungen + kumulierte Sitzungsanfragen | Sitzungen / Anfragen |
-| Anfragen | 65.774 | 72.098 | — |
-| Kosten (USD) | 8.013,93 | 2.717,62 | 2.468,73 (interne Kosten) |
-| Credits | 86.925 (fensterunabhängig) | — | 0 |
-| Token | 3.245.804.009 | — | — |
-| Erfolgsquote | 95,31 % | — | 94,64 % |
-| Sitzungen | — | 19.235 | 17.390 |
+| Zähleinheit | Anfragen | Sitzungen + kumulierte Sitzungsanfragen | Anfragen (je Anbieter aggregiert) |
+| Anfragen | 81.265 | 58.180 (im Universum) / 77.687 (Gesamtmenge außerhalb des Universums) | 178.841 (einschließlich „Nicht zugeordnet") |
+| Kosten (USD) | 8.854,70 | 1.551,41 (im Universum) | 8.612,07 |
+| Probe-Verkehr | bereits ausgeschlossen | nach den Sitzungsregeln ausgeschlossen | **nicht ausgeschlossen** |
+| Reifegrad | Echtzeit | Echtzeit | **T+1-Snapshot** |
 
-Zuordnung der Abweichungen:
+### Board vs. Anbieter-Abgleich: taggenauer Abgleich
 
-- **Anfragen 72.098 > 65.774**: Die Anfragenzahl der Sitzungsseite ist die kumulierte Anfragenzahl der gewählten Sitzungen; eine Sitzung, die das Fenster überschreitet, bringt ihre Anfragen nach dem Fensterende vollständig mit. Zusätzlich enthält die Sitzungstabelle doppelte Zeilen (gemessen: bis zu 30 gleiche Schlüssel), die mit aggregiert werden.
-- **Kosten 2.717,62 < 8.013,93**: Das Sitzungsuniversum entfernt die oben genannten $6.452,73 Geschäftsverkehr. Hinzu kommt, dass das Board auch Aufrufe **ohne Sitzungsbezug** zählt (direkte API-Aufrufe, Skriptaufrufe) — gemessen rund ein Fünftel der Board-Kosten.
-- **Credits 0 vs. 86.925**: Weder die Sitzungsseite noch die Anfrage-Faktentabelle halten derzeit einen belastbaren Credit-Bestand; der angezeigte Wert stammt aus der Live-Differenz.
-- **Erfolgsquote 95,31 % vs. 94,64 %**: beides Anfrage-Ebene, aber einmal aus `usage_facts`, einmal aus der materialisierten Anfrage-Log-Sicht — und mit unterschiedlichen Fenstern.
+Die Abgleich-Seite liest `daily_total` aus `report_snapshots` und gleicht es taggenau gegen die Faktentabelle ab (geschlossener Kalendertagsbereich 11/17 ~ 11/23):
+
+| Datum | Anfragen in der Faktentabelle | Anfragen im Abgleich-Snapshot | Differenz | Kosten-Differenz |
+| --- | --- | --- | --- | --- |
+| 11/17 | 27.446 | 27.446 | 0 | 0,0000 |
+| 11/18 | 22.905 | 22.905 | 0 | 0,0000 |
+| 11/19 | 35.008 | 35.008 | 0 | 0,0000 |
+| 11/20 | 23.947 | 23.947 | 0 | 0,0000 |
+| 11/21 | 21.341 | 21.341 | 0 | 0,0000 |
+| 11/22 | 19.693 | 19.693 | 0 | 0,0000 |
+| 11/23 | 36.019 | 28.501 | 7.518 | 42,38 |
+
+⇒ **Die ersten 6 Tage stimmen anfrage- und centweise exakt überein**; die Differenz am 11/23 stammt zu 100 % vom Abschlusszeitpunkt des Tages-Snapshots (Snapshot `updated_at` = 17:38, Messzeitpunkt 21:05) — **kein Rechenfehler, sondern die normale Verzögerung eines noch nicht abgeschlossenen Tages**.
+
+### Innerhalb des Abgleich-Moduls: keine Doppelzählung
+
+Die Anbieterzeilen der Abgleich-Seite (einschließlich „Nicht zugeordnet") **summieren sich exakt auf die Gesamtsumme der Seite**:
+
+- Summe der Anbieterzeilen = 178.841 Anfragen = die Gesamt-Anfragen der Seite ✓
+- Summe der Kosten der Anbieterzeilen = $8.612,07 = die Gesamtkosten der Seite ✓
+- Davon „Nicht zugeordnet" (`provider_id IS NULL`) = 79.801 Anfragen / 100 % Fehlschläge / $0,00 — das ist **Probe-Verkehr ohne Anbieterzuordnung** (Probes gehen nicht an den Upstream-Anbieter), keine fehlende Rechnung.
 
 ## Was tun, wenn die Zahlen nicht zusammenpassen
 
-1. **Zuerst das Fenster angleichen**: Board = ab Kalendertages-Mitternacht; Sitzungsstatistik-Panel = rollierende N Tage; Abgleichzeile = ganze Shanghai-Kalendertage. Auch bei gleicher Voreinstellung sind das drei verschiedene Fenster.
+1. **Zuerst das Fenster angleichen**: Board = ab Kalendertages-Mitternacht; Sitzungsstatistik-Panel = rollierende N Tage; Abgleichzeile = ganze Shanghai-Kalendertage; Anbieter-Abgleich = geschlossener Kalendertagsbereich. Auch bei gleicher Voreinstellung sind das vier verschiedene Fenster.
 2. **Dann die Zähleinheit angleichen**: Anfragen mit Anfragen, Kosten mit Kosten vergleichen; Sitzungszahl nicht gegen Anfragenzahl stellen.
-3. **Auf Degradierungsmarkierungen achten**: Zeigt eine Karte „degradiert / nicht vertrauenswürdig / nicht berechenbar", bedeuten diese Nullen nicht „kein Verkehr".
-4. **Den Probe-Schalter prüfen**: „Probes ausschließen / einschließen" im Board wirkt nur auf die Kopfsumme; Verteilungs- und Trenddiagramm bleiben immer auf Geschäftsgrundlage.
-5. **„Heute" konnte fehlschlagen (behoben am 2026-11-23)**: Die Voreinstellung „Heute" der Sitzungsstatistik lief reproduzierbar in ein 30-Sekunden-Timeout, weil auf der Datenbankseite der Join-Index fehlte (Index am 2026-11-23 ergänzt: Abfragezeit von 121,8 s auf 0,19 s). Zeigt die Seite den Fehler wieder an, ist der Index erneut verschwunden — dann bitte den Bereitschaftsdienst prüfen lassen, ob `idx_session_dim_session_key` vorhanden ist.
+3. **Dann die Probe-Berechnungsgrundlage angleichen**: Das Board lässt sich auf „Probes einschließen" umstellen; die Sitzungsstatistik schließt nach den Regeln des Sitzungsuniversums aus; **der Abgleich enthält immer die Probes**. Weichen die Anfragenzahlen stark ab, während die Kosten ähnlich bleiben ⇒ zuerst die Probes prüfen.
+4. **Dann den Reifegrad angleichen**: Der Abgleich ist ein T+1-Snapshot, **die Daten des laufenden Tages hinken zwingend hinterher**; vor dem Vergleich prüfen, bis zu welchem Tag der Snapshot reicht.
+5. **Auf Degradierungsmarkierungen achten**: Zeigt eine Karte „degradiert / nicht vertrauenswürdig / nicht berechenbar", bedeuten diese Nullen nicht „kein Verkehr".
+6. **Trenddiagramm des Boards ≠ Karten des Boards**: Das Trenddiagramm stammt aus der Minutentabelle, also aus einer anderen Quelle als die Karten darüber (Anfrage-Faktentabelle) (im 30-Tage-Fenster gemessen rund 13,8 % Abweichung).
+7. **„Heute" konnte fehlschlagen (behoben am 2026-11-23)**: Die Voreinstellung „Heute" der Sitzungsstatistik lief reproduzierbar in ein 30-Sekunden-Timeout, weil auf der Datenbankseite der Join-Index fehlte (Index am 2026-11-23 ergänzt: Abfragezeit von 121,8 s auf 0,19 s). Zeigt die Seite den Fehler wieder an, ist der Index erneut verschwunden — dann bitte den Bereitschaftsdienst prüfen lassen, ob `idx_session_dim_session_key` vorhanden ist.
 
 ## Bekannte Einschränkungen (gemessen 2026-11-23)
 
-1. **Kosten und Anfragenzahl der Sitzungsseite sind zu hoch (Doppelzählung, am 2026-11-23 auf `main` behoben)**: Kosten und Anfragenzahl der Sitzungsstatistik stammen aus der Aggregation der Sitzungssummen; `sessions` ist jedoch eine **nach Tagen partitionierte Sitzungshistorie** (dieselbe Session bekommt jeden Tag eine neue Zeile), und der Join der Statistik dedupliziert nicht nach Sitzung ⇒ dieselbe Session wird mehrfach gezählt. Messung auf der Produktionsdatenbank vom 2026-11-23 (gleiches 7-Tage-Fenster, **Werte vor der Behebung**): Die Kosten der Sitzungsseite liegen rund **61 %** und die Anfragenzahl rund **36 %** über den nach Sitzung deduplizierten Werten (die teuerste Session wurde dreimal gezählt). **Diese Doppelzählung ist behoben**: der Join der Sitzungsuniversum dedupliziert nun nach `(session_id, tenant_id)` (`DISTINCT ON`), die drei materialisierten Sichten wurden mit Migration 994 nachgezogen ⇒ die **61 %／36 %** oben sind **Messwerte vor der Behebung**. **Die weiterhin bestehende bekannte Einschränkung ist D1 (zu aggressive Probe-Ausschließung, orthogonal zu diesem Punkt)**; **die Board-Zahlen (auf Anfrage-Ebene) waren nie betroffen** ⇒ beim Kostenvergleich das Board heranziehen.
-2. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
-3. Trenddiagramm (Minutentabelle) und Karten (Anfrage-Faktentabelle) des Boards unterscheiden sich im 30-Tage-Fenster um rund 13,8 % (160.451 vs. 140.969 Anfragen).
-4. Der Probe-Ausschluss entfernt auf beiden Seiten nicht denselben Verkehr (siehe oben).
+1. **Das Sitzungsuniversum schließt Probes zu aggressiv aus (D1/D2, am 2026-11-23 messtechnisch bestätigt)**: Die von der Sitzungsstatistik ausgeschlossenen 19.512 Anfragen bzw. $7.021,91 Kosten sind im Anfrageprotokoll **zu 100 % Geschäftsverkehr**. Die Sitzungsstatistik liegt damit rund **$7.021,91 (79 %)** unter dem Board (Berechnungsgrundlage ohne Probes). **Die Board-Zahlen (auf Anfrage-Ebene) waren nie betroffen** ⇒ für einen exakten Kostenabgleich das Board heranziehen oder die Abgleich-Seite vorher auf die Geschäftsgrundlage umstellen.
+2. **Sitzungen über das Fenster hinaus (E)**: Bei 18 Sitzungen liegt die erste Anfrage vor dem Fenster, sie sind im Fenster aber noch aktiv und werden derzeit vollständig ausgeschlossen — das verschluckt 3.191 Anfragen / $281,38 (3,2 % der Board-Kosten).
+3. **Aufrufe ohne Sitzungsbezug (F)**: 381 direkte API- / Skriptaufrufe haben keine Sitzung; das Board zählt sie, die Sitzungsstatistik nicht.
+4. **Verzögerung des Abgleich-Snapshots am selben Tag**: Der Abgleich ist T+1, **die Daten des heutigen Tages sind unvollständig**; direkt von den Echtzeit-Zahlen des Boards abgezogen entsteht daher immer eine Differenz.
+5. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
+6. Trenddiagramm (Minutentabelle) und Karten (Anfrage-Faktentabelle) des Boards unterscheiden sich im 30-Tage-Fenster um rund 13,8 % (160.451 vs. 140.969 Anfragen).

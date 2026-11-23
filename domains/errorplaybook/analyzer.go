@@ -56,7 +56,24 @@ func clampConfidence(c float64) float64 {
 //	★ 无论提案质量如何，手册条目**一定**落库（source='pi_analysis'）——
 //	「把新错误类型记录到手册」是 owner 需求的硬性交付；提案差 ⇒ 条目带
 //	prompt 方案（分析指引），提案好 ⇒ 条目带可执行方案。
+//
+// 自动化调用（worker）走本入口：留痕 executed_by 记引擎身份。
 func (e *Engine) AnalyzeUnknown(ctx context.Context, cfg Config, ev Event) error {
+	return e.analyzeUnknown(ctx, cfg, ev, e.executedBy)
+}
+
+// AnalyzeUnknownAs 以指定操作者身份做未知错误分析（管理面手动分析用）。
+//
+//	★ 2026-11-23 审计轮：此前手动分析也走 AnalyzeUnknown ⇒ 留痕 executed_by
+//	  与自动化分析无法区分。executedBy 为空 ⇒ 回落引擎身份。
+func (e *Engine) AnalyzeUnknownAs(ctx context.Context, cfg Config, ev Event, executedBy string) error {
+	return e.analyzeUnknown(ctx, cfg, ev, executedBy)
+}
+
+func (e *Engine) analyzeUnknown(ctx context.Context, cfg Config, ev Event, executedBy string) error {
+	if strings.TrimSpace(executedBy) == "" {
+		executedBy = e.executedBy
+	}
 	if e.llm == nil {
 		return fmt.Errorf("LLM client not configured; unknown-error analysis unavailable")
 	}
@@ -89,8 +106,16 @@ func (e *Engine) AnalyzeUnknown(ctx context.Context, cfg Config, ev Event) error
 	// ── 门控执行一次修正 ─────────────────────────────────────────
 	//	变更类方案必须过 0.80 置信度门；只读方案（prompt / record_note /
 	//	只读 api）直接执行。
+	//
+	//	★ 2026-11-23 审计轮：变更类方案还必须过**全局执行闸** cfg.AutoExecute。
+	//	  此前这条路径只看置信度 —— 标准模式有全局闸、首次修正没有 ⇒
+	//	  「auto_execute 先关」的灰度态下，LLM 给出置信度 ≥0.80 的变更类方案
+	//	  会被当场执行（设置项文档自称「全局执行闸」，行为却只覆盖标准模式）。
+	//	  只读方案不受全局闸约束：它们不改变生产状态，属于 auto_analyze 的分析面。
 	autoExecute := !mutating // 条目后续标准模式是否自动执行：非变更方案才默认开
-	if !mutating || confidence >= confidenceFloor {
+	passConfidence := !mutating || confidence >= confidenceFloor
+	blockedByGlobalGate := mutating && !cfg.AutoExecute
+	if passConfidence && !blockedByGlobalGate {
 		probe := Entry{
 			ID:           0,
 			ErrorType:    ev.ErrorType,
@@ -98,30 +123,40 @@ func (e *Engine) AnalyzeUnknown(ctx context.Context, cfg Config, ev Event) error
 			Title:        proposal.Title,
 			Plan:         plan,
 		}
-		rec, execErr := e.ExecuteEntry(ctx, &probe, ev, TriggerAutoAnalyze)
+		rec, execErr := e.executeEntry(ctx, &probe, ev, TriggerAutoAnalyze, executedBy)
 		// probe.ID=0 ⇒ 执行留痕不挂条目（条目在下面才落库）；失败也如实记录。
 		if execErr != nil {
 			slog.Warn("error_playbook: first-fix execution failed",
 				"error_type", ev.ErrorType, "status", rec.Status, "error", execErr)
 		}
 	} else {
-		// 低置信度变更方案 ⇒ 不执行，留痕 awaiting_approval。
+		// 方案被闸拦下 ⇒ 不执行，留痕 awaiting_approval 并写明是哪道闸。
+		// 两道闸同时不过时报置信度门（把全局闸打开它也执行不了，那才是主因）。
 		rec := Execution{
 			ErrorType:     ev.ErrorType,
 			TriggerSource: TriggerAutoAnalyze,
 			Status:        StatusAwaitingApproval,
-			ExecutedBy:    e.executedBy,
+			ExecutedBy:    executedBy,
 		}
-		rec.ErrorMessage = fmt.Sprintf(
-			"mutating plan (confidence %.2f < floor %.2f) not executed; entry recorded view-only",
-			confidence, confidenceFloor)
+		gateStep := StepLog{Step: 1, Action: "proposal_gate", Status: "skipped"}
+		switch {
+		case !passConfidence:
+			rec.ErrorMessage = fmt.Sprintf(
+				"mutating plan (confidence %.2f < floor %.2f) not executed; entry recorded view-only",
+				confidence, confidenceFloor)
+			gateStep.Result = fmt.Sprintf("plan_kind=%s confidence=%.2f", plan.Kind, confidence)
+		default:
+			rec.ErrorMessage = fmt.Sprintf(
+				"auto_execute disabled globally: mutating plan (confidence %.2f) not executed; entry recorded view-only",
+				confidence)
+			gateStep.Action = "global_execute_gate"
+			gateStep.Result = fmt.Sprintf("plan_kind=%s confidence=%.2f gate=error_playbook.auto_execute",
+				plan.Kind, confidence)
+		}
 		if ctxBytes, err := json.Marshal(ev); err == nil {
 			rec.Context = ctxBytes
 		}
-		rec.Steps = marshalSteps([]StepLog{{
-			Step: 1, Action: "proposal_gate", Status: "skipped",
-			Result: fmt.Sprintf("plan_kind=%s confidence=%.2f", plan.Kind, confidence),
-		}})
+		rec.Steps = marshalSteps([]StepLog{gateStep})
 		if err := e.store.RecordExecution(ctx, rec); err != nil {
 			slog.Warn("error_playbook: record gate execution failed", "error", err)
 		}

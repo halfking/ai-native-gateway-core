@@ -117,7 +117,7 @@ export default {
   stats: {
     scopeNoticeTitle: 'Précision sur le périmètre :',
     scopeNoticeBody: 'Cette page compte toutes les requêtes et les coûts des sessions dont la première requête a eu lieu au cours des {days} derniers jours.',
-    scopeNoticeHint: 'Remarque : les sessions commencées avant la fenêtre mais encore actives dedans ne sont pas incluses ; les coûts ici peuvent donc être inférieurs à ceux de la page « Dashboard » (qui compte toutes les requêtes de la fenêtre). Pour le coût complet de la fenêtre, consultez la page « Dashboard ».',
+    scopeNoticeHint: 'Remarque : cette page retire les sessions de sonde selon les règles de l « univers des sessions » ; les mesures en production montrent que toutes les requêtes ainsi retirées sont du trafic métier réel dans le journal des requêtes, de sorte que les coûts ici sont nettement inférieurs à ceux de la page « Dashboard » (qui exclut les sondes par classe de trafic). Ne sont pas non plus comptées les sessions dont la première requête précède la fenêtre mais qui y restent actives. Pour le coût complet de la fenêtre, consultez la page « Dashboard » ou les « Standards de calcul ».',
     loading: "Chargement des statistiques de session…",
     last7Days: "7 derniers jours",
     last30Days: "30 derniers jours",
