@@ -1,9 +1,9 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/984_api_keys_team_id.sql
+-- File:          sql/migrations/startup/973_api_keys_team_id.sql
 -- Migration:     984
 -- Purpose:       为 api_keys 表添加 team_id 列（团队 key 归属）
 -- Database:      llm_gateway
--- Down:          984_api_keys_team_id.down.sql
+-- Down:          973_api_keys_team_id.down.sql
 --
 -- ★ 2026-11-23 重编号（原 057_api_keys_team_id.sql）：★ 原件**三条投递通道一条
 --   都没登记** ⇒ ★ **永远不会被应用**（★ 生产实测：api_keys 无 team_id 列）
@@ -12,7 +12,7 @@
 --   ★ 重编号为 984（> 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免；★ 三位数硬约束
 --   见 982 头部注记）。
 --
--- 前置：依赖 982_teams_table.sql（外键指向 public.teams.id）；
+-- 前置：依赖 918_teams_table.sql（外键指向 public.teams.id）；
 --       api_keys 表本身由基线 01-schema.sql 提供
 -- 幂等：ADD COLUMN / CREATE INDEX IF NOT EXISTS
 --
@@ -62,7 +62,7 @@ COMMENT ON COLUMN public.api_keys.team_id IS '团队 ID（可选）：NULL 表�
 
 -- 台账自登记（≥952 纪律）
 INSERT INTO public.schema_migrations (version, applied_at)
-VALUES ('984', now())
+VALUES ('973', now())
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

@@ -1,16 +1,16 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/983_user_teams.sql
+-- File:          sql/migrations/startup/925_user_teams.sql
 -- Migration:     983
 -- Purpose:       创建 user_teams 关联表：用户与团队的多对多关系，支持角色（owner/admin/member）
 -- Database:      llm_gateway
--- Down:          983_user_teams.down.sql
+-- Down:          925_user_teams.down.sql
 --
 -- ★ 2026-11-23 重编号（原 056_user_teams.sql）：★ 原件**三条投递通道一条都没
 --   登记** ⇒ ★ **永远不会被应用**（★ 生产实测：user_teams 表不存在）。
 --   ★ 重编号为 983（> 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免；★ 三位数硬约束
 --   见 982 头部注记）。
 --
--- 前置：依赖 982_teams_table.sql（外键指向 public.teams.id）
+-- 前置：依赖 918_teams_table.sql（外键指向 public.teams.id）
 -- 幂等：CREATE TABLE / CREATE INDEX IF NOT EXISTS
 -- ===========================================================================
 
@@ -65,7 +65,7 @@ COMMENT ON TABLE public.user_teams IS '用户-团队关联表：用户与团队�
 
 -- 台账自登记（≥952 纪律）
 INSERT INTO public.schema_migrations (version, applied_at)
-VALUES ('983', now())
+VALUES ('925', now())
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

@@ -930,13 +930,13 @@ idx_error_analysis_results_queue_uniq	error_analysis_results	977	977_pi_error_an
 idx_sessions_is_probe	sessions	981	981_session_analytics_foundation.sql	yes	fresh		reachable-and-present	none	
 idx_sessions_project	sessions	981	981_session_analytics_foundation.sql	yes	fresh		reachable-and-present	none	
 idx_sessions_task_category	sessions	981	981_session_analytics_foundation.sql	yes	fresh		reachable-and-present	none	
-idx_teams_owner_id	teams	982	982_teams_table.sql	yes	fresh		reachable-and-present	none	
-idx_teams_tenant_id	teams	982	982_teams_table.sql	yes	fresh		reachable-and-present	none	
-idx_user_teams_team_id	user_teams	983	983_user_teams.sql	yes	fresh		reachable-and-present	none	
-idx_user_teams_user_id	user_teams	983	983_user_teams.sql	yes	fresh		reachable-and-present	none	
-idx_api_keys_team_id	api_keys	984	984_api_keys_team_id.sql	yes	fresh	local,252,211	reachable-and-present	none	
-idx_api_keys_tenant_team	api_keys	984	984_api_keys_team_id.sql	yes	fresh	local,252,211	reachable-and-present	none	
-idx_team_budgets_team_id	team_budgets	985	985_team_budgets.sql	yes	fresh		reachable-and-present	none	
+idx_teams_owner_id	teams	918	918_teams_table.sql	yes	fresh		reachable-and-present	none	
+idx_teams_tenant_id	teams	918	918_teams_table.sql	yes	fresh		reachable-and-present	none	
+idx_user_teams_team_id	user_teams	925	925_user_teams.sql	yes	fresh		reachable-and-present	none	
+idx_user_teams_user_id	user_teams	925	925_user_teams.sql	yes	fresh		reachable-and-present	none	
+idx_api_keys_team_id	api_keys	973	973_api_keys_team_id.sql	yes	fresh	local,252,211	reachable-and-present	none	
+idx_api_keys_tenant_team	api_keys	973	973_api_keys_team_id.sql	yes	fresh	local,252,211	reachable-and-present	none	
+idx_team_budgets_team_id	team_budgets	986	986_team_budgets.sql	yes	fresh		reachable-and-present	none	
 idx_agent_usage_agg_agent	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
 idx_agent_usage_agg_pk	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
 idx_agent_usage_agg_tenant	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	

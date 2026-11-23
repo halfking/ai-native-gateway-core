@@ -1,16 +1,16 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/985_team_budgets.sql
+-- File:          sql/migrations/startup/986_team_budgets.sql
 -- Migration:     985
 -- Purpose:       创建 team_budgets 表：团队月度预算配置
 -- Database:      llm_gateway
--- Down:          985_team_budgets.down.sql
+-- Down:          986_team_budgets.down.sql
 --
 -- ★ 2026-11-23 重编号（原 058_team_budgets.sql）：★ 原件**三条投递通道一条都
 --   没登记** ⇒ ★ **永远不会被应用**（★ 生产实测：team_budgets 表不存在）。
 --   ★ 重编号为 985（> 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免；★ 三位数硬约束
 --   见 982 头部注记）。
 --
--- 前置：依赖 982_teams_table.sql（外键指向 public.teams.id）
+-- 前置：依赖 918_teams_table.sql（外键指向 public.teams.id）
 -- 幂等：CREATE TABLE / CREATE INDEX IF NOT EXISTS
 -- ===========================================================================
 
@@ -59,7 +59,7 @@ COMMENT ON TABLE public.team_budgets IS '团队月度预算表：配置团队级
 
 -- 台账自登记（≥952 纪律）
 INSERT INTO public.schema_migrations (version, applied_at)
-VALUES ('985', now())
+VALUES ('986', now())
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

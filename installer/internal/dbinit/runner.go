@@ -2020,7 +2020,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"997_tasks_dimension_table.sql",
 			"998_session_summaries_task_association.sql",
 			"999_session_summary_layers.sql",
-			// ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
+			// ★ 918/925/973/986（2026-11-23 团队功能底座轮，★ 原编号 055-058 ⇒ 曾用
+			// 982-985 ⇒ 与上游 982_provider_call_attempts（aac6602ab，已 push）撞号
+			// ⇒ 按 919 让号轮先例「未 push 方避让」改占真空号）：
 			//   teams / user_teams / api_keys.team_id / team_budgets 四件套。
 			//   ★ ★ 重编号的原因（★ 原件**永远不会被应用**，★ 三条通道都不投它）：
 			//     ① **存量升级通道**（deploy-lib 的 _deploy_pending_startup_migrations）
@@ -2034,22 +2036,22 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//        ⇒ ★ 而现役代码无条件写 api_keys.team_id ⇒ 生产「发 API key」必失败
 			//        （★ 2026-11-23 生产实测：api_keys 无 team_id 列、teams/user_teams/
 			//          team_budgets 三表不存在、schema_migrations 水位 999）。
-			//   ★ ★ 重编号为 982-985（★ > 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免、
+			//   ★ ★ 避让重编号为 918/925/973/986（★ > 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免、
 			//     ★ 不计真缺口；★ 而投递判据是「版本号不在账本里」、★ 不是「大于水位」
 			//     ⇒ 新号仍会被正常投递）。
 			//   ★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS ＋ ADD COLUMN IF NOT EXISTS
 			//     ＋ 自登记 ON CONFLICT DO NOTHING）⇒ 重放安全。
-			//   ★ 次序：982 → 983/984/985（★ 983/984/985 的外键都指向 teams.id
+			//   ★ 次序：918 → 925/973/986（★ 925/973/986 的外键都指向 teams.id
 			//     ⇒ ★ teams 必须先建）。
 			//   ★ ★ **位置放在本表末尾**（★ 而不是按编号插到 981 与 990 之间）：
 			//     ★ 因为 installed_startup_migrations.tsv 的首列是**下标** ⇒ ★ 插在中间
 			//     会把 996/997/998/999 的下标整体后移 4 位 ⇒ ★ 而逐迁移投递测试
 			//     （migration_996/997_998_999_delivery_test.go）**硬编码了这些下标**
 			//     ⇒ ⇒ ★ 追加在末尾 ⇒ ★ 既有下标一个都不动 ⇒ ★ 既有门不被无关位移打红。
-			"982_teams_table.sql",
-			"983_user_teams.sql",
-			"984_api_keys_team_id.sql",
-			"985_team_budgets.sql",
+			"918_teams_table.sql",
+			"925_user_teams.sql",
+			"973_api_keys_team_id.sql",
+			"986_team_budgets.sql",
 			// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 ——
 			//   981 的文件**缺 schema_migrations 自登记行** ⇒ 211 的记账链在
 			//   980 与 990 之间**断一格**（实测：211 有 '980' 与 '990'、独缺 '981'，
