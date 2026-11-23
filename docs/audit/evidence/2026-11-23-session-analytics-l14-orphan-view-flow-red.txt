@@ -1,0 +1,170 @@
+==============================================================================
+L14 取证证据 —— 「同一个 URL 换组件」⇒ 三层脱钩 + 新增「孤儿组件」门
+日期：2026-11-23　仓：/tmp/lgw-l9l10　基线提交：76cf15141（origin/main tip）
+取证口径：★ 全部为**离线可复跑**的静态判据（不需登录 / 不需数据 / 不需部署）
+==============================================================================
+
+--- ① 肇事提交：上游 95e44dc15 把路由指向换了组件 -----------------------
+95e44dc15 2026-11-23 feat(session-analytics): 整合 Dashboard 会话统计与 Top10 用户排行到用户分析页面
+-    { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
++    { path: '/admin/session-analytics/users', component: SessionAnalyticsUsersView, meta: { requiresAuth: true } },
+
+--- ② 现役是否已含该提交（生产已生效）---------------------------------
+$ git merge-base --is-ancestor 95e44dc15 42ae8b70
+rc=0  ⇒ 是（211 现役 42ae8b70 上该页已是 SessionAnalyticsUsersView）
+$ git merge-base --is-ancestor 614b72e9c 42ae8b70
+rc=0  ⇒ 是（Top5 四件套那笔也在现役）
+
+--- ③ 路由现状：router.ts 里 users 路由指向谁 -------------------------
+349:    { path: '/admin/session-analytics/users', component: SessionAnalyticsUsersView, meta: { requiresAuth: true } },
+350:    { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
+372:    // 2026-11-23：重定向 overview 到整合后的 users 页面（整合任务：将 overview 内容移到 /admin/session-analytics/users）
+373:    { path: '/admin/session-analytics', redirect: '/admin/session-analytics/users', meta: { requiresAuth: true } },
+
+--- ④ ★ 孤儿组件精确计算（被 import 却无任何路由 component: 指向它）----
+router.ts 被 import 的组件数 = 104
+router.ts 被路由 component: 使用的组件数 = 103
+★ 孤儿组件（被 import 但无路由指向）= 1 条：
+    UserProfileListView  ←  ./views/UserProfileListView.vue
+
+--- ⑤ ★★ 渲染闭包：现役页能渲染出哪些东西 ------------------------------
+闭合集合：17 个 .vue ＋ 23 个非 locale .ts
+    components/AppSpinner.vue
+    components/EmptyState.vue
+    components/SessionStatsPanel.vue
+    components/analytics/DashboardStatsRow.vue
+    components/analytics/HealthGradeChart.vue
+    components/analytics/SessionStatsRankings.vue
+    components/analytics/SessionStatsSignals.vue
+    components/analytics/SessionTrendChart.vue
+    components/help/ManualInline.vue
+    components/help/PageHelpDrawer.vue
+    components/ui/DataTable.vue
+    components/ui/KxDateRangePicker.vue
+    components/ui/PageHeader.vue
+    views/admin/session-analytics/SessionAnalyticsUsersView.vue
+    views/admin/session-analytics/components/SaRangeHint.vue
+    views/admin/session-analytics/components/SaStateBanner.vue
+    views/admin/session-analytics/components/SaTop5Rankings.vue
+
+★ 断言点 / 探针判据 在闭合集合内的命中：
+    request_logs_with_current_month  → ★ 0 命中
+    画像列与用量列的口径区别                     → ★ 0 命中
+    Token 统计公式                       → ★ 0 命中
+    查看统计说明                           → ★ 0 命中
+    画像详情                             → ★ 0 命中
+    user-profile-usage-meta          → ★ 0 命中
+    user-profile-list-help           → ★ 0 命中
+    el-table                         → ★ 0 命中
+    el-table__expand-icon            → ★ 0 命中
+★ 反向对照（证明闭合没算空）：
+    sessions.userProfile.* 键引用数 = 0
+    sessionAnalytics.* 键引用数   = 40
+
+--- ⑥ ★ 第二层探针的「半红」：后端能力在、前端呈现没了 ----------------
+后端端点与出处块（仍在 ⇒ API 段绿）：
+1368:	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
+1372:	mux.HandleFunc("/api/admin/session-analytics/users/usage-matrix", admin(h.handleUserUsageMatrix))
+1373:	mux.HandleFunc("/api/admin/session-analytics/users/", admin(h.handleUserAnalyticsDetail))
+99:	SourceView  string `json:"source_view"`
+343:	// 外部成本」列与详情页模型卡天然同源。出处块 usage_meta 随响应回传，
+477:		"usage_meta": userUsageMeta{
+486:			"source_view": "user_session_aggregates",
+1233:// queryUserUsageMatrix（出处块 usage_meta 随响应回传）。
+1272:		"usage_meta": userUsageMeta{
+1446:		"usage_meta": userUsageMeta{
+前端判据（已不可达 ⇒ 页面段红）：
+    maestro/tools/assert-users-usage.mjs 查 [data-testid="user-profile-usage-meta"]
+    …… .el-table th 的五列 / [data-testid="user-profile-list-help"] / .el-table__expand-icon
+    ⇒ 四类判据在闭合集合内全部 0 命中（见 ⑤）
+
+--- ⑦ 帮助正文层：三方互不相同 --------------------------------------
+路由 → 内容 id 绑定：
+65:  { match: '/admin/session-analytics/users', id: 'session-users', titleKey: 'pageHelp.title.sessionUsers' },
+正文里是否出现 flow 13 的判据串：
+★ 0 命中（全目录）
+现役页列头（sessionAnalytics.* 语汇）vs 孤儿页列头（sessions.userProfile.* 语汇）：
+300:                <el-table-column :label="t('sessions.userProfile.modelName')" prop="model_name" min-width="180" />
+301:                <el-table-column :label="t('sessions.userProfile.provider')" prop="provider" min-width="120" />
+302:                <el-table-column :label="t('sessions.userProfile.usageColRequests')" prop="request_count" width="90" align="right" />
+303:                <el-table-column :label="t('sessions.userProfile.inputTokens')" prop="input_tokens" width="110" align="right">
+★ 孤儿页列头用 sessions.userProfile.*；现役页用 sessionAnalytics.*；
+★ session-users.zh-CN.md 描述的是「全量名单可搜索 / 展开行常用模型 Top / 成功率」——
+★   既不是现役页（无搜索/无展开行/无成功率列），也不是孤儿页（无成功率列）。
+
+--- ⑧ 为什么三条既有守卫都没红（盲区交集）----------------------------
+navCoverage.test.ts（判路由可达性）：
+
+appNav.ts 里该 URL 有菜单入口 ⇒ 路由不孤儿 ⇒ 门绿：
+238:      { path: '/admin/session-analytics/users', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
+pageHelpRegistry.test.ts（判存在性，不判正文与页面是否一致）：
+59:  it('注册表每个 id 都有内容文件', () => {
+65:  it('每个内容文件都被注册表引用（无孤儿文件）', () => {
+71:  it('注册表 titleKey 在 zh-CN 语言包里真实存在', () => {
+74:      .map((e) => e.titleKey.split('.').pop() as string)
+81:  it('每条 match（除虚拟键）都对应 router.ts 里的真实路由 path', () => {
+89:  it('注册表 match 无重复', () => {
+94:  it('同一 id 的多条登记必须指向同一份内容文件（id 即内容键，titleKey 可按页面语境不同）', () => {
+102:  it('每个 titleKey 都是 pageHelp.title.* 形态', () => {
+109:  it('精确路径命中', () => {
+113:  it(':param 路由任意段命中', () => {
+118:  it('虚拟键 /dashboard-simple 可命中（简易模式总览）', () => {
+122:  it('未登记路径返回 null', () => {
+127:  it('按声明顺序取第一个命中（前缀不越权匹配）', () => {
+139:  it('resolvePageHelpById 命中统计标准正文，标题键出自注册表', () => {
+145:  it('未登记的内容 id 返回 null（页面内嵌传错 id 时不崩、不串页）', () => {
+150:  it('统计标准正文文件在仓内（中文 + 6 个已译语种齐全）', () => {
+160:  it('统计标准正文点明两页口径差异的关键事实（口径别漂移）', () => {
+audit-route-coverage.mjs（判路径三方对拍，不判该路径渲染的是谁）：
+3: * audit-route-coverage.mjs —— 路由覆盖三方对拍（L10 收口轮的可复跑工具）
+21: *   ② 从 `maestro/flows/` 下的 yaml 的 `openLink:` 提取**真实被打开过**的路径
+23: *   然后三方对拍，产出：未覆盖路由 / README 未登记 / README 多记（幽灵路由）。
+41: *   本来就不该由 Maestro 打开，见 README §3 的登记口径）。
+
+--- ⑨ ★ CI 载体事实：没有任何自动路径跑 maestro ------------------------
+远端：
+git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
+真载体（codeup）：
+main-verify.yml
+GitHub workflows 里是否含 maestro / verify-statistics-pages：
+★ 0 命中
+⇒ 上游 flow 13 的恒红在自动路径上不会被拦。
+
+--- ⑩ ★★ 新门实测与两个变异臂（真实 router.ts 上注入 ⇒ 恢复）-----------
+门文件：web/src/config/orphanViewComponent.test.ts
+基线（未注入）：
+Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  11:39:49
+   Duration  420ms (environment 86%, transform 9%, import 1%, worker 1%, tests 1%, setup 1%)
+★ M1 注入：给 UserProfileListView 加一条路由 ⇒ 期望「豁免表不得腐烂」红
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: 豁免表里这些条目已不是孤儿组件（组件已被路由指向或已删除）：UserProfileListView
+      Tests  1 failed | 4 passed (5)
+★ M2 注入：新增一个被 import 但无路由的组件常量 ⇒ 期望「未登记的孤儿组件」红
+× 没有未登记的孤儿组件（新增孤儿 ⇒ 红） 3ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/config/orphanViewComponent.test.ts > orphanViewComponent —— 孤儿组件守卫 > 没有未登记的孤儿组件（新增孤儿 ⇒ 红）
+AssertionError: 未登记的孤儿组件：1 条。
+★ 恢复后：
+Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  11:39:52
+   Duration  444ms (environment 85%, transform 9%, setup 2%, import 2%, worker 1%, tests 1%)
+★ router.ts 零漂移：
+
+（★ 上面为空 ⇒ router.ts 与 HEAD 逐字一致）
+
+--- ⑪ 回归：src/config/ 全目录 + 全量 vitest --------------------------
+Test Files  11 passed (11)
+      Tests  192 passed (192)
+全量 vitest：
+    Test Files  365 passed | 1 skipped (366)
+    Tests       3728 passed | 2 skipped (3730)   ⇒ 0 failed
+
+--- ⑫ 现役身份未变（本轮零部署、零在役切换）---------------------------
+211 = 2.6.1-42ae8b70-20261123-211 / build_seq 3241（未变）
+154 = 8d97cc17 / seq 3154　　245 = 8d97cc17 / seq 3155（未变）
+本轮：零生产写 / 零 schema 变更 / 零在役身份切换 / 零前端行为改动
+     未改 router.ts、未改 maestro flow 13、未改 page-help 正文、未改任何 .vue
+==============================================================================
