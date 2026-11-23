@@ -506,6 +506,19 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "R172 会话族两臂直查 helper：canonical 视图名只出现在一条注释里（对比说明「canonical 视图没有反连接」）；本文件的读面是会话族 hot ∪ 父表，与 canonical 视图无关",
 	},
+	// internal/metricsstore/processor.go：请求指标**维增强**读 canonical 视图
+	//   request_logs_with_current_month（迁移 890 删掉 v1 母表后的双腿稳定形态）。
+	// ★ 分类核定依据：该读点读 gw_task_id（734 **details 腿**列）与 gw_session_id
+	//   （视图里的 **CASE 表达式**列）⇒ 与 admin/request_trace.go 的读点1 同形态
+	//   ⇒ 归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
+	"internal/metricsstore/processor.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "请求指标维增强：按 request_id 取会话/任务/协议/附件维度（读双腿 canonical 视图 request_logs_with_current_month —— 迁移 890 已删 v1 母表，裸读 FROM request_logs 在生产上 42P01）",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"attachment_count:base", "client_protocol:base", "egress_protocol:base", "gw_session_id:expr", "gw_task_id:detail", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "请求指标维增强读点：读 attachment_count:base,client_protocol:base,egress_protocol:base,gw_session_id:expr,gw_task_id:detail,request_id:base,ts:base ⇒ 引用了 734 details 腿的列（gw_task_id）与视图里的 CASE 表达式列（gw_session_id）⇒ 窄投影须带上 details LEFT JOIN"},
+		},
+	},
 	"admin/providers.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,

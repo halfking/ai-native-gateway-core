@@ -6,12 +6,19 @@
 # ★★ 这道门补的是哪块缺口（★ 必须写清楚 ★★）★★
 #   ★ 仓里**早有静态那半**：★ `sql/migrations/startup/hot_surface_select_star_contract_test.go`
 #     ★ 它禁止**新建**跨面 `SELECT *` 视图、★ 并把**历史写法**登记进
-#     ★ `legacyCrossSurfaceSelectStar`（★ 11 条 ★★）★ 另配反向门
+#     ★ `legacyCrossSurfaceSelectStar`（★ ★★ L34 八轮起＝**语句级台账**（★ 30 条 ★★）★★）
 #     ★ `TestLegacyCrossSurfaceSelectStarRegistryIsExact`（★ 登记不许空转 ★★）★★
 #   ★ ⇒ ★★ **但那只是【静态那半】：★ 它查的是「仓里现在有没有新的违规写法」★★**
-#   ★ ⇒ ★★ **运行时那半从来没人核对过**：★ ★★ 「登记表里这 11 对跨面视图、★
-#     ★★ 在**今天这台库上**、★ 两侧的列序是否**仍然对齐**」★★ ⇒ ★★ ⇒ ★★
+#   ★ ⇒ ★★ **运行时那半从来没人核对过**：★ ★★ 「登记表里那些跨面视图的各个分支、★
+#     ★★ 在**今天这台库上**、★ 列序是否**仍然对齐**」★★ ⇒ ★★ ⇒ ★★
 #     ★★ **那才是真正会炸的那一半** ★★
+#
+# ★★ L34 八轮的升级（★ 与静态门同源 ★★）★★
+#   ★ ① 台账升级为**语句级**（★ 键＝「<迁移文件 basename>|<视图名>」、★ 值＝**分支序列** ★★）
+#   ★   ⇒ ★★ **分支序列直接来自登记表**、★ 本门**不再自己解析 SQL** ★★
+#   ★   ⇒ ★★ **与静态门共用同一张表** ⇒ ★★ **两张门在结构上不可能分叉** ★★
+#   ★ ② 比对从**两路**扩到 **N 路**（★ `340` 那一族是**三路**：父表 ∪ 月分区 ∪ default ★★）
+#   ★ ③ 台账从 11 条扩到 **30 条**（★ **含过去从不被检出的 `340`／`342`／`330` 三批** ★★）★★
 #
 # ★★ 为什么列序漂移会炸（★ 机制、★ 不是推测 ★★）★★
 #   ★ 跨面视图的写法是 `SELECT * FROM <hot> UNION ALL SELECT * FROM <parent>`
@@ -54,7 +61,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 REGISTRY_GO="sql/migrations/startup/hot_surface_select_star_contract_test.go"
-SQL_DIR="sql/migrations/startup"
+# ★★ 台账里的迁移文件可能落在**不同的迁移目录**下（★ 例：`330` 在 `domain/` ★）
+# ★★ ⇒ ★★ 文件在场自证要**扫这几个目录**（★ 与静态门的扫描根对齐 ★★）★★
+SQL_DIRS="sql/migrations/startup sql/migrations/domain"
 DEPLOY_SCRIPT="scripts/apply-db-revision-sequence.sh"
 
 SKIP=0
@@ -112,20 +121,32 @@ pairs_file="$(mktemp "${TMPDIR:-/tmp}/select-star-pairs.XXXXXX")"
 cols_file="$(mktemp "${TMPDIR:-/tmp}/select-star-cols.XXXXXX")"
 trap 'rm -f "${registry_file:-}" "${pairs_file:-}" "${cols_file:-}"' EXIT
 
-# ★★ 登记表解析：★ 从 Go 的 map 字面量里取「视图名 → 迁移文件」★★
+# ★★ 登记表解析（★ ★★ L34 八轮：★ 台账升级为【语句级】 ★★）★★
+# ★★ 键＝"<迁移文件 basename>|<视图名>"、★ 值＝**分支关系序列**（★ 逗号分隔 ★★）★★
+# ★★ ⇒ ★★ **分支序列直接来自登记表**、★ 本门**不再自己解析 SQL** ★★
+# ★★ ⇒ ★★ **与静态门共用同一张表** ⇒ ★★ **两张门在结构上不可能分叉** ★★
+# ★★ （★ 与 L34 七轮「投递面解析抽共享库」同一条纪律：★ **同一条规定只写一份** ★★）★★
 awk '
   /^var legacyCrossSurfaceSelectStar = map\[string\]string\{/ { inmap = 1; next }
   inmap && /^\}/ { inmap = 0; next }
   inmap {
     line = $0
     if (line !~ /^[[:space:]]*"/) next
-    if (match(line, /^[[:space:]]*"[A-Za-z0-9_]+"/) == 0) next
+    # ★★ 键：★ 第一个引号串（★ ★★ gofmt 会把 map 字面量**对齐** ⇒
+    # ★★   键与冒号之间可能是**多个空格** ★★ ⇒ ★★ 所以这里不假设空格个数 ★★）★★
+    if (match(line, /^[[:space:]]*"[^"]+"/) == 0) next
     key = substr(line, RSTART, RLENGTH)
     gsub(/"/, "", key)
+    # ★★ 剥掉**行首空白**（★ gofmt 会把 map 字面量缩进一个 TAB ★★）★★
+    # ★★ ⇒ ★★ 否则这一行有**三个** TAB 分隔字段、★ `cut -f2` 会取错列 ★★
+    sub(/^[[:space:]]+/, "", key)
     rest = substr(line, RSTART + RLENGTH)
+    # ★★ 值：★ 第二个引号串（★ 分支关系序列 ★★）★★
     if (match(rest, /"[^"]*"/) == 0) next
     val = substr(rest, RSTART, RLENGTH)
     gsub(/"/, "", val)
+    # ★★ 键必须含 "|"（★ "<文件>|<视图>" ★★）⇒ ★ **解析面自证** ★★
+    if (index(key, "|") == 0) next
     print key "\t" val
   }
 ' "$REGISTRY_GO" >"$registry_file"
@@ -134,82 +155,51 @@ registry_count=$(wc -l <"$registry_file" | tr -d ' ')
 if [ "${registry_count:-0}" -eq 0 ]; then
   abort "从 ${REGISTRY_GO} 解析出 0 条登记 ⇒ ★ 门自己的解析器坏了（★ **不是**判据红）"
 fi
-note "legacy 跨面视图登记：${registry_count} 条（★ 解析自 ${REGISTRY_GO}）"
+note "legacy 跨面视图登记：${registry_count} 条（★ 解析自 ${REGISTRY_GO} · ★ **语句级台账** ★★）"
 
-# ★★ 视图对解析：★ 在迁移文件里找 `CREATE ... VIEW <view>`、★ 再找它下面那两个
-# ★★ `SELECT * FROM <rel>`（★ 形态：★ 第一个是 hot、★ 第二个是 parent ★★）★★
-while IFS="$(printf '\t')" read -r view desc; do
-  [ -n "$view" ] || continue
-  # ★ 描述字段里文件名前可能带 `347/` 前缀、★ 后面可能跟中文说明 ⇒ 只取到 `.sql` ★
-  file=""
-  case "$desc" in
-    *".sql"*) file="${desc%%.sql*}.sql" ;;
-  esac
-  [ -n "$file" ] || { abort "登记表条目「${view}」的描述里没解析出文件名 ⇒ ★ 门自己的解析器坏了" ; }
-  file="${file##*/}"
-  path="${SQL_DIR}/${file}"
-  if [ ! -f "$path" ]; then
-    abort "登记表条目「${view}」指向的迁移文件不存在（${path}）⇒ ★ 门自己的解析器坏了"
+# ★★ 台账 → 视图对清单：★ 键拆成「文件 + 视图」、★ 值就是**分支序列** ★★
+while IFS="$(printf '\t')" read -r key val; do
+  [ -n "$key" ] || continue
+  file="${key%%|*}"
+  view="${key#*|}"
+  if [ "$file" = "$key" ] || [ -z "$file" ] || [ -z "$view" ]; then
+    abort "登记表条目「${key}」拆不出「<文件>|<视图>」⇒ ★ 门自己的解析器坏了"
   fi
-  pair="$(awk -v VIEW="$view" '
-    { lines[NR] = $0 }
-    END {
-      view = VIEW
-      start = 0
-      for (i = 1; i <= NR; i++) {
-        l = tolower(lines[i])
-        if (l ~ /create[ \t]+(or[ \t]+replace[ \t]+)?view[ \t]+/ && index(lines[i], view) > 0) { start = i; break }
-      }
-      if (start == 0) { print "?"; exit }
-      a = ""; b = ""
-      for (i = start; i <= NR && i <= start + 80; i++) {
-        l = lines[i]
-        sub(/--.*$/, "", l)
-        if (tolower(l) ~ /select[ \t]+\*[ \t]+from[ \t]+/) {
-          rel = l
-          sub(/.*[Ss][Ee][Ll][Ee][Cc][Tt][ \t]+\*[ \t]+[Ff][Rr][Oo][Mm][ \t]+/, "", rel)
-          # ★ 去掉 schema 前缀（★ 625 的 down 文件写的是 `public.xxx` ★★）★★
-          # ★ ★★ 顺序很关键：★ **先**去掉 `public.`、★ **后**再截断在非标识符字符 ★★
-          # ★ ★★ （★ 反过来会把它截成 `public` ★★）★★
-          sub(/^public[.]/, "", rel)
-          sub(/[^A-Za-z0-9_].*$/, "", rel)
-          if (a == "") { a = rel } else if (b == "" && rel != a) { b = rel }
-        }
-      }
-      print a "\t" b
-    }
-  ' "$path")"
-  a="$(printf '%s' "$pair" | cut -f1)"
-  b="$(printf '%s' "$pair" | cut -f2)"
-  if [ -z "$a" ] || [ -z "$b" ] || [ "$a" = "?" ] || [ "$b" = "?" ]; then
-    abort "登记表条目「${view}」的视图对解析不出来（★ 迁移 ${file} 里找不到「CREATE VIEW <view>」下面那两个「SELECT * FROM」）⇒ ★ 门自己的解析器坏了"
+  if [ -z "$val" ]; then
+    abort "登记表条目「${key}」的分支序列是空的 ⇒ ★ 门自己的解析器坏了"
   fi
-  printf '%s\t%s\t%s\t%s\n' "$view" "$a" "$b" "$file" >>"$pairs_file"
+  # ★★ 分支数自证：★ 跨面并集**至少两个分支**（★ 少于两个 ⇒ 那不是跨面并集 ★★）★★
+  n_branch="$(printf '%s' "$val" | awk -F',' '{ print NF }')"
+  if [ "${n_branch:-0}" -lt 2 ]; then
+    abort "登记表条目「${key}」只有 ${n_branch:-0} 个分支 ⇒ ★ 门自己的解析器坏了"
+  fi
+  # ★★ 文件在场自证：★ 迁移文件必须真的在仓里（★ 静态门保证键对得上、★
+  # ★★   但本门独立跑时仍要自证 ★★）★★
+  found_path=""
+  for d in $SQL_DIRS; do
+    if [ -f "${d}/${file}" ]; then
+      found_path="${d}/${file}"
+      break
+    fi
+  done
+  if [ -z "$found_path" ]; then
+    abort "登记表条目「${key}」指向的迁移文件在 ${SQL_DIRS} 里都找不到（★ ${file} ★）⇒ ★ 门自己的解析器坏了"
+  fi
+  printf '%s\t%s\t%s\n' "$view" "$file" "$val" >>"$pairs_file"
 done <"$registry_file"
 
 pair_count=$(wc -l <"$pairs_file" | tr -d ' ')
 if [ "${pair_count:-0}" -ne "$registry_count" ]; then
   abort "登记表 ${registry_count} 条、★ 解析出视图对 ${pair_count} 条 ⇒ ★ 数量对不上 ⇒ ★ 门自己的解析器坏了"
 fi
-note "视图对解析：${pair_count} 对（★ 形态＝「SELECT * FROM <hot> UNION ALL SELECT * FROM <parent>」★★）"
+note "视图对解析：${pair_count} 对（★ 形态＝「N 路 SELECT-STAR 并集」、★ ★★ 分支序列直接取自登记表 ★★）"
 
 # ═══════════════════════════════════════════════════════════════════════
 # ── 只读取列序（★ 一次查完、★ 一次判完 ★★）─────────────────────────
 # ═══════════════════════════════════════════════════════════════════════
-rel_list="'"
-first=1
-while IFS="$(printf '\t')" read -r view a b file; do
-  [ -n "$view" ] || continue
-  for rel in "$a" "$b"; do
-    if [ "$first" = "1" ]; then
-      first=0
-    else
-      rel_list="${rel_list},"
-    fi
-    rel_list="${rel_list}${rel}"
-  done
-done <"$pairs_file"
-rel_list="${rel_list}'"
+# ★★ 注意：★ 本门**不再**在 SQL 里按关系名过滤（★ L34 五轮实测过：★
+# ★★   `c.relname = any (array['a,b,c'])` 那是**一个元素** ⇒ 0 行 ⇒ 恒绿 ★★）
+# ★★ ⇒ ★★ **全量取回**、★ 本地筛 ⇒ ★★ 过滤条件写错也不会漏数据 ★★
 
 # ★★ ★★ 查询面**自证**（★ 本轮在生产 211 上真跑、★ **实测撞到的真缺陷** ★★）★★
 # ★★ 第一版用的是 `c.relname = any (array['a,b,c'])` ⇒ ★★ 那是【一个元素】★★
@@ -283,26 +273,56 @@ blast_files=""
 blast_min=""
 blast_min_file=""
 
-while IFS="$(printf '\t')" read -r view a b file; do
+while IFS="$(printf '\t')" read -r view file rels; do
   [ -n "$view" ] || continue
-  a_cols="$(awk -F'\t' -v r="$a" '$1 == r { print $3 " " $4 }' "$cols_file" | tr '\n' '|')"
-  b_cols="$(awk -F'\t' -v r="$b" '$1 == r { print $3 " " $4 }' "$cols_file" | tr '\n' '|')"
-  if [ -z "$a_cols" ] && [ -z "$b_cols" ]; then
-    absent=$((absent+1))
-    note "  · ${view}（★ ${file} ★）：两侧都不在场（★ ${a} / ${b} ★）⇒ ★ **这套资产在本库上不存在 ⇒ 无重放风险** ⇒ 不判红"
-    continue
-  fi
-  if [ -z "$a_cols" ] || [ -z "$b_cols" ]; then
-    half=$((half+1))
-    present=""
-    [ -n "$a_cols" ] && present="${a}"
-    [ -n "$b_cols" ] && present="${present}${present:+ +}${b}"
-    note "  · ${view}（★ ${file} ★）：**只有一侧在场**（★ 在场＝${present} ★★）⇒ ★ 报出来"
-    continue
-  fi
-  if [ "$a_cols" = "$b_cols" ]; then
+  # ★★ N 路分支列向量（★ L34 八轮：★ 台账里的分支序列可以是 2 路、★ 也可以是 3 路 ★★）★★
+  IFS=',' read -ra branch_list <<<"$rels"
+  base_rel=""
+  base_cols=""
+  present_rels=""
+  missing_rels=""
+  drift_rel=""
+  drift_cols=""
+  for rel in "${branch_list[@]}"; do
+    [ -n "$rel" ] || continue
+    cols="$(awk -F'\t' -v r="$rel" '$1 == r { print $3 " " $4 }' "$cols_file" | tr '\n' '|')"
+    if [ -z "$cols" ]; then
+      missing_rels="${missing_rels}${missing_rels:+,}${rel}"
+      continue
+    fi
+    present_rels="${present_rels}${present_rels:+,}${rel}"
+    if [ -z "$base_rel" ]; then
+      base_rel="$rel"
+      base_cols="$cols"
+      continue
+    fi
+    if [ -z "$drift_rel" ] && [ "$cols" != "$base_cols" ]; then
+      drift_rel="$rel"
+      drift_cols="$cols"
+    fi
+  done
+  # ★★ **全部分支都不在场** ⇒ ★ **绿**（★ 这套资产在本库上不存在 ⇒ 无重放风险 ★★）
+  # ★★ （★ ★★ 别把它当「门坏了」★★：★ `request_logs` 那一族已被 `890` 下线、★
+  # ★★   整族不在场是**正常状态** ★★）
+  if [ -z "$missing_rels" ] && [ -z "$drift_rel" ]; then
     aligned=$((aligned+1))
-    note "  · ${view}（★ ${file} ★）：两侧列序**逐位置对齐**（★ ${a} ↔ ${b} ★）✔"
+    note "  · ${view}（★ ${file} ★）：各分支列序**逐位置对齐**（★ ${present_rels} ★）✔"
+    continue
+  fi
+  if [ -n "$missing_rels" ] && [ -z "$drift_rel" ]; then
+    if [ -z "$present_rels" ]; then
+      absent=$((absent+1))
+      note "  · ${view}（★ ${file} ★）：各分支**都不在场**（★ ${rels} ★）⇒ ★ **这套资产在本库上不存在 ⇒ 无重放风险** ⇒ 不判红"
+    else
+      half=$((half+1))
+      note "  · ${view}（★ ${file} ★）：**只有部分分支在场**（★ 在场＝${present_rels} ／ 不在场＝${missing_rels} ★★）⇒ ★ 报出来"
+    fi
+    continue
+  fi
+  if [ -n "$missing_rels" ]; then
+    # ★★ 分支**既缺场又对不齐** ⇒ ★ 报出来、★ 但不判红（★ 缺场那一支本身就没法并 ★★）
+    half=$((half+1))
+    note "  · ${view}（★ ${file} ★）：**只有部分分支在场**（★ 在场＝${present_rels} ／ 不在场＝${missing_rels} ★★）⇒ ★ 报出来"
     continue
   fi
   drift=$((drift+1))
@@ -317,7 +337,7 @@ while IFS="$(printf '\t')" read -r view a b file; do
       }
       print "列数不同：" na " ↔ " nb
     }
-  ' A="$a" B="$b" "$cols_file")"
+  ' A="$base_rel" B="$drift_rel" "$cols_file")"
   # ★★ 投递面位次（★ L34 七轮：★ 把「有漂移」变成「**这次会在第几条炸**」 ★★）★★
   pos=""
   if [ -s "$surface_file" ]; then
@@ -334,11 +354,11 @@ while IFS="$(printf '\t')" read -r view a b file; do
   else
     blast_hint="★ 该迁移**不在**部署通道投递面里 ⇒ ★★ **本次部署不会重放它 ⇒ 没有即时风险**（★ 但它仍在登记表里、★ 将来一旦被投递就会炸 ★★）★★"
   fi
-  bad "跨面视图 ${view} 的两侧**列序已漂移**（★ ${a} ↔ ${b} ★）⇒ ★★ **\`UNION ALL\` 按位置比类型 ⇒ 重建该视图必炸**（★ 典型报错：\`UNION types integer and text cannot be matched\` ★★）★★ ★★ 而这些迁移**大多不自记账** ⇒ ★★ **⇒ 下一次增量部署就会重跑它** ⇒ ★★ ⇒ ★★ ${first_diff} ★★ ★★ ${blast_hint} ★★"
+  bad "跨面视图 ${view} 的分支之间**列序已漂移**（★ ${base_rel} ↔ ${drift_rel} ★）⇒ ★★ **\`UNION ALL\` 按位置比类型 ⇒ 重建该视图必炸**（★ 典型报错：\`UNION types integer and text cannot be matched\` ★★）★★ ★★ 而这些迁移**大多不自记账** ⇒ ★★ **⇒ 下一次增量部署就会重跑它** ⇒ ★★ ⇒ ★★ ${first_diff} ★★ ★★ ${blast_hint} ★★"
 done <"$pairs_file"
 
 note ""
-note "汇总：对齐 ${aligned} 对｜列序漂移 ${drift} 对｜只有一侧在场 ${half} 对｜两侧都不在场 ${absent} 对（★ 登记表共 ${registry_count} 条 ★★）"
+note "汇总：对齐 ${aligned} 对｜列序漂移 ${drift} 对｜只有部分分支在场 ${half} 对｜各分支都不在场 ${absent} 对（★ 登记表共 ${registry_count} 条 ★★）"
 
 if [ "$drift" -gt 0 ]; then
   note ""

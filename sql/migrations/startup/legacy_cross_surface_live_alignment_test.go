@@ -13,6 +13,17 @@ package startup
 //	★★ 而**仓里从来没有一道门核对过「这些历史迁移在今天这张库上还重放得了吗」** ★★
 //	★★ ⇒ ★★ 本文件补的就是这一半（★ 另一半＝静态那半、★ 已由 contract 门守住）★★。
 //
+// ★★ ★★ 与【上游 L34 五轮/六轮那道 shell 门】的分工（★ 2026-11-24 · ★ 同题不同问、★ 不是重复实现 ★★）★★
+//
+//	★ 上游那道：`scripts/checks/legacy-select-star-column-order-gate.sh`（★ shell 门、★ 进 `make guards-select-star-order` ＋ `verify.sh`）★
+//	  ⇒ ★★ 它问的是「★ **列序还对不齐** ★」⇒ ★ 判据＝**有漂移就红**（★ **不问通道会不会投递它**）★★
+//	★ 本文件问的是「★ **通道此刻会不会重放它、★ 重放会不会炸** ★」⇒ ★ 判据＝**错位 ＋ 会投递 ⇒ 地雷**★★
+//	★ ⇒ ★★ **⇒ 所以同一台库上两门可以给出不同颜色、★ 而两个都对**：★★
+//	  ★ **211**：★ 上游门＝**红**（★ 两表确实错位）｜★ 本门＝**绿**（★ 392 被两本账按同一指纹跳过、★ 344 不在通道清单里 ⇒ ★ **今天没有重放风险**）★★
+//	  ★ **252**：★ 上游门＝**红**（★ 同样 2 处漂移）｜★ 本门＝**红**（★ 且 392 **会被投递** ⇒ ★ **是地雷**、★ 不只是漂移）★★
+//	★ ⇒ ★★ **⇒ 通用式：★ 同题两车各做一份、★ 先判【问的是不是同一个问题】——★ 「漂移存在」与「漂移会咬人」是两个命题、★ 两道门各管一个** ★★
+//	★ ⇒ ★★ **⇒ 两门都留**（★ 判定＝**两者不是等价产物** ⇒ 不适用「同题两份只留一份」那条规矩）★★
+//
 // ★★ 实测证据（★ 2026-11-23 · 生产 211 / 252 · **只读**）★★
 //
 //	★ **211**：★ `candidate_failure_logs_hot`(21 列) 与 `candidate_failure_logs`(21 列)
@@ -155,45 +166,73 @@ func legacyLivePairs(t *testing.T) []legacyLivePair {
 	t.Helper()
 	var pairs []legacyLivePair
 	seen := map[string]bool{}
-	for key, view := range crossSurfaceSelectStar(t) {
-		if _, ok := legacyCrossSurfaceSelectStar[view]; !ok {
+	// ★★ 上游 L34 八轮把 detector 改成了【语句级模型】★★：
+	// ★   键＝「<basename>|<视图名>」、★ 值＝`crossSurfaceStatement`
+	// ★   （★ `rels`＝分支关系、★ 顺序＝UNION ALL 出现顺序；★ `paths`＝同键语句所在的路径）★★
+	// ★ ⇒ ★ **静态那半与动态那半仍共用同一套解析** ⇒ ★ 不会口径分叉 ★★
+	for key, st := range crossSurfaceSelectStar(t) {
+		if _, ok := legacyCrossSurfaceSelectStar[key]; !ok {
 			continue // ★ 非登记表条目 ⇒ 归静态门（TestHotSurfaceViewsMustEnumerateColumns）
 		}
-		idx := strings.LastIndex(key, " @@ ")
-		if idx < 0 {
-			t.Fatalf("crossSurfaceSelectStar 的键形状变了（★ 缺 ' @@ '）：%q", key)
+		base := key
+		if i := strings.Index(key, "|"); i >= 0 {
+			base = key[:i]
 		}
-		stmt, path := strings.TrimSpace(key[:idx]), strings.TrimSpace(key[idx+4:])
-		base := filepath.Base(path)
 		ver := reLegacyFileRe.FindStringSubmatch(base)
 		if ver == nil {
 			continue // ★ 没有数字前缀 ⇒ 不参与版本台账判定
 		}
-		hot, parent, ok := legacyHotAndParent(stmt)
-		if !ok {
-			continue // ★ 不是「hot ＋ 父表」这一对（★ 例如 625 的统一视图）
+		if len(st.rels) < 2 {
+			continue // ★ 不是 union 形状
 		}
-		id := view + "@" + base
-		if seen[id] {
-			continue
+		// ★ 两条通道各自执行的那份字节（★ 部署通道＝canonical、★ 安装器＝embeddata 副本）
+		canonPath, embPath := "", ""
+		for _, p := range st.paths {
+			if strings.Contains(p, string(filepath.Separator)+"embeddata"+string(filepath.Separator)) {
+				if embPath == "" {
+					embPath = p
+				}
+				continue
+			}
+			if canonPath == "" {
+				canonPath = p
+			}
 		}
-		seen[id] = true
-		pair := legacyLivePair{view: view, file: base, version: ver[1], hot: hot, parent: parent, stmt: stmt}
-		// ★ 两条通道各自执行的那份字节的指纹（★ 部署通道＝canonical、★ 安装器＝embeddata 副本）
-		pair.shaCano = legacySHA256(t, path)
-		emb := filepath.Join("../../../installer/cmd/llm-gw-installer/embeddata/startup", base)
-		if _, err := os.Stat(emb); err == nil {
-			pair.shaEmb = legacySHA256(t, emb)
-		} else {
-			pair.shaEmb = pair.shaCano
+		if canonPath == "" && len(st.paths) > 0 {
+			canonPath = st.paths[0]
 		}
-		pairs = append(pairs, pair)
+		// ★★★ **逐分支比对（★ 本轮随上游改动一并升级）** ★★★：
+		// ★ 上游把登记表从 11 对扩到【含三路形状】（★ 父表 ∪ 当月分区 ∪ default）★★
+		// ★ ⇒ ★ **只比前两个分支就是「只核 2/3」那个洞**（★ 上游 AGENTS 里登记过这条）★★
+		// ★ ⇒ ★ 对**每一个分支**都比一次（★ 参考分支＝`rels[0]`）★★
+		ref := st.rels[0]
+		stmt := strings.Join(st.rels, " UNION ALL ")
+		for _, other := range st.rels[1:] {
+			id := key + "|" + other
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			pair := legacyLivePair{view: st.view, file: base, version: ver[1], hot: ref, parent: other, stmt: stmt}
+			if canonPath != "" {
+				pair.shaCano = legacySHA256(t, canonPath)
+			}
+			if embPath != "" {
+				pair.shaEmb = legacySHA256(t, embPath)
+			} else {
+				pair.shaEmb = pair.shaCano
+			}
+			pairs = append(pairs, pair)
+		}
 	}
 	sort.Slice(pairs, func(i, j int) bool {
 		if pairs[i].view != pairs[j].view {
 			return pairs[i].view < pairs[j].view
 		}
-		return pairs[i].file < pairs[j].file
+		if pairs[i].file != pairs[j].file {
+			return pairs[i].file < pairs[j].file
+		}
+		return pairs[i].parent < pairs[j].parent
 	})
 	return pairs
 }
