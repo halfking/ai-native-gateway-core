@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil"
 )
 
 // Runner DB 初始化执行器
@@ -2069,13 +2072,61 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 }
 
 // WaitForPG 等待 PG 就绪（最多 timeout 秒）
+//
+// ★★★ **契约（★ 2026-11-23 修、★ 之前是破的）**：★★★
+//
+// ★ 这条函数的注释**一直写着**「★ 最多 timeout 秒 ★」⇒ ★★ 而旧实现里
+// ★ **每一次 `docker exec` 都没有任何上限** ⇒ ★★ Docker 守护进程僵死时
+// ★ （★ `docker exec` 客户端永不返回 ★）**第一次调用就无限挂**
+// ★ ⇒ ★★ **注释里的契约今天本来就是破的** ⇒ ★★ 而且连
+// ★ 「PostgreSQL 启动超时 (Ns)」这句话**都打不出来**（★ 运维只看到「卡住」 ★）★★。
+//
+// ★★ **修法（★ 两条一起 ★）**：★★
+//
+//	★ ① **每次调用单独封顶**（★ `dockerutil.DockerCmdTimeoutFast` ★）
+//	★ ② **整段用 deadline 收口**（★ 而不是「循环 N 次」★）
+//
+// ★ ⇒ ★★ **总耗时回到「最多 timeout 秒」** ★★（★ 而不是无限期 ★）
+// ★ ⇒ ★★ **且能区分两种失败**：★★
+//
+//	★ **PG 还没起来**（★ docker 正常、★ `pg_isready` 快速返回非零 ★）
+//	★   ⇒ 保持原口径：**「PostgreSQL 启动超时 (Ns)」** ★
+//	★ **docker 本身无响应**（★ 调用被超时砍掉 ★）
+//	★   ⇒ 追加一句「★ docker exec 无响应、★ Docker 守护进程可能僵死 ★」
+//	★   ⇒ ★★ **让下一次撞上它的人一眼看出根因** ★★。
 func (r *Runner) WaitForPG(timeout int) error {
-	for i := 0; i < timeout; i++ {
-		cmd := exec.Command("docker", "exec", r.CitusContainer, "pg_isready", "-U", r.DBUser)
-		if err := cmd.Run(); err == nil {
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	unresponsive := false
+	for {
+		// ★ ★ 单次预算**同时受两个上限约束** ★ ★：
+		// ★ ① 快档上限（★ `DockerCmdTimeoutFast` ★）★ —— 防止一次调用吃掉整个预算；
+		// ★ ② **剩余 deadline**（★ ★ ⇒ ★ 总耗时真正回到「最多 timeout 秒」 ★ ★）★。
+		// ★ ★ 只加 ① 不加 ② ⇒ ★ 总耗时会是「timeout ＋ 一档」⇒ ★ 契约仍然被破坏 ★★。
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		budget := dockerutil.DockerCmdTimeoutFast
+		if remaining < budget {
+			budget = remaining
+		}
+		_, err := dockerutil.RunDocker(budget,
+			"exec", r.CitusContainer, "pg_isready", "-U", r.DBUser)
+		if err == nil {
 			return nil
 		}
+		// ★ 本次失败是「★ docker 无响应 ★」还是「★ PG 还没起来 ★」？
+		// ★ 二者的区别就是：**调用有没有被自己的超时砍掉**。
+		if errors.Is(err, context.DeadlineExceeded) {
+			unresponsive = true
+		}
+		if time.Until(deadline) <= 0 {
+			break
+		}
 		time.Sleep(time.Second)
+	}
+	if unresponsive {
+		return fmt.Errorf("PostgreSQL 启动超时 (%ds): ★ docker exec pg_isready 无响应（★ Docker 守护进程可能僵死）", timeout)
 	}
 	return fmt.Errorf("PostgreSQL 启动超时 (%ds)", timeout)
 }
@@ -2597,10 +2648,11 @@ func (r *Runner) execSQL(sql string) error {
 
 // VerifySchema 检查 schema 是否加载成功
 func (r *Runner) VerifySchema() (int, error) {
-	cmd := exec.Command("docker", "exec", r.CitusContainer, "psql",
+	// ★★ 2026-11-23：★ 带**硬超时**（★ 与 `WaitForPG` 同族 ★）。
+	out, err := dockerutil.RunDocker(dockerutil.DockerCmdTimeoutSlow,
+		"exec", r.CitusContainer, "psql",
 		"-U", r.DBUser, "-d", r.DBName,
 		"-t", "-c", "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
-	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}
