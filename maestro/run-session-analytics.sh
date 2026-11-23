@@ -238,14 +238,18 @@ if [ -z "${TOKEN}" ]; then
 fi
 END_DATE="$(date +%Y-%m-%d)"
 START_DATE="$(date -v-6d +%Y-%m-%d 2>/dev/null || date -d '6 days ago' +%Y-%m-%d)"
-SESSION_OWNER="$(curl -s --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
+SESSION_OWNER="${SESSION_OWNER:-$(curl -s --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
   "${BASE_URL}/api/admin/session-analytics/user-ranking?start_date=${START_DATE}&end_date=${END_DATE}&limit=1" \
   | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 u=(d.get('users') or [])
 print(u[0]['owner'] if u and u[0].get('owner') else '')
-" 2>/dev/null)"
+" 2>/dev/null)}"
+# ★★ 2026-11-23（L8 轮）：★ **允许调用方指定 owner**（`SESSION_OWNER=xxx bash maestro/run-session-analytics.sh`）
+#   ⇒ 用途：**覆盖某个 owner 名下的数据形态**（★ 例：任务层「**有数据**」分支
+#   只有 `asm-session-agent` 名下有真值 ⇒ 想验那条分支就得指定它）。
+#   ⇒ ★ 缺省仍取「窗口内第一个有会话的人」⇒ **默认行为逐字不变**。
 if [ -z "${SESSION_OWNER}" ]; then
   echo "!! 窗口 ${START_DATE}~${END_DATE} 内没有人员行 ⇒ 动态段无真值 ⇒ flow 会退化成空 URL。" >&2
   echo "   （这不是产品红，是量具失效；换窗口或先造数据。）" >&2
@@ -283,6 +287,7 @@ node "${ROOT}/maestro/tools/assert-session-analytics.mjs" \
   --cdp "http://127.0.0.1:${SA_CDP_PORT}" \
   --url "${BASE_URL}" \
   --user "${ADMIN_USER}" \
+  --owner "${SESSION_OWNER}" \
   --start-date "${START_DATE}" \
   --end-date "${END_DATE}" \
   2>&1 | tee "${OUT}/assert-session-analytics.txt"
