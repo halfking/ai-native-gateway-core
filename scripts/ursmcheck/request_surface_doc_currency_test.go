@@ -255,18 +255,18 @@ type docEvidence struct {
 //	main_pipeline.go 启动日志 :1290、D09 合成/写回窗口 829-840（合成点 :837）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8918, to: 8937,
+		file: "cmd/gateway/main.go", from: 9126, to: 9145,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8921, to: 8928,
+		file: "cmd/gateway/main.go", from: 9129, to: 9136,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8878, to: 8883,
+		file: "cmd/gateway/main.go", from: 9086, to: 9091,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -307,17 +307,17 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "v1 的前飞/后飞「全部 inline」的自陈说明（★ 证据是包注释，不是代码）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 160, to: 169,
+		file: "cmd/gateway/main_pipeline.go", from: 171, to: 180,
 		mustContain: "func v2UsePipeline() bool", kind: evidenceCode,
 		why: "v2 开关的读取（默认关、启动时读一次）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 1290, to: 1290,
+		file: "cmd/gateway/main_pipeline.go", from: 1515, to: 1515,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 829, to: 840,
+		file: "cmd/gateway/main_pipeline.go", from: 1030, to: 1040,
 		mustContain: "v2pipe-", kind: evidenceCode,
 		why: "D09 的 v2 request-id 合成与写回（★ 存在 ⇒ 那条差异不是「没实现」）",
 	},

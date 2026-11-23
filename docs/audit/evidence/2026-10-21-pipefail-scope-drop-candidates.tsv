@@ -159,7 +159,7 @@ scripts/verify-local-deployment.sh	245	verify_l2_dependencies	var-write	judgment
 scripts/verify-local-deployment.sh	269	verify_l2_dependencies	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$READY_RESPONSE" | grep -qE '"redis".*"ok"|"connected".*true'; then
 scripts/verify-local-deployment.sh	312	verify_l3_functional	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$ADMIN_RESPONSE" | grep -qE '"error"|"message"'; then
 scripts/verify-local-deployment.sh	351	verify_l3_functional	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$INDEX_RESPONSE" | grep -qE '<html|<!DOCTYPE'; then
-scripts/verify-per-model-breaker.sh	179	test_scenario_2	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$line" | grep -q "key="; then
+scripts/verify-per-model-breaker.sh	194	test_scenario_2	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$line" | grep -q "key="; then
 sql/migrations/timeout-optimization/run_migrations.sh	195	verify_migrations	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "${exists}" | grep -q "t"; then
 sql/migrations/timeout-optimization/run_migrations.sh	210	verify_migrations	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "${exists}" | grep -q "t"; then
 tests/audit_ledger_consistency_test.sh	146	extract_sib6	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$line" | grep -qE '^[0-9]+\. ' || continue
