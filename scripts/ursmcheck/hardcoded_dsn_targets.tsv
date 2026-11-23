@@ -8,11 +8,13 @@
 ../../admin/storage_degraded_surfaces_r27_test.go	host=127.0.0.1 port=1 user=audit dbname=audit sslmode=disable connect_timeout=1 pool_max_conns=1	9974bc4286	probe	pending	端口 1；函数名 newDeadPool ⇒ 故意连不上的死池
 ../../admin/usage_enhanced_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且**完全无视 env** ⇒ 本机有那个库就会真连上；连不上则静默 SKIP 被记成绿（R69 §19.18）⇒ R70 改成认事实源
 ../../admin/user_usage_summary_observation_test.go	postgres://127.0.0.1:54318/postgres?sslmode=disable	cb2b754096	probe	pending	注释自证「this unit test never connects」⇒ 假 DSN 只为构造 pool
+../../admin/user_usage_window_test.go	postgres://127.0.0.1:1/none?connect_timeout=1	436abc09f6	probe	pending	端口 1 = 必连不上；pgxpool.New 惰性建池（不立即建连）⇒ 只为构造非 nil db 走「nil-db 503 先于参数检查」的分支 ⇒ 该 DSN 在任何机器上都不会连上任何真实库 ⇒ 无「连错库」面
 ../../bg/auto_route_realtime_listener_test.go	postgres://nobody:nopass@127.0.0.1:1/none?sslmode=disable	b7a7a73ed6	probe	pending	端口 1 = 必连不上
 ../../bg/auto_route_workers_test.go	postgres://nouser:nopass@127.0.0.1:1/none	ab5d93d765	probe	pending	端口 1 = 必连不上
 ../../bg/feature_stats_worker_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:LLM_GATEWAY_FEATURE_STATS_TEST_DSN	原 fallback 到写死库 ⇒ 连不上则静默 SKIP（R69 §19.18 记的形态 b）⇒ R70 取消 fallback，改成未设即明确 SKIP
 ../../bg/materialized_view_refresher_test.go	postgres://127.0.0.1:1/postgres?sslmode=disable&connect_timeout=1	556c206dfb	probe	pending	端口 1 + 注释自证「unreachable DSN」
 ../../bg/systemmonitor/metrics_collector_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且无视 env ⇒ 连不上则静默 SKIP 被记成绿 ⇒ R70 改成认事实源
+../../cmd/gateway/error_playbook_routes_test.go	postgres://pb_test:pb_test@127.0.0.1:1/pb_test?sslmode=disable&connect_timeout=1	cef03e861c	probe	pending	端口 1 = 必连不上；pgxpool.New 惰性建池（不立即建连）⇒ 只为构造非 nil pool ⇒ 该 DSN 在任何机器上都不会连上任何真实库 ⇒ 无「连错库」面
 ../../cmd/gateway/pi_analysis_routes_reachable_test.go	postgres://pi_test:pi_test@127.0.0.1:1/pi_test?sslmode=disable&connect_timeout=1	88e1eb8795	probe	pending	★ 端口 1 = 必连不上；本文件造的是**惰性** pgxpool（注释自述「不会真的连库」）：AdminMiddleware 对无凭据请求直接 401、根本不碰池子 ⇒ 池子只需「非 nil 且配置合法」⇒ 该 DSN 在任何机器上都不会连上任何真实库 ⇒ 无「连错库」面；★ 与 admin/live_stream_async_test.go、admin/storage_degraded_surfaces_r27_test.go 同族（probe/pending）
 ../../cmd/gateway/recovery_gate_adapter_test.go	postgres://u:p@127.0.0.1:1/db?sslmode=disable	c281483052	probe	pending	端口 1 = 必连不上
 ../../cmd/gateway/routing_optimizer_init_test.go	postgres://gateway:gw@127.0.0.1:1/gw?sslmode=disable	12891fe9dd	probe	pending	端口 1 = 必连不上

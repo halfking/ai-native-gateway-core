@@ -9,6 +9,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"github.com/kaixuan/llm-gateway-go/internal/testguard"
 )
 
 // getTestDBConnStr returns a test database connection string.
@@ -29,6 +31,18 @@ func setupTestDB(t *testing.T) (*sql.DB, string) {
 	if !ok {
 		return nil, ""
 	}
+
+	// ★★ 目标库守卫（R88 轮形态：判定必须**在第一条破坏性语句之前**）★★
+	//
+	// ★ 这条腿会 `DROP TABLE IF EXISTS plugin_registry` ⇒ ★ 而 `plugin_registry`
+	//   是**插件运行时的产品表**（不只是本腿自建的测试对象）⇒ ★ 若事实源
+	//   （scripts/audit/datasource_env.sh）把 TEST_DB_URL 指到产品库 ⇒ ★
+	//   **这条腿会清空产品库里的插件注册表** ⇒ ★ 数据事故级。
+	// ⇒ ★ 因此在建连/建池**之前**先证明目标是隔离库；证明不了就**跳过**
+	//   （跳过不构成证据，但不造成伤害）。
+	// ⇒ ★ 范式与仓内另外四条已修的高危腿一致（见
+	//   scripts/ursmcheck/destructive_target_ledger.tsv 头部点名的那四条）。
+	testguard.RequireIsolatedTarget(t, connStr)
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
