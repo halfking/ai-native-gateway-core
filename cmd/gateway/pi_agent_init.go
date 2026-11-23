@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
 )
 
@@ -212,6 +213,36 @@ func initPIAgent(
 	analyzer.SetBatchSize(cfg.batchSize)
 	worker := promptinjection.NewErrorAnalysisWorker(analyzer, cfg.interval)
 	worker.Start(ctx)
+
+	// F6 修复：定期清理旧的错误分析记录（90 天保留期）。
+	//
+	//	问题：cleanup_old_error_analysis SQL 函数已定义（977 迁移），但全仓零调用方
+	//	⇒ 队列与结果表（含攻击者原文 + LLM 响应）无界增长。
+	//	修复：每 24 小时调用一次清理函数，删除超过 90 天的记录。
+	bg.Go("pi_agent.cleanup", func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("pi_agent: cleanup task stopping")
+				return
+			case <-ticker.C:
+				var deletedQueue, deletedResults int64
+				if err := sqlDB.QueryRowContext(ctx,
+					`SELECT * FROM cleanup_old_error_analysis($1)`, 90).Scan(&deletedQueue, &deletedResults); err != nil {
+					slog.Warn("pi_agent: cleanup failed", "error", err)
+					continue
+				}
+				if deletedQueue > 0 || deletedResults > 0 {
+					slog.Info("pi_agent: cleanup completed",
+						"deleted_queue", deletedQueue,
+						"deleted_results", deletedResults)
+				}
+			}
+		}
+	})
 
 	slog.Info("pi_agent: error analysis enabled",
 		"model", model,

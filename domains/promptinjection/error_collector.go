@@ -377,8 +377,10 @@ func (ec *ErrorCollector) Collect(ctx context.Context, collectedErr *CollectedEr
 
 	exists, existingID, err := ec.checkDuplicateTx(ctx, tx, errorHash, 24*time.Hour)
 	if err != nil {
-		slog.Warn("error_collector: failed to check duplicate", "error", err)
-		// 继续插入，不因去重检查失败而阻断
+		// F5 修复：查重失败意味着事务已中止（PostgreSQL SQLSTATE 25P02），
+		// 后续 INSERT 不可能成功。之前的注释声称"继续插入"是误导性的。
+		return fmt.Errorf("failed to check duplicate in transaction: %w", err)
+		// defer 会自动 rollback
 	}
 
 	if exists {
@@ -403,8 +405,8 @@ func (ec *ErrorCollector) Collect(ctx context.Context, collectedErr *CollectedEr
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM error_analysis_queue
 			 WHERE status IN ('pending','processing')`).Scan(&depth); err != nil {
-			slog.Warn("error_collector: failed to check queue depth; inserting anyway",
-				"error", err)
+			// F5 修复：深度检查失败意味着事务已中止，后续 INSERT 不可能成功。
+			return fmt.Errorf("failed to check queue depth in transaction: %w", err)
 		} else if depth >= limit {
 			ec.depthDropped.Add(1)
 			slog.Warn("error_collector: queue depth limit reached, error dropped",
