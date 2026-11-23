@@ -128,9 +128,9 @@ note "文档语境反向对照 ✔（★ 示例文案未被误报）"
 if [ "$(uname -s)" = "Linux" ]; then
   # ★ ★★ 用**含标记字符**的模板做探测（★ ⇒ 不触发本门判据 ★★）
   if mktemp -t "<probe-no-x>" >/dev/null 2>&1; then
-    note "  ℹ 本机是 Linux：★ `mktemp -t` 竟对无 X 模板成功（★ 分布被改过 ⇒ ★ 结论仍成立、★ 但实测读数与本轮不符 ★）"
+    note "  ℹ 本机是 Linux：★ \`mktemp -t\` 竟对无 X 模板成功（★ 分布被改过 ⇒ ★ 结论仍成立、★ 但实测读数与本轮不符 ★）"
   else
-    note "  ✔ 本机是 Linux：★ `mktemp -t` 对无 X 模板**实测失败**（★ GNU coreutils 要求 ≥3 个 X）★ ⇒ ★ **本轮的缺陷根因在 Linux 上可复现** ★"
+    note "  ✔ 本机是 Linux：★ \`mktemp -t\` 对无 X 模板**实测失败**（★ GNU coreutils 要求 ≥3 个 X）★ ⇒ ★ **本轮的缺陷根因在 Linux 上可复现** ★"
   fi
 else
   note "  ℹ 本机不是 Linux（★ $(uname -s) ★）⇒ ★ macOS 容忍无 X 的模板 ⇒ ★ **⇒ 这类缺陷只在 Linux 上暴露**（★ 本轮的教训）★"
@@ -152,7 +152,7 @@ while IFS= read -r f; do
   [ -n "$out" ] || continue
   while IFS= read -r hitline; do
     [ -n "$hitline" ] || continue
-    bad "★ ${f}:${hitline}（★ `mktemp -t` 的模板里必须含 **≥3 个连续 X**：★ GNU coreutils（★ Linux ★）要求 ≥3、★ 而 macOS 容忍没有 ⇒ ★ ⇒ ★ **在生产 Linux 上这道脚本会直接失败** ★★）"
+    bad "★ ${f}:${hitline}（★ \`mktemp -t\` 的模板里必须含 **≥3 个连续 X**：★ GNU coreutils（★ Linux ★）要求 ≥3、★ 而 macOS 容忍没有 ⇒ ★ ⇒ ★ **在生产 Linux 上这道脚本会直接失败** ★★）"
   done <<EOF
 $out
 EOF

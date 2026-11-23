@@ -179,6 +179,27 @@ done <"$plan_file"
 # ★★ 「除 PICK 的版本外都在」的安装器那本账 ★★
 awk -v v="$PICK_VER" '$1 + 0 != v + 0' "$instver_all" >"$FIXTURE_DIR/instver-minus-pick.txt"
 
+# ── ★★ 夹具侧算【当前内容指纹】（★ 2026-11-24 L34 四轮新增 ★★）──
+# ★★ 为什么夹具也要算：★ 门现在会把「账里有、★ 但指纹过期」的条目标成【内容加固重放】★★
+# ★★ ⇒ ★★ 覆盖臂若还用假的指纹（★ `deadbeef` ★★）、★ 全部 356 条都会变成「过期」★★
+# ★★ ⇒ ★★ ⇒ ★★ **⇒ 覆盖臂必须用【真实指纹】**（★ 而这同时是对「门算指纹的口径」的
+# ★★ **交叉校验**：★ 夹具与门两套实现算出同一个指纹、★ 否则覆盖臂就不会绿 ★★）★★
+if command -v sha256sum >/dev/null 2>&1; then
+  FIX_SHA_CMD="sha256sum"
+else
+  FIX_SHA_CMD="shasum -a 256"
+fi
+: >"$FIXTURE_DIR/present-paths.txt"
+while IFS= read -r base; do
+  [ -n "$base" ] || continue
+  printf '%s\n' "sql/migrations/startup/${base}" >>"$FIXTURE_DIR/present-paths.txt"
+done <"$plan_file"
+xargs $FIX_SHA_CMD <"$FIXTURE_DIR/present-paths.txt" 2>/dev/null | awk -v d="sql/migrations/startup/" '
+  { p = $2; if (index(p, d) == 1) { b = substr(p, length(d) + 1) } else { b = p }; print b "\t" $1 }
+' >"$FIXTURE_DIR/shas-all.tsv"
+sha_count=$(wc -l <"$FIXTURE_DIR/shas-all.tsv" | tr -d ' ')
+note "当前内容指纹（夹具）：${sha_count} 条"
+
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 臂 A：账表**不存在** ⇒ ★ 全部缺口 ⇒ ★ 期望红（EXIT=1）"
 make_fake_psql 0 /dev/null 0 "$instver_all"
@@ -203,10 +224,10 @@ fi
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 臂 C：投递面**每一条都有记录** ⇒ ★ 无断层 ⇒ ★ 期望绿（EXIT=0）"
 : >"$FIXTURE_DIR/full.tsv"
-while IFS= read -r base; do
+while IFS="$(printf '\t')" read -r base sha; do
   [ -n "$base" ] || continue
-  printf '%s:%s\tdeadbeef\n' "$SEQ" "$base" >>"$FIXTURE_DIR/full.tsv"
-done <"$plan_file"
+  printf '%s:%s\t%s\n' "$SEQ" "$base" "$sha" >>"$FIXTURE_DIR/full.tsv"
+done <"$FIXTURE_DIR/shas-all.tsv"
 make_fake_psql 1 "$FIXTURE_DIR/full.tsv" 0 "$instver_all"
 run_gate
 if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "无断层"; then
@@ -218,9 +239,9 @@ fi
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 臂 D：**只有一部分**有记录 ⇒ ★ 缺口 > 0 ⇒ ★ 期望红（EXIT=1）"
 : >"$FIXTURE_DIR/partial.tsv"
-head -10 "$plan_file" | while IFS= read -r base; do
+head -10 "$FIXTURE_DIR/shas-all.tsv" | while IFS="$(printf '\t')" read -r base sha; do
   [ -n "$base" ] || continue
-  printf '%s:%s\tdeadbeef\n' "$SEQ" "$base" >>"$FIXTURE_DIR/partial.tsv"
+  printf '%s:%s\t%s\n' "$SEQ" "$base" "$sha" >>"$FIXTURE_DIR/partial.tsv"
 done
 make_fake_psql 1 "$FIXTURE_DIR/partial.tsv" 0 "$instver_all"
 run_gate
@@ -239,7 +260,7 @@ while IFS= read -r base; do
 done <"$plan_file"
 make_fake_psql 1 "$FIXTURE_DIR/legacy.tsv" 0 "$instver_all"
 run_gate
-if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "legacy 记账行"; then
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "legacy 行"; then
   ok "臂 E 绿（EXIT=0）且把 legacy 行单列（★ 不误报成断层 ★）"
 else
   bad "臂 E 期望 EXIT=0、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
@@ -299,7 +320,7 @@ fi
 # ★★ ⇒ ★★ 因为门按**自己所在目录**推导仓根（★ 合成仓里也要有同样的相对布局 ★★）★★
 note "★ 臂 J：缺口那条**文件名无数字版本号** ⇒ ★ 不可判定 ⇒ ★ 期望红（EXIT=1）"
 FAKEROOT="$FIXTURE_DIR/fakerepo"
-mkdir -p "$FAKEROOT/scripts/checks"
+mkdir -p "$FAKEROOT/scripts/checks" "$FAKEROOT/sql/migrations/startup"
 cp "$GATE" "$FAKEROOT/scripts/checks/deploy-ledger-coverage-gate.sh"
 cat >"$FAKEROOT/scripts/apply-db-revision-sequence.sh" <<'FAKEDEPLOY'
 #!/usr/bin/env bash
@@ -308,7 +329,11 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/alpha_no_version.sql"
 )
 FAKEDEPLOY
-printf '%s:%s\tdeadbeef\n' "$SEQ" "123_pick.sql" >"$FIXTURE_DIR/fakeledger.tsv"
+# ★★ 合成仓的两个文件**要在磁盘上真的存在**（★ 否则它们会先被判成「不在场」★★）
+printf 'SELECT 1;\n' >"$FAKEROOT/sql/migrations/startup/123_pick.sql"
+printf 'SELECT 1;\n' >"$FAKEROOT/sql/migrations/startup/alpha_no_version.sql"
+pick_sha="$($FIX_SHA_CMD "$FAKEROOT/sql/migrations/startup/123_pick.sql" | cut -d' ' -f1)"
+printf '%s:%s\t%s\n' "$SEQ" "123_pick.sql" "$pick_sha" >"$FIXTURE_DIR/fakeledger.tsv"
 printf '999\n' >"$FIXTURE_DIR/fakeinstver.txt"
 rc=0
 DEPLOY_LEDGER_GATE_DATABASE_URL="postgres://fixture/fixture" \
@@ -320,6 +345,47 @@ if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "不可判定"; the
   ok "臂 J 红（EXIT=1）且报「不可判定」（★ 无版本号 ⇒ 保守计入断层 ★）"
 else
   bad "臂 J 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 臂 K（★ L34 四轮新增 ★★）：★ 账里有记录、★ 但**指纹过期** ★★
+# ★★ ⇒ ★ 通道会**按当前内容重放**它（★ 通道**设计内**的行为 ★★）⇒ ★ **绿、但要报出来** ★★
+# ★★ 这一臂钉的是「旧口径把它当覆盖」那个**盲区**：★ 现在它必须被单独点名 ★★
+note "★ 臂 K：那条的**指纹过期** ⇒ ★ 内容加固重放 ⇒ ★ 期望绿（EXIT=0）＋ 报出来"
+awk -F'\t' -v key="${SEQ}:${PICK}" '{ if ($1 == key) { print $1 "\t" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" } else { print } }' "$FIXTURE_DIR/full.tsv" >"$FIXTURE_DIR/stale.tsv"
+make_fake_psql 1 "$FIXTURE_DIR/stale.tsv" 0 "$instver_all"
+run_gate
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "内容加固" \
+   && printf '%s' "$GATE_OUT" | grep -q "$PICK"; then
+  ok "臂 K 绿（EXIT=0）且把「内容加固重放」那条单独报出来（★ 不当覆盖、★ 也不当断层 ★）"
+else
+  bad "臂 K 期望 EXIT=0、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 臂 L（★ L34 四轮新增 ★★）：★ 投递面里的文件**在磁盘上不在场** ★★
+# ★★ ⇒ ★ 通道跑到它会**直接失败**（★ 那不是重放风险、★ 是更硬的错 ★★）⇒ ★ 期望红 ★★
+note "★ 臂 L：投递面里有个文件**磁盘上不在场** ⇒ ★ 期望红（EXIT=1）"
+FAKEROOT2="$FIXTURE_DIR/fakerepo2"
+mkdir -p "$FAKEROOT2/scripts/checks" "$FAKEROOT2/sql/migrations/startup"
+cp "$GATE" "$FAKEROOT2/scripts/checks/deploy-ledger-coverage-gate.sh"
+cat >"$FAKEROOT2/scripts/apply-db-revision-sequence.sh" <<'FAKEDEPLOY'
+#!/usr/bin/env bash
+files=(
+  "$ROOT_DIR/sql/migrations/startup/ghost_missing.sql"
+)
+FAKEDEPLOY
+printf '%s:%s\t%s\n' "$SEQ" "ghost_missing.sql" "deadbeef" >"$FIXTURE_DIR/ghost-ledger.tsv"
+rc=0
+DEPLOY_LEDGER_GATE_DATABASE_URL="postgres://fixture/fixture" \
+DEPLOY_LEDGER_GATE_PSQL_BIN="$FIXTURE_DIR/fake-psql" \
+  bash "$FAKEROOT2/scripts/checks/deploy-ledger-coverage-gate.sh" >"$FIXTURE_DIR/out.txt" 2>&1 || rc=$?
+GATE_OUT="$(cat "$FIXTURE_DIR/out.txt")"
+GATE_RC="$rc"
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "不在场"; then
+  ok "臂 L 红（EXIT=1）且报「不在场」（★ 通道跑到它会直接失败 ★）"
+else
+  bad "臂 L 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

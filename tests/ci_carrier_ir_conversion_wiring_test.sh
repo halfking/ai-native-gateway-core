@@ -123,7 +123,7 @@ fi
 if [[ -n "${configs// /}" ]]; then
   ok "载体目录存在且有流水线配置：${configs# }"
 else
-  bad "`.workflow/` 下找不到任何流水线配置 ⇒ 在跑的载体不存在 ⇒ 判据失效（fail-closed）"
+  bad "\`.workflow/\` 下找不到任何流水线配置 ⇒ 在跑的载体不存在 ⇒ 判据失效（fail-closed）"
 fi
 
 # ══ 判据 ②：载体里有非注释行调 `make guards-fast` ═════════════════════

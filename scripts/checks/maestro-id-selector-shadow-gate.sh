@@ -86,7 +86,7 @@ VUE
 arm_out="$(python3 "$TOOL" --root="$TMP_DIR" --json 2>&1)"
 arm_rc=$?
 if [[ $arm_rc -eq 0 ]]; then
-  bad "对照臂：带 title 的按钮被 `id:` 选中时工具仍判绿 ⇒ 判据抓不住遮蔽（门恒绿）"
+  bad "对照臂：带 title 的按钮被 \`id:\` 选中时工具仍判绿 ⇒ 判据抓不住遮蔽（门恒绿）"
 else
   ok "对照臂：带 title 的按钮存在时工具判红（退出码 ${arm_rc}）"
   if printf '%s' "$arm_out" | grep -q 'shadowed-btn'; then
