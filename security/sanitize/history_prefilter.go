@@ -148,3 +148,17 @@ func historyMayMatch(ctx context.Context, open func() io.Reader, terms [][]byte)
 		}
 	}
 }
+
+// historyTextMayMatch 是 historyMayMatch 的内存版：folded 须是已做 ASCII 折叠的
+// 文本。判据相同——terms 为空 ⇒ 不确定（当可能）；否则任一字面量出现才可能。
+func historyTextMayMatch(folded []byte, terms [][]byte) bool {
+	if len(terms) == 0 {
+		return true
+	}
+	for _, term := range terms {
+		if bytes.Contains(folded, term) {
+			return true
+		}
+	}
+	return false
+}

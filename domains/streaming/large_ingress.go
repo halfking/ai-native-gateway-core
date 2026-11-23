@@ -374,6 +374,15 @@ func observeContextReduce(ctx context.Context, started time.Time, report session
 	}
 	metrics.SessionContextReduceDuration.WithLabelValues(parallel, outcome).Observe(time.Since(started).Seconds())
 	metrics.SessionContextReduceMessages.WithLabelValues(outcome).Observe(float64(report.Messages))
+	if report.SensitiveHistoryOmitted > 0 {
+		metrics.SessionContextReduceOmitted.Add(float64(report.SensitiveHistoryOmitted))
+	}
+	if report.DigestSegments > 0 {
+		// 分段摘要：命中的段 / 未命中的段（未命中才要现算），以及最终摘要的字节数。
+		metrics.SessionContextDigestSegments.WithLabelValues("hit").Add(float64(report.DigestCacheHits))
+		metrics.SessionContextDigestSegments.WithLabelValues("miss").Add(float64(report.DigestSegments - report.DigestCacheHits))
+		metrics.SessionContextDigestBytes.Observe(float64(report.DigestBytes))
+	}
 }
 
 // largeIngressPrepBudget 是入口预处理（读体 + 归档 + 归约 + 会话绑定）的时限。

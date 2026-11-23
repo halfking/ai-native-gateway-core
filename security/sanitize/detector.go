@@ -177,6 +177,17 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 	if snapshot != nil {
 		patterns = managed
 	}
+	return d.detectPatterns(ctx, text, patterns, scope, snapshot)
+}
+
+// detectPatterns 是检测的主体：对一组规则跑完整条候选过滤链（地址族放行、声明
+// 配对重叠、引号剥离、非字面量声明、账号/银行卡/身份证/密钥形状/Bearer 的可信
+// 度、数字串边界……）并产出片段。DetectScope 负责选规则（内建 / 托管快照）。
+//
+// 历史守卫（history_guard.go）在快路径的正则说「可能命中」之后，用**同一份实现**
+// 复核候选——守卫与输入面因此不可能各自漂移（2026-11-23 之前守卫只看正则，
+// 「tokens」「keyboard」「token count」这类被输入面放行的词会让整条历史被丢）。
+func (d *PatternDetector) detectPatterns(ctx context.Context, text string, patterns []patternEntry, scope DetectionScope, snapshot *sanitizerules.Snapshot) ([]SensitiveFragment, error) {
 	var blocked string
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)

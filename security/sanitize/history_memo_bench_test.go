@@ -5,14 +5,17 @@ package sanitize
 //
 //	go test ./security/sanitize/ -run '^$' -bench 'ReduceWithHistoryGuard' -benchtime 3x
 //
-// 量的是 sessioncontext.Reduce 对一份约 7.8MB / 3200 条的 agent 式会话在三种
+// 量的是 sessioncontext.Reduce 对一份约 7.8MB / 3200 条的 agent 式会话在各
 // 形态下的耗时：
 //
 //	baseline        串行 + 无缓存 —— 2026-11-23 之前的线上行为
 //	parallel-cold   并行 + 缓存冷 —— 进程刚启动（或规则刚变更）后的第一轮
 //	parallel-warm   并行 + 缓存热 —— 同一会话后续每一轮的常态
+//	digest-cold     并行 + 缓存热 + 分段摘要冷 —— 第三步：段摘要全部现算
+//	digest-warm     并行 + 缓存热 + 分段摘要热 —— 段摘要全部命中缓存
 //
-// 三者的归约输出必须逐字节相同（bench 里顺带断言）。
+// 同一摘要状态下的归约输出必须逐字节相同（bench 里顺带断言）：摘要关闭的三种
+// 形态一个哈希，开启的两种另一个哈希。
 //
 // 规则取 configs/sensitive_patterns.yaml（经 PatternDetector.HistoryGuard，与
 // 生产装配同构；生产上规则来自托管规则表，条数不同但量级相近）。
@@ -89,16 +92,22 @@ func BenchmarkReduceWithHistoryGuard(b *testing.B) {
 		}
 		return d
 	}
-	want := ""
+	// want[digest]：该摘要状态下第一个形态的输出哈希；后续形态必须与它相同。
+	want := map[bool]string{}
+	digestOn := sessioncontext.DigestConfig{Enabled: true}
 	for _, mode := range []struct {
 		name    string
 		memo    bool // 走缓存包装
 		fresh   bool // 每次迭代换一个空缓存（冷）
 		workers int
+		digest  bool // 生成分段摘要
+		dfresh  bool // 每次迭代换一个空的段摘要缓存（摘要冷）
 	}{
-		{"baseline", false, false, 1},
-		{"parallel-cold", true, true, 8},
-		{"parallel-warm", true, false, 8},
+		{"baseline", false, false, 1, false, false},
+		{"parallel-cold", true, true, 8, false, false},
+		{"parallel-warm", true, false, 8, false, false},
+		{"digest-cold", true, false, 8, true, true},
+		{"digest-warm", true, false, 8, true, false},
 	} {
 		b.Run(mode.name, func(b *testing.B) {
 			d := detector()
@@ -112,18 +121,36 @@ func BenchmarkReduceWithHistoryGuard(b *testing.B) {
 					d.SetHistoryVerdictMemo(NewHistoryVerdictMemo(HistoryMemoConfig{}))
 				}
 				ctx := sessioncontext.WithReduceWorkers(context.Background(), mode.workers)
+				if mode.digest {
+					ctx = sessioncontext.WithDigest(ctx, digestOn)
+					if mode.dfresh {
+						ctx = sessioncontext.WithDigestCache(ctx, sessioncontext.NewDigestCache(256))
+					}
+				}
 				ctx = sessioncontext.WithHistoryGuard(ctx, d.HistoryGuard(context.Background()))
-				out, _, err := sessioncontext.Reduce(ctx, store, ref, 1<<20)
+				out, rep, err := sessioncontext.Reduce(ctx, store, ref, 1<<20)
 				if err != nil {
 					b.Fatal(err)
 				}
+				if mode.digest && (rep.DigestSegments == 0 || rep.DigestBytes == 0) {
+					b.Fatalf("%s: 摘要没有生成: %+v", mode.name, rep)
+				}
+				if !mode.digest && rep.DigestSegments != 0 {
+					b.Fatalf("%s: 未启用摘要却生成了: %+v", mode.name, rep)
+				}
 				sum := fmt.Sprintf("%x", sha256.Sum256(out))
-				if want == "" {
-					want = sum
-				} else if sum != want {
-					b.Fatalf("%s: 归约输出与基线不同（%s vs %s）", mode.name, sum[:12], want[:12])
+				if want[mode.digest] == "" {
+					want[mode.digest] = sum
+					if mode.digest {
+						b.Logf("digest: segments=%d cache_hits=%d bytes=%d", rep.DigestSegments, rep.DigestCacheHits, rep.DigestBytes)
+					}
+				} else if sum != want[mode.digest] {
+					b.Fatalf("%s: 归约输出与同一摘要状态的基线不同（%s vs %s）", mode.name, sum[:12], want[mode.digest][:12])
 				}
 			}
 		})
+	}
+	if want[false] == want[true] {
+		b.Fatal("开启摘要必须改变归约输出")
 	}
 }

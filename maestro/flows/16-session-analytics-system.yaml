@@ -43,10 +43,21 @@
 #
 # ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（13-flow 头注同源）：
 #   ① `text:` 是**全匹配正则** ⇒ 读数会变的元素一律 `.*….*`；
-#   ② `id:` 选得到 data-testid 但**选不到 <button>** ⇒ 按钮**交互**（tab 切换）
-#      走 text:，按钮**存在性**断言走 id:（assertVisible 不受该限制）；
+#   ② ★★ **2026-11-23（L13 收口轮）更正**：`id:` **能选到 <button>**
+#      —— 本文件原注释断言「`id:` 选得到 data-testid 但**选不到 <button>**」
+#      ⇒ ★★ **该结论经真机实测被推翻**（`tapOn: id: sa-tab-models` /
+#      `sa-tab-apikeys` 均 COMPLETED，点后对应表与表头断言全过）
+#      ⇒ ⇒ 本 flow 的**全部断言与交互**现已走 `id:`（data-testid）
+#      ⇒ ⇒ **不再依赖界面语言**（L13 收口）。
+#      ★ ★ 通用式：**「实测结论」本身也会过期** ⇒ 头注里写死的结论必须
+#      **标注日期 + 可被复跑的证伪路径**，否则它会变成一条没人再验的传闻。
 #   ③ pressKey Escape 在 web 驱动不支持；
-#   ④ 视口必须 1440x1400（run-local.sh 传入）⇒ 折叠线以下的内容断言不到；
+#   ④ ★ **视口必须 1440x3600**（★ 2026-11-23 由 1440x1400 上调 —— 上游 L7 轮
+#      把 stats 面板加高 ⇒ 会话分析 users 页锚点被推到 1400px 折叠线以下：
+#      实测文档 Y：sa-top5-section=2437 / sa-range-label=3223 / sa-users-col-rank=3329
+#      ⇒ ★ 旧视口下**必然假红**；真旋钮是 Maestro 的 `--screen-size`
+#      （`run-session-analytics.sh` 的 `MAESTRO_SCREEN_SIZE`），
+#      **不是** Chrome 的 `--window-size`（误改后者实测截图仍 1440×1257））；
 #   ⑤ **宽表横向滚动在 DataTable 的内部容器里**（`.app-data-table__scroller`
 #      的 overflow-x:auto）⇒ 右侧列不在视口内 ⇒ 本 flow 只断**左侧列**，
 #      右侧列与折叠线下的内容归第二层 CDP 探针
@@ -96,18 +107,41 @@ url: ${BASE_URL}
 #   区间与刷新控件）都在。
 #   ★ 落定判据＝Top10 表头（表头出现 = 该表数据到位）。
 - openLink: ${BASE_URL}/admin/session-analytics
+# ★★★★ 2026-11-23（L15 真机复核轮）**本段曾必然假红**——量具修正，不是产品修正：
+#   上游 L7 轮（会话统计「包含探测」开关修复）把 stats 面板**加高**（11 卡 + 趋势
+#   + 合规明细 + 模型 Top10 全塞进面板）⇒ 本页锚点被整体推到 **1400px 视口折叠线以下**：
+#     实测文档 Y 坐标：sa-top5-section=**2437**、sa-range-label=**3223**、
+#                     sa-users-col-rank=**3329**（旧视口高 1400）
+#   ⇒ Maestro 的「看得见」只认**视口内**（本文件头注④早写过「折叠线以下的内容
+#     断言不到」）⇒ 旧写法**必然假红**（2026-11-23 真机实测 flow rc=1 FAILED=1，
+#     而同一时刻 CDP 侧 t+2s 就已渲染出该元素 ⇒ **产品是好的**）。
+#   ⇒ 修法（实测两条，只有一条成立）：① `scrollUntilVisible` —— ★ **web 驱动
+#     不支持滚动**（Maestro 直接报「No visible element found」）⇒ **弃用**；
+#     ② **加高视口** ⇒ `run-session-analytics.sh` 把 Maestro Chrome 的
+#     `--window-size` 从 1440,1400 提到 **1440,3600**（> 最高锚点 3329）
+#     ⇒ ★ 视口就是本文件头注④点名的那个旋钮 ⇒ 断言强度不变（Top10 表头出现
+#     = 该表数据到位），只解决「够不着」。
 - extendedWaitUntil:
     visible:
-      id: "sa-users-col-rank"
+      id: "sa-page-users"
     timeout: 30000
 - assertVisible:
     id: "sa-page-users"
 - assertVisible:
-    id: "sa-range-label"
-- assertVisible:
     id: "sa-refresh-btn"
+- extendedWaitUntil:
+    visible:
+      id: "sa-top5-section"
+    timeout: 30000
 - assertVisible:
     id: "sa-top5-section"
+- assertVisible:
+    id: "sa-range-label"
+# ★ 落定判据：Top10 表头出现 = 该表数据到位（表头在 loading 时被 spinner 整块替换）
+- extendedWaitUntil:
+    visible:
+      id: "sa-users-col-rank"
+    timeout: 30000
 - assertVisible:
     id: "sa-users-table"
 - assertVisible:
@@ -180,11 +214,19 @@ url: ${BASE_URL}
     id: "sa-trend-tasks"
 
 # ── ④.1 用户详情页 - 模型用量 tab ──────────────────────────────────────
-# ★ tab 是 <button> ⇒ Maestro 2.11 web 驱动的 `id:` **选不到 button**
-#   ⇒ 交互仍走 text:（文案取自 sessionAnalytics.section.models）；
-#   断言一律走 id:（表容器 + 表头）⇒ 与 locale、与文案漂移都无关。
+# ★★ 2026-11-23（L13 收口轮）：本行由**中文文案**改为 **data-testid**。
+#   ★ 原注释断言「Maestro 2.11 web 驱动的 `id:` **选不到 <button>**」⇒ 交互只能走 text:
+#     —— ★★ **该结论经 2026-11-23 真机实测被推翻**：
+#     `tapOn: id: sa-tab-models` / `tapOn: id: sa-tab-apikeys` **都能点中** tab 按钮
+#     （实测 COMPLETED，且点后对应表与表头断言全过）。
+#   ⇒ ★ 前端这两个 tab **本来就有 data-testid**（`SessionAnalyticsUserDetailView.vue`
+#     的 `sa-tab-models` / `sa-tab-apikeys`）⇒ ⇒ **改成 id: 零前端改动、零部署**。
+#   ⇒ ★★ **这是 L13（flow 层文案判据）的最后两处依赖** ⇒ 改完后本 flow 的
+#     **全部断言与交互都不再依赖界面语言**（连同 §0 的登出两行，它们是 `optional: true`
+#     ⇒ 换语种下只是 WARNED，不影响判定）。
+#   ⇒ ★ 复现命令见 §7.13 的「locale 无关性实测」。
 - tapOn:
-    text: ".*模型用量.*"
+    id: "sa-tab-models"
 - extendedWaitUntil:
     visible:
       id: "sa-user-models-col-model"
@@ -207,8 +249,9 @@ url: ${BASE_URL}
     id: "sa-user-models-col-avg-response-time"
 
 # ── ④.2 用户详情页 - API Key 统计 tab ────────────────────────────────
+# ★ 同 ④.1：tab 交互由**中文文案**改为 **data-testid**（`sa-tab-apikeys`）。
 - tapOn:
-    text: ".*API Key用量.*"
+    id: "sa-tab-apikeys"
 - extendedWaitUntil:
     visible:
       id: "sa-user-apikeys-col-alias"

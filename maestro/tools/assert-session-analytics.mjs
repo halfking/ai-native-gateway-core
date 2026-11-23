@@ -107,6 +107,30 @@ function capturedApi(fragment) {
   }
   return null
 }
+/**
+ * ★★★ 2026-11-23（L16 修复轮）新增：**取最近一次捕获的响应连同 HTTP 状态码**。
+ *
+ * ★ 为什么必须有它（这是 §7.11 总结的那条通用式的落地）：
+ *   ★ **「端点 500」与「端点返回空」在页面上的默认表现都是「表格区域空着」**
+ *   ⇒ ⇒ 只断言「空态 vs 有表」就**分不清这两者**
+ *   ⇒ ⇒ 必须**同时抓 HTTP 状态码**，否则「后端 500」会被误判成「业务无数据」
+ *   ⇒ ⇒ ★★ **且顺序不能反**：先按**状态码**定性，再按**页面**定性。
+ *
+ * ★ 实测代价（2026-11-23 真实事故）：`/user-ranking/:owner/api-keys` 在生产上返回
+ *   **500**（PG `/dev/shm` 不足 ⇒ SQLSTATE 53100），而页面把它渲染成「暂无数据」
+ *   ⇒ 探针若只断「空态」，报出来的是「**前端缺陷**」⇒ ★ **归因完全错位**
+ *   （真因在后端/基础设施，前端只是「把错误吞了」）。
+ */
+function capturedApiWithStatus(fragment) {
+  for (let i = apiResponses.length - 1; i >= 0; i--) {
+    if (apiResponses[i].url.includes(fragment)) {
+      try {
+        return { status: apiResponses[i].status, body: JSON.parse(apiResponses[i].body) }
+      } catch { return null }
+    }
+  }
+  return null
+}
 
 async function goto(url, waitMs = 6000) {
   const created = await cdp.send('Target.createTarget', { url: 'about:blank' })
@@ -330,7 +354,10 @@ const loadPage = async (url) => {
   await goto(`${BASE}/dashboard`, 5000)
   const menu = JSON.parse(await js(`(async () => {
     const triggers = [...document.querySelectorAll('.app-topbar__group-trigger')]
-    const findLink = () => document.querySelector('a[href="/admin/session-analytics"]')
+    // ★ 2026-11-23（L15 复核轮）：上游把「/admin/session-analytics」总览页**取消**
+    //   （路由改为重定向到 /admin/session-analytics/users）⇒ 菜单里的入口路径
+    //   随之变成 users ⇒ 旧的 a[href="/admin/session-analytics"] 永远查不到 ⇒ 假红。
+    const findLink = () => document.querySelector('a[href="/admin/session-analytics/users"]')
     for (const t of triggers) {
       // ① hover 展开（@mouseenter="openGroupMenu"）
       t.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
@@ -352,57 +379,59 @@ const loadPage = async (url) => {
     return JSON.stringify({ ok: false, triggers: triggers.length })
   })()`))
   check('菜单：分组下拉里存在「会话分析」入口', menu.ok === true, menu.ok ? `label="${menu.label}" 触发器 ${menu.triggers} 个` : `未找到入口（触发器 ${menu.triggers} 个）`)
-  check('菜单：点击入口后落到 /admin/session-analytics', menu.path === '/admin/session-analytics', `path=${menu.path}`)
+  check('菜单：点击入口后落到 /admin/session-analytics/users', menu.path === '/admin/session-analytics/users', `path=${menu.path}`)
 }
 
-// ── 2. 总览页 ─────────────────────────────────────────────────────────────
+// ── 2. users 页（/admin/session-analytics 的**重定向落点**）────────────────
+// ★★★ 2026-11-23（L15 真机复核轮）**整段重写**：本段原先断言的是
+//   **已被上游取消的「会话分析总览页」**——11 张数据卡（会话总数/活跃人员/…/
+//   内部成本（美元）/外部成本（积分））、3 个趋势段 + 3 个榜单标题、
+//   高频模型/活跃人员/活跃项目 三张表头。
+//   ★ 上游 2026-11-23 审计轮把总览页**按 owner 指令取消**（内容重组迁入
+//     /admin/session-analytics/users，路由改为 redirect）⇒ **这些 DOM 结构
+//     在现网已不存在** ⇒ 旧断言**恒红**（2026-11-23 真机实测：本段 8 条红，
+//     探针 11/66 红中的绝大部分即此段）⇒ ⇒ **量具红，不是产品红**。
+// ⇒ 现在断言的是**users 页当前真实结构**：结构类名 + data-testid（不依赖文案）。
+// ★ 落点页的**行级对拍**为何不在这里做：users 页会发**两路** user-ranking
+//   请求（Top5 活跃用户 与 Top10 用户排行，参数不同）⇒ 「页面收到的最后一份
+//   响应」不必然对应 Top10 表 ⇒ 在此处做行级对拍会引入假红。
+//   ⇒ 同一端点的**行级同源对拍**已在「3. 人员排行页」用其**自身页面**的响应完成。
 {
   const p = await loadPage('/admin/session-analytics')
-  check('总览页：无错误横幅', !p.hasError)
-  check('总览页：无陈旧横幅（503 analytics_view_stale 未触发）', !p.hasStale)
-  const needCards = ['会话总数', '活跃人员', '活跃项目', '活跃任务', '平均 Token 数', '平均轮次',
-    '平均会话时长', '成功率', '缓存命中率', '内部成本（美元）', '外部成本（积分）']
-  const missing = needCards.filter(l => !(l in p.cards))
-  check(`总览页：11 张数据卡齐全`, missing.length === 0, missing.length ? '缺 ' + missing.join('/') : `${needCards.length} 张全在`)
-  const needTitles = ['会话趋势', 'Token 趋势', '花费趋势', '高频模型', '活跃人员', '活跃项目']
-  const missingT = needTitles.filter(t => !p.titles.includes(t))
-  check('总览页：3 个趋势段 + 3 个榜单标题齐全', missingT.length === 0, missingT.length ? '缺 ' + missingT.join('/') : '6 个标题全在')
-  // 榜单表头
-  const tbls = p.tables
-  const topModels = tbls.find(t => t.headers.includes('模型') && t.headers.includes('请求数'))
-  const topUsers = tbls.find(t => t.headers.includes('人员') && t.headers.includes('花费'))
-  const topProjects = tbls.find(t => t.headers.includes('项目') && t.headers.includes('使用人数'))
-  check('总览页：高频模型表头 [模型, 请求数]', !!topModels, topModels ? topModels.headers.join(' | ') : '未找到')
-  check('总览页：活跃人员表头 [人员, 会话数, Token 数, 花费]', !!topUsers, topUsers ? topUsers.headers.join(' | ') : '未找到')
-  check('总览页：活跃项目表头 [项目, 会话数, 使用人数, 花费]', !!topProjects, topProjects ? topProjects.headers.join(' | ') : '未找到')
-  check('总览页：活跃人员榜有行', !!topUsers && topUsers.rows.length > 0, topUsers ? `rows=${topUsers.rows.length}` : '')
-  // ★ 对拍：页面渲染值 == API 返回值
-  // ★ 对拍基准＝**页面自己收到的 overview 响应**（同源、同时刻 ⇒ 严格相等）
-  // ★ 捕获不到 ⇒ 判「未评估」而不是拿探针另取的值凑（那会让同源退化成跨时刻）。
-  const ovCap = sameSource('/overview?')
-  const ovBaselineOk = !!(ovCap && ovCap.summary)
-  check('对拍基准：已捕获页面自己的 overview 响应', ovBaselineOk,
-    ovBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
-  if (!ovBaselineOk) {
-    gauge('对拍：总览「会话总数」/「活跃人员」/「内部成本」/「外部成本」', '同源基准未捕获')
-  } else {
-    const Sc = ovCap.summary || {}
-    const trendsCap = ovCap.trends || ov.body.trends
-    check('对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions',
-      num(p.cards['会话总数']) !== null && num(p.cards['会话总数']) === Sc.total_sessions,
-      `页面=${p.cards['会话总数']} 同源响应=${Sc.total_sessions}`)
-    check('对拍：总览「活跃人员」卡值 == 页面自身响应 summary.active_users',
-      num(p.cards['活跃人员']) !== null && num(p.cards['活跃人员']) === Sc.active_users,
-      `页面=${p.cards['活跃人员']} 同源响应=${Sc.active_users}`)
-    const trendInternal = (trendsCap.cost || []).reduce((a, b) => a + Number(b.internal || 0), 0)
-    const trendExternal = (trendsCap.cost || []).reduce((a, b) => a + Number(b.external || 0), 0)
-    check('对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和',
-      num(p.cards['内部成本（美元）']) !== null && Math.abs(num(p.cards['内部成本（美元）']) - trendInternal) < 0.01,
-      `页面=${p.cards['内部成本（美元）']} 同源求和=${trendInternal}`)
-    check('对拍：总览「外部成本（积分）」卡值 == 页面自身响应 trends.cost.external 求和',
-      num(p.cards['外部成本（积分）']) !== null && Math.abs(num(p.cards['外部成本（积分）']) - trendExternal) < 0.01,
-      `页面=${p.cards['外部成本（积分）']} 同源求和=${trendExternal}`)
-  }
+  check('users 页：无错误横幅', !p.hasError)
+  check('users 页：无陈旧横幅（503 analytics_view_stale 未触发）', !p.hasStale)
+
+  const struct = JSON.parse(await js(`(() => {
+    const has = (id) => !!document.querySelector('[data-testid="' + id + '"]')
+    const panel = document.querySelector('.stats-panel-wrapper')
+    return JSON.stringify({
+      path: location.pathname,
+      page: has('sa-page-users'),
+      top5: has('sa-top5-section'),
+      top5models: has('sa-top5-models'),
+      top5providers: has('sa-top5-providers'),
+      top5users: has('sa-top5-users'),
+      top5tasks: has('sa-top5-tasks'),
+      usersTable: has('sa-users-table'),
+      usersColRank: has('sa-users-col-rank'),
+      panelTextLen: panel ? (panel.innerText || '').trim().length : 0,
+    })
+  })()`))
+  check('users 页：重定向落点是 /admin/session-analytics/users', struct.path === '/admin/session-analytics/users', `path=${struct.path}`)
+  check('users 页：页根在（sa-page-users）', struct.page === true)
+  check('users 页：会话统计面板已渲染（.stats-panel-wrapper 有内容）', struct.panelTextLen > 0, `面板文本长度=${struct.panelTextLen}`)
+  check('users 页：Top5 四件套区块在（sa-top5-section + 4 张卡）',
+    struct.top5 && struct.top5models && struct.top5providers && struct.top5users && struct.top5tasks,
+    `section=${struct.top5} 模型=${struct.top5models} 供应商=${struct.top5providers} 用户=${struct.top5users} 任务=${struct.top5tasks}`)
+  check('users 页：Top10 用户排行表在（sa-users-table + 排名列）',
+    struct.usersTable && struct.usersColRank,
+    `table=${struct.usersTable} rank列=${struct.usersColRank}`)
+
+  // 表头仍在（Top10 用户排行的左侧列；右侧列在内部滚动容器里 ⇒ 归 CDP 宽度对拍）
+  const top10 = p.tables.find(x => x.headers.includes('排名') && x.headers.includes('邮箱'))
+  check('users 页：Top10 表头齐全（排名/人员/邮箱/会话数/项目数/任务数）', !!top10,
+    top10 ? top10.headers.join(' | ') : '未找到 Top10 表')
+  check('users 页：Top10 有数据行', !!top10 && top10.rows.length > 0, top10 ? `rows=${top10.rows.length}` : '')
 }
 
 // ── 3. 人员排行页 ─────────────────────────────────────────────────────────
@@ -563,21 +592,46 @@ if (!owner) {
     return JSON.stringify({
       ok: true, tables,
       hasEmptyState: !!document.querySelector('.app-empty-state'),
+      // ★ 2026-11-23（L16）：**错误横幅**也要采样 ⇒ 才能区分
+      //   「端点失败被渲染成空态」与「端点失败被渲染成错误态」。
+      hasErrorBanner: !!document.querySelector('.sa-banner--error'),
+      hasStaleBanner: !!document.querySelector('.sa-banner--stale'),
     })
   })()`))
   if (!apiKeysTab.ok) {
     check('人员详情页：API Key 用量 tab 存在', false, apiKeysTab.why || '找不到 API Key 用量 tab')
   } else {
+    // ★★★ 2026-11-23（L16）：**先按 HTTP 状态码定性，再按页面定性** ★★★
+    // ★ 旧写法只断「空态 vs 有表」⇒ ★ 把「端点 500」误判成「前端没渲染空态」
+    //   ⇒ 归因完全错位（真因在后端）。⇒ 现在先看状态码。
+    const apiKeysResp = capturedApiWithStatus(`/user-ranking/${owner}/api-keys?`)
+    const apiKeysStatus = apiKeysResp ? apiKeysResp.status : null
+    const endpointFailed = apiKeysStatus !== null && apiKeysStatus >= 400
+    // ★ 提到分支外：下面的行级对拍段也要用它（端点失败时它为 undefined ⇒ 对拍自然跳过）
     const apiKeysTable = apiKeysTab.tables.find(t => t.headers.includes('Key别名'))
-    const needHeaders = ['Key别名', 'Key ID', '请求数', 'Token 数', '关联项目数', '主要项目']
-    if (apiKeysTable) {
-      check('人员详情页：API Key 统计表头齐全', needHeaders.every(h => apiKeysTable.headers.includes(h)),
-        needHeaders.filter(h => !apiKeysTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !apiKeysTable.headers.includes(h)).join('/') : '6 列全在')
-      check('人员详情页：API Key 统计有行或显示空态', apiKeysTable.rows.length > 0 || apiKeysTab.hasEmptyState,
-        `rows=${apiKeysTable.rows.length} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+
+    if (endpointFailed) {
+      // ── 端点失败分支：页面**必须**显示错误态，且**不得**显示「暂无数据」空态 ──
+      check('人员详情页：API Key 统计端点失败时显示错误态（而非「暂无数据」）',
+        apiKeysTab.hasErrorBanner === true,
+        `status=${apiKeysStatus} hasErrorBanner=${apiKeysTab.hasErrorBanner} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+      check('人员详情页：API Key 统计端点失败时不显示「暂无数据」空态',
+        apiKeysTab.hasEmptyState === false,
+        `hasEmptyState=${apiKeysTab.hasEmptyState} ⇒ 错误被伪装成无数据`)
+      // ★ 端点本身的健康度单独记一条 ⇒ **红的归因是「后端 500」，不是「前端」**
+      check('人员详情页：API Key 统计端点健康（应为 200）', false,
+        `status=${apiKeysStatus} ⇒ 端点失败（★ 归因：后端/基础设施，不是页面渲染）`)
     } else {
-      check('人员详情页：API Key 统计无数据时显示空态', apiKeysTab.hasEmptyState === true,
-        `hasEmptyState=${apiKeysTab.hasEmptyState} tables=${apiKeysTab.tables.length}`)
+      const needHeaders = ['Key别名', 'Key ID', '请求数', 'Token 数', '关联项目数', '主要项目']
+      if (apiKeysTable) {
+        check('人员详情页：API Key 统计表头齐全', needHeaders.every(h => apiKeysTable.headers.includes(h)),
+          needHeaders.filter(h => !apiKeysTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !apiKeysTable.headers.includes(h)).join('/') : '6 列全在')
+        check('人员详情页：API Key 统计有行或显示空态', apiKeysTable.rows.length > 0 || apiKeysTab.hasEmptyState,
+          `rows=${apiKeysTable.rows.length} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+      } else {
+        check('人员详情页：API Key 统计无数据时显示空态', apiKeysTab.hasEmptyState === true,
+          `hasEmptyState=${apiKeysTab.hasEmptyState} tables=${apiKeysTab.tables.length}`)
+      }
     }
     const apiKeysCap = sameSource(`/user-ranking/${owner}/api-keys?`)
     check('对拍基准：已捕获页面自己的 api-keys 响应', !!apiKeysCap,

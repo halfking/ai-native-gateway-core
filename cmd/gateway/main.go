@@ -7913,6 +7913,14 @@ func main() {
 		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler, swEngine); ok && v2Deps != nil {
 			v2SecurityRegistry = v2Deps.SecurityRegistry
 
+			// ★ 2026-11-23（N3 接线）：把**真实 provider 目录**注入 discovery
+			// 阶段。★ 目录＝路由的权威候选查询（provider.Client.GetCandidates）
+			// ⇒ ★ 与「路由会怎么选」同源、★ 不复制门槛、★ 不会漂移。
+			// ★ providerClient 在这里已就绪（★ 它在 main() 早期创建、
+			// ★ SetDB 在 dbConn 可用时完成）⇒ ★ 目录可用。
+			// ★ 目录失败**不会中止管线**（★ advisory 契约）⇒ ★ 这里不判错。
+			SetV2DispatchProviderCatalog(v2Deps, &routerDiscoveryCatalog{client: providerClient})
+
 			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
 			// IntentStore 后再启动 Loop 和 Flusher。
 			if dbConn != nil && dbConn.Pool() != nil {

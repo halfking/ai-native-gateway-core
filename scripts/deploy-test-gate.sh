@@ -258,27 +258,85 @@ dd_guard_domain_packages() {
   return 0
 }
 
+# ── 基线 commit（★ 选包与基线对照**共用**同一个值）──────────────────────
+#
+# ★ 为什么抽成函数（★ 2026-11-23 L9 修复轮实测出来的机制缺陷）：
+#
+#	★ 原先**两套口径**：
+#	  · 选包   ＝ `git diff HEAD~1 HEAD`（★ **只看最后一笔提交**）
+#	  · 基线对照＝ `git merge-base HEAD "$BASE_REF"`（★ 跑**基线树**）
+#	⇒ ⇒ 两套口径漂移 ⇒ ★ **选出来的包，基线树可能根本没跑过**
+#	⇒ ⇒ 「这盏灯是新的红还是旧的红」**判不出来** ⇒ ★ 新红会被当成既有红放行。
+#
+#	★ 实测（211 seq 3236→3237 那一轮）：★ 本轮的 admin 生产改动在
+#	  `044349a2c`（★ **倒数第二笔**）⇒ ★ 最后一笔是并行会话的 ratelimit 改动
+#	  ⇒ ⇒ 选包只选出 `./cmd/gateway ./ratelimit` ⇒ ★ **`./admin` 压根没进闸门**
+#	  ⇒ ★ 而闸门当时「全绿」。
+#
+#	★ 正解：★ 选包与基线对照**共用同一个 merge-base**
+#	  ⇒ 选包 ＝ 「基线树 vs 当前树」的差异所触及的包
+#	  ⇒ ⇒ 两套口径**永不漂移** ⇒ ★ 新红/旧红**可判定**。
+dd_gate_base_commit() {
+  git merge-base HEAD "$BASE_REF" 2>/dev/null || true
+}
+
+# dd_gate_changed_files [base_commit]：★ 本次部署的**改动清单**（★ 四路并集）。
+#
+# ★ 四路缺任何一路都会**漏选包** ⇒ 漏掉的包**不会被闸门看见**：
+#   ① 工作区未提交改动   git diff HEAD
+#   ② 暂存区未提交改动   git diff --cached
+#   ③ 最后一笔提交       git diff HEAD~1 HEAD
+#      （★ 兜底：BASE_REF 退化成 HEAD 自身时，③ 仍能选出一笔）
+#   ④ ★★ 相对**基线树**的全部改动  git diff <base_commit> HEAD
+#      （★ base_commit＝merge-base(HEAD, $BASE_REF)＝**基线对照跑的那棵树**）
+#      ⇒ ★ 这一路才是「本次上线相对现役**真正**改了什么」的完整答案。
+dd_gate_changed_files() {
+  local base_commit="${1:-}"
+  {
+    git diff --name-only -z HEAD 2>/dev/null || true
+    git diff --name-only -z --cached 2>/dev/null || true
+    git diff --name-only -z HEAD~1 HEAD 2>/dev/null || true
+    if [[ -n "$base_commit" ]]; then
+      git diff --name-only -z "$base_commit" HEAD 2>/dev/null || true
+    fi
+  } | tr '\0' '\n' | sort -u
+}
+
+# dd_gate_packages_from_files <changed_files>：★ 改动文件清单 ⇒ 该跑的包清单。
+#
+# ★ 判据面：★ 改动的 .go 文件所在目录（★ 该目录含 _test.go 才选）
+#   ＋ 非 .go 改动按守卫域映射补选（★ 见上 DD_GUARDED_DOMAINS）。
+# ★ 抽成函数是**为了让判据可测**（★ scripts/deploygate 的守卫会把它
+#   **原样抽出来**在真 git 仓库里跑 ⇒ ★ 对照臂：删掉第④路 ⇒ 必须选不出 ./admin）。
+dd_gate_packages_from_files() {
+  local changed="${1:-}" dir extra
+  local -a out=()
+  if [[ -n "$changed" ]]; then
+    while IFS= read -r dir; do
+      [[ -n "$dir" ]] || continue
+      if compgen -G "$dir/*_test.go" >/dev/null 2>&1; then
+        out+=("./$dir")
+      fi
+    done < <(printf '%s\n' "$changed" | grep '\.go$' | xargs -n1 dirname 2>/dev/null | sort -u || true)
+    # ★ 非 .go 改动 ⇒ 按守卫域映射补选（★ 2026-11-23 N10，★ 见上「为什么」）
+    while IFS= read -r extra; do
+      [[ -n "$extra" ]] || continue
+      out+=("$extra")
+    done < <(dd_guard_domain_packages "$changed")
+  fi
+  if [[ ${#out[@]} -gt 0 ]]; then
+    printf '%s\n' "${out[@]}"
+  fi
+  return 0
+}
+
 # ── 选包：改动触及的目录（只留有 _test.go 的） ──────────────────────────
-changed_files="$({
-  git diff --name-only -z HEAD 2>/dev/null || true
-  git diff --name-only -z --cached 2>/dev/null || true
-  git diff --name-only -z HEAD~1 HEAD 2>/dev/null || true
-} | tr '\0' '\n' | sort -u)"
+base_commit="$(dd_gate_base_commit)"
+changed_files="$(dd_gate_changed_files "$base_commit")"
 
 packages=()
 if [[ -n "$changed_files" ]]; then
-  dirs="$(printf '%s\n' "$changed_files" | grep '\.go$' | xargs -n1 dirname 2>/dev/null | sort -u || true)"
-  while IFS= read -r dir; do
-    [[ -n "$dir" ]] || continue
-    if compgen -G "$dir/*_test.go" >/dev/null 2>&1; then
-      packages+=("./$dir")
-    fi
-  done <<< "$dirs"
-  # ★ 非 .go 改动 ⇒ 按守卫域映射补选（★ 2026-11-23 N10，★ 见上「为什么」）
-  while IFS= read -r extra; do
-    [[ -n "$extra" ]] || continue
-    packages+=("$extra")
-  done < <(dd_guard_domain_packages "$changed_files")
+  mapfile -t packages < <(dd_gate_packages_from_files "$changed_files")
 fi
 
 if [[ ${#packages[@]} -eq 0 ]]; then
@@ -592,7 +650,11 @@ fi
 log "★ 当前树有红（$(printf '%s' "$current_reds" | tr '\n' ' ')）★ ⇒ 比对基线（${BASE_REF}）"
 
 # ── 基线树（★ 只在有红时才跑）────────────────────────────────────────
-base_commit="$(git merge-base HEAD "$BASE_REF" 2>/dev/null || true)"
+# ★ ★ 必须走**同一个** dd_gate_base_commit（★ 而不是自己再算一次 merge-base）：
+#   ★ 选包那一侧算的是「基线树 vs 当前树」的差异 ⇒ ★ 这一侧跑的就必须是
+#   ★ **同一棵树** ⇒ ⇒ 否则「基线红 / 当前红」不可比 ⇒ ★ 新红会被当成旧红放行。
+#   ★ ★ 两者一旦各算各的、口径漂移 ⇒ 这道门就会**静默放过新红**（★ L9 实测事故）。
+base_commit="$(dd_gate_base_commit)"
 if [[ -z "$base_commit" ]]; then
   printf '%s\n' '—— 当前树输出尾部 ——' >&2
   tail -40 "$out_current" >&2

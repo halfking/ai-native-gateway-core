@@ -67,6 +67,23 @@ func HistoryGuardContextForTest(h *ChatHandler, r *http.Request) context.Context
 	return h.prepareHistoryGuard(r).Context()
 }
 
+// SetDigestConfig 声明归约时是否生成分段抽取式摘要及其参数。
+// 须在开始服务请求之前调用；未调用 ⇒ 关闭。
+func (h *ChatHandler) SetDigestConfig(cfg sessioncontext.DigestConfig) {
+	if h == nil {
+		return
+	}
+	h.digest = cfg
+}
+
+// DigestConfigured 返回当前生效的摘要配置。
+func (h *ChatHandler) DigestConfigured() sessioncontext.DigestConfig {
+	if h == nil {
+		return sessioncontext.DigestConfig{}
+	}
+	return h.digest
+}
+
 func (h *ChatHandler) prepareHistoryGuard(r *http.Request) *http.Request {
 	r = h.pinRules(r)
 	if sessioncontext.HasHistoryGuard(r.Context()) {
@@ -79,6 +96,10 @@ func (h *ChatHandler) prepareHistoryGuard(r *http.Request) *http.Request {
 	ctx := sessioncontext.WithHistoryGuard(r.Context(), factory(r.Context()))
 	if h.historyGuardConcurrencySafe {
 		ctx = sessioncontext.WithReduceWorkers(ctx, reduceWorkerCount())
+	}
+	if h.digest.Enabled {
+		// 分段摘要（2026-11-23 第三步）。归约器只在 ctx 里有声明时才做。
+		ctx = sessioncontext.WithDigest(ctx, h.digest)
 	}
 	return r.WithContext(ctx)
 }

@@ -85,7 +85,10 @@ func TestHistoryGuardManagedBaselinePreservesFactsAndRecognizesCredentialFields(
 	}{
 		{`{"role":"assistant","content":"billing database port 6432 in /srv/billing/db.yaml"}`, true},
 		{`{"role":"tool","content":{"password":"SYNTHETICVALUE42"}}`, false},
+		// 2026-11-23：字段规则（这里是 builtin.account_field.input：键名 username + 任意值）
+		// 维持修复前的行为——键名出现即省略；复核只针对无字段选择器的泛匹配规则。
 		{`{"role":"tool","content":{"username":"service-account"}}`, false},
+		{`{"role":"tool","content":{"username":"zhangsan_ops_2024"}}`, false},
 	} {
 		safe, err := guard(ctx, func() io.Reader { return strings.NewReader(tc.text) })
 		if err != nil || safe != tc.safe {

@@ -463,6 +463,53 @@ node maestro/tools/assert-stage-tree.mjs \
 ★ 「缺口」是**事实登记**，不是**红门**：本 README 不对覆盖率判红
   （哪些路由值得写 flow 属产品优先级，见 `maestro/L10-uncovered-routes.md` §3.1）。
 
+### 3.14 ★ PR 模板「页面改动 Checklist」与当前树的对拍（L12 补轮，2026-11-23）
+
+> ★ **为什么有这一节**：L12 的诉求是「会话分析 E2E 没接入 CI ⇒ 改了页面但没跑 E2E 不会被拦住」。
+> 上游 2026-11-20 的收口（`035b0c4b7`）走 **PR checklist** 方案：在
+> `.github/pull_request_template.md` 里列出「改了这些页面就必须复跑会话分析 E2E」。
+> ★ ★ 但那份清单是**手写的**，且 **2026-11-23 实测漂移了两处**：
+>
+> | 漂移 | 事实 |
+> |---|---|
+> | **幽灵条目** | 模板列了 `SessionAnalyticsOverviewView.vue` —— 上游 2026-11-23 审计轮把「会话分析总览页」**取消了**（路由改 redirect 到 `/admin/session-analytics/users`）⇒ 该文件**在仓内已不存在** |
+> | **漏项** | 上游把总览页内容**重组迁入** `SessionAnalyticsUsersView.vue` ⇒ ★ **这个新页面不在模板里** ⇒ ★ **改了最需要复跑 E2E 的那个页面，checklist 反而不会要求复跑** |
+>
+> ⇒ **L12 的保护恰好在最需要的地方失效**。
+
+**对拍工具**（★ 零第三方依赖，python3）：
+
+```bash
+python3 maestro/tools/audit-page-change-checklist.py          # Markdown 报告
+python3 maestro/tools/audit-page-change-checklist.py --json   # 机读 JSON
+```
+
+三条判据（退出码 0 = 一致；1 = 漂移）：
+
+| 判据 | 内容 |
+|---|---|
+| A **幽灵文件** | 模板列的每个 `.vue` 在仓内**都存在** |
+| B **漏项文件** | 仓内每个会话分析 `.vue` **都被模板覆盖**（逐个列出，或其目录被整体列出） |
+| C **幽灵路径** | 模板列的每个 `/admin/session-analytics*` 路径在 `router.ts` 里**都存在** |
+
+★ **为什么是 python3 而不是 node**：★ 本工具要挂在**真正在跑的 CI 载体**上
+⇒ ★ **必须零依赖**（`typescript` 装在 `web/node_modules` ⇒ CI 精简镜像里没有
+⇒ ⇒ ★★ **「工具不可运行 ⇒ 它的产出不可复现 ⇒ 门会被判成恒绿或误红」** —— L10 的那条教训）；
+且 ★ **node 本身也不可靠**（仓内既有 CI 门对 node 是「有就跑、没有就 skip」语义）
+⇒ ⇒ 门以 node 为前提 ⇒ CI 上要么恒红、要么被 skip ⇒ **门等于没接**。
+⇒ **两把尺子的分工**：精确路由计数/redirect 形态判别用 AST 工具
+（`maestro/tools/audit-route-coverage.mjs`，**只在本地跑，不进 CI 载体**）；
+CI 上跑的必须是零依赖的这把。
+
+**门与接线**：
+
+| 项 | 内容 |
+|---|---|
+| 门 | `scripts/checks/session-analytics-checklist-gate.sh`（行为判据 + **对照臂** + **反向断言**） |
+| 真载体 | `.workflow/main-verify.yml` 的 `session-analytics-checklist-gate` step（★ **非注释行**） |
+| ★ 为什么不挂 `.github/workflows/` | 本仓远端是 `codeup.aliyun.com` ⇒ ★ **`.github/workflows/` 从来不在执行路径上** ⇒ 挂那儿 = 「文件在、门绿、CI 根本不跑它」（`scripts/ursmcheck/ci_carrier_truth_test.go` 记的「自证型门第四形态」） |
+| 对照臂 | 注入一个**仓内不存在**的会话分析视图名 ⇒ 工具**必须红**；且必须**红在幽灵条目上**（否则「随便红一下」也算过） |
+
 ---
 
 ## 4. 前置条件
@@ -728,7 +775,7 @@ maestro test --driver-host-port 9222 --headless --no-ansi \
 | `assertVisible: { css }` | 可用但**极慢**（单条实测 2 分 23 秒） | 少用；能换 `id:` 就换 |
 | `assertNotVisible: { css }` | **直接挂住**（无超时上限） | 不要用 |
 | `assertVisible: { text }` | 可用，**秒级**；但**只匹配可见文本**且是**元素完整文本相等**（**不是子串包含**！实测「下一步该做什么」这种半句匹配不到）；`aria-label` / `title` **不参与**（`tapOn "切到专家模式"` ⇒ Element not found）。★ **2026-11-17 补测：它是「全匹配正则」**（命令 JSON 里字段名就是 `textRegex`）⇒ `.*….*` 可以用来选**读数会变**的元素（实测 `text: ".*条 · 成功率.*"` 命中统计胶囊，而 `text: "成功率"` 这种裸子串不命中） | 判据一律用**整句**（`text: "工作模式 · 简易模式"`、`text: "今日请求"`）；读数会变的元素用 `.*….*` 包起来 |
-| `assertVisible: { id }` | 可用，秒级。★ **2026-11-17 复测定论**：`id:` **能**选到 `data-testid`（实测 `id: stage-tree-canvas`（div）、`id: toggle-probe`（label）均命中）—— 此前「只匹配 HTML `id`」的记载是**错的**；★ 但**`<button>` 命中不了**（实测 `id: stage-stats-open`、`id: work-mode-switch` ⇒ `Element not found: Id matching regex: …`） | 需要 testid 级精确定位 ⇒ `id:` 可用于 div/label/span/article；**按钮**要么用可见文案（`text:`），要么走页面内 CDP |
+| `assertVisible: { id }` | 可用，秒级。★ **2026-11-17 复测定论**：`id:` **能**选到 `data-testid`（实测 `id: stage-tree-canvas`（div）、`id: toggle-probe`（label）均命中）—— 此前「只匹配 HTML `id`」的记载是**错的**。★★ **2026-11-23（L13 补轮）更正后半句**：原文写「**`<button>` 命中不了**」⇒ ★★ **该推广是错的** —— 判别因素**不是元素类型**，而是 ★ **元素的 `title` / `aria-label` 会盖掉 `data-testid`**（web 驱动取 hierarchy 的 `resource-id` 时，`aria-label` > `title` > `data-testid`）。实测：`<button data-testid="sa-tab-models">`（**无** title/aria-label）⇒ `id:` **命中**（真机 COMPLETED）；`<button data-testid="stage-stats-open" :title="…">` ⇒ hierarchy 的 resource-id 是「展开统计（全页）」⇒ `id:` **命中不了**；`<button data-testid="work-mode-switch" :title="…" :aria-label="…">` ⇒ resource-id 是「切到简易模式」⇒ 同样命中不了 | 需要 testid 级精确定位 ⇒ `id:` 可用于 **div/label/span/article/button**；★ **但被 `title`/`aria-label` 遮蔽的元素除外** —— 那类元素要么去掉 title/aria-label，要么把 data-testid 挪到**不带 title 的外层包裹元素**上，要么走 `text:`。★ 全仓遮蔽审计：`python3 maestro/tools/audit-maestro-id-selectors.py`（门：`scripts/checks/maestro-id-selector-shadow-gate.sh`） |
 | `pressKey: Escape` | **不支持**（实测报 `Keycode ESCAPE is not supported on web`）⇒ 组件的「Esc 出口」在 flow 里**验不了** | 走页面内 CDP（`maestro/tools/assert-stage-tree.mjs` 在页面里派发 `keydown`） |
 | **view hierarchy 只覆盖视口** | 视口固定 **1024×625**（hierarchy 根节点 `bounds = [0,0][1024,625]`）⇒ 折叠线以下的内容**不进树** ⇒ `assertVisible` 对视口外元素**一律判 false**（哪怕它已渲染在 DOM 里） | 视口外的元素先 `scrollUntilVisible`（真滚动：`window.scrollY + innerHeight/2`）→ 再断言 → 再滚回顶部 |
 | `css` + `text` 组合 | **不可用**（实测 FAILED） | 一条断言只用一种 |
