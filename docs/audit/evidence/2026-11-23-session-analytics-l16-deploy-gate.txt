@@ -1,0 +1,141 @@
+# 证据：2026-11-23 L16 部署闸门首跑（BASE_REF=a798423f）——判据结论=无新红，被「基线红认领层」拦下
+
+## 运行参数（隔离 worktree /tmp/lgw-l9l10，HEAD=9db0f8931，工作树干净）
+    BASE_REF=a798423f DD_TEST_TIMEOUT=30m DD_FORCE_FOREIGN_LOCK=1 \
+      ~/sdk/bash5/bin/bash scripts/deploy-211.sh --force
+## 现役（部署前）：2.6.1-a798423f-20261123-211 / git_sha=a798423f / build_seq=3239 / 槽 b@8783
+## 闸门选中包（15 个，含 ./admin ⇒ 选包口径已含基线 diff）
+## 结论：★ 判据层通过（当前树红 ⊂ 基线树红 ⇒ 无新红）；★ 被上游 08:02 新增的「基线红必须显式认领」层拦下
+##       ⇒ 本轮改走 DD_SKIP_TEST_GATE=1 显式逃生舱（理由见报告 §7.17）
+
+[deploy-211] --force：已转交引擎（恢复陈旧的 211 本地部署锁；活的持有者一律不硬抢）
+[deploy-211]   （${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-deploy-211.lock）
+[deploy-211]   ★ 目标机侧锁：跨机器来源的锁无法在本机判活 ⇒ 不自动回收；确认持有者已死后可设 DD_FORCE_FOREIGN_LOCK=1。
+[deploy-211] ssh 通道: 211（内网直连探测通过）
+[deploy-211] DD_RUN_PRE_GATE 未开启 ⇒ 跳过 D3 部署前置门禁（★ 手工预检可用：bash scripts/deploy-pre-gate.sh）
+[test-gate] 要跑的包：./admin ./cmd/gateway ./domains/hooks/security ./domains/provider ./domains/security ./domains/streaming ./internal/sessioncontext ./internal/sqlguard ./internal/verdictkv ./metrics ./plugin-runtime ./scripts/deploygate ./security/sanitize ./sql/migrations/startup
+[test-gate] ★ 原生 go 候选核对（required=1.27.4 /Users/niuer/homebrew/bin/go=1.27.3 /Users/niuer/sdk/go/bin/go=1.27.4 ）⇒ 选中 /Users/niuer/sdk/go/bin/go
+[test-gate] 跑法：原生 go（go1.27.4，复用本机构建缓存；超时 30m；主模块根 -mod=vendor）
+[test-gate] 首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…
+ok  	github.com/kaixuan/llm-gateway-go/admin	132.881s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway	18.868s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/security	0.086s
+ok  	github.com/kaixuan/llm-gateway-go/domains/provider	0.067s
+ok  	github.com/kaixuan/llm-gateway-go/domains/security	0.115s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	162.485s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessioncontext	13.979s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	16.082s
+ok  	github.com/kaixuan/llm-gateway-go/internal/verdictkv	1.848s
+ok  	github.com/kaixuan/llm-gateway-go/metrics	0.198s
+ok  	github.com/kaixuan/llm-gateway-go/plugin-runtime	6.329s
+ok  	github.com/kaixuan/llm-gateway-go/scripts/deploygate	3.505s
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	39.481s
+2026/11/23 08:32:41 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+--- FAIL: TestMigration905_IndexColumnMatchesGoFilterColumn (0.00s)
+    migration_905_turns_session_model_idx_test.go:391: 调用点 (colExpr="t.model", colName="model", pred="ft.model = ANY($)") 的谓词不是「ft.<col> = $N」形态 —— 派生表形态下这种谓词无法生效
+--- FAIL: TestMigrationLedgerSelfRegistration (0.00s)
+    migration_960_ledger_repair_test.go:137: startup migrations lacking self-registration (记账链断层, 950/951/957/958 同款): [981_session_analytics_foundation.sql]
+--- FAIL: TestHeavyDDLModernMigrationsDeclareMeasuredBudget (0.03s)
+    migration_version_unique_test.go:190: grandfathered 900_freediscovery_schema_reassert.sql: applied；字节冻结；表小靠角色级 30s 侥幸通过
+    migration_version_unique_test.go:190: grandfathered 912_session_recording_trash.sql: applied；字节冻结；索引建在同文件新建的空表上（无存量扫描），30s 合理
+    migration_version_unique_test.go:190: grandfathered 913_maas_monthly_bills_coupons.sql: applied；字节冻结；索引建在同文件新建的空表上（无存量扫描），30s 合理
+    migration_version_unique_test.go:190: grandfathered 914_session_turns_origin_stage_check.sql: applied(211/245/252/154)；字节冻结；245 实测 VALIDATE 2m25s > 120s 已按改副本+stamp 收场
+    migration_version_unique_test.go:190: grandfathered 917_sanitize_block_reviews.sql: applied；字节冻结；新功能表无大存量（sanitize_block_reviews 等 3 表 + 索引）
+    migration_version_unique_test.go:190: grandfathered 921_sanitize_block_workbench.sql: applied；字节冻结；新功能表无大存量（evidence 表 + reviews 补索引）
+    migration_version_unique_test.go:190: grandfathered 928_probe_traffic_physical_lane.sql: applied(211)；字节冻结；索引建在同文件新建的空表上（无存量扫描）；实测 0.276s/空库、<0.5s/50 万存量形态
+    migration_version_unique_test.go:190: grandfathered 958_market_platform_registry.sql: applied(245/252)；字节冻结；两张非并发索引建在同文件新建的空表上（16 行种子 ⇒ 秒级，无存量扫描）
+    migration_version_unique_test.go:201: 981_session_analytics_foundation.sql 含全表扫描类 DDL（VALIDATE CONSTRAINT / 非 CONCURRENTLY CREATE INDEX），但最宽 statement_timeout=0s < 10min。预算必须按目标环境最大表实测后抬够（761 先例：实测 18.9s ⇒ 抬 10min；914 反例：拍 120s ⇒ 245 部署中止）。
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	17.251s
+FAIL
+[test-gate] ★ 当前树有红（TestHeavyDDLModernMigrationsDeclareMeasuredBudget TestMigration905_IndexColumnMatchesGoFilterColumn TestMigrationLedgerSelfRegistration github.com/kaixuan/llm-gateway-go/sql/migrations/startup）★ ⇒ 比对基线（a798423f）
+[test-gate] 跑法：原生 go（go1.27.4，复用本机构建缓存；超时 30m；主模块根 -mod=vendor）
+[test-gate] 首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…
+# github.com/shoenig/go-m1cpu
+vendor/github.com/shoenig/go-m1cpu/cpu.go:75:17: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+vendor/github.com/shoenig/go-m1cpu/cpu.go:77:16: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+ok  	github.com/kaixuan/llm-gateway-go/admin	106.067s
+2026/11/23 08:36:43 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 6 笔" metrics="map[api_key_id:42 rate_per_min:6 requests_1min:6]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 7 笔" metrics="map[api_key_id:42 rate_per_min:7 requests_1min:7]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 8 笔" metrics="map[api_key_id:42 rate_per_min:8 requests_1min:8]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 9 笔" metrics="map[api_key_id:42 rate_per_min:9 requests_1min:9]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 10 笔" metrics="map[api_key_id:42 rate_per_min:10 requests_1min:10]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 11 笔（2.2/min）" metrics="map[api_key_id:42 rate_per_min:2.2 requests_10min:11 requests_5min:11]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 12 笔（2.4/min）" metrics="map[api_key_id:42 rate_per_min:2.4 requests_10min:12 requests_5min:12]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 13 笔（2.6/min）" metrics="map[api_key_id:42 rate_per_min:2.6 requests_10min:13 requests_5min:13]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 14 笔（2.8/min）" metrics="map[api_key_id:42 rate_per_min:2.8 requests_10min:14 requests_5min:14]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 15 笔（3.0/min）" metrics="map[api_key_id:42 rate_per_min:3 requests_10min:15 requests_5min:15]" session_id="" api_key_id=42 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 6 笔" metrics="map[api_key_id:7 rate_per_min:6 requests_1min:6]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 7 笔" metrics="map[api_key_id:7 rate_per_min:7 requests_1min:7]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 8 笔" metrics="map[api_key_id:7 rate_per_min:8 requests_1min:8]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 9 笔" metrics="map[api_key_id:7 rate_per_min:9 requests_1min:9]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_burst_requests severity=medium message="会话请求突发：1 分钟内 10 笔" metrics="map[api_key_id:7 rate_per_min:10 requests_1min:10]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 11 笔（2.2/min）" metrics="map[api_key_id:7 rate_per_min:2.2 requests_10min:11 requests_5min:11]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 12 笔（2.4/min）" metrics="map[api_key_id:7 rate_per_min:2.4 requests_10min:12 requests_5min:12]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 13 笔（2.6/min）" metrics="map[api_key_id:7 rate_per_min:2.6 requests_10min:13 requests_5min:13]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 14 笔（2.8/min）" metrics="map[api_key_id:7 rate_per_min:2.8 requests_10min:14 requests_5min:14]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 INFO anomaly_observed code=session_request_storm severity=high message="会话请求频率过高：5 分钟内 15 笔（3.0/min）" metrics="map[api_key_id:7 rate_per_min:3 requests_10min:15 requests_5min:15]" session_id="" api_key_id=7 tenant_id=tenant-observe path=/v1/chat/completions
+2026/11/23 08:36:43 WARN attachment storage: unknown LLM_GATEWAY_STORAGE_TYPE, falling back to filesystem type=s3nuba acceptable="filesystem, local, oss, s3, minio, cloudreve"
+2026/11/23 08:36:43 WARN attachment storage: backend construct failed, falling back to filesystem type=cloudreve error="Cloudreve storage backend not available - build with -tags cloudreve_storage" hint="if you set cloudreve but the binary was built without -tags storage_cloudreve_storage, rebuild with the tag"
+2026/11/23 08:36:43 WARN attachment storage: env config validation failed, falling back to filesystem type=oss error="OSS endpoint is required"
+2026/11/23 08:36:43 WARN attachment storage: env config validation failed, falling back to filesystem type=s3 error="S3 access key ID is required"
+--- FAIL: TestLiteRequestLogSink_DataSurvivesShutdown (0.01s)
+    lite_telemetry_sink_test.go:410: PersistRequestLog: lite sink: bodies turn tenant-a/sess-durable#1: file bodies store: write turn 1 of tenant-a/sess-durable: async file writer: mkdir /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/TestLiteRequestLogSink_DataSurvivesShutdown2339320734/001/bodies/tenant-a/se/sess-durable: mkdir /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/TestLiteRequestLogSink_DataSurvivesShutdown2339320734/001/bodies/tenant-a/se: no such file or directory
+2026/11/23 08:36:44 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+2026/11/23 08:36:44 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+2026/11/23 08:36:49 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/cmd/gateway	15.337s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/security	0.023s
+ok  	github.com/kaixuan/llm-gateway-go/domains/provider	0.027s
+ok  	github.com/kaixuan/llm-gateway-go/domains/security	0.040s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	108.492s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessioncontext	10.005s
+--- FAIL: TestMigration994OwnerKeyAndClosePathDelivered (0.00s)
+    migration_994_delivery_test.go:92: 994 正本与 installer/migrations 副本不一致
+--- FAIL: TestRegistryShaIsActuallyTheFile (0.02s)
+    migration_registry_continuity_test.go:284: 994_session_analytics_owner_key_and_close_path.sql 的登记 sha 与文件实测不符。
+          实测   : 1cb26a1ed3e502247767a2050eb349e960dbc6dfcc75792b9b173fef57585412
+          台账登记: 059f5f94020a9859da3fc36afae2a725cca9991a6c6a9c43d1d2176b0b157330
+        ⇒ verify-migration-checksums.sh 会判 MISMATCH 并 exit 1 ⇒ CI Unified Verification 失败。
+        修法：补一行新 sha（保留原行，供已应用库按旧字节核对）——参见 730/810/811/812 的既有多行登记惯例。
+    migration_registry_continuity_test.go:295: 按脚本口径重算：登记 338 条，实际校验 338 条，不匹配 1 条（应与 221 号实测的 161/0 一致或更新）
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/internal/sqlguard	12.613s
+ok  	github.com/kaixuan/llm-gateway-go/internal/verdictkv	1.806s
+ok  	github.com/kaixuan/llm-gateway-go/metrics	0.059s
+ok  	github.com/kaixuan/llm-gateway-go/plugin-runtime	5.366s
+ok  	github.com/kaixuan/llm-gateway-go/scripts/deploygate	0.324s
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	18.303s
+2026/11/23 08:36:43 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+--- FAIL: TestMigration905_IndexColumnMatchesGoFilterColumn (0.00s)
+    migration_905_turns_session_model_idx_test.go:391: 调用点 (colExpr="t.model", colName="model", pred="ft.model = ANY($)") 的谓词不是「ft.<col> = $N」形态 —— 派生表形态下这种谓词无法生效
+--- FAIL: TestMigrationLedgerSelfRegistration (0.00s)
+    migration_960_ledger_repair_test.go:137: startup migrations lacking self-registration (记账链断层, 950/951/957/958 同款): [981_session_analytics_foundation.sql]
+--- FAIL: TestHeavyDDLModernMigrationsDeclareMeasuredBudget (0.03s)
+    migration_version_unique_test.go:190: grandfathered 900_freediscovery_schema_reassert.sql: applied；字节冻结；表小靠角色级 30s 侥幸通过
+    migration_version_unique_test.go:190: grandfathered 912_session_recording_trash.sql: applied；字节冻结；索引建在同文件新建的空表上（无存量扫描），30s 合理
+    migration_version_unique_test.go:190: grandfathered 913_maas_monthly_bills_coupons.sql: applied；字节冻结；索引建在同文件新建的空表上（无存量扫描），30s 合理
+    migration_version_unique_test.go:190: grandfathered 914_session_turns_origin_stage_check.sql: applied(211/245/252/154)；字节冻结；245 实测 VALIDATE 2m25s > 120s 已按改副本+stamp 收场
+    migration_version_unique_test.go:190: grandfathered 917_sanitize_block_reviews.sql: applied；字节冻结；新功能表无大存量（sanitize_block_reviews 等 3 表 + 索引）
+    migration_version_unique_test.go:190: grandfathered 921_sanitize_block_workbench.sql: applied；字节冻结；新功能表无大存量（evidence 表 + reviews 补索引）
+    migration_version_unique_test.go:190: grandfathered 928_probe_traffic_physical_lane.sql: applied(211)；字节冻结；索引建在同文件新建的空表上（无存量扫描）；实测 0.276s/空库、<0.5s/50 万存量形态
+    migration_version_unique_test.go:190: grandfathered 958_market_platform_registry.sql: applied(245/252)；字节冻结；两张非并发索引建在同文件新建的空表上（16 行种子 ⇒ 秒级，无存量扫描）
+    migration_version_unique_test.go:201: 981_session_analytics_foundation.sql 含全表扫描类 DDL（VALIDATE CONSTRAINT / 非 CONCURRENTLY CREATE INDEX），但最宽 statement_timeout=0s < 10min。预算必须按目标环境最大表实测后抬够（761 先例：实测 18.9s ⇒ 抬 10min；914 反例：拍 120s ⇒ 245 部署中止）。
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	14.742s
+FAIL
+[test-gate] ★ 基线（a798423fde11dd55a0c1b59ffc25bcb76ec60c9c）**本来就红**：TestHeavyDDLModernMigrationsDeclareMeasuredBudget TestLiteRequestLogSink_DataSurvivesShutdown TestMigration905_IndexColumnMatchesGoFilterColumn TestMigration994OwnerKeyAndClosePathDelivered TestMigrationLedgerSelfRegistration TestRegistryShaIsActuallyTheFile github.com/kaixuan/llm-gateway-go/cmd/gateway github.com/kaixuan/llm-gateway-go/internal/sqlguard github.com/kaixuan/llm-gateway-go/sql/migrations/startup★
+[test-gate] ★   ⇒ 这些红灯**不是**本次改动带来的 ★
+TestHeavyDDLModernMigrationsDeclareMeasuredBudget
+TestLiteRequestLogSink_DataSurvivesShutdown
+TestMigration905_IndexColumnMatchesGoFilterColumn
+TestMigration994OwnerKeyAndClosePathDelivered
+TestMigrationLedgerSelfRegistration
+TestRegistryShaIsActuallyTheFile
+github.com/kaixuan/llm-gateway-go/cmd/gateway
+github.com/kaixuan/llm-gateway-go/internal/sqlguard
+github.com/kaixuan/llm-gateway-go/sql/migrations/startup
+[test-gate] FAIL: ★ 基线红里存在**未被豁免表认领**的红灯（★ 见上）⇒ 拒绝上线 ★
+EXIT=1
