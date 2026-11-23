@@ -1,19 +1,32 @@
 # Règles de calcul du tableau de bord et des statistiques de session
 
-Le « Tableau de bord » et les « Statistiques de session » résument le même flux d'appels de modèles selon **deux règles de calcul**. Cette page explique comment chaque nombre de chaque onglet est obtenu, d'où viennent les données et quelle fenêtre temporelle ils couvrent, avec un tableau de confrontation qui relie chaque écart à sa cause. Objectif : aligner les données et vérifier soi-même les écarts.
+Le « Tableau de bord », les « Statistiques de session » et le « Rapprochement fournisseurs » résument le même flux d'appels de modèles selon **trois règles de calcul**. Cette page explique comment chaque nombre est obtenu, d'où viennent les données et quelle fenêtre temporelle ils couvrent, avec un **détail poste par poste** reliant chaque écart à sa cause. Objectif : aligner les données et vérifier soi-même les écarts.
 
-> Base de mesure : 2026-11-23 02:27 (Asia/Shanghai) en production, recoupé avec des requêtes en lecture seule sur la base de production.
+> Base de mesure : 2026-11-23 21:05 (Asia/Shanghai) en production. Tous les chiffres ont été relevés au **même instant** (dans une seule requête SQL), fenêtre = `NOW()-7 jours` ; le rapprochement fournisseurs a été mesuré séparément sur l'intervalle fermé de journées calendaires `2026-11-17 ~ 2026-11-23` et rapproché jour par jour de la table de faits.
 
-## Comment les deux onglets s'articulent
+## Comment les trois modules s'articulent
 
-| | Tableau de bord | Statistiques de session |
+| | Tableau de bord | Statistiques de session | Rapprochement fournisseurs |
+| --- | --- | --- | --- |
+| Entité statistique | Un appel de modèle compte pour une ligne (**niveau requête**) | Une session compte pour une ligne portant ses valeurs **cumulées** (**niveau session**) | Un appel de modèle compte pour une ligne (**niveau requête**, agrégée par fournisseur) |
+| Source de vérité | Table de faits au niveau requête `usage_facts` | Table de résumé des sessions `session_summaries` + univers de sessions | Table d'instantanés quotidiens `report_snapshots` |
+| Fenêtre temporelle | Jours calendaires dans le fuseau du système : minuit de aujourd'hui-(N-1) à maintenant | N jours glissants (première requête dans les N derniers jours) | **Intervalle fermé de journées calendaires** (journée entière, y compris le dernier jour in extenso) |
+| Trafic de sonde | Exclu via `traffic_class` (commutable) | Exclu via les règles de l'« univers de sessions » | **Non exclu** (tout le trafic, y compris « non attribué ») |
+| Maturité | Temps réel | Temps réel | **Instantané T+1** (les dates dont la journée n'est pas terminée ont du retard) |
+
+**Conclusion d'abord** : les chiffres des trois modules **ne doivent pas coïncider** — entité différente, fenêtre différente, règles d'exclusion de sonde différentes, maturité différente. Toute comparaison doit d'abord aligner ces quatre points ; on ne soustrait pas directement.
+
+### Le plus important : le trafic de sonde est presque gratuit
+
+Le trafic de sonde (health check / auto-vérification) figure à part dans la table de faits sous `traffic_class='probe'` :
+
+| Base de calcul (même fenêtre) | Requêtes | Coût |
 | --- | --- | --- |
-| Entité statistique | Un appel de modèle compte pour une ligne (**niveau requête**) | Une session compte pour une ligne portant ses valeurs **cumulées** (**niveau session**) |
-| Source de vérité | Table de faits au niveau requête `usage_facts` (base en cache Redis + delta temps réel) | Table de résumé des sessions `session_summaries` (requête directe) + vues matérialisées (couche en cache) |
-| Fenêtre temporelle | Jours calendaires dans le fuseau du système : minuit de aujourd'hui-(N-1) à maintenant | Panneau = N jours glissants (première requête dans les N derniers jours) ; ligne d'alignement = journées calendaires complètes de Shanghai |
-| Trafic de sonde | Exclu via la classe de trafic de la table de faits | Exclu via les règles d'« univers de sessions » côté sessions |
+| Hors sondes | 81 265 | 8 854,70 $ |
+| Avec sondes | 189 534 | 8 856,87 $ |
+| **Part de sonde** | **108 271** | **2,17 $** |
 
-**Conclusion d'abord** : les chiffres des deux onglets **ne doivent pas coïncider** — entité différente (requête ou session), fenêtre différente, règles d'exclusion différentes. Toute comparaison doit d'abord aligner ces trois points ; on ne soustrait pas directement.
+⇒ **Le nombre de requêtes varie d'un facteur 2,3 alors que le coût ne varie que de 2,17 $.** Devant un « beaucoup plus de requêtes pour un coût à peu près égal », soupçonnez d'abord la base de sonde, pas un erreur de calcul.
 
 ## Tableau de bord : origine de chaque chiffre
 
@@ -69,45 +82,83 @@ Une session n'est comptée que si les trois conditions sont réunies :
 2. elle possède un propriétaire (clé utilisateur ou clé de propriétaire de clé API ; si les deux sont vides, elle n'est pas comptée) ;
 3. ce n'est pas une session de sonde : ni marquée manuellement comme sonde, ni reconnue par le motif « propriétaire / type de client / titre » comme auto-vérification, garde de déploiement, test ou vérification.
 
-### Pourquoi le coût est ici plus faible que sur le tableau de bord
+## Détail complet de l'écart de coût (mesuré le 2026-11-23 au même instant)
 
-La troisième règle de l'univers de sessions écarte des **sessions métier réelles** classées comme sondes. Mesure en base de production (même fenêtre de 7 jours, 2026-11-23) :
+Les 81 265 requêtes / 8 854,70 $ du tableau de bord (hors sondes), **détaillés poste par poste dans chaque bloc des statistiques de session** (les six postes ci-dessous s'additionnent au total du tableau de bord, le coût se referme au centime près) :
 
-- les 15 898 sessions écartées par le côté sessions ont leur requête principale classée à **100 % en trafic métier** dans la table de faits, pour 6 452,73 $ au total ;
-- sur la même fenêtre, le trafic réellement classé comme sonde dans la table de faits ne totalise que **1,81 $**.
+| # | Composant | Requêtes | Coût (USD) | Affectation |
+| --- | --- | --- | --- | --- |
+| C | Sessions **conservées** dans l'univers de sessions | 58 180 | 1 551,41 | Statistiques de session (c'est le bloc affiché par la page) |
+| D1 | Exclues · **sondes marquées manuellement** | 12 364 | 5 145,16 | Écart des statistiques de session |
+| D2 | Exclues · **sondes détectées par motif** | 5 946 | 1 876,67 | Écart des statistiques de session |
+| D3 | Exclues · **sans propriétaire** | 1 202 | 0,08 | Écart des statistiques de session |
+| E | **Sessions à cheval sur la fenêtre** (première requête hors fenêtre, actives dedans) | 3 191 | 281,38 | Écart des statistiques de session |
+| F | **Sans session rattachée** (appels directs à l'API, appels par script) | 381 | 0,00 | Tableau de bord uniquement |
+| | **Total** | **81 263** | **8 854,70** | |
 
-Autrement dit : les deux onglets prétendent exclure la sonde, mais **n'excluent pas les mêmes requêtes**. C'est la première raison pour laquelle le coût des statistiques de session est nettement inférieur à celui du tableau de bord.
+⇒ **L'écart entre les statistiques de session et le tableau de bord ne vient pas principalement des « sessions à cheval sur la fenêtre », mais des règles d'exclusion de sonde de l'univers de sessions (D1+D2).**
 
-## Confrontation des chiffres (mesuré le 2026-11-23, fenêtre de 7 jours)
+### Mesure clé : tout ce qui est exclu est du trafic métier réel
 
-| Indicateur | Tableau de bord | Statistiques de session (panneau) | Statistiques de session (ligne d'alignement) |
+Les requêtes, dans la fenêtre, des sessions exclues D1/D2/D3, classées d'après `origin_stage` dans le journal des requêtes :
+
+| Motif d'exclusion | Requêtes | Coût (USD) | Dont `origin_stage='business'` | Part |
+| --- | --- | --- | --- | --- |
+| Sondes marquées manuellement | 12 364 | 5 145,16 | 12 364 | **100 %** |
+| Sondes détectées par motif | 5 946 | 1 876,67 | 5 946 | **100 %** |
+| Sans propriétaire | 1 202 | 0,08 | 1 202 | **100 %** |
+
+⇒ Les 19 512 requêtes et 7 021,91 $ exclus côté sessions sont, dans le journal des requêtes, **à 100 % du trafic métier (`origin_stage='business'`)** : pas une seule n'est une sonde. **C'est la première raison pour laquelle les statistiques de session sont en dessous du tableau de bord, et c'est l'écart isolé le plus important à ce jour.**
+
+## Confrontation des chiffres des trois modules (mesuré le 2026-11-23)
+
+| Indicateur | Tableau de bord (hors sondes) | Statistiques de session (panneau) | Rapprochement fournisseurs |
 | --- | --- | --- | --- |
-| Entité statistique | requêtes | sessions + requêtes cumulées de session | sessions / requêtes |
-| Requêtes | 65 774 | 72 098 | — |
-| Coût (USD) | 8 013,93 | 2 717,62 | 2 468,73 (coût interne) |
-| Crédits | 86 925 (indépendant de la fenêtre) | — | 0 |
-| Tokens | 3 245 804 009 | — | — |
-| Taux de réussite | 95,31 % | — | 94,64 % |
-| Sessions | — | 19 235 | 17 390 |
+| Entité statistique | requêtes | sessions + requêtes cumulées de session | requêtes (agrégées par fournisseur) |
+| Requêtes | 81 265 | 58 180 (dans l'univers) / 77 687 (total hors univers) | 178 841 (y compris « non attribué ») |
+| Coût (USD) | 8 854,70 | 1 551,41 (dans l'univers) | 8 612,07 |
+| Trafic de sonde | déjà exclu | exclu selon les règles de session | **non exclu** |
+| Maturité | temps réel | temps réel | **instantané T+1** |
 
-À quoi correspond chaque écart :
+### Tableau de bord face au rapprochement fournisseurs : confrontation jour par jour
 
-- **Requêtes 72 098 > 65 774** : le nombre de requêtes côté sessions est le cumul des requêtes des sessions retenues ; une session qui dépasse la limite de la fenêtre apporte aussi ses requêtes postérieures à la fenêtre. De plus, la table des sessions contient des lignes en double (mesuré : jusqu'à 30 lignes pour une même clé de session), elles aussi agrégées.
-- **Coût 2 717,62 < 8 013,93** : l'univers de sessions retire les 6 452,73 $ de trafic métier décrits ci-dessus ; le tableau de bord compte en outre les appels **sans session rattachée** (appels directs à l'API, appels par script), mesurés à environ un cinquième du coût du tableau de bord.
-- **Crédits 0 contre 86 925** : ni le côté sessions ni la table de faits au niveau requête ne détiennent actuellement de stock de crédits fiable ; la valeur affichée vient du delta temps réel.
-- **Taux de réussite 95,31 % contre 94,64 %** : les deux au niveau requête, mais l'un vient de `usage_facts`, l'autre de la vue matérialisée du journal des requêtes, et les fenêtres diffèrent.
+Le côté rapprochement lit `daily_total` dans `report_snapshots` et le confronte jour par jour à la table de faits (intervalle fermé de journées calendaires 11/17 ~ 11/23) :
+
+| Date | Requêtes table de faits | Requêtes instantané de rapprochement | Écart | Écart de coût |
+| --- | --- | --- | --- | --- |
+| 11/17 | 27 446 | 27 446 | 0 | 0,0000 |
+| 11/18 | 22 905 | 22 905 | 0 | 0,0000 |
+| 11/19 | 35 008 | 35 008 | 0 | 0,0000 |
+| 11/20 | 23 947 | 23 947 | 0 | 0,0000 |
+| 11/21 | 21 341 | 21 341 | 0 | 0,0000 |
+| 11/22 | 19 693 | 19 693 | 0 | 0,0000 |
+| 11/23 | 36 019 | 28 501 | 7 518 | 42,38 |
+
+⇒ **Les 6 premiers jours coïncident requête par requête et centime par centime** ; l'écart du 11/23 provient à 100 % de l'instant d'arrêt de l'instantané de ce jour (instantané `updated_at` = 17:38, heure de mesure 21:05) — **ce n'est pas une erreur de calcul, c'est le retard normal d'une journée inachevée**.
+
+### À l'intérieur du module de rapprochement : aucun double comptage
+
+Les lignes par fournisseur de la page de rapprochement (y compris « non attribué ») **s'additionnent exactement au total de la page** :
+
+- Somme des lignes par fournisseur = 178 841 requêtes = le nombre total de requêtes de la page ✓
+- Somme des coûts des lignes par fournisseur = 8 612,07 $ = le coût total de la page ✓
+- Dont « non attribué » (`provider_id IS NULL`) = 79 801 requêtes / 100 % d'échecs / 0,00 $ — c'est du **trafic de sonde sans fournisseur rattaché** (la sonde n'atteint pas le fournisseur amont), pas un compte manquant.
 
 ## Que vérifier quand les chiffres ne concordent pas
 
-1. **Aligner d'abord la fenêtre** : tableau de bord = depuis un minuit calendaire ; panneau des statistiques de session = N jours glissants ; ligne d'alignement = journées calendaires complètes de Shanghai. Même avec le même préréglage, ce sont trois fenêtres différentes.
+1. **Aligner d'abord la fenêtre** : tableau de bord = depuis un minuit calendaire ; panneau des statistiques de session = N jours glissants ; ligne d'alignement = journées calendaires complètes de Shanghai ; rapprochement fournisseurs = intervalle fermé de journées calendaires. Même avec le même préréglage, ce sont quatre fenêtres différentes.
 2. **Aligner ensuite l'entité** : comparer requêtes avec requêtes, coût avec coût ; ne jamais confronter un nombre de sessions à un nombre de requêtes.
-3. **Chercher les marqueurs de dégradation** : quand une carte affiche « dégradé / peu fiable / non calculé », ces zéros ne signifient pas « aucun trafic ».
-4. **Vérifier l'interrupteur de sonde** : « exclure la sonde / inclure la sonde » du tableau de bord ne concerne que la synthèse ; les camemberts et la courbe restent toujours sur la base métier.
-5. **« Aujourd'hui » peut échouer (corrigé le 2026-11-23)** : sur les statistiques de session, le préréglage « Aujourd'hui » atteignait de façon reproductible le délai de 30 secondes, faute d'index de jointure côté base de données (index ajouté le 2026-11-23 : la requête est passée de 121,8 s à 0,19 s). Si la page affiche de nouveau l'erreur, l'index a disparu : demander à l'astreinte de vérifier que `idx_session_dim_session_key` est bien en place.
+3. **Aligner ensuite la base de sonde** : le tableau de bord permet de passer à « inclure la sonde » ; les statistiques de session excluent selon les règles de l'univers de sessions ; **le rapprochement inclut toujours les sondes**. Si le nombre de requêtes diverge fortement alors que les coûts se ressemblent ⇒ regardez d'abord les sondes.
+4. **Aligner ensuite la maturité** : le rapprochement est un instantané T+1, **les données du jour en cours ont nécessairement du retard** ; avant de comparer, vérifiez jusqu'à quelle date l'instantané couvre.
+5. **Chercher les marqueurs de dégradation** : quand une carte affiche « dégradé / peu fiable / non calculé », ces zéros ne signifient pas « aucun trafic ».
+6. **Courbe d'usage du tableau de bord ≠ cartes du tableau de bord** : la courbe vient de la table des statistiques à la minute, donc d'une autre source que les cartes du dessus (table de faits au niveau requête) (mesuré : environ 13,8 % d'écart sur une fenêtre de 30 jours).
+7. **« Aujourd'hui » peut échouer (corrigé le 2026-11-23)** : sur les statistiques de session, le préréglage « Aujourd'hui » atteignait de façon reproductible le délai de 30 secondes, faute d'index de jointure côté base de données (index ajouté le 2026-11-23 : la requête est passée de 121,8 s à 0,19 s). Si la page affiche de nouveau l'erreur, l'index a disparu : demander à l'astreinte de vérifier que `idx_session_dim_session_key` est bien en place.
 
 ## Limites connues (mesuré le 2026-11-23)
 
-1. **Le coût et le nombre de requêtes du côté sessions sont trop élevés (double comptage, corrigé sur `main` le 2026-11-23)** : le coût et les requêtes des statistiques de session proviennent de l'agrégation des résumés de session, mais `sessions` est un **historique de sessions partitionné par jour** (la même session reçoit une nouvelle ligne chaque jour) et la jointure de la statistique ne déduplique pas par session ⇒ la même session est comptée plusieurs fois. Mesure en base de production le 2026-11-23 (même fenêtre de 7 jours, **valeurs antérieures au correctif**) : le coût du côté sessions ressort environ **61 %** et le nombre de requêtes environ **36 %** au-dessus des valeurs dédupliquées par session (la session la plus coûteuse a été comptée 3 fois). **Ce double comptage est corrigé** : la jointure de l'univers des sessions déduplique désormais par `(session_id, tenant_id)` (`DISTINCT ON`) et les trois vues matérialisées ont été mises à jour avec la migration 994 ⇒ les **61 %／36 %** ci-dessus sont des **mesures antérieures au correctif**. **La limitation connue qui subsiste est D1 (exclusion des sondes trop agressive, orthogonale à ce point)** ; **les chiffres du tableau de bord (au niveau requête) n'ont jamais été concernés** ⇒ pour comparer les coûts, s'appuyer sur le tableau de bord.
-2. La carte des crédits du tableau de bord ne varie pas avec la fenêtre temporelle (voir plus haut).
-3. La courbe du tableau de bord (table à la minute) et les cartes (table de faits au niveau requête) diffèrent d'environ 13,8 % sur 30 jours (160 451 contre 140 969 requêtes).
-4. L'exclusion de la sonde ne retire pas le même trafic de part et d'autre (voir plus haut).
+1. **L'univers de sessions exclut les sondes trop largement (D1/D2, confirmé par mesure le 2026-11-23)** : les 19 512 requêtes et 7 021,91 $ exclus par les statistiques de session sont, dans le journal des requêtes, **à 100 % du trafic métier**. Les statistiques de session se situent donc environ **7 021,91 $ (79 %)** en dessous du tableau de bord (base hors sondes). **Les chiffres du tableau de bord (au niveau requête) n'ont jamais été concernés** ⇒ pour un rapprochement exact des coûts, s'appuyer sur le tableau de bord, ou mettre la page de rapprochement sur la base « métier » avant de comparer.
+2. **Sessions à cheval sur la fenêtre (E)** : 18 sessions dont la première requête précède la fenêtre y sont encore actives et sont aujourd'hui écartées en bloc, ce qui omet 3 191 requêtes / 281,38 $ (3,2 % du coût du tableau de bord).
+3. **Appels sans session rattachée (F)** : 381 appels directs à l'API ou par script n'ont pas de session ; le tableau de bord les compte, les statistiques de session non.
+4. **Retard du jour même dans l'instantané de rapprochement** : le rapprochement est en base T+1, **les données du jour sont incomplètes** ; les soustraire directement des chiffres temps réel du tableau de bord fait toujours apparaître un écart.
+5. La carte des crédits du tableau de bord ne varie pas avec la fenêtre temporelle (voir plus haut).
+6. La courbe du tableau de bord (table à la minute) et les cartes (table de faits au niveau requête) diffèrent d'environ 13,8 % sur 30 jours (160 451 contre 140 969 requêtes).

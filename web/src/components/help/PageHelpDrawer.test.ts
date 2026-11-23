@@ -210,8 +210,18 @@ describe('PageHelpDrawer', () => {
     const body = w.find('.page-help-body').text()
     // 正文真的渲染出来了（import.meta.glob 路径写错会静默空抽屉 ⇒ 必须钉正文非空）
     expect(body).toContain('统计标准')
-    expect(body).toContain('65,774')
-    expect(body).toContain('72,098')
+    // ★ 2026-11-23 21:05 订正：原断言钉的是「两页数字对照」表里的旧实测值
+    // （65,774 / 72,098）——那组数字随每次复测都会变，且已被逐项拆解推翻
+    // （见 docs/audit/2026-11-23-数据一致性验证最终报告-数据库实测.md）。
+    // ⇒ 改钉**本文件独有的结构标识**：它们证明「加载的是这一份正文」，
+    //    且不随复测漂移（复测只改数字、不改章节骨架）。
+    //    唯一性已实测：这三个短语在 content/page-help/*.md 全目录各只命中 1 个文件。
+    expect(body).toContain('三个模块是什么关系')
+    expect(body).toContain('费用差的完整拆解')
+    expect(body).toContain('被剔除的全是真实业务流量')
+    // 版本锚点：钉一个当期实测值（复测后需要同步更新这一条）。
+    expect(body).toContain('8,854.70')
+    // 共享正文（content/statistics-standards/zh-CN.md，由抽屉拼接）里的段落仍在
     expect(body).toContain('供应商返回金额')
   })
 

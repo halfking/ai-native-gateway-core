@@ -121,7 +121,7 @@ export default {
   stats: {
     scopeNoticeTitle: 'Scope note:',
     scopeNoticeBody: 'This page counts all requests and costs for sessions whose first request happened within the last {days} days.',
-    scopeNoticeHint: 'Note: sessions that started before the window but are still active inside it are not included, so costs here may be lower than on the Dashboard page (which counts every request in the window). For the complete in-window cost, see the Dashboard page.',
+    scopeNoticeHint: 'Note: this page drops probe sessions by the "session universe" rules; production measurements show every request dropped that way is real business traffic in the request log, so costs here are noticeably lower than on the Dashboard (which excludes probes by traffic class). Sessions whose first request predates the window but that are still active inside it are also not counted. For the complete in-window cost, see the Dashboard page, or open "Calculation standards" for the item-by-item breakdown.',
     last7Days: 'Last 7 Days',
     last30Days: 'Last 30 Days',
     sessionCount: 'Session Count',

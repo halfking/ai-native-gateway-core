@@ -1,19 +1,32 @@
 # Reglas de cálculo del panel y de las estadísticas de sesión
 
-El «Panel» y las «Estadísticas de sesión» resumen el mismo flujo de llamadas a modelos con **dos reglas de cálculo distintas**. Esta página explica cómo se obtiene cada número de cada pestaña, de dónde salen los datos y qué ventana temporal cubren, e incluye una tabla de contraste con el motivo de las diferencias. Sirve para alinear datos y comprobar desvíos por cuenta propia.
+El «Panel», las «Estadísticas de sesión» y la «Conciliación de proveedores» resumen el mismo flujo de llamadas a modelos con **tres reglas de cálculo distintas**. Esta página explica cómo se obtiene cada número, de dónde salen los datos y qué ventana temporal cubren, e incluye un **desglose punto por punto** de por qué los números de los tres módulos no cuadran. Sirve para alinear datos y comprobar desvíos por cuenta propia.
 
-> Base de la medición: 2026-11-23 02:27 (Asia/Shanghai) en producción, contrastado con consultas de solo lectura sobre la base de datos de producción.
+> Base de la medición: 2026-11-23 21:05 (Asia/Shanghai) en producción. Todas las cifras se tomaron en el **mismo instante** (dentro de una única consulta SQL), ventana = `NOW()-7 días`; la conciliación de proveedores se midió aparte sobre el intervalo cerrado de días naturales `2026-11-17 ~ 2026-11-23` y se contrastó día a día con la tabla de hechos.
 
-## Cómo se relacionan las dos pestañas
+## Cómo se relacionan los tres módulos
 
-| | Panel | Estadísticas de sesión |
+| | Panel | Estadísticas de sesión | Conciliación de proveedores |
+| --- | --- | --- | --- |
+| Entidad estadística | Una llamada a modelo cuenta como una fila (**nivel de solicitud**) | Una sesión cuenta como una fila con sus valores **acumulados** (**nivel de sesión**) | Una llamada a modelo cuenta como una fila (**nivel de solicitud**, agregada por proveedor) |
+| Fuente de verdad | Tabla de hechos a nivel de solicitud `usage_facts` | Tabla resumen de sesiones `session_summaries` + universo de sesiones | Tabla de instantáneas diarias `report_snapshots` |
+| Ventana temporal | Días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta ahora | N días móviles (primera solicitud dentro de los últimos N días) | **Intervalo cerrado de días naturales** (día completo, incluido el último día entero) |
+| Tráfico de sondeo | Excluido según `traffic_class` (conmutable) | Excluido según las reglas del **universo de sesiones** | **No se excluye** (todo el tráfico, incluido «sin asignar») |
+| Madurez | En vivo | En vivo | **Instantánea T+1** (las fechas cuyo día aún no ha terminado van con retraso) |
+
+**Conclusión primero**: los números de los tres módulos **no deberían coincidir** — entidad distinta, ventana distinta, reglas de exclusión de sondeo distintas y madurez distinta. Para comparar hay que alinear primero esos cuatro puntos; no vale con restarlos.
+
+### Lo más importante: el tráfico de sondeo es casi gratis
+
+El tráfico de sondeo (health check / autocomprobación) figura por separado en la tabla de hechos como `traffic_class='probe'`:
+
+| Base de cálculo (misma ventana) | Solicitudes | Coste |
 | --- | --- | --- |
-| Entidad estadística | Una llamada a modelo cuenta como una fila (**nivel de solicitud**) | Una sesión cuenta como una fila con sus valores **acumulados** (**nivel de sesión**) |
-| Fuente de verdad | Tabla de hechos a nivel de solicitud `usage_facts` (línea base en Redis + delta en vivo) | Tabla resumen de sesiones `session_summaries` (consulta en vivo) + vistas materializadas (capa en caché) |
-| Ventana temporal | Días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta ahora | Panel = N días móviles (primera solicitud dentro de los últimos N días); fila de contraste = días naturales completos de Shanghái |
-| Tráfico de sondeo | Excluido según la clase de tráfico de la tabla de hechos | Excluido según las reglas de «universo de sesiones» del lado de sesiones |
+| Sin sondeo | 81.265 | 8.854,70 $ |
+| Con sondeo | 189.534 | 8.856,87 $ |
+| **Parte de sondeo** | **108.271** | **2,17 $** |
 
-**Conclusión primero**: los números de las dos pestañas **no deberían coincidir** — entidad distinta (solicitud frente a sesión), ventana distinta y reglas de exclusión distintas. Para comparar hay que alinear primero esos tres puntos; no vale con restarlos.
+⇒ **El número de solicitudes se multiplica por 2,3, pero el coste solo cambia en 2,17 $.** Ante cualquier «muchas más solicitudes pero coste parecido», sospeche primero de la base de sondeo, no de un error de cálculo.
 
 ## Panel: cómo se obtiene cada número
 
@@ -69,45 +82,83 @@ Una sesión se cuenta solo si cumple las tres condiciones:
 2. Tiene propietario (clave de usuario o clave de propietario de API; si ambas están vacías no cuenta);
 3. No es una sesión de sondeo: ni está marcada manualmente como sondeo ni coincide con el patrón «propietario / tipo de cliente / título» de autocomprobación, puerta de despliegue, prueba o verificación.
 
-### Por qué aquí el coste es menor que en el panel
+## Desglose completo de la diferencia de coste (medido 2026-11-23 en el mismo instante)
 
-La tercera regla del universo de sesiones descarta **sesiones de negocio reales** clasificadas como sondeo. Medición en la base de datos de producción (misma ventana de 7 días, 2026-11-23):
+Los 81.265 / 8.854,70 $ del panel (sin sondeo), **desglosados punto por punto en cada bloque de las estadísticas de sesión** (las seis posiciones siguientes suman el total del panel, con el coste cerrando al céntimo):
 
-- Las 15.898 sesiones excluidas por el lado de sesiones tienen su solicitud principal clasificada como **100 % tráfico de negocio** en la tabla de hechos, por un total de 6.452,73 $;
-- en la misma ventana, el tráfico realmente clasificado como sondeo en la tabla de hechos suma solo **1,81 $**.
+| # | Componente | Solicitudes | Coste (USD) | Atribución |
+| --- | --- | --- | --- | --- |
+| C | Sesiones **conservadas** dentro del universo de sesiones | 58.180 | 1.551,41 | Estadísticas de sesión (esto es lo que muestra la página) |
+| D1 | Excluidas · **sondeo marcado manualmente** | 12.364 | 5.145,16 | Brecha de las estadísticas de sesión |
+| D2 | Excluidas · **sondeo detectado por patrón** | 5.946 | 1.876,67 | Brecha de las estadísticas de sesión |
+| D3 | Excluidas · **sin propietario** | 1.202 | 0,08 | Brecha de las estadísticas de sesión |
+| E | **Sesiones que cruzan la ventana** (primera solicitud fuera, activas dentro) | 3.191 | 281,38 | Brecha de las estadísticas de sesión |
+| F | **Sin sesión asociada** (llamadas directas a la API, llamadas desde scripts) | 381 | 0,00 | Solo el panel |
+| | **Total** | **81.263** | **8.854,70** | |
 
-Es decir: ambas pestañas afirman excluir el sondeo, pero **no excluyen las mismas solicitudes**. Esta es la primera razón por la que el coste de las estadísticas de sesión queda claramente por debajo del del panel.
+⇒ **La diferencia entre las estadísticas de sesión y el panel no está principalmente en las «sesiones que cruzan la ventana», sino en las reglas de exclusión de sondeo del universo de sesiones (D1+D2).**
 
-## Contraste de números (medido 2026-11-23, ventana de 7 días)
+### Medición clave: todo lo excluido es tráfico de negocio real
 
-| Métrica | Panel | Estadísticas de sesión (panel) | Estadísticas de sesión (fila de contraste) |
+Las solicitudes dentro de la ventana de las sesiones excluidas D1/D2/D3, clasificadas por el `origin_stage` del registro de solicitudes:
+
+| Motivo de exclusión | Solicitudes | Coste (USD) | De ellas `origin_stage='business'` | Porcentaje |
+| --- | --- | --- | --- | --- |
+| Sondeo marcado manualmente | 12.364 | 5.145,16 | 12.364 | **100 %** |
+| Sondeo detectado por patrón | 5.946 | 1.876,67 | 5.946 | **100 %** |
+| Sin propietario | 1.202 | 0,08 | 1.202 | **100 %** |
+
+⇒ Las 19.512 solicitudes y 7.021,91 $ que el lado de sesiones excluye son, en el registro de solicitudes, **al 100 % tráfico de negocio (`origin_stage='business'`)**: ni una sola es de sondeo. **Esta es la primera razón por la que las estadísticas de sesión quedan por debajo del panel, y también la mayor desviación individual del momento.**
+
+## Contraste de números de los tres módulos (medido 2026-11-23)
+
+| Métrica | Panel (sin sondeo) | Estadísticas de sesión (panel) | Conciliación de proveedores |
 | --- | --- | --- | --- |
-| Entidad estadística | solicitudes | sesiones + solicitudes acumuladas | sesiones / solicitudes |
-| Solicitudes | 65.774 | 72.098 | — |
-| Coste (USD) | 8.013,93 | 2.717,62 | 2.468,73 (coste interno) |
-| Créditos | 86.925 (independiente de la ventana) | — | 0 |
-| Tokens | 3.245.804.009 | — | — |
-| Tasa de éxito | 95,31 % | — | 94,64 % |
-| Sesiones | — | 19.235 | 17.390 |
+| Entidad estadística | solicitudes | sesiones + solicitudes acumuladas de sesión | solicitudes (agregadas por proveedor) |
+| Solicitudes | 81.265 | 58.180 (dentro del universo) / 77.687 (total fuera del universo) | 178.841 (incluido «sin asignar») |
+| Coste (USD) | 8.854,70 | 1.551,41 (dentro del universo) | 8.612,07 |
+| Tráfico de sondeo | ya excluido | excluido según las reglas de sesión | **no se excluye** |
+| Madurez | en vivo | en vivo | **instantánea T+1** |
 
-Correspondencia de cada diferencia:
+### Panel frente a conciliación de proveedores: contraste día a día
 
-- **Solicitudes 72.098 > 65.774**: el número de solicitudes del lado de sesiones es el acumulado de las sesiones elegidas, de modo que una sesión que cruza el límite de la ventana aporta íntegras sus solicitudes posteriores; además la tabla de sesiones contiene filas duplicadas (medido: hasta 30 filas con la misma clave de sesión) que también se agregan.
-- **Coste 2.717,62 < 8.013,93**: el universo de sesiones elimina los 6.452,73 $ de tráfico de negocio descritos arriba; además el panel también cuenta llamadas **sin sesión asociada** (llamadas directas a la API, llamadas desde scripts), que miden alrededor de la quinta parte del coste del panel.
-- **Créditos 0 frente a 86.925**: ni el lado de sesiones ni la tabla de hechos a nivel de solicitud tienen hoy existencias de crédito fiables; el valor mostrado procede del delta en vivo.
-- **Tasa de éxito 95,31 % frente a 94,64 %**: ambas a nivel de solicitud, pero una sale de `usage_facts` y la otra de la vista materializada del registro de solicitudes, y con ventanas distintas.
+El lado de conciliación lee `daily_total` de `report_snapshots` y lo contrasta día a día con la tabla de hechos (intervalo cerrado de días naturales 11/17 ~ 11/23):
+
+| Fecha | Solicitudes en la tabla de hechos | Solicitudes en la instantánea de conciliación | Diferencia | Diferencia de coste |
+| --- | --- | --- | --- | --- |
+| 11/17 | 27.446 | 27.446 | 0 | 0,0000 |
+| 11/18 | 22.905 | 22.905 | 0 | 0,0000 |
+| 11/19 | 35.008 | 35.008 | 0 | 0,0000 |
+| 11/20 | 23.947 | 23.947 | 0 | 0,0000 |
+| 11/21 | 21.341 | 21.341 | 0 | 0,0000 |
+| 11/22 | 19.693 | 19.693 | 0 | 0,0000 |
+| 11/23 | 36.019 | 28.501 | 7.518 | 42,38 |
+
+⇒ **Los 6 primeros días coinciden solicitud por solicitud y céntimo por céntimo**; la diferencia del 11/23 proviene al 100 % del momento de corte de la instantánea de ese día (instantánea `updated_at` = 17:38, hora de medición 21:05): **no es un error de cálculo, es el retraso normal de un día que no ha terminado**.
+
+### Dentro del módulo de conciliación: cero recuentos duplicados
+
+Las filas de proveedor de la página de conciliación (incluido «sin asignar») **suman exactamente el total de la página**:
+
+- Suma de las filas de proveedor = 178.841 solicitudes = el total de solicitudes de la página ✓
+- Suma del coste de las filas de proveedor = 8.612,07 $ = el coste total de la página ✓
+- De ellas, «sin asignar» (`provider_id IS NULL`) = 79.801 solicitudes / 100 % de fallos / 0,00 $ — es **tráfico de sondeo sin proveedor asignado** (el sondeo no llega al proveedor de aguas arriba), no un conteo que falte.
 
 ## Qué revisar cuando los números no cuadran
 
-1. **Alinee primero la ventana**: panel = desde la medianoche de un día natural; panel de estadísticas de sesión = N días móviles; fila de contraste = días naturales completos de Shanghái. Con el mismo preajuste siguen siendo tres ventanas distintas.
+1. **Alinee primero la ventana**: panel = desde la medianoche de un día natural; panel de estadísticas de sesión = N días móviles; fila de contraste = días naturales completos de Shanghái; conciliación de proveedores = intervalo cerrado de días naturales. Con el mismo preajuste siguen siendo cuatro ventanas distintas.
 2. **Alinee después la entidad**: compare solicitudes con solicitudes y coste con coste; no compare número de sesiones con número de solicitudes.
-3. **Busque marcas de degradación**: cuando una tarjeta muestra «degradado / no fiable / no calculado», esos ceros no significan «sin tráfico».
-4. **Revise el conmutador de sondeo**: «excluir sondeo / incluir sondeo» en el panel solo cambia la cabecera; los gráficos de distribución y de tendencia siempre usan la base de negocio.
-5. **«Hoy» puede fallar (corregido el 2026-11-23)**: el preajuste «Hoy» de las estadísticas de sesión agotaba de forma reproducible el tiempo de espera de 30 segundos porque faltaba el índice de la unión en la base de datos (índice añadido el 2026-11-23: la consulta pasó de 121,8 s a 0,19 s). Si la página vuelve a mostrar el error, el índice ha vuelto a desaparecer: pida al equipo de guardia que compruebe que `idx_session_dim_session_key` está en su sitio.
+3. **Alinee después la base de sondeo**: el panel permite conmutar a «incluir sondeo»; las estadísticas de sesión excluyen según las reglas del universo de sesiones; **la conciliación siempre incluye el sondeo**. Si el número de solicitudes difiere mucho y el coste es parecido ⇒ revise primero el sondeo.
+4. **Alinee después la madurez**: la conciliación es una instantánea T+1, **los datos del día en curso van necesariamente con retraso**; antes de comparar, confirme hasta qué día llega la instantánea.
+5. **Busque marcas de degradación**: cuando una tarjeta muestra «degradado / no fiable / no calculado», esos ceros no significan «sin tráfico».
+6. **La tendencia del panel ≠ las tarjetas del panel**: la tendencia viene de la tabla de estadísticas por minuto, no de la misma fuente que las tarjetas de arriba (tabla de hechos a nivel de solicitud) (medido, alrededor de un 13,8 % de diferencia en la ventana de 30 días).
+7. **«Hoy» puede fallar (corregido el 2026-11-23)**: el preajuste «Hoy» de las estadísticas de sesión agotaba de forma reproducible el tiempo de espera de 30 segundos porque faltaba el índice de la unión en la base de datos (índice añadido el 2026-11-23: la consulta pasó de 121,8 s a 0,19 s). Si la página vuelve a mostrar el error, el índice ha vuelto a desaparecer: pida al equipo de guardia que compruebe que `idx_session_dim_session_key` está en su sitio.
 
 ## Limitaciones conocidas (medido 2026-11-23)
 
-1. **El coste y el número de solicitudes del lado de sesiones salen demasiado altos (recuento duplicado, corregido en `main` el 2026-11-23)**: el coste y las solicitudes de las estadísticas de sesión proceden de la agregación de los resúmenes de sesión, pero `sessions` es un **historial de sesiones particionado por día** (la misma sesión recibe una fila nueva cada día) y la unión de la estadística no deduplica por sesión ⇒ la misma sesión se cuenta varias veces. Medición en la base de producción el 2026-11-23 (misma ventana de 7 días, **cifras anteriores a la corrección**): el coste del lado de sesiones queda alrededor de un **61 %** y el número de solicitudes alrededor de un **36 %** por encima de los valores deduplicados por sesión (la sesión más cara se contó 3 veces). **Ese recuento duplicado está corregido**: la unión del universo de sesiones ahora deduplica por `(session_id, tenant_id)` (`DISTINCT ON`) y las tres vistas materializadas se actualizaron junto con la migración 994 ⇒ el **61 %／36 %** anterior son **medidas previas a la corrección**. **La limitación conocida que sigue vigente es D1 (exclusión de sondas demasiado agresiva, ortogonal a este punto)**; **las cifras del panel (a nivel de solicitud) nunca se vieron afectadas** ⇒ al comparar costes, use el panel.
-2. La tarjeta de créditos del panel no cambia con la ventana temporal (véase arriba).
-3. La tendencia del panel (tabla por minuto) y las tarjetas (tabla de hechos a nivel de solicitud) difieren en torno al 13,8 % en la ventana de 30 días (160.451 frente a 140.969 solicitudes).
-4. La exclusión de sondeo no retira el mismo tráfico en ambos lados (véase arriba).
+1. **El universo de sesiones excluye el sondeo demasiado a fondo (D1/D2, confirmado por medición el 2026-11-23)**: las 19.512 solicitudes y 7.021,91 $ que excluyen las estadísticas de sesión son, en el registro de solicitudes, **al 100 % tráfico de negocio**. Por eso las estadísticas de sesión quedan unos **7.021,91 $ (79 %)** por debajo del panel (base de cálculo sin sondeo). **Las cifras del panel (a nivel de solicitud) nunca se vieron afectadas** ⇒ para una conciliación exacta de costes use el panel, o ponga la página de conciliación en la base «negocio» antes de comparar.
+2. **Sesiones que cruzan la ventana (E)**: 18 sesiones cuya primera solicitud es anterior a la ventana siguen activas dentro de ella y hoy se excluyen por completo, lo que deja fuera 3.191 solicitudes / 281,38 $ (un 3,2 % del coste del panel).
+3. **Llamadas sin sesión asociada (F)**: 381 llamadas directas a la API o desde scripts no tienen sesión; el panel las cuenta, las estadísticas de sesión no.
+4. **Retraso del mismo día en la instantánea de conciliación**: la conciliación es de base T+1, **los datos de hoy están incompletos**; restarlos directamente de las cifras en vivo del panel produce siempre una diferencia.
+5. La tarjeta de créditos del panel no cambia con la ventana temporal (véase arriba).
+6. La tendencia del panel (tabla por minuto) y las tarjetas (tabla de hechos a nivel de solicitud) difieren en torno al 13,8 % en la ventana de 30 días (160.451 frente a 140.969 solicitudes).
