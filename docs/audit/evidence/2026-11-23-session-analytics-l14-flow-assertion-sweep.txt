@@ -1,0 +1,247 @@
+==============================================================================
+L14 复核轮证据 —— 「flow 断言点 × 现役渲染闭包」四方对拍工具（工具化 + 横扫 + 变异自证）
+日期：2026-11-23　仓：/tmp/lgw-l9l10　基线提交：a19590ec1（origin/main tip）
+新增工具：maestro/tools/audit-flow-assertions.mjs（★ 只读事实登记工具，★ 不判红绿）
+==============================================================================
+
+--- ① 工具设计要点（详见报告 §7.26.2）------------------------------------
+四档判定：reachable / not-found / regex-mismatch / undecidable
+强弱候选分区：页面闭包含「真正的动态组件解析」⇒ 候选降级为弱候选
+退出码：0 = 跑通（不代表没有候选）；1 = 工具自身出错
+
+--- ② 全仓横扫（29 条 flow / 128 条路由 / 8281 个 zh-CN locale 键）---------
+# flow 断言点 × 现役渲染闭包 —— 四方对拍
+
+路由数：128　flow 数：29　zh-CN locale 键：8281　壳层文件：3
+
+## ★ 候选「断言点在现役页面不可达」（not-found）：68 条
+### ★★ 强候选（页面闭包**静态可枚举** ⇒ 「渲染不出」是硬证据）：65 条
+- `01-public-guest.yaml` 第 30 行 · visible · 页面 `/` → 路由 `/`（HomeView）· 断言「AI-Native 组织核心网关」
+- `01-public-guest.yaml` 第 155 行 · visible · 页面 `/no-such-route-404-probe` → 路由 `/`（HomeView）· 断言「AI-Native 组织核心网关」
+- `03-providers-models.yaml` 第 35 行 · visible · 页面 `/providers/${PROVIDER_ID}` → 路由 `/providers/:id`（ProviderDetailView）· 断言「基础信息」
+- `05-routing.yaml` 第 291 行 · visible · 页面 `/dispatch/waterfall` → 路由 `/dispatch/waterfall`（DispatchWaterfallView）· 断言「队列瀑布图」
+- `06-keys-requests.yaml` 第 70 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像」
+- `06-keys-requests.yaml` 第 126 行 · visible · 页面 `/admin/session-analytics/filter-options` → 路由 `/admin/session-analytics/filter-options`（./views/SessionAnalyticsFilterOptionsView.vue）· 断言「会话分析筛选」
+- `11-simple-overview.yaml` 第 201 行 · text · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「上游账号、余额与健康状态」
+- `11-simple-overview.yaml` 第 218 行 · text · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「两个字段签发一个密钥，租户与应用自动填充为默认值」
+- `12-live-stage-tree.yaml` 第 76 行 · visible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「请求阶段树」
+- `12-live-stage-tree.yaml` 第 82 行 · tapOn · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「请求阶段树」
+- `12-live-stage-tree.yaml` 第 88 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「全部客户端」
+- `12-live-stage-tree.yaml` 第 89 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「全部供应商」
+- `12-live-stage-tree.yaml` 第 90 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「全部模型」
+- `12-live-stage-tree.yaml` 第 91 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「全部节点」
+- `12-live-stage-tree.yaml` 第 92 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「全部状态」
+- `12-live-stage-tree.yaml` 第 96 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「显示无效节点」
+- `12-live-stage-tree.yaml` 第 101 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「未到达」
+- `12-live-stage-tree.yaml` 第 103 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「.*发送轨.*」
+- `12-live-stage-tree.yaml` 第 104 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「.*接收轨.*」
+- `12-live-stage-tree.yaml` 第 114 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「紧凑」
+- `12-live-stage-tree.yaml` 第 115 行 · tapOn · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「紧凑」
+- `12-live-stage-tree.yaml` 第 123 行 · visible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「鉴权/限流」
+- `12-live-stage-tree.yaml` 第 133 行 · visible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「实时统计」
+- `12-live-stage-tree.yaml` 第 137 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「周期统计」
+- `12-live-stage-tree.yaml` 第 138 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「分类统计」
+- `12-live-stage-tree.yaml` 第 139 行 · assertVisible · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「口径说明」
+- `13-board-operational.yaml` 第 54 行 · text · 页面 `/admin/board-operational` → 路由 `/admin/board-operational`（BoardOperationalView）· 断言「最近 1 天」
+- `13-board-operational.yaml` 第 69 行 · text · 页面 `/admin/board-operational` → 路由 `/admin/board-operational`（BoardOperationalView）· 断言「最近 30 天」
+- `13-board-operational.yaml` 第 84 行 · text · 页面 `/admin/board-operational` → 路由 `/admin/board-operational`（BoardOperationalView）· 断言「最近 90 天」
+- `13-session-analytics-users.yaml` 第 44 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「.*request_logs_with_current_month.*」
+- `13-session-analytics-users.yaml` 第 48 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「请求数（窗口内）」
+- `13-session-analytics-users.yaml` 第 49 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「Token（窗口内）」
+- `13-session-analytics-users.yaml` 第 50 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「内部成本（窗口内）」
+- `13-session-analytics-users.yaml` 第 51 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「外部成本（窗口内）」
+- `13-session-analytics-users.yaml` 第 52 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「模型数（窗口内）」
+- `13-session-analytics-users.yaml` 第 53 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户标识」
+- `13-session-analytics-users.yaml` 第 59 行 · tapOn · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「查看统计说明」
+- `13-session-analytics-users.yaml` 第 60 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「画像列与用量列的口径区别」
+- `13-session-analytics-users.yaml` 第 61 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「Token 统计公式」
+- `13-session-analytics-users.yaml` 第 62 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「总 Token 数 = 输入 Token + 输出 Token」
+- `13-session-analytics-users.yaml` 第 63 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「成本核算公式」
+- `13-session-analytics-users.yaml` 第 64 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「数据来源」
+- `13-session-analytics-users.yaml` 第 75 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「.*request_logs_with_current_month.*」
+- `13-session-analytics-users.yaml` 第 77 行 · tapOn · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「画像详情」
+- `13-session-analytics-users.yaml` 第 82 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「.*用户画像详情.*」
+- `13-session-analytics-users.yaml` 第 89 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「热门任务」
+- `13-user-auth-verification.yaml` 第 127 行 · text · 页面 `/dashboard` → 路由 `/dashboard`（HomeView）· 断言「系统设置」
+- `14-stats-consistency-test.yaml` 第 41 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像」
+- `14-stats-consistency-test.yaml` 第 51 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「会话列表|暂无会话|用户画像」
+- `14-user-analytics-enhancement.yaml` 第 66 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像详情」
+- `14-user-analytics-enhancement.yaml` 第 122 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「查看统计说明」
+- `14-user-analytics-enhancement.yaml` 第 158 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「最近7天」
+- `14-user-analytics-enhancement.yaml` 第 178 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像」
+- `17-error-playbook.yaml` 第 67 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「脚本步骤」
+- `17-error-playbook.yaml` 第 68 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「管理面 API」
+- `17-error-playbook.yaml` 第 69 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「AI 提示词」
+- `17-error-playbook.yaml` 第 84 行 · visible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「执行留痕时间线」
+- `17-error-playbook.yaml` 第 88 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「AI 提示词」
+- `17-error-playbook.yaml` 第 90 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「执行方案」
+- `17-error-playbook.yaml` 第 92 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「手动执行」
+- `17-error-playbook.yaml` 第 93 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「保存方案修改」
+- `17-error-playbook.yaml` 第 94 行 · assertVisible · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「返回手册列表」
+- `17-error-playbook.yaml` 第 99 行 · tapOn · 页面 `/admin/error-playbook` → 路由 `/admin/error-playbook`（ErrorPlaybookListView）· 断言「返回手册列表」
+- `auto-mode-test.yaml` 第 28 行 · visible · 页面 `/routing-v2/auto-ops` → 路由 `/routing-v2/auto-ops`（AutoRoutingOpsView）· 断言「决策记录」
+- `auto-mode-test.yaml` 第 52 行 · visible · 页面 `/settings` → 路由 `/`（HomeView）· 断言「系统设置」
+
+### ○ 弱候选（页面闭包**含动态组件** ⇒ 静态闭包不完整 ⇒ 需人工确认）：3 条
+- `03-providers-models.yaml` 第 20 行 · visible · 页面 `/providers` → 路由 `/providers`（ProvidersView）· 断言「供应商管理」
+- `98-theme-validation.yaml` 第 80 行 · visible · 页面 `/providers` → 路由 `/providers`（ProvidersView）· 断言「供应商管理」
+- `98-theme-validation.yaml` 第 180 行 · visible · 页面 `/providers` → 路由 `/providers`（ProvidersView）· 断言「供应商管理」
+
+## ★★ 候选「断言写法错：字面量在页面上、但被写成了正则」（regex-mismatch）：2 条
+- `05-routing.yaml` 第 231 行 · visible · 页面 `/correlations` → 路由 `/correlations`（CorrelationsView）· 断言「Auto-Route 关联分析 (Correlations)」
+- `05-routing.yaml` 第 243 行 · visible · 页面 `/routing/overrides` → 路由 `/routing/overrides`（RoutingOverrideView）· 断言「路由覆盖 (Routing Overrides)」
+
+## 静态不可判定（undecidable）：46 条　★ 不作为候选
+- `01-public-guest.yaml` 第 42 行 · visible · 页面 `/bootstrap` → `/bootstrap`（BootstrapWizardView）· 断言「本地网关安装激活」
+- `05-routing.yaml` 第 61 行 · visible · 页面 `/probe-health/detail` → `/probe-health/detail`（ProbeHealthDetailView）· 断言「${MODEL_NAME}」
+- `07-admin-config.yaml` 第 143 行 · visible · 页面 `/admin/data-lifecycle` → `/admin/data-lifecycle`（DataLifecycleView）· 断言「数据生命周期管理」
+- `08-admin-data-ops.yaml` 第 106 行 · visible · 页面 `/admin/turns` → `/admin/turns`（TurnsListView）· 断言「会话与轮次」
+- `11-simple-overview.yaml` 第 68 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `11-simple-overview.yaml` 第 236 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「+ 新建」
+- `12-live-stage-tree.yaml` 第 57 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `12-live-stage-tree.yaml` 第 159 行 · visible · 页面 `/live` → `/live`（LiveTopologyView）· 断言「.*请求 · .*成功率.*」
+- `13-session-analytics-users.yaml` 第 25 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `13-user-auth-verification-simple.yaml` 第 14 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification-simple.yaml` 第 34 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification-simple.yaml` 第 38 行 · text · 页面 `/` → `/`（HomeView）· 断言「系统管理员」
+- `13-user-auth-verification-simple.yaml` 第 45 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `13-user-auth-verification-simple.yaml` 第 58 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification-simple.yaml` 第 78 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification-simple.yaml` 第 82 行 · text · 页面 `/` → `/`（HomeView）· 断言「演示管理员」
+- `13-user-auth-verification-simple.yaml` 第 89 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「演示管理员」
+- `13-user-auth-verification-simple.yaml` 第 102 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification-simple.yaml` 第 122 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification-simple.yaml` 第 126 行 · text · 页面 `/` → `/`（HomeView）· 断言「演示用户」
+- `13-user-auth-verification-simple.yaml` 第 133 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「演示用户」
+- `13-user-auth-verification.yaml` 第 27 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification.yaml` 第 48 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification.yaml` 第 54 行 · text · 页面 `/` → `/`（HomeView）· 断言「系统管理员」
+- `13-user-auth-verification.yaml` 第 61 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `13-user-auth-verification.yaml` 第 66 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `13-user-auth-verification.yaml` 第 87 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification.yaml` 第 108 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification.yaml` 第 114 行 · text · 页面 `/` → `/`（HomeView）· 断言「演示管理员」
+- `13-user-auth-verification.yaml` 第 121 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「演示管理员」
+- `13-user-auth-verification.yaml` 第 132 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「演示管理员」
+- `13-user-auth-verification.yaml` 第 153 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification.yaml` 第 174 行 · id · 页面 `/` → `/`（HomeView）· 断言「login-modal-title」
+- `13-user-auth-verification.yaml` 第 180 行 · text · 页面 `/` → `/`（HomeView）· 断言「演示用户」
+- `13-user-auth-verification.yaml` 第 187 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「演示用户」
+- `13-user-auth-verification.yaml` 第 198 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「演示用户」
+- `14-user-analytics-enhancement.yaml` 第 27 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `15-board-probe-scope.yaml` 第 21 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `16-request-logs-probe-scope.yaml` 第 24 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `16-request-logs-probe-scope.yaml` 第 56 行 · text · 页面 `/request-logs` → `/request-logs`（RequestLogsView）· 断言「📊 统计概览」
+- `17-error-playbook.yaml` 第 25 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「系统管理员」
+- `17-error-playbook.yaml` 第 58 行 · assertVisible · 页面 `/admin/error-playbook` → `/admin/error-playbook`（ErrorPlaybookListView）· 断言「.*鉴权类失败.*」
+- `17-error-playbook.yaml` 第 82 行 · text · 页面 `/admin/error-playbook` → `/admin/error-playbook`（ErrorPlaybookListView）· 断言「.*鉴权类失败.*」
+- `17-live-gateway-core-display.yaml` 第 29 行 · text · 页面 `/dashboard` → `/dashboard`（HomeView）· 断言「${ADMIN_DISPLAY_NAME}」
+- `auto-mode-test.yaml` 第 24 行 · visible · 页面 `/routing-v2/auto-ops` → `/routing-v2/auto-ops`（AutoRoutingOpsView）· 断言「AUTO 运营」
+- `auto-mode-test.yaml` 第 57 行 · visible · 页面 `/settings` → `/`（HomeView）· 断言「allow_model_change」
+
+## 其它异常（无路由 / 无组件 / 组件文件缺失）：21 条
+- `01-public-guest.yaml` 第 142 行 · visible · 页面 `/maintain/ops/anything` · no-route · 断言「运维平台暂时不可用|503 · 运维平台不可用」
+- `10-mcp-gateway.yaml` 第 21 行 · visible · 页面 `/mcp/admin` · no-route · 断言「MCP 网关运营看板」
+- `10-mcp-gateway.yaml` 第 25 行 · assertVisible · 页面 `/mcp/admin` · no-route · 断言「适配器总数」
+- `10-mcp-gateway.yaml` 第 26 行 · assertVisible · 页面 `/mcp/admin` · no-route · 断言「健康适配器」
+- `10-mcp-gateway.yaml` 第 27 行 · assertVisible · 页面 `/mcp/admin` · no-route · 断言「审计事件数」
+- `10-mcp-gateway.yaml` 第 28 行 · assertVisible · 页面 `/mcp/admin` · no-route · 断言「上游适配器」
+- `10-mcp-gateway.yaml` 第 32 行 · visible · 页面 `/mcp/admin` · no-route · 断言「demo」
+- `10-mcp-gateway.yaml` 第 35 行 · visible · 页面 `/mcp/admin` · no-route · 断言「crm」
+- `10-mcp-gateway.yaml` 第 44 行 · assertVisible · 页面 `/mcp/admin` · no-route · 断言「Top 工具（按调用量）」
+- `10-mcp-gateway.yaml` 第 52 行 · assertVisible · 页面 `/mcp/admin` · no-route · 断言「最近审计事件」
+- `10-mcp-gateway.yaml` 第 57 行 · visible · 页面 `/mcp/admin` · no-route · 断言「MCP 网关运营看板」
+- `10-mcp-gateway.yaml` 第 60 行 · visible · 页面 `/mcp/admin` · no-route · 断言「健康信息加载失败」
+- `90-dev-only.yaml` 第 27 行 · visible · 页面 `/dev/waterfall-preview` · no-route · 断言「队列瀑布图 · 本地预览」
+- `90-dev-only.yaml` 第 41 行 · visible · 页面 `/dev/live-topology-preview` · no-route · 断言「实时拓扑」
+- `90-dev-only.yaml` 第 55 行 · visible · 页面 `/dev/live-request-preview/${REQUEST_ID}` · no-route · 断言「请求详情」
+- `03-providers-models.yaml` 第 59 行 · visible · 页面 `/catalog` · no-component · 断言「模型与目录」
+- `04-tenants-portal.yaml` 第 127 行 · visible · 页面 `/maas/models` · no-component · 断言「标准模型」
+- `04-tenants-portal.yaml` 第 142 行 · visible · 页面 `/maas/account` · no-component · 断言「订阅额度」
+- `04-tenants-portal.yaml` 第 157 行 · visible · 页面 `/maas/pricing` · no-component · 断言「.*套餐与充值.*」
+- `04-tenants-portal.yaml` 第 171 行 · visible · 页面 `/maas/orders/${ORDER_ID}` · no-component · 断言「订单支付」
+- `04-tenants-portal.yaml` 第 186 行 · visible · 页面 `/maas/usage` · no-component · 断言「积分消耗」
+
+★ 口径：`not-found` ＝ 该字面量在仓内确实存在、但在该页现役渲染闭包里渲染不出来 ⇒ **强候选**
+★ 口径：`regex-mismatch` ＝ 字面量**就在页面上**，但断言把它写成了正则（★ 括号/加号被当元字符）⇒ **该断言恒红**
+★ `undecidable` ＝ 运行期数据 / `${ENV}` 占位符 / 跨 token 正则 / 仓内不存在的字面量 ⇒ **不作为候选**
+★ **升级为红门之前必须先人工过一遍 `not-found` 清单**（门自己的误报比没门更坏）
+
+--- ③ ★★ L14 家族：4 条 flow / 17 条断言都指向那个孤儿页形态 --------------
+13-session-analytics-users.yaml          ⇒ 17 条
+    - `13-session-analytics-users.yaml` 第 44 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「.*request_logs_with_current_month.*」
+    - `13-session-analytics-users.yaml` 第 48 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「请求数（窗口内）」
+    - `13-session-analytics-users.yaml` 第 49 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「Token（窗口内）」
+    - `13-session-analytics-users.yaml` 第 50 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「内部成本（窗口内）」
+    - `13-session-analytics-users.yaml` 第 51 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「外部成本（窗口内）」
+    - `13-session-analytics-users.yaml` 第 52 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「模型数（窗口内）」
+    - `13-session-analytics-users.yaml` 第 53 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户标识」
+    - `13-session-analytics-users.yaml` 第 59 行 · tapOn · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「查看统计说明」
+    - `13-session-analytics-users.yaml` 第 60 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「画像列与用量列的口径区别」
+    - `13-session-analytics-users.yaml` 第 61 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「Token 统计公式」
+    - `13-session-analytics-users.yaml` 第 62 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「总 Token 数 = 输入 Token + 输出 Token」
+    - `13-session-analytics-users.yaml` 第 63 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「成本核算公式」
+    - `13-session-analytics-users.yaml` 第 64 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「数据来源」
+    - `13-session-analytics-users.yaml` 第 75 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「.*request_logs_with_current_month.*」
+    - `13-session-analytics-users.yaml` 第 77 行 · tapOn · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「画像详情」
+    - `13-session-analytics-users.yaml` 第 82 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「.*用户画像详情.*」
+    - `13-session-analytics-users.yaml` 第 89 行 · assertVisible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「热门任务」
+06-keys-requests.yaml                    ⇒ 1 条
+    - `06-keys-requests.yaml` 第 70 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像」
+14-stats-consistency-test.yaml           ⇒ 2 条
+    - `14-stats-consistency-test.yaml` 第 41 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像」
+    - `14-stats-consistency-test.yaml` 第 51 行 · visible · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「会话列表|暂无会话|用户画像」
+14-user-analytics-enhancement.yaml       ⇒ 4 条
+    - `14-user-analytics-enhancement.yaml` 第 66 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像详情」
+    - `14-user-analytics-enhancement.yaml` 第 122 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「查看统计说明」
+    - `14-user-analytics-enhancement.yaml` 第 158 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「最近7天」
+    - `14-user-analytics-enhancement.yaml` 第 178 行 · text · 页面 `/admin/session-analytics/users` → 路由 `/admin/session-analytics/users`（SessionAnalyticsUsersView）· 断言「用户画像」
+
+--- ④ regex-mismatch 两例（断言写法错：字面量里的括号被当正则分组）-------
+页面真正渲染的文案（locale 实体）：
+3:  title: 'Auto-Route 关联分析 (Correlations)',
+3:  title: '路由覆盖 (Routing Overrides)',
+★ Maestro 的 visible: 是**正则** ⇒ (Correlations) 是分组 ⇒ 实际要匹配的是
+  「Auto-Route 关联分析Correlations」（无空格无括号）⇒ 与页面逐字不同 ⇒ 恒红
+★ 页面自身确实渲染该标题：
+268:    <h1>{{ t('correlations.title') }}</h1>
+214:    <h1>{{ t('routingOverride.title') }}</h1>
+
+--- ⑤ /mcp/admin 在 SPA 里不存在（上游 10-mcp-gateway.yaml 的 13 条断言）---
+$ grep -rn "mcp/admin|McpAdmin|mcpAdmin" web/src --include=*.vue --include=*.ts | grep -v test
+
+$ ls web/src/views | grep -i mcp
+★ 0 命中（无对应视图）
+★ ⇒ 该 flow 不可能全绿（上游 MCP 列车下线了该页、flow 未撤）
+
+--- ⑥ ★★ 工具的变异自证（两个方向，真实文件注入 ⇒ 恢复）------------------
+基线：not-found=68　regex-mismatch=2
+M1（注入不可达断言）：not-found=69　regex-mismatch=2
+M1 判定：✅ 精确报出该断言（期望 not-found 69）
+M2（把 L14 断言换成现役页可达字面量）：not-found=67　regex-mismatch=2
+M2 判定：✅ 该条从 not-found 清单消失（工具能分辨可达/不可达）
+恢复后：not-found=68　regex-mismatch=2　（与基线一致：true）
+
+--- ⑦ ★★ 工具自己翻的四次车（写实）--------------------------------------
+坑① 自己重写路由提取 ⇒ vue-router children 没扁平化 ⇒ /mcp/admin 等子路由误判「无路由」
+   ⇒ 修法：复用 maestro/tools/extract-routes.mjs 的 JSON 输出 + 补函数式重定向目标
+坑② locale 整包进了「可达文本」集合 ⇒ 任何 locale 值都变成可达 ⇒ 工具恒绿
+   ⇒ 修法：locale 文件不进可达文本；locale 值另走 t(key) 引用解析
+坑③ page-help 全量文件都算可达 ⇒ 同上 ⇒ 又一次恒绿
+   ⇒ 修法：只取该路由在 pageHelpRegistry 登记的那一篇
+坑④ import.meta.glob(*.md) 被当成「动态组件」 ⇒ 含 PageHelpDrawer 的页面被误判动态
+   ⇒ L14 的候选被降级成弱候选 ⇒ 修法：glob markdown 不算动态，只有 glob 组件才算
+口径坑 「该字面量仓内是否存在」必须用**包含**判据 ⇒ 否则 request_logs_with_current_month
+       （只以更长句子的一部分存在于 locale）会被判成「仓内不存在」⇒ L14 信号被工具吃掉
+
+--- ⑧ 确定性：两次跑输出逐字一致 -----------------------------------------
+★ 两次输出逐字一致
+
+--- ⑨ 本轮边界（诚实登记）------------------------------------------------
+★ 强候选 65 条里**仍混有**「断言点其实存在、只是由我没覆盖到的渲染路径」的情形
+  （抽查：「脚本步骤」在 errorPlaybook.ts locale 里、页面是 tab/弹窗形态）
+  ⇒ 误报率**未量化** ⇒ 按仓内纪律（门自己的误报比没门更坏）**不升级为红门**
+★ 本轮零生产写 / 零 schema 变更 / 零在役身份切换 / 零前端行为改动
+★ 未改 router.ts、未改任何 flow yaml、未改 page-help、未改任何 .vue ⇒ 未擅动上游资产
+★ 211 现役不变 2.6.1-42ae8b70-20261123-211（build_seq 3241）；154/245 不变 8d97cc17
+==============================================================================

@@ -19802,3 +19802,84 @@ checkout 或当时目录状态确有变化（同日 `~/sdk/bash5` 确被清过�
 > ★ **验证**：layout 文件 **41/41**（新增 4 条 + 1 条判据改「==」）；graph + layout + gap **64/64**；`vue-tsc --noEmit` ✅ 0 错；`npm run build` ✅ 26.51s；★ 全量 vitest ⇒ **0 failed**。
 > ★ **通用式三条**：① **「兜底下限」必须 ≥ 被兜对象的真实需求**——★ 否则兜底等于没兜（★ 而且会造出一整段「夹在兜底与需求之间」的溢出区）；② **同一语义的下限不许在两处各写一个数**（容器 CSS 下限 / 布局兜底下限）⇒ 必须**相等**且由判据锁住；③ **区间型缺陷必须用「区间扫描」守，抽样守不住**——★ 旧判据扫 4 个采样点时，被剔掉的 480 连带把 **481~545 的溢出**一起藏了起来（★ 抽样不是「覆盖」，是「取样」）。
 > ★ **登记**：**L8**（任务层 `sessions.task` 数据补充后复跑探针）**未闭环**（外部依赖）；**L14**（13-flow 列表页段因上游整合而失效）**待裁决**；**L15**（真机 E2E 未复跑）**待部署环境**；**L18** `mobileListUx.spec.ts` 按**行号**锚定 ⇒ 根治＝内容锚点化；**L24** 上游 merge 会覆盖 AGENTS.md 的交接块 ⇒ 关键结论必须同时落在代码/测试与提交信息里；**L25** CJK 棘轮把 `.vue` 的 `<style>` 注释里的中文也算硬编码中文 ⇒ 根治＝口径也剥离 style 注释（需重铸棘轮）。
+
+
+# 追加：**2026-11-01 智能体识别与 IP 落库轮的批判式审计轮**（goal 会话）：审计对象＝上一批
+
+> **2026-11-01 智能体识别与 IP 落库轮的批判式审计轮**（goal 会话）：审计对象＝上一批
+> （88e277974）改动**与其文档断言**。落库验证正确，但**缺三样**：一处真缺陷（失败路径丢
+> body）、一处真副作用（client_model 空）、**一整层回归门**。
+> ⇒ ★★ **修复 1（真缺陷）**：`readRequestBody` 消费 body **不复原**（只有 `bufferRequestBody`
+> 复原）⇒ responses/messages 里 `captureAttemptBody` 拿到空 ⇒ **系统提示词兜底恰好在
+> 运维最需要的失败行上失效** ⇒ 新增 `readRequestBodyRestore(r, limit)`（读后复原；
+> **读失败/超限不复原**——残缺字节流不能当完整 body 重放）⇒ 两处 handler 改用它。
+> ⇒ ★★ **修复 2（真副作用）**：`EnsureCaptured`→`ensureRequestBodyBuffered` 在 Body 已非空
+> 时提前 return ⇒ **顺带跳过模型提取** ⇒ 上一批的「预填 Body」使 `client_model` 恒空 ⇒
+> 两处 handler 显式补 `SetClientModel(extractModelFromBody(bodyBytes))` + `"<unknown>"` 兜底。
+> ⇒ ★★★ **修复 3（回归门，本轮最重要）**：新增
+> `domains/streaming/identification_nonchat_test.go`——行为层（`BuildContextAttrsEntry`：
+> 弱 UA + 系统提示词自报 ⇒ zcode/minimax-code；强 UA pi ⇒强名不被兜底覆盖）+ 接线层
+> （**AST 级**断言两个 handler 各调 `SetKey(ki)` 与 `EnsureCaptured()`）。
+> ⇒ ★★★★ **第一版接线门用 `strings.Contains` ⇒ 变异验证时仍全绿**（注释里还留着同样
+> 字符串）⇒ 改 `go/ast`（注释对 AST 不可见）⇒同一变异红 4 处 ⇒ **断言形状含首参**
+> （`SetKey(ki)` 而非 `SetKey`：文件里另有 rate-limit 分支的 `SetKey(keyInfo)`）。
+> ⇒ ★★ **订正上一批文档的错误断言**：「turn_no 权威口径在 ROW_NUMBER 派生」**不属实**
+> （全仓 `row_number()` 仅 `admin/annotation_handler.go:390` 一处且无关）⇒ 真况：
+> `SetTurnNo` 无调用方 ⇒ 侧表 `request_context_attrs.turn_no` 恒 NULL **属实**；但
+> **会话轮 turn_no 正常**（权威在会话写手 MAX+1，211 实测 4063 行 turn_no=1）。
+> ⇒ ★★ **同族缺口登记不修**：Gemini 入口（`/v1beta/models/`、`/v1/models/`）整条无识别链、
+> 也不写侧表 ⇒ **从不出现在「空名」统计里**（是没记录，不是识别成功）⇒ 211 侧表 48h 按协议
+> 分布实测 Gemini 协议行 0 条 ⇒ 当前零流量 ⇒ 登记为待办（接线需新建整条日志写入路径）。
+> ⇒ ★★★★ **修复 4（本轮最实质，★ 生产实测坐实）**：失败行的系统提示词兜底**根本没跑**
+> —— 部署后真实流量实测：**同一请求成功行落 `agent_name=zcode`、失败行落
+> `agent_name=go-client`**。根因：`meta.SystemPrompt` **只在 `EnsureCaptured()` 里生产**，
+> `refreshMeta()` 只消费它 ⇒ responses/messages 的失败行构建器
+> `recordFailedRequestWithKey` **只调 `refreshMeta()`** ⇒ 兜底链最后一环没有输入。
+> 对照 chat 路径失败行走 `captureAndEmitFailure` → **已调 `EnsureCaptured()`**
+> （211 读数：chat 失败行 2248 条全部带 `prompt_tokens`）⇒ 两条路径本来就不对齐。
+> ⇒ 修复：失败行构建器改调 `EnsureCaptured()`（body 已在 ctx 上，不重读请求）。
+> ⇒ ★★ **教训**：**「同一兜底在成功路径生效、在失败路径失效」是可观测的**（同一请求两行
+> 落库值不同），比「全都不识别」更难发现；**失败行是运维最常看的行** ⇒ 只在成功路径
+> 生效的识别，排障价值趋近于零 ⇒ **凡有兜底链的字段，逐条路径核销「兜底的输入由谁生产」**。
+> ⇒ 审计档 §5b（含变异验证读数）；通用式见 `LESSONS.md` **§602**（7 条）。
+
+
+# 追加：**2026-11-03 同步轮（合并轮）**：16 处冲突逐条定性 ⇒ 合并暴露 **4 条真缺陷**（2 条 P0＝
+
+> **2026-11-03 同步轮（合并轮）**：16 处冲突逐条定性 ⇒ 合并暴露 **4 条真缺陷**（2 条 P0＝spec/路由**重复注册** ⇒ ★「文本不冲突 ≠ 没重复」）⇒ 详见 `docs/audit/2026-11-03-拉取合并轮-冲突定性与合并暴露的四条真缺陷.md` ＋ `LESSONS.md` §625。
+
+# 追加：**2026-11-21 ZCode 流断言取证轮——安全模块排除 + 客户端 undici 断言定案（goal 会话；
+
+> **2026-11-21 ZCode 流断言取证轮——安全模块排除 + 客户端 undici 断言定案（goal 会话；主档 `docs/audit/2026-11-21-ZCode-ERR_ASSERTION流中断取证-主档.md`；**零迁移/零 schema 变更/零产品代码改动**——取证证明没有可修的产品缺陷）**：
+> ★★★★ **owner 报障＝ZCode 报 `ERR_ASSERTION: assert(statusCode >= 100)`「Cannot connect to API」，怀疑安全模块过于敏感**。定案＝**安全模块全程未参与**（`security.enabled=false`；当日 2,350 turn 零 policy/security/governance/sanitize/block 事件；该会话 censor 记录 0 条）＋ **网关交付完整且帧序合法**（`bd9adb63`＝2MB body、200、94 chunks、[DONE]、success=true；直连 8781 / 过 nginx 443 / 真实 claude 路径三重抓包全部干净）＋ **根因在客户端**（Node24 fetch/undici `onMessageComplete` 内部断言，`TypeError(fetch failed)` cause 透传被 provider-utils 渲染成「Cannot connect to API」；nginx 侧 `499 16237/21735`＝客户端断开指纹；当日 1,193 笔 ZCode 请求中唯一一例）。★ **通用式：①「Cannot connect to API」≠ 连接层故障——provider-utils 会把 `fetch failed` 的 **cause 链**（含 undici 内部断言）渲染成这句话，取证要先拆 cause 链再看传输层；② nginx `499` + 网关 `audit completed success=true` 组合＝「客户端流尾自行断开」的指纹，两侧日志对拍即可定责，不需要抓线也能定案。**
+> ★ **取证配方三件**：① 退出容器的 docker logs 仍在（蓝绿切换杀掉的旧槽是**事后取证的金矿**，先查再清）；② llhttp wasm 可直接驱动枚举「MC 无 HC」字节序列（严格模式下不存在 ⇒ 断言只能来自客户端内部竞态）；③ 查近期 turn 用 `session_turns_hot`/`session_turns_with_current_month` 视图——**父表 `session_turns` 不含未聚合热行**（max t0 停在聚合水位，本轮首查误读成「写入面断裂」）。★ 临时探针 key 必须**显式 `key_alias` + TTL**（空 alias 默认值会与既有无 alias key 冲突 `findActiveKeyConflict`，本轮撞 key id=24 一次、铸 id=365 验后已吊销）。
+
+# 追加：**2026-11-15 限流统一按 key 轮 + 日志脱敏假名化（goal 会话，LESSONS §725；零迁移/
+
+> **2026-11-15 限流统一按 key 轮 + 日志脱敏假名化（goal 会话，LESSONS §725；零迁移/零路由变更）**：
+> ★ 背景＝211 取证定案：「会话请求频率过高：5 分钟内 15 笔（3.0/min）」683 次检出/344 拦截由 2026-11-14 上线的 anomaly 频率检测器发出——裸字符串 context 键（api_key_id 恒 0）、空 session 共享全局桶（无会话头流量 ~9 笔/分钟即全体被拦）、被拦请求自喂窗口自锁、429 信封与按 key RPM 链不同形。用户裁决：脱敏不可塌缩不同值；限流统一按 key 配置一个标准。
+> ★★★★ **WP1 日志脱敏假名化**：16 个 sensitiveKeys 整体塌缩 `[REDACTED]` → 确定性假名 `[REDACTED:<key>:<8hex>]`（HMAC-SHA256，env LLM_GATEWAY_LOG_REDACT_HMAC_KEY，未设每进程随机+WARN；还原=密钥持有者重算对拍，零敏感映射落库）；输出侧遮蔽标记两段式索引（同 type ≥2 个不同值才启用 `[REDACTED:type:n]`，单值经典形态 ⇒ sanitize 29 处形状钉测零改判）。**坑：RedactedPlaceholder 带闭合括号直接拼接产出畸形假名；HMAC 懒初始化 WARN 混进记录计数测试捕获窗（init 期初始化修）**。
+> ★★★★ **WP2 限流收敛**：① anomaly 频率检测→观察模式（`ObserveOnly`，窗口 key=api key ID，无身份/IsInternal 跳过，零客户端拦截；删死代码 middleware/anomaly_detector_mw.go 整文件）；② 429 形状统一（messages 族 529→429、images code 统一+budget fail-closed 503 分支）；③ TPM 死字段接线（EffectiveTPM+TPMChecker+estimatedTokens 参数，count_tokens 类面传 0=跳过）；④ per-key 并发闸真执法（domains/streaming/key_concurrent_gate.go，executors 软告警保留为纵深）；⑤ createKey 补帽（keyLimitCaps 与 updateKeyLimits 共用）。
+> ★ 验证：触碰十一包全量绿（streaming 104s/admin 107s/cmd/gateway 18s）；变异 6/6 红→还原绿；gofmt 经手文件零漂移；dataplane_guard_surface 门对新 wrapper 零咬红。
+> ★ 遗留：messages/responses 无 CheckBudget（ingressguard registeredGap 单独立项）｜TPM=入口估计 admission 口径｜并发计数进程内｜211 部署随下一班列车（在役 anomaly 拦截形态随部署消除）。
+
+
+# 追加：**2026-11-21 错误处理手册轮——批判式审计修正（goal 会话；主档 `docs/audit/2026-11
+
+> **2026-11-21 错误处理手册轮——批判式审计修正（goal 会话；主档 `docs/audit/2026-11-21-错误处理手册轮-主档.md`；交付主体 `3643a6408`（并行车代推，本地重复提交 blob 级对拍后弃用）；审计修正 F1-F7 随新提交进仓；**零新增迁移**（995 已在 origin/main，审计修正零 schema 变更）；真库契约测试对本地 kx-citus 实测**当场打回 F2 首版守卫**——updated_at 触发器使时间戳判据恒失效）**：
+> ★★★★ **owner 需求＝「错误先查手册：已知类型按预定方案标准执行；未知错误 PI 智能体 log+上下文分析→根因→方案→执行修正→落手册供后续标准执行；方案=脚本/API/提示词；手册不存在则建并自动完善；提交推送」**。手册主体：`error_playbook_entries`（plan_kind 闭集 script〔白名单动作 DSL〕/api〔管理面路径闸〕/prompt〔AI 提示词〕）+ `error_playbook_executions`（留痕+每步快照⇒可回滚）；匹配=正文模式>类型级；变更类方案 0.80 置信度门；条目 auto_execute 默认 FALSE（非变更方案 PI 落库才默认 TRUE）；5 条 seed 全 prompt 型；自动化默认关（`error_playbook.enabled=false`，7 旋钮热加载）；worker 摄取 candidate_failure_logs_hot 错误窗口（watermark）。
+> ★★★★ **审计头号发现＝F2 假绿（★★★★级）：提炼候选判据首版用 `updated_at < last_executed_at`，但 `error_playbook_entries` 的 **BEFORE UPDATE 触发器把 updated_at 在任何 UPDATE 时顶成 NOW()** ⇒ 两列恒相等 ⇒ `<` 恒假 ⇒ 守卫把**所有**失败条目永久排除出自动提炼——单测（假 store 不建模触发器）全绿、真库契约测试一跑即红。修正＝**提炼标记行**：UpdatePlanFromRefinement 同步写一条 `trigger_source='refinement'` 执行留痕（不碰计数/last_status），ListRefineCandidates 用 `NOT EXISTS(标记行 AND created_at > last_executed_at)` 判「失败之后已提炼」⇒ 提炼后退出候选、再失败（失败晚于标记）重新入围。★ **通用式：① 凡判据依赖 DB 列的时序/默认值/触发器行为，必须有真库契约测试——单测的假 store 不会告诉你触发器存在；② 带 BEFORE UPDATE 触发器的表上 `updated_at` 不是可靠时间线，「A 时间 vs B 时间」判据先查触发器；③ 守卫判据要选「只由目标动作自己写入的行」（事件标记行）而不是「会被旁路更新的列」。**
+> ★ **F1 半截变更：script 多步执行第 N 步失败 ⇒ 前 N-1 步变更留在生产（各动作独立副作用、不在同一事务，PI ApplyFix 的事务语义不自动继承）⇒ 修正＝失败即按快照**逆序 best-effort 自动回滚**（留痕进 steps；回滚也失败 ⇒ errorMessage 给 `/executions/{id}/revert` 人工指引；无快照步骤不产生回滚噪音）。★ **通用式：多步执行器的失败语义（回滚/留痕/半截）要在第一版就定义——失败处理与成功路径同等设计。**
+> ★ **其余修正**：F3 无 LLM 时 worker 提炼段空转（RefineEntry 内存 dedup 只在成功后置位）⇒ `HasLLM()` 前置守卫；F4 api 方案引用未登记路由执行期才发现 ⇒「失败→提炼→再失败」循环 ⇒ 新增 RouteChecker 归一化期 fail-fast（LLM 此类提案走 prompt 兜底）；F5 UpsertManualEntry 先查后插 ⇒ 并发创建撞唯一键 23505 ⇒ 单条 `INSERT ON CONFLICT (表达式) DO UPDATE RETURNING id` 原子化；F6 执行留痕无保留期（错误风暴每轮一行）⇒ worker 每 24h 清 >30 天行；F7 `/stats` 走 ListEntries(200 帽) 逐行累加 ⇒ 条目 >200 静默欠数 ⇒ EntrySummary SQL 聚合（`COUNT(*) FILTER`+GROUP BY）。★ **通用式：统计面禁止「列表聚合」——limit 截断后的逐行累加是静默欠数制造机。**
+> ★ **撞车实录**：本地提交 `ecd349e2c` 后 fetch 发现并行车把同一工作树 staged 内容以 `3643a6408` 推上 origin/main（30/31 文件 blob 逐字相同、main.go=我方+并行车 sink 接线超集）⇒ 按「后修者弃提交」纪律 `reset --hard` 弃本地重复提交。★ **通用式：交付是否「已在 origin」要做 **blob 级对拍**（`git rev-parse <commit>:<path>` 逐文件比哈希）——树间 diff --stat 混着中间列车内容，数不清「我的东西在不在」。**
+> ★ **验证**：`go build ./...` ✅ / errorplaybook 全量 ✅ / 真库契约 ✅（F2 含再失败重获资格腿）/ admin 110s ✅ / cmd/gateway 19s ✅ / sqlguard+settings+ursmcheck census ✅；上轮登记的基线红（sqlguard 981/905/HeavyDDL、installer 993 embed、admin D13）**已全部被上游列车收口**（本轮实测全绿）。遗留：R1 前端管理页未做（仅 API）；R2 call_admin_api 可执行闭集仅 1 条内置路由；R3 未知错误分析每类 2 次 LLM 调用（阈值/dedup/冷却期是唯一费用闸）；R5 995 待任一台部署时由台账闸门自动应用。
+
+# 追加：**2026-11-21 统计轮收尾——211 两层 E2E 全绿 + 共享登录流判据去账号耦合（goal 会话；提交「
+
+> **2026-11-21 统计轮收尾——211 两层 E2E 全绿 + 共享登录流判据去账号耦合（goal 会话；提交「量具参数化」+「证据」两笔；**零迁移/零 schema 变更/零产品代码改动**——改动面全部在 `maestro/` 量具资产与 `docs/audit/evidence/`；211 现役经并行车四连部署收口（42321b4c→0a081292→4e6e1466-dirty→**e5781643(3181/3182)**），实测现役树 ⊇ 本轮 4 笔提交 ⇒ **未自行部署**，两层 E2E 直接在并行车现役身份上验证：flow 16 `rc=0 FAILED=0`（60 步全 COMPLETED）+ CDP 探针 `RESULT: PASS（58 条）`，证据 `docs/audit/evidence/2026-11-21-211-session-analytics-two-layer-e2e.txt`）**：
+> ★★★★ **登录凭据死结的解法＝读并行车落仓文档，不追轮换**：交接时 admin 密码被并行车轮换、两个候选密码 401、全站 captcha 锁 ⇒ 本轮发现 `docs/211-user-auth-final-verification.md`（211-user-auth 轮已提交）记录了**三组最终凭据**——`demoadmin/Demo@admin123`（super_admin）/`demo/Demo@user123`（tenant_admin）——**API 单次验证即 200**（user_id=47），全程零 captcha（`admin/auth_captcha.go`：默认免码、连续失败 3 次才强制、成功清零、计数在进程内存 ⇒ **蓝绿换进程即清零**，昨晚的锁不必等自冷）。★ **通用式：① 并行车的凭据/配置类交付，先查它落仓的报告再自己试——「密码被轮换」的下一站往往是「文档里有最终值」；② captcha 锁是进程态不是站点态：蓝绿切换后计数器归零，「锁死」结论要标上进程身份。**
+> ★★★★ **共享登录流判据②③「系统管理员」是账号耦合的量具红**：多账号时代（demoadmin display_name=「演示管理员」）用 demoadmin 跑 flow，登录成功（弹窗关闭 ✓）但判据②必红——实测 FAILED=2 全部红在 `text: "系统管理员"` ⇒ **量具红非产品红**。修法＝`_shared/login.yaml` 判据②③参数化 `${ADMIN_DISPLAY_NAME}` + **默认值放调用侧**（README 已实测「flow env: 块压过 CLI -e」⇒ 默认值不能写进 flow）——4 个 runner（run-local/run-mock-only/run-board-probe-scope/run-session-analytics）加 `:-系统管理员` 默认 + 22 个调用 flow 全量 runFlow env 转发（首轮 19 个；**收尾轮补齐 2 个历史零转发调用方** `price-compare-model-picker`/`model-pricing-unified-filter`——它们连 ADMIN_USER 都没转发，全靠未知作用域语义；并行车当日新增的 `16-request-logs-probe-scope` 已按新约定自带转发 ⇒ **调用方清单全量闭合**）；**对既有 admin 账号零行为变化**；修后同一需求重跑两层全绿。★ **通用式：① 「种子账号的 display_name 与环境无关」的判据前提在多账号时代失效——凡「登录成功」类判据，要么锚结构（注意：Maestro web 驱动 css: 断言单条实测 2 分 23 秒 ⇒ 结构锚点不可行），要么参数化 + 调用侧默认值；② 改共享登录流资产必须全量枚举调用方并**全部闭合**（本轮 22 flow + 4 runner；收尾轮用 grep 重新枚举发现漏网 2 个 + 并行车新增 1 个），漏一个调用方 = 别的列车下一轮假红。**
+> ★ **撞本机活锁的后台轮询等待**：冻结 worktree 部署在 test-gate 通过后撞 `kx-llm-gateway-deploy-211.lock`（source_host=本机、pid 存活、started_at 4 分钟前 ⇒ 在飞非陈旧）⇒ 不硬抢、轮询等放行；放行后并行车部署树（4e6e14667）⊇ 我方 tip（2ad322021）⇒ **「自己再部署一遍」不是义务，「现役树 ⊇ 我方提交 ＋ 行为级验证」才是义务**（AGENTS.md 既有通用式的再次应验）。★ 并行车当日部署节奏极快（40 分钟 3178→3182 五次切换）⇒ **E2E 跑前/跑后各采一次 `/healthz` 身份对拍**：本轮跑前跑后 git_sha 相同（仅 seq 3181→3182 同树重发）⇒ 内容稳定。
+> ★ **runner 的 Chrome 日志目录缺口**：`run-session-analytics.sh` 把 Chrome 日志写进 `maestro/reports/` **内部**，而该目录只在很靠后才 `mkdir -p` ⇒ 新鲜 worktree/新 checkout 里跑必假报「Chrome 起不来」（重定向失败 ⇒ Chrome 根本没被拉起）。修法＝REPORT_ROOT 定义处即 `mkdir -p`。同族三处无此缺口（run-local/run-mock-only 的 chrome.log 在 `maestro/` 下兄弟路径、run-users-usage 落 /dev/null）——同一族检查要一次摸完再改。★ **通用式：「Chrome 起不来」要先看重定向目标目录存不存在——shell 重定向失败时命令根本不会执行，报错文案指向的是一个不存在的日志文件。**
+> ★ **10.7 统计术语总表线上活性的正确量法**：入口 chunk grep「统计术语总表」**恒 0 命中**——HelpManualView 是懒加载路由、`?raw` 内联的正文在**路由分包**里 ⇒ 量具要抓 `assets/HelpManualView-*.js`（chunk 名可从入口 chunk 的动态 import 表解析）再 grep，实测命中 ⇒ aabacfdc3 内容已上线。★ **通用式：「入口 chunk 没有它」≠「线上没有它」——懒加载路由的内容在分包 chunk，产物级核对先查目标内容落在哪个 chunk。**
+

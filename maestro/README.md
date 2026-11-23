@@ -547,6 +547,47 @@ CI 上跑的必须是零依赖的这把。
 
 ---
 
+### 3.15 ★★ flow 断言点 × 现役渲染闭包（四方对拍，L14 复核轮新增，2026-11-23）
+
+> ★★ §3.1–§3.14 全部按**路径**核对（flow 打开过哪些 URL、README 登记了哪些 URL）。
+> ★★ **本节按「断言点」核对**：★ **flow 打开某个 URL 后，断言的那个字/那个 testid，
+> 在那个 URL 的【现役渲染闭包】里到底还在不在？**
+>
+> ```bash
+> node maestro/tools/audit-flow-assertions.mjs            # Markdown 报告
+> node maestro/tools/audit-flow-assertions.mjs --json     # 机读
+> node maestro/tools/audit-flow-assertions.mjs --flow 13   # 只看某个 flow（文件名前缀）
+> ```
+>
+> ★ **它补的是第四个维度**（前三维已被存量工具占满）：
+>
+> | 维度 | 谁在判 | 为什么看不见 L14 |
+> | --- | --- | --- |
+> | ① | `navCoverage.test.ts` | 判**路由**可达性 ⇒ 组件被 import 却没路由，它看不见 |
+> | ② | `pageHelpRegistry.test.ts` | 判**存在性** ⇒ 正文与页面形态是否一致不在判据里 |
+> | ③ | `maestro/tools/audit-route-coverage.mjs` | 判**路径**三方对拍 ⇒ **同一个 URL 换了组件、断言随之失效，它看不见** |
+> | ④ | ★ **本工具** | 判**断言点 × 该 URL 的现役渲染闭包** | —— |
+>
+> ★ **四档判定**：`reachable`（可达）｜`not-found`（★ **仓内确实存在、但该页渲染不出** ⇒ **强候选**）｜
+> `regex-mismatch`（★ 字面量**就在页面上**、但断言把它**写成了正则** ⇒ **该断言恒红**）｜
+> `undecidable`（运行期数据 / `${ENV}` 占位符 / 跨 token 正则 ⇒ **不作为候选**）。
+>
+> ★ **强弱候选分区**：★ 页面闭包里若出现**真正的动态组件解析**（`defineAsyncComponent` /
+> `resolveComponent` / `Vue.component` / **glob 组件**）⇒ ★ 静态闭包不完整 ⇒
+> 「渲染不出」的推论**证据强度较低** ⇒ ★ 这类候选单列为「弱候选」。
+>
+> ★★ **本工具是只读的事实登记工具，★ 不判红绿、★ 不进 CI 载体**
+> （★ 与同族 `audit-route-coverage.mjs` 同口径；★ 误报率尚未量化 ⇒ ★ 按仓内纪律
+> 「门自己的误报比没门更坏」⇒ ★ **升级为红门之前必须先人工过一遍候选清单**）。
+>
+> ★★ **当前树的实测产出**（★ 全文见 `docs/audit/evidence/2026-11-23-session-analytics-l14-flow-assertion-sweep.txt`）：
+> 全仓 **29 条 flow / 128 条路由**扫完 ⇒ `not-found` 候选 **68**（★ **其中 17 条指向
+> `/admin/session-analytics/users`** ⇒ ★★ **L14 家族＝4 条 flow**：`13-session-analytics-users` /
+> `06-keys-requests` / `14-stats-consistency-test` / `14-user-analytics-enhancement`）、
+> `regex-mismatch` **2**、`undecidable` **46**、其它（无路由/无组件）**21**。
+> ⇒ ★★ **「只重写 flow 13 段」口径不足** ⇒ 要么按 flow 族一起改、要么恢复路由让它们一起转绿。
+> 详见主档 `docs/audit/2026-11-20-会话分析系统前端实施报告.md` §7.26。
+
 ## 4. 前置条件
 
 ### 4.1 Maestro CLI
