@@ -259,10 +259,29 @@ func PickEntry(entries []Entry, ev Event) (*Entry, bool) {
 //	★ prompt 方案 = 调 LLM 生成分析（记录输出，不改状态）；
 //	★ script/api 方案 = 逐步骤过动作注册表（白名单 + 快照 + 可回滚）。
 //	返回执行留痕（已写入 store）与业务错误（步骤失败时 rec.Status=failed）。
+//
+// 自动化调用（标准模式 / 未知错误首次修正）走本入口：留痕 executed_by 记
+// 引擎身份。管理面手动执行走 ExecuteEntryAs。
 func (e *Engine) ExecuteEntry(ctx context.Context, entry *Entry, ev Event, trigger string) (Execution, error) {
+	return e.executeEntry(ctx, entry, ev, trigger, e.executedBy)
+}
+
+// ExecuteEntryAs 以指定操作者身份执行一个条目的预定方案（管理面手动执行用）。
+//
+//	★ 2026-11-23 审计轮：此前手动执行也走 ExecuteEntry ⇒ 留痕 executed_by
+//	  恒为引擎身份 "error_playbook"，与自动化执行无法区分 —— 能执行变更动作
+//	  并留快照的功能，留痕必须答得出「是谁按的」。executedBy 为空 ⇒ 回落引擎身份。
+func (e *Engine) ExecuteEntryAs(ctx context.Context, entry *Entry, ev Event, trigger, executedBy string) (Execution, error) {
+	return e.executeEntry(ctx, entry, ev, trigger, executedBy)
+}
+
+func (e *Engine) executeEntry(ctx context.Context, entry *Entry, ev Event, trigger, executedBy string) (Execution, error) {
 	started := e.nowFn()
 	rec := e.newExecution(entry, ev, trigger, "")
-	rec.ExecutedBy = e.executedBy
+	if strings.TrimSpace(executedBy) == "" {
+		executedBy = e.executedBy
+	}
+	rec.ExecutedBy = executedBy
 
 	switch entry.Plan.Kind {
 	case PlanKindPrompt:

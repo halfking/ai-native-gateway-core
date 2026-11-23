@@ -114,7 +114,7 @@ export default {
   stats: {
     scopeNoticeTitle: 'Hinweis zur Abgrenzung:',
     scopeNoticeBody: 'Diese Seite zählt alle Anfragen und Kosten von Sitzungen, deren erste Anfrage in den letzten {days} Tagen lag.',
-    scopeNoticeHint: 'Achtung: Sitzungen, die vor dem Zeitfenster begannen, aber darin noch aktiv sind, sind nicht enthalten; die Kosten können daher niedriger ausfallen als auf der Seite „Dashboard“ (dort werden alle Anfragen im Zeitfenster gezählt). Für die vollständigen Kosten im Zeitfenster siehe die Seite „Dashboard“.',
+    scopeNoticeHint: 'Achtung: Diese Seite entfernt Probe-Sitzungen nach den Regeln der „Session Universe“; Messungen auf Produktion zeigen, dass alle so entfernten Anfragen im Anfrageprotokoll echter Geschäftsverkehr sind. Die Kosten liegen hier daher deutlich unter denjenigen der Seite „Dashboard“ (dort wird nach Verkehrsklasse gefiltert). Ebenfalls nicht gezählt werden Sitzungen, deren erste Anfrage vor dem Zeitfenster lag, die darin aber noch aktiv sind. Für die vollständigen Kosten im Zeitfenster siehe die Seite „Dashboard“ bzw. „Berechnungsstandards“.',
     loading: "Sitzungsstatistik wird geladen…",
     last7Days: "Letzte 7 Tage",
     last30Days: "Letzte 30 Tage",

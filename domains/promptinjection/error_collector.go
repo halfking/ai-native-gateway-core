@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -838,8 +839,32 @@ func (ec *ErrorCollector) IncrementRetry(ctx context.Context, queueID int64) err
 
 // calculateErrorHash 计算错误指纹
 func (ec *ErrorCollector) calculateErrorHash(collectedErr *CollectedError) string {
-	// 基于核心特征生成 hash，用于去重
-	// 包含：错误类型、租户、输入 hash（如果有）、错误消息前 100 字符
+	// F3 修复：输出守卫类错误的去重指纹不含 inputHash
+	//
+	//	问题：输出守卫的 inputText 是逐请求不同的证据摘录（streaming/policy_block_feedback.go
+	//	的 digest/evidence），导致同一条规则误报 N 次会入队 N 条。
+	//	修复：输出守卫类错误只用 errorType + tenantID + rule 去重。
+	if collectedErr.ErrorType == ErrorTypeOutputGuardBlocked {
+		// 提取规则名称（按字母序排序确保稳定）
+		ruleNames := make([]string, 0, len(collectedErr.MatchedRules))
+		for _, rule := range collectedErr.MatchedRules {
+			if rule.RuleName != "" {
+				ruleNames = append(ruleNames, rule.RuleName)
+			}
+		}
+		sort.Strings(ruleNames)
+
+		hashInput := fmt.Sprintf("%s|%s|rules:%s",
+			collectedErr.ErrorType,
+			collectedErr.TenantID,
+			strings.Join(ruleNames, ","),
+		)
+
+		hash := sha256.Sum256([]byte(hashInput))
+		return hex.EncodeToString(hash[:])
+	}
+
+	// 其他类型错误：原有逻辑（包含 errorMessage 和 inputHash）
 	hashInput := fmt.Sprintf("%s|%s|%s",
 		collectedErr.ErrorType,
 		collectedErr.TenantID,

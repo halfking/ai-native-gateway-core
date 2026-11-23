@@ -1,0 +1,219 @@
+错误处理手册 48h 灰度——审计修正轮证据（2026-11-23）
+
+说明：生产侧只读采集 + 仓内 12 臂变异自证 + 重写后采样器对现役 dry-run。
+本档是机器实测输出（部分敏感信息已脱敏）。
+
+错误处理手册 48h 灰度——审计修正轮取证（2026-11-23，只读采集 + 仓内变异自证）
+采集时刻(UTC): 2026-11-23T08:39:54Z   生产侧采集方式: 公网管理面 API（demoadmin）
+生产写说明: 本轮对生产的唯一写入 = 撤回上轮我对条目 7/8 的改动（auto_execute false→true，见 §1.5）；其余全部只读
+
+════════ §1 生产侧（只读） ════════
+
+[1.1] 现役身份
+{"version":"2.6.1-c8289d60-20261123-211","git_sha":"c8289d60","build_seq":3244,"ready":true}
+
+[1.2] settings 变更历史（jq 注意：new_value 可能是 false，不能用 a // b 取值）
+-- error_playbook.enabled
+   2026-11-22T22:18:47.332143+08:00  true -> true
+   2026-11-22T00:42:51.628979+08:00  <未设置> -> true
+-- error_playbook.kind_threshold
+   2026-11-22T22:18:47.430424+08:00  5 -> 5
+   2026-11-22T00:42:51.690034+08:00  <未设置> -> 5
+-- error_playbook.auto_execute
+   2026-11-22T00:42:51.754549+08:00  <未设置> -> false
+   （22:18:47 那两条 true->true / 5->5 是上轮我的空操作 PUT 留下的历史行；00:42:51 那三条才是灰度开启）
+
+[1.3] error_playbook.* 七个旋钮的生效值
+   analyze_interval_seconds  value=300  default=300  source=default
+   auto_analyze  value=true  default=true  source=default
+   auto_execute  value=false  default=true  source=db
+   enabled  value=true  default=false  source=db
+   execution_cooldown_minutes  value=30  default=30  source=default
+   kind_threshold  value=5  default=3  source=db
+   llm_timeout_seconds  value=150  default=150  source=default
+
+[1.4] /stats 原文（SQL 聚合，完整口径）
+{"auto_execute_entries":5,"enabled_entries":10,"engine_wired":true,"entries_by_plan_kind":{"prompt":10},"entries_by_source":{"pi_analysis":5,"seed":5},"executions":{"last_24h":{"awaiting_approval":200,"succeeded":6},"total":206},"last_run_at":"2026-11-23T16:07:58.490508376+08:00","llm_wired":true,"pending_unknown":{"client_bug":1,"fp_slot_saturated":1,"model_unavailable":1},"provisioned":true,"total_entries":10}
+
+[1.5] 五条 PI 落库条目的 auto_execute（上轮我改过的 7/8 已撤回，与 9/10/11 一致）
+[{"id":7,"auto_execute":true},{"id":8,"auto_execute":true},{"id":9,"auto_execute":true},{"id":10,"auto_execute":true},{"id":11,"auto_execute":true}]
+
+[1.6] 全量执行留痕扫描（全部分页）: 触发源 × 状态 × 动作
+ 200 standard | awaiting_approval | 
+   5 auto_analyze | succeeded | prompt_analysis:ok
+   1 manual | succeeded | prompt_analysis:ok
+
+[1.7] 最早的 6 条留痕（offset=total-6；worker 首次出活的时间线）
+{"id":1,"entry_id":2,"trigger":"standard","status":"awaiting_approval","error_type":"rate_limit","created_at":"2026-11-22T22:41:34","reason":"auto_execute disabled globally: matched entry awaits"}
+{"id":2,"entry_id":0,"trigger":"auto_analyze","status":"succeeded","error_type":"concurrent","created_at":"2026-11-22T23:27:31","reason":""}
+{"id":3,"entry_id":0,"trigger":"auto_analyze","status":"succeeded","error_type":"canceled","created_at":"2026-11-22T23:29:42","reason":""}
+{"id":4,"entry_id":8,"trigger":"standard","status":"awaiting_approval","error_type":"canceled","created_at":"2026-11-22T23:35:11","reason":"auto_execute disabled globally: matched entry awaits"}
+{"id":5,"entry_id":2,"trigger":"standard","status":"awaiting_approval","error_type":"rate_limit","created_at":"2026-11-22T23:35:11","reason":"auto_execute disabled globally: matched entry awaits"}
+{"id":6,"entry_id":7,"trigger":"standard","status":"awaiting_approval","error_type":"concurrent","created_at":"2026-11-22T23:35:11","reason":"auto_execute disabled globally: matched entry awaits"}
+   ⇒ 第一条留痕 id=1 落在 2026-11-22 22:41:34 CST；灰度开关 00:42:51 CST 落库 ⇒ 中间约 22 小时零留痕
+
+[1.8] 条目 #3（quota_permanent → 永久配额耗尽…走凭据下线流程）的待确认留痕，按真实错误消息归类
+   8 [quota_permanent] upstream 429: {"error":{"message":"rps exhausted","type":"quota_exceeded_error
+   8 [quota_permanent] upstream 429: {"error":{"message":"rpm exhausted","type":"quota_exceeded_error
+   2 [quota_permanent] upstream 429: {"type":"error","error":{"type":"rate_limit_error","message":"已达
+
+[1.9] 旧现役 b5eb7d81 是否含摄取链修复（按文件内容核对，不按提交祖先）
+-- git show b5eb7d81:domains/errorplaybook/worker.go | grep -c 'provider_id::text'  → 0
+-- git show b5eb7d81:domains/errorplaybook/worker.go | grep -c 'pq.Array'          → 0
+-- git merge-base --is-ancestor f712ea685 b5eb7d81 → NOT ancestor
+-- b5eb7d81 提交时刻: 2026-11-22T00:55:03+08:00 ｜ f712ea685（摄取链修复）提交时刻: 2026-11-22T03:51:32+08:00
+-- 954568f6（11-22 23:23 CST 采样到的现役）: fatal: Not a valid object name 954568f6  ⇒ 该构建不在本地克隆里，其内容本轮无法核实
+════════ §2 仓内变异自证（隔离工作树 llm-gateway-go-ep-audit；每个臂改真实文件→跑→git checkout 还原） ════════
+基线提交: 3a68f5ed2 fix(maestro): 采样器记录里的 newest_execution_at 用 ISO 串（毫秒数不便人读）
+
+[2.1] 后端钉测（domains/errorplaybook + admin）
+── M1 摘掉全局执行闸
+     --- FAIL: TestAnalyzeUnknownMutatingBlockedWhenGlobalAutoExecuteOff (0.00s)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.462s
+     FAIL
+── M2' 全局闸拦下时错报成置信度门
+     --- FAIL: TestAnalyzeUnknownMutatingBlockedWhenGlobalAutoExecuteOff (0.00s)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.346s
+     FAIL
+── M2'' 两闸都不过时错报成全局闸
+     --- FAIL: TestAnalyzeUnknownGateReasonReportsConfidenceFloorFirst (0.00s)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.372s
+     FAIL
+── M3 留痕无视操作者身份
+     --- FAIL: TestManualExecutionRecordsOperatorIdentity (0.00s)
+     --- FAIL: TestManualAnalysisRecordsOperatorIdentity (0.00s)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.360s
+     FAIL
+── M4 处理器手动分析退回裸入口
+     --- FAIL: TestErrorPlaybookManualPathsCarryOperatorIdentity (0.00s)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/admin	362.387s
+     FAIL
+
+[2.2] FetchWindow 真库契约（kx-citus，pgx stdlib 驱动；把 f712ea685 修掉的两个缺陷原样注回）
+── N1 注回 COALESCE(provider_id, '') 对 integer NOT NULL
+     --- FAIL: TestRealDBSQLSourceFetchWindow (0.15s)
+         worker_realdb_test.go:105: FetchWindow (this query must run against INT NOT NULL + text[] with the pgx driver): query candidate failure window failed: ERROR: invalid input syntax for type integer: "" (SQLSTATE 22P02)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.389s
+     FAIL
+── N2 注回数组列用 &[]string 承装
+     mutated: 3 changed lines
+     --- FAIL: TestRealDBSQLSourceFetchWindow (0.56s)
+         worker_realdb_test.go:105: FetchWindow (this query must run against INT NOT NULL + text[] with the pgx driver): scan failure window row failed: sql: Scan error on column index 4, name "samples": unsupported Scan, storing drive
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.759s
+     FAIL
+
+[2.3] 采样器自测（maestro/tools/observe-error-playbook.selftest.mjs；把首版每个缺陷各注回一次）
+── S1 摘掉「worker 不出活」判据
+       ✗ A2 ★ 历史事故复现：开关开着、last_run_at=null、零留痕 ⇒ 必须报（首版对此 10 轮全静默）  —— 首轮应报 worker 不出活 期望 1，实际 0
+     SELFTEST: FAIL（1 / 21）
+── S2 收口跨轮相加
+       ✗ B1 ★ 重复计数回归：收口数字只来自全量留痕，不跨轮相加  —— 全量行数
+     SELFTEST: FAIL（1 / 21）
+── S3 call_admin_api 不算变更类
+       ✗ A4 ★ 灰度约束：全局闸关 + 自动化动了变更类动作 ⇒ CONSTRAINT_VIOLATION 逐条点名；只读/手动/skipped 不算  —— 变更类留痕 期望 "501,502,506,507"，实际 "501,506,507"
+       ✗ C3 isMutatingStep 与后端同口径  —— call_admin_api 看方法（缺方法按变更） 期望 "true,false,false,true"，实际 "false,false,false,false"
+     SELFTEST: FAIL（2 / 21）
+── S4 把 awaiting_approval>0 报成异常
+       ✗ A1 设计稳态不报异常：全局闸关 + 大量待确认 + worker 正常出留痕 ⇒ anomalies=[]  —— anomalies 期望 "[]"，实际 "[\"awaiting_approval=196\"]"
+     SELFTEST: FAIL（1 / 21）
+
+[2.4] 还原后基线（必须全绿、工作树干净）
+-- git status --porcelain → []
+-- go test ./domains/errorplaybook（带真库 DSN）
+     ok  	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.457s
+-- go test ./admin -run TestErrorPlaybookManualPathsCarryOperatorIdentity
+     ok  	github.com/kaixuan/llm-gateway-go/admin	0.200s
+-- node maestro/tools/observe-error-playbook.selftest.mjs
+     SELFTEST: PASS
+── M-LOOP Worker.Start 还原成旧的单次返回函数体（自功能诞生即存在的 P1）
+     mutated: 10 changed lines (removed the for-loop, one round then return)
+     --- FAIL: TestWorkerStartLoopsAcrossRounds (3.00s)
+         worker_test.go:40: worker must keep taking rounds: want >=5 FetchWindow calls within 3s, got 1 (a one-shot body exits after the first round — bg.SpawnLoop does not restart a runFn that returns)
+     FAIL
+     FAIL	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	3.994s
+     FAIL
+
+[2.4] 还原后基线（必须全绿、工作树干净）
+-- git status --porcelain → []
+-- go test ./domains/errorplaybook（带真库 DSN）
+     ok  	github.com/kaixuan/llm-gateway-go/domains/errorplaybook	0.457s
+-- go test ./admin -run TestErrorPlaybookManualPathsCarryOperatorIdentity
+     ok  	github.com/kaixuan/llm-gateway-go/admin	0.200s
+-- node maestro/tools/observe-error-playbook.selftest.mjs
+     SELFTEST: PASS
+
+════════ §3 重写后的采样器对现役实跑（只读：--dry-run，不追加 JSONL、不写收口档） ════════
+命令: node maestro/tools/observe-error-playbook.mjs --base https://llm.itestu.cn --dry-run --closure-preview --out <12 行采样的副本>
+实跑时刻(UTC): 2026-11-23T08:56:59Z   副本行数（实跑前后应相同）: 12
+
+[3.1] 本轮记录（dry-run 行，未落盘）
+{"ts":"2026-11-23T08:56:59.583Z","health":{"version":"2.6.1-c8289d60-20261123-211","git_sha":"c8289d60","build_seq":3244,"ready":true},"gates":{"enabled":true,"auto_analyze":true,"auto_execute":false},"stats":{"engine_wired":true,"llm_wired":true,"provisioned":true,"total_entries":10,"enabled_entries":10,"auto_execute_entries":5,"executions_total":206,"last_24h":{"awaiting_approval":200,"succeeded":6},"pending_unknown":{"client_bug":1,"fp_slot_saturated":1,"model_unavailable":1},"last_run_at":"2026-11-23T16:07:58.490508376+08:00"},"window_status_counts":{"awaiting_approval":196,"succeeded":4},"window_trigger_counts":{"standard":196,"manual":1,"auto_analyze":3},"entries_by_source":{"pi_analysis":5,"seed":5},"recent":{"returned":200,"newest_execution_at":"2026-11-23T08:07:59.765Z","mutating_executed":[]},"anomalies":[]}
+
+[3.2] 一行摘要
+observe: git_sha=c8289d60 gates={"enabled":true,"auto_analyze":true,"auto_execute":false} total_entries=10 exec_total=206 window_status={"awaiting_approval":196,"succeeded":4} anomalies=[]
+
+[3.3] 收口预览（48h 未到期，仅预览；「人工判定样本」表只保留条目 #2 / #3 两行）
+# 错误处理手册 48h 灰度观察收口（2026/11/23 16:56:59）
+
+- 观察窗口：2026-11-22T01:00:00+08:00 起 39.9 小时；采样 13 轮（按每 2 小时应采约 20 轮，缺 7 轮）
+- 采样缺口（相邻两轮间隔 > 2.5h）：2026-11-22T16:23:25.489Z → 2026-11-23T08:56:59.583Z（16.6h）；最后一轮距今 0.0h
+- 最终身份：{"version":"2.6.1-c8289d60-20261123-211","git_sha":"c8289d60","build_seq":3244,"ready":true}
+- 全局闸（灰度约束的真源，来自 settings）：enabled=true auto_analyze=true auto_execute=false
+- 条目面：total=10 enabled=10 auto_execute_entries=5；来源分布={"pi_analysis":5,"seed":5}
+- 未知错误待分析（pending_unknown，进程内存）：{"client_bug":1,"fp_slot_saturated":1,"model_unavailable":1}
+
+## 执行留痕（窗口内全量 206 行，未截断）
+
+- 按状态：{"awaiting_approval":200,"succeeded":6}
+- 按触发源：{"standard":200,"manual":1,"auto_analyze":5}
+- 按状态×触发源：{"standard|awaiting_approval":200,"manual|succeeded":1,"auto_analyze|succeeded":5}
+- 按条目：
+  - 条目 #2 上游限流：确认窗口口径，禁止把单点 429 升级成凭据级拉黑（rate_limit）：49
+  - 条目 #8 客户端主动取消引发上游请求中断，属预期行为（canceled）：44
+  - 条目 #7 上游24渠道触发TPM/RPM限流：降载、退避与配额核对（concurrent）：40
+  - 条目 #9 MiniMax Flash 系上游空流响应且终端帧已下发（empty_response）：36
+  - 条目 #3 永久配额耗尽：确认后走凭据下线流程并观察守约（quota_permanent）：18
+  - 条目 #10 上游通道95436不可达：192.168.31.36:3427无监听连接被拒（network）：13
+  - 条目 #0 不挂条目（分析阶段）：5
+  - 条目 #11 z-ai glm-5.3-flash 上游流中断（双渠道同发）（upstream_down）：1
+- 按错误类型：{"canceled":45,"rate_limit":49,"quota_permanent":18,"empty_response":37,"network":14,"concurrent":41,"upstream_down":2}
+
+## 灰度约束核对
+
+- 全局 auto_execute=false。
+- 自动化（standard / auto_analyze / refinement）执行了变更类动作（set_settings_kv / disable_pi_rule / call_admin_api 非 GET·HEAD·OPTIONS）的留痕：0 条。
+- 其中发生在「全局闸关闭」约束下的：**0 条**（约束成立）
+
+
+## 判读（自动化指标）
+
+- 触发合计（窗口内全部留痕）= 206；其中实际执行了方案的（succeeded + failed）= 6
+- 标准执行成功率 = succeeded/(succeeded+failed) = 100.0%
+- 误报率代理 ① = failed/触发合计 = 0.0%
+- 误报率代理 ② = awaiting_approval/触发合计 = 97.1%（全局 auto_execute 关闭时，命中必然落 awaiting_approval ⇒ 这个比例由闸门决定、恒接近 100%，**不反映误报**）
+- 未知错误 → PI 分析 → 落手册：自动分析留痕 5 条；PI 落库条目 5 条
+
+## 误报率的人工判定样本
+
+自动化指标**给不出真误报率** —— 没有「这次命中对不对」的 ground truth。判误报的办法是人看样本：
+下表每个条目列出其待确认留痕里的真实错误消息（去重），逐条判断「该条目的处置方案是否适用于这类错误」；
+判「不适用」的占比，就是该条目的误报率（人工口径，需在结论里注明样本量）。
+
+| 条目 | 待确认留痕 | 错误样本（去重，最多 5 条） |
+|---|---|---|
+| #2 上游限流：确认窗口口径，禁止把单点 429 升级成凭据级拉黑（rate_limit）<br>来源 seed · auto_execute false | 49 | [rate_limit] upstream 429: {"error":{"message":"Rate limit exceeded: more than 120 requests per minute. Retry in 1s.","type":"rate_limit_error"}}<br>[rate_limit] upstream 429: {"error":{"message":"Rate limit exceeded: more than 120 requests per minute. Retry in 14s.","type":"rate_limit_error"}}<br>[rate_limit] upstream 429: {"error":{"code":"1302","message":"您的账户已达到速率限制，请您控制请求频率"}}<br>[rate_limit] upstream 429: {"error":{"message
+| #3 永久配额耗尽：确认后走凭据下线流程并观察守约（quota_permanent）<br>来源 seed · auto_execute false | 18 | [quota_permanent] upstream 429: {"error":{"message":"rpm exhausted","type":"quota_exceeded_error","code":"8"}}<br>[quota_permanent] upstream 429: {"error":{"message":"rps exhausted","type":"quota_exceeded_error","code":"8"}}<br>[quota_permanent] upstream 429: {"type":"error","error":{"type":"rate_limit_error","message":"已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)","http_code |
+
+## 异常轨迹（1 / 13 轮带 anomalies）
+
+  - 2026-11-22T16:23:25.489Z：awaiting_approval=15
+
+- 数据源：/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-ep-audit/docs/audit/evidence/2026-11-22-error-playbook-48h-observations.jsonl（13 行；其中 12 行是 2026-11-23 审计前的旧格式，没有 gates / recent 字段，也没有可用的异常判据）
+
