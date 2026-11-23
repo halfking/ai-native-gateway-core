@@ -59,6 +59,10 @@ trap 'printf "FAIL: 脚本在第 %s 行异常退出（★ 这是门自身的缺�
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
+# ★★ 共享库：★ 「部署通道投递面」解析的**唯一真源**（★ 见 scripts/lib/deploy-surface.sh ★★）★★
+# shellcheck source=scripts/lib/deploy-surface.sh
+. "$REPO_ROOT/scripts/lib/deploy-surface.sh"
+
 DEPLOY_SCRIPT="scripts/apply-db-revision-sequence.sh"
 SEQUENCE_NAME="session-summary-and-integrity-2026-09"
 
@@ -137,37 +141,16 @@ fi
 # ★★★ ⇒ ★★ **修法**：★ **逐行解析**、★ **只取未被注释的行**（★ `#` 开头 ★★）★★
 plan_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-plan.XXXXXX")"
 trap 'rm -f "$plan_file"' EXIT
-awk '
-  BEGIN { in_files = 0 }
-  {
-    line = $0
-    if (!in_files) {
-      if (line ~ /^files=\(/) { in_files = 1 }
-      next
-    }
-    if (line ~ /^\)/) { in_files = 0; next }
-    # ★★ 注释行（★ `#` 开头 ★★）⇒ ★ **不是投递面** ★★
-    trimmed = line
-    sub(/^[ \t]+/, "", trimmed)
-    if (trimmed ~ /^#/ || trimmed == "") { next }
-    # ★ 只取「整行只有这一条引号路径」的写法（★ 通道脚本的实际形态 ★）
-    # ★ ★★ 剥前缀**不用正则**（★ 跨 awk 实现一致 ★★）：★★
-    # ★ ★★ 根因（★ 本轮在生产 Linux 上实测坐实 ★★）：★★
-    # ★ ★★ mawk（★ Linux 生产 ★）把正则里的 `\$` 当成「字面反斜杠 + 美元」★★
-    # ★ ★★ ⇒ ★★ 剥前缀失败 ⇒ ★★ 而 BSD awk（★ macOS ★）剥成功 ⇒ ★★
-    # ★ ★★ ⇒ ★★ **同一段 awk 在两个平台行为不同** ⇒ ★★ ⇒ ★★ **⇒ 正则里不能写反斜杠美元**★★
-    # ★ ★★ ⇒ ★★ **⇒ 改用【index + substr】按固定前缀长度截取** ★★（★ 零正则方言依赖 ★★）★★
-    pfx = "$ROOT_DIR/sql/migrations/startup/"
-    p = index(line, pfx)
-    if (p > 0) {
-      rest = substr(line, p + length(pfx))
-      sub(/^[ \t"]+/, "", rest)
-      sub(/[\t"]+$/, "", rest)
-      # ★ 只接受「纯文件名 + .sql」形态（★ 排除带参数的行 ★）★★
-      if (rest ~ /^[A-Za-z0-9_.-]+[.]sql$/) { print rest }
-    }
-  }
-' "$DEPLOY_SCRIPT" | awk '!seen[$0]++' | grep -v '\.down\.sql$' >"$plan_file"
+# ★★ 2026-11-24（L34 七轮）：★ 解析逻辑搬进**共享库** `scripts/lib/deploy-surface.sh` ★★
+# ★★ ⇒ ★★ 本门与「列序对拍门」**共用同一份投递面解析** ⇒ ★★ **口径不可能分叉** ★★
+# ★★ （★ 仓内既有教训：★ 「同一条规定写了两份」⇒ ★ 两边各改各的 ⇒ ★ 门与门互相矛盾 ★★）★★
+# ★★ 口径：★ 逐行解析 files=() ｜★ 只取未注释的行 ｜★ 剥 `$ROOT_DIR/sql/migrations/startup/`
+# ★★ 前缀（★ index+substr、★ 零 awk 方言依赖 ★★）｜★ 去重且保留首次位置 ｜★ 跳过 .down.sql ★★
+surface_rc=0
+deploy_surface_extract "$DEPLOY_SCRIPT" "$plan_file" || surface_rc=$?
+if [ "$surface_rc" -ne 0 ]; then
+  abort "从 ${DEPLOY_SCRIPT} 的 files=() 里解析出 0 条投递文件 ⇒ ★ 门自己的解析器坏了（★ **不是**判据红）"
+fi
 
 plan_count=$(wc -l <"$plan_file" | tr -d ' ')
 if [ "${plan_count:-0}" -eq 0 ]; then

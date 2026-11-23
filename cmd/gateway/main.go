@@ -128,6 +128,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/memoraprewarm"
+	"github.com/kaixuan/llm-gateway-go/internal/metricsstore"
 	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -4418,6 +4419,23 @@ func main() {
 			})
 		}
 		materializedViewRefresher.Start()
+	}
+
+	// 2026-11-24: request_metrics processor — 统计专用数据表填充
+	//
+	// 从 usage_facts 读取并填充 request_metrics 表，支持多维度快速聚合查询。
+	// 这是阶段一（双写验证）：数据异步填充到新表，原有查询不受影响。
+	//
+	// 设计文档: /tmp/request_metrics_design.md
+	// 迁移: 983_request_metrics.sql
+	// 部署验证计划: /tmp/request_metrics_deployment_plan.md
+	if dbConn != nil && dbConn.Enabled() {
+		metricsProcessor := metricsstore.NewProcessor(dbConn.Stdlib())
+		go metricsProcessor.Run(context.Background(), 5*time.Minute, 100)
+		slog.Info("CHECKPOINT: request_metrics processor started",
+			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
+			"interval", "5m",
+			"batch_size", 100)
 	}
 
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only

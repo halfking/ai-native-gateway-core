@@ -357,6 +357,26 @@ bash scripts/checks/deploy-ledger-coverage-gate.sh
 echo "[verify] deploy-ledger coverage gate selftest (fast gate: seven fixture arms, no PG needed)"
 bash scripts/checks/deploy-ledger-coverage-gate.test.sh
 
+# ★★ legacy 跨面 `SELECT * UNION ALL` 视图的**运行时列序对拍门**（★ 2026-11-24 新增 · 慢门 ★★）★★
+#   ★ 起因：★ **L32 那道缺口的【运行时那半】**——★ 仓里**早有静态那半**
+#     （★ `sql/migrations/startup/hot_surface_select_star_contract_test.go`：★ 禁止新建跨面
+#     ★ `SELECT *` 视图、★ 并把历史写法登记进 `legacyCrossSurfaceSelectStar`（★ 11 条 ★★）★★
+#   ★ ⇒ ★★ **但「登记表里这 11 对、★ 在今天这台库上两侧的列序是否仍然对齐」从来没人核对过** ★★
+#   ★ ⇒ ★★ 机制：★ `UNION ALL` **逐位置比类型** ⇒ ★★ 两侧列数相同但顺序不同 ⇒ 视图重建必炸 ★★
+#   ★ 本门**只读**（★ 一律 SELECT ★★）★ 三态：★ 没给 DB 地址 ⇒ **显式 SKIP**（rc=0、★
+#     ★ 不伪装成通过 ★）；★ 量具自身坏了 ⇒ **ABORT**（rc=2）；★ 有列序漂移 ⇒ FAIL（rc=1）。
+#   ★ 与部署通道覆盖门**同处理**：★ 单列 Makefile target `guards-select-star-order`
+#     （进 `make guards` 慢门族）＋ 官方门显式一行 ★ ⇒ ★ **不进 CI 快门族**。
+echo "[verify] legacy select-star column-order gate (slow gate: read-only; cross-surface view column order)"
+bash scripts/checks/legacy-select-star-column-order-gate.sh
+
+# ★★ 列序对拍门**自身**的夹具测试（★ 八臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
+#   ★ 判据是【两串列序的比对】⇒ ★★ **不需要真的连上 PG** ⇒ ★★ ⇒ 进 **CI 快门族** ★★
+#   ★ 八臂：★ 无地址（⇒ SKIP）/ 全对齐 / 列序漂移 / 列数不同 / 两侧都不在场（⇒ 绿 ★）/
+#   ★ ★ 只有一侧在场 / 登记表解析面坏（⇒ ABORT）/ **查询面坏（⇒ ABORT）** ★★★。
+echo "[verify] legacy select-star column-order gate selftest (fast gate: eight fixture arms, no PG needed)"
+bash scripts/checks/legacy-select-star-column-order-gate.test.sh
+
 # ★★ 「mktemp 模板」跨平台门（★ 2026-11-24 新增 ★ 快门：纯静态、★ 约 1~2s ★）★★
 #   ★ 起因：★ **在生产 Linux 上真跑一道 macOS 上跑过的门** ⇒ ★ 实测发现
 #     `mktemp -t <模板>` 在 **GNU coreutils（Linux）要求模板含 ≥3 个 X**、
