@@ -11156,3 +11156,4 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 982 | `982_provider_call_attempts.sql` | `5421564ddbb0b894689b87ff2ca2adb3c701c72143e0bf6b30ab8faaae3f106a` | pending deploy。逐次记录供应商发送证据、用量、测算与供应商返回金额。首次安装及增量通道均追加执行，离线升级副本同步。无历史补写。 |
+| 983 | `983_request_metrics.sql` | `4441d11d03acbd154e568c41fa4e94ae717c40a66523db35aff120e6cc55da5e` | 2026-11-24 | request_metrics统计基础表 | 创建统计专用表，支持多维度聚合查询，含多模态字段 |

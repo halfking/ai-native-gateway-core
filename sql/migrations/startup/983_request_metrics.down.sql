@@ -38,4 +38,10 @@ DROP INDEX IF EXISTS public.idx_request_metrics_protocol_time;
 
 DROP TABLE IF EXISTS public.request_metrics CASCADE;
 
+-- ============================================================
+-- 3. 台账回退（与 up 的自登记对偶）
+-- ============================================================
+-- down 只退自己引入的行
+DELETE FROM public.schema_migrations WHERE version = '983';
+
 COMMIT;

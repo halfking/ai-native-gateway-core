@@ -222,4 +222,13 @@ COMMENT ON COLUMN public.request_metrics.payer_type IS 'tenant=租户付费, tea
 COMMENT ON COLUMN public.request_metrics.attributes IS '扩展属性，存储未来可能需要的维度字段（JSONB格式）';
 COMMENT ON COLUMN public.request_metrics.source IS '数据来源标识（async_processor=异步处理器, manual=手动导入, backfill=补填）';
 
+-- ============================================================
+-- 4. 台账自登记（≥952 双账本纪律）
+-- ============================================================
+-- 迁移必须自己把行写进 public.schema_migrations
+-- 缺此段 ⇒ 任何通道应用后运行时台账无行 ⇒ 连续性门/漂移报告假红
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('983', 'request_metrics statistics base table')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;

@@ -1972,6 +1972,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 本件只依赖 `session_summaries` / `stats_usage_daily`（基线已有）
 			//     ⇒ ★ 提前到 981 之前无副作用（★ 实测：全链 392 条在空库跑通）。
 			"990_stats_consistency_fixes.sql",
+			"983_request_metrics.sql",
 			// ★ 981（2026-11-19 会话分析系统基础设施）：已修正列依赖，现已就绪。
 			//   为 sessions 表添加 project/task/task_category/is_probe 四列，
 			//   创建 4 个物化视图（user_session_aggregates, project_task_aggregates,
