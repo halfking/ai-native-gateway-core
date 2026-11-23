@@ -24,8 +24,9 @@ type RequestMetric struct {
 
 	// 核心维度
 	ProviderID    *int64
-	OutboundModel *string
+	OutboundModel *string  // 标准模型名称（映射后）
 	CanonicalID   *int64
+	RawModelName  *string  // 原始模型名称（来自usage_facts.raw_model_name）
 
 	// 付款与使用者维度
 	PayerID   *string
@@ -116,7 +117,7 @@ const upsertRequestMetricSQL = `
 	INSERT INTO request_metrics (
 		request_id, tenant_id, occurred_at, occurred_date, billing_date,
 		gateway_node_id, gateway_instance, endpoint_node,
-		provider_id, outbound_model, canonical_id,
+		provider_id, outbound_model, canonical_id, raw_model_name,
 		payer_id, payer_type, user_id,
 		session_id, task_id,
 		org_id, team_id,
@@ -132,19 +133,19 @@ const upsertRequestMetricSQL = `
 	) VALUES (
 		$1, $2, $3, $4::date, $5::date,
 		$6, $7, $8,
-		$9, $10, $11,
-		$12, $13, $14,
-		$15, $16,
-		$17, $18,
-		$19, $20,
-		$21, $22, $23, $24,
-		$25, $26, $27, $28, $29,
-		$30, $31, $32,
-		$33, $34,
-		$35, $36, $37, $38,
-		$39, $40,
-		$41::jsonb,
-		$42, NOW(), NOW()
+		$9, $10, $11, $12,
+		$13, $14, $15,
+		$16, $17,
+		$18, $19,
+		$20, $21,
+		$22, $23, $24, $25,
+		$26, $27, $28, $29, $30,
+		$31, $32, $33,
+		$34, $35,
+		$36, $37, $38, $39,
+		$40, $41,
+		$42::jsonb,
+		$43, NOW(), NOW()
 	)
 	ON CONFLICT (request_id, occurred_at) DO UPDATE SET
 		tenant_id = EXCLUDED.tenant_id,
@@ -156,6 +157,7 @@ const upsertRequestMetricSQL = `
 		provider_id = EXCLUDED.provider_id,
 		outbound_model = EXCLUDED.outbound_model,
 		canonical_id = EXCLUDED.canonical_id,
+		raw_model_name = EXCLUDED.raw_model_name,
 		payer_id = EXCLUDED.payer_id,
 		payer_type = EXCLUDED.payer_type,
 		user_id = EXCLUDED.user_id,
@@ -214,6 +216,7 @@ func requestMetricArgs(metric *RequestMetric) ([]interface{}, error) {
 		metric.ProviderID,
 		metric.OutboundModel,
 		metric.CanonicalID,
+		metric.RawModelName,
 		metric.PayerID,
 		metric.PayerType,
 		metric.UserID,

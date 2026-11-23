@@ -176,6 +176,7 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 		var cachedTokens, reasoningTokens, imageTokens, audioTokens, videoTokens sql.NullInt64
 		var latencyMs, ttftMs sql.NullInt64
 		var promptTokens, completionTokens, totalTokens int64
+		var rawModelName sql.NullString
 
 		err := rows.Scan(
 			&metric.RequestID,
@@ -183,7 +184,7 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 			&metric.OccurredAt,
 			&metric.ProviderID,
 			&metric.CanonicalID,
-			&metric.OutboundModel,
+			&rawModelName,
 			&metric.APIKeyID,
 			&metric.ApplicationID,
 			&metric.UserID,
@@ -231,6 +232,16 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 
 		// 转换费用：美元 -> 分
 		metric.CostCents = usdToCents(costUSD)
+
+		// 处理模型名称：raw_model_name + 映射到canonical_name
+		if rawModelName.Valid && rawModelName.String != "" {
+			metric.RawModelName = &rawModelName.String
+			// 查询模型映射获取canonical_id和canonical_name
+			if err := p.enrichModelInfo(ctx, &metric, rawModelName.String); err != nil {
+				// 映射失败不阻断处理，使用原始名称
+				log.Printf("模型映射失败 (request_id=%s, raw_model=%s): %v", metric.RequestID, rawModelName.String, err)
+			}
+		}
 
 		// 设置日期字段（UTC 日历日，与查询侧的 UTC 日裁剪保持同一口径）
 		occurredAtUTC := metric.OccurredAt.UTC()
@@ -416,6 +427,43 @@ func deriveModality(imageTokens, audioTokens, videoTokens int32, attachmentCount
 //	改用 SQL 侧 round(cost_amount*100)::bigint 计算。
 func usdToCents(usd float64) int64 {
 	return int64(math.Round(usd * 100))
+}
+
+// enrichModelInfo 查询模型映射，填充canonical_id和outbound_model(canonical_name)
+//
+// ★ 策略：通过model_aliases表查询raw_model_name到canonical模型的映射
+// ★ 失败不阻断：映射失败时保留原始canonical_id，outbound_model使用raw_model_name
+func (p *Processor) enrichModelInfo(ctx context.Context, metric *RequestMetric, rawModelName string) error {
+	var canonicalID sql.NullInt64
+	var canonicalName sql.NullString
+
+	query := `
+		SELECT ma.canonical_id, mc.canonical_name
+		FROM model_aliases ma
+		JOIN models_canonical mc ON mc.id = ma.canonical_id
+		WHERE ma.raw_name = $1 AND ma.status = 'active'
+		LIMIT 1
+	`
+
+	err := p.db.QueryRowContext(ctx, query, rawModelName).Scan(&canonicalID, &canonicalName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 没有映射，保持原始值
+			return nil
+		}
+		return err
+	}
+
+	// 更新canonical_id和outbound_model
+	if canonicalID.Valid {
+		cid := canonicalID.Int64
+		metric.CanonicalID = &cid
+	}
+	if canonicalName.Valid && canonicalName.String != "" {
+		metric.OutboundModel = &canonicalName.String
+	}
+
+	return nil
 }
 
 // Run 启动后台任务（阻塞式循环）
