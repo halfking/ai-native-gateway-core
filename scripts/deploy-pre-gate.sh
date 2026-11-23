@@ -98,6 +98,7 @@ GATE_BASE_URL="${BASE_URL:-http://localhost:8780}"
 GATE_ADMIN_USER="${ADMIN_USER:-admin}"
 GATE_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 GATE_DIST_MAX_AGE_MIN="${GATE_DIST_MAX_AGE_MIN:-10}"
+GATE_MAESTRO_REGISTRY_TIMEOUT="${GATE_MAESTRO_REGISTRY_TIMEOUT:-120}"
 
 # ── 解析参数 ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -268,6 +269,41 @@ run_with_timeout() {
   wait "$pid"
 }
 
+# ── G1.5: Maestro 路由登记口径（★ 新增路由必须同时登记 README）────────────
+#
+# ★ 为什么这道检查要进【部署前置门】：
+#   2026-11-23 实测踩到的那一类 —— ★ L14 落地轮**新增了路由**
+#   （`/admin/session-analytics/users/overview`）★ **只改了 `web/src/router.ts`**
+#   ⇒ ★ `maestro/README.md` 的路由口径清单**一个字没改**
+#   ⇒ ★ `audit-route-coverage.mjs --check` 的 **5 条判据当场红**（★ 每条都正好差 1）
+#   ⇒ ★★ **而它【没进任何一道门】**（★ `deploy-test-gate.sh` 只选 Go 包、
+#     ★ `deploy-pre-gate.sh` 跑的是 sqlguard ＋ Maestro 回归 ＋ 产物新鲜度）
+#   ⇒ ★★★ **⇒ 一个【加了功能却没登记】的缺陷、★ 能一路飘到发布**。
+#
+# ★ 为什么用 python3 版而不是 mjs 版：★ `audit-readme-route-stats.py` **零第三方依赖**
+#   （★ 仓内 CI 精简镜像里 node 不可靠 ⇒ ★ node 版门会「有就跑、没有就 skip」
+#   ⇒ ★ 那样的门**等于没接**；★ 仓内先例见 `maestro-readme-route-stats-gate.sh` 头注）。
+run_maestro_registry() {
+  local gate="scripts/checks/maestro-readme-route-stats-gate.sh"
+  if [[ ! -f "$gate" ]]; then
+    err "找不到路由登记口径门：$gate"
+    return 1
+  fi
+  # ★ 源码树不在此处（★ 例如只在目标机上跑、只有 dist 产物）⇒ ★ **显式 SKIP**：
+  #   ★ 不伪装成通过、★ 也不把「输入缺失」当成漂移（★ 仓内先例：fresh-install 门的无 docker SKIP）。
+  if [[ ! -f "web/src/router.ts" || ! -f "maestro/README.md" ]]; then
+    ok "跳过 Maestro 路由登记口径（★ 本机没有 web/src/router.ts 或 maestro/README.md ⇒ 源码树不在此处）"
+    return 0
+  fi
+  log "检查 Maestro 路由登记口径（README §1.1/§1.2/§1.3/§3.13 ↔ web/src/router.ts）"
+  if run_with_timeout "${GATE_MAESTRO_REGISTRY_TIMEOUT}" bash "$gate"; then
+    ok "Maestro 路由登记口径与现役树一致"
+    return 0
+  fi
+  err "Maestro 路由登记口径漂移（★ 多半是【新增了路由却没登记 README】⇒ ★ 新增路由必须同时登记）"
+  return 1
+}
+
 # ── G2: Maestro 快速回归 ──────────────────────────────────────────────────
 run_maestro() {
   log "G2: Maestro 快速回归（flows: ${GATE_MAESTRO_FLOWS}）..."
@@ -388,6 +424,9 @@ main() {
   log "模式：$GATE_MODE"
   
   local failed=0
+  
+  # ★ 这道【每个模式都跑】：★ 它只要 python3、★ 亚秒级、★ 且与部署产物无关。
+  run_maestro_registry || failed=1
   
   case "$GATE_MODE" in
     maestro-only)
