@@ -192,4 +192,12 @@ COMMENT ON COLUMN public.request_metrics.payer_type IS 'tenant=租户付费, tea
 COMMENT ON COLUMN public.request_metrics.attributes IS '扩展属性，存储未来可能需要的维度字段（JSONB格式）';
 COMMENT ON COLUMN public.request_metrics.source IS '数据来源标识（async_processor=异步处理器, manual=手动导入, backfill=补填）';
 
+-- ★ ≥952 自登记纪律（★ 本仓约定：★ 每条迁移自带 schema_migrations 记账行 ⇒
+--   否则「应用了却没记账」⇒ 记账链断口（★ 914/928/960/981 同款））。
+--   ★ 本行为 2026-11-23 合并轮九补入：★ 上游 `b8f2935f4` 的原件缺这一行、
+--   而该迁移**从未被任何库应用过**（★ 三条投递通道都没登记它）⇒ 改字节零分叉风险。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('1000', 'request metrics partitioned base table')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;
