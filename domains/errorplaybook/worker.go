@@ -63,16 +63,27 @@ func NewWorker(engine *Engine, source ErrorSource, cfgFn func() Config, interval
 //	（22P02 / 数组 Scan）时**日志里一行都没有**，`/stats` 的 last_run_at
 //	也停在旧值 ⇒ 「灰度已开启却看不出来」。
 //	⇒ 现在每轮失败都记 Error 级日志。
+//
+//	★ 2026-11-23 审计轮修正（自功能诞生即存在）：runFn 必须**自带循环** ——
+//	bg.SpawnLoop 的监督器对 runFn 的「正常返回」语义是「有意退出、不重启」
+//	（bg/base_worker.go supervise：只有 panic 才退避重启）。此前的函数体是
+//	「一轮 → 睡一个间隔 → 返回」⇒ **每个进程生命周期只跑一轮**，只有部署或
+//	重启时才会再跑。生产上（211）它被高频部署掩盖成「每 7–15 分钟一轮」
+//	（轮次时间逐一对应镜像构建后 3–5 分钟）；部署稀疏时就静默数小时
+//	（2026-11-23 09:35→14:26 CST 空了 4 小时 51 分）。
+//	既有测试只直接调 RunOnce、从不经过 Start，所以一直没被发现。
 func (w *Worker) Start(ctx context.Context) {
 	bg.SpawnLoop(ctx, "error_playbook.worker", func(ctx context.Context) {
-		if err := w.runOnce(ctx); err != nil {
-			slog.Error("error_playbook: worker round failed", "error", err)
-		}
-		// sleep 尊重 ctx 取消（P3-16）：停机时最多滞留一个 interval（上限 1 小时）。
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(w.interval):
+		for {
+			if err := w.runOnce(ctx); err != nil {
+				slog.Error("error_playbook: worker round failed", "error", err)
+			}
+			// sleep 尊重 ctx 取消（P3-16）：停机时最多滞留一个 interval（上限 1 小时）。
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(w.interval):
+			}
 		}
 	})
 }

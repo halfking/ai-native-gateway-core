@@ -382,6 +382,200 @@ func TestAnalyzeUnknownLLMFailureRecordsNothing(t *testing.T) {
 	}
 }
 
+// ── 全局执行闸（2026-11-23 审计轮） ──────────────────────────────────
+
+// mutatingProposals 是全部三种变更类方案形态（isMutatingAction 的三个分支）。
+var mutatingProposals = []struct {
+	name    string
+	kind    string
+	payload map[string]interface{}
+}{
+	{"script:set_settings_kv", "script", map[string]interface{}{
+		"steps": []interface{}{map[string]interface{}{"action": ActionSetSettingsKV,
+			"params": map[string]interface{}{"key": "security.enabled", "value": false}}}}},
+	{"script:disable_pi_rule", "script", map[string]interface{}{
+		"steps": []interface{}{map[string]interface{}{"action": ActionDisablePIRule,
+			"params": map[string]interface{}{"rule_name": "r1"}}}}},
+	{"api:POST", "api", map[string]interface{}{
+		"method": "POST", "path": "/api/admin/credentials/force-recover"}},
+}
+
+// 全局 auto_execute 关闭时，未知错误首次修正**不得**执行变更类方案。
+//
+//	★ 回归钉：此前这条路径只看置信度 —— 标准模式有全局闸、首次修正没有
+//	  ⇒「auto_execute 先关」的灰度态下，LLM 给出置信度 ≥0.80 的变更类方案
+//	  会被当场执行（设置项文档自称「全局执行闸」，行为却只覆盖标准模式）。
+func TestAnalyzeUnknownMutatingBlockedWhenGlobalAutoExecuteOff(t *testing.T) {
+	for _, tc := range mutatingProposals {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			reg := &fakeRegistry{}
+			engine := NewEngine(store, reg, proposalLLM(t, tc.kind, tc.payload, 0.95), nil)
+			cfg := cfgAuto()
+			cfg.AutoExecute = false
+
+			if err := engine.AnalyzeUnknown(context.Background(), cfg, Event{ErrorType: "k", Occurrences: 9}); err != nil {
+				t.Fatalf("analyze failed: %v", err)
+			}
+			if len(reg.executed) != 0 || len(reg.snapshots) != 0 {
+				t.Fatalf("mutating plan must NOT execute while global auto_execute is off: %v", reg.executed)
+			}
+			if len(store.executions) != 1 || store.executions[0].Status != StatusAwaitingApproval {
+				t.Fatalf("mutating first-fix must be held at awaiting_approval: %+v", store.executions)
+			}
+			if msg := store.executions[0].ErrorMessage; !strings.Contains(msg, "auto_execute disabled globally") {
+				t.Fatalf("gate reason must name the global gate, got %q", msg)
+			}
+			// 分析面不受执行闸影响：条目照常落库，变更类默认 auto_execute=false。
+			if len(store.upserts) != 1 || store.upserts[0].AutoExecute {
+				t.Fatalf("entry must still be recorded with auto_execute=false: %+v", store.upserts)
+			}
+		})
+	}
+}
+
+// 全局闸开 ⇒ 行为不变：高置信变更类方案仍执行一次（三种形态逐一钉）。
+// 与 TestAnalyzeUnknownMutatingHighConfidenceExecutesOnce 互为对照臂。
+func TestAnalyzeUnknownMutatingExecutesWhenGlobalAutoExecuteOn(t *testing.T) {
+	for _, tc := range mutatingProposals {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			reg := &fakeRegistry{}
+			engine := NewEngine(store, reg, proposalLLM(t, tc.kind, tc.payload, 0.95), nil)
+			cfg := cfgAuto() // DefaultConfig.AutoExecute == true
+			if !cfg.AutoExecute {
+				t.Fatal("test premise broken: DefaultConfig().AutoExecute must be true")
+			}
+
+			if err := engine.AnalyzeUnknown(context.Background(), cfg, Event{ErrorType: "k", Occurrences: 9}); err != nil {
+				t.Fatalf("analyze failed: %v", err)
+			}
+			if len(reg.executed) != 1 || store.executions[0].Status != StatusSucceeded {
+				t.Fatalf("first fix must still execute once with the gate on: executed=%v execs=%+v",
+					reg.executed, store.executions)
+			}
+		})
+	}
+}
+
+// 只读方案（prompt / record_note）不受全局执行闸影响：
+// 它们不改变生产状态，属于 auto_analyze 的分析面。
+func TestAnalyzeUnknownReadOnlyPlanUnaffectedByGlobalAutoExecuteOff(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		payload map[string]interface{}
+	}{
+		{"prompt", "prompt", map[string]interface{}{"prompt": "分析该错误", "expect": "analysis"}},
+		{"script:record_note", "script", map[string]interface{}{
+			"steps": []interface{}{map[string]interface{}{"action": ActionRecordNote,
+				"params": map[string]interface{}{"message": "核对配额类别"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			reg := &fakeRegistry{}
+			engine := NewEngine(store, reg, proposalLLM(t, tc.kind, tc.payload, 0.9), nil)
+			cfg := cfgAuto()
+			cfg.AutoExecute = false
+
+			if err := engine.AnalyzeUnknown(context.Background(), cfg, Event{ErrorType: "k", Occurrences: 9}); err != nil {
+				t.Fatalf("analyze failed: %v", err)
+			}
+			if len(store.executions) != 1 || store.executions[0].Status != StatusSucceeded {
+				t.Fatalf("read-only plan must still run with the gate off: %+v", store.executions)
+			}
+			if tc.name == "script:record_note" && (len(reg.executed) != 1 || reg.executed[0] != ActionRecordNote) {
+				t.Fatalf("record_note must run: %v", reg.executed)
+			}
+		})
+	}
+}
+
+// 两道闸同时不过 ⇒ 原因报置信度门（把全局闸打开它也执行不了，那才是主因）。
+func TestAnalyzeUnknownGateReasonReportsConfidenceFloorFirst(t *testing.T) {
+	store := newFakeStore()
+	tc := mutatingProposals[0]
+	engine := NewEngine(store, &fakeRegistry{}, proposalLLM(t, tc.kind, tc.payload, 0.50), nil)
+	cfg := cfgAuto()
+	cfg.AutoExecute = false
+
+	if err := engine.AnalyzeUnknown(context.Background(), cfg, Event{ErrorType: "k", Occurrences: 9}); err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	msg := store.executions[0].ErrorMessage
+	if !strings.Contains(msg, "< floor") || strings.Contains(msg, "auto_execute disabled globally") {
+		t.Fatalf("confidence floor must be reported as the blocking gate, got %q", msg)
+	}
+}
+
+// ── 留痕归属（2026-11-23 审计轮） ─────────────────────────────────────
+
+// 手动执行的留痕记操作者身份；自动化入口仍记引擎身份；空身份回落引擎身份。
+//
+//	★ 回归钉：此前手动执行也走 ExecuteEntry ⇒ 留痕 executed_by 恒为
+//	  "error_playbook"，能执行变更动作并留快照的功能答不出「是谁按的」。
+func TestManualExecutionRecordsOperatorIdentity(t *testing.T) {
+	store := newFakeStore(enabledEntry(1, "k", Plan{Kind: PlanKindPrompt, Prompt: "核对"}, true, nil))
+	engine := NewEngine(store, &fakeRegistry{}, &fakeLLM{resp: "analysis"}, nil)
+	ev := Event{ErrorType: "k", Occurrences: 1}
+
+	if _, err := engine.ExecuteEntryAs(context.Background(), &store.entries[0], ev, TriggerManual, "manual:alice"); err != nil {
+		t.Fatalf("manual execute failed: %v", err)
+	}
+	if got := store.executions[0].ExecutedBy; got != "manual:alice" {
+		t.Fatalf("manual execution must record the operator, got %q", got)
+	}
+	if _, err := engine.ExecuteEntry(context.Background(), &store.entries[0], ev, TriggerStandard); err != nil {
+		t.Fatalf("automation execute failed: %v", err)
+	}
+	if got := store.executions[1].ExecutedBy; got != "error_playbook" {
+		t.Fatalf("automation entry point must keep the engine identity, got %q", got)
+	}
+	if _, err := engine.ExecuteEntryAs(context.Background(), &store.entries[0], ev, TriggerManual, "  "); err != nil {
+		t.Fatalf("manual execute (blank operator) failed: %v", err)
+	}
+	if got := store.executions[2].ExecutedBy; got != "error_playbook" {
+		t.Fatalf("blank operator must fall back to the engine identity, got %q", got)
+	}
+}
+
+// 手动分析的两个留痕分支（执行 / 被闸拦下）都记操作者身份；自动化入口仍记引擎身份。
+func TestManualAnalysisRecordsOperatorIdentity(t *testing.T) {
+	readOnly := proposalLLM(t, "script", map[string]interface{}{
+		"steps": []interface{}{map[string]interface{}{"action": "record_note", "params": map[string]interface{}{"message": "核对"}}},
+	}, 0.9)
+	gated := proposalLLM(t, "script", mutatingProposals[0].payload, 0.50)
+
+	// ① 执行分支。
+	store := newFakeStore()
+	engine := NewEngine(store, &fakeRegistry{}, readOnly, nil)
+	if err := engine.AnalyzeUnknownAs(context.Background(), cfgAuto(), Event{ErrorType: "k", Occurrences: 9}, "manual:bob"); err != nil {
+		t.Fatalf("manual analyze failed: %v", err)
+	}
+	if len(store.executions) != 1 || store.executions[0].ExecutedBy != "manual:bob" {
+		t.Fatalf("executed first-fix must record the operator: %+v", store.executions)
+	}
+	// ② 闸门分支。
+	store = newFakeStore()
+	engine = NewEngine(store, &fakeRegistry{}, gated, nil)
+	if err := engine.AnalyzeUnknownAs(context.Background(), cfgAuto(), Event{ErrorType: "k", Occurrences: 9}, "manual:bob"); err != nil {
+		t.Fatalf("manual analyze (gated) failed: %v", err)
+	}
+	if len(store.executions) != 1 || store.executions[0].ExecutedBy != "manual:bob" ||
+		store.executions[0].Status != StatusAwaitingApproval {
+		t.Fatalf("gated first-fix must record the operator: %+v", store.executions)
+	}
+	// ③ 自动化入口不变。
+	store = newFakeStore()
+	engine = NewEngine(store, &fakeRegistry{}, readOnly, nil)
+	if err := engine.AnalyzeUnknown(context.Background(), cfgAuto(), Event{ErrorType: "k", Occurrences: 9}); err != nil {
+		t.Fatalf("automation analyze failed: %v", err)
+	}
+	if got := store.executions[0].ExecutedBy; got != "error_playbook" {
+		t.Fatalf("automation entry point must keep the engine identity, got %q", got)
+	}
+}
+
 // ── 自动完善与回滚 ──────────────────────────────────────────────────
 
 func TestRefineEntryUpdatesPlan(t *testing.T) {
