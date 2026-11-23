@@ -48,6 +48,9 @@ LLM_GATEWAY_FEATURE_STATS_TEST_DSN	dsn_exclusive	feature-stats 破坏性腿的�
 LLM_GATEWAY_FIX_ROLE_ALTERNATION	component	特性开关：角色轮转修复
 LLM_GATEWAY_HANDOFF_PG_DSN	dsn_exclusive	PG DSN，但属 handoff 专用夹具（自带 harness），不能与通用 DSN 同值
 LLM_GATEWAY_INSTALL_DIR	component	安装目录（路径），与库无关
+LLM_GATEWAY_LEGACY_ALIGN_CHANNELS	component	选择本环境在用的投递通道（★ `deploy` / `install`）用于覆盖面判定；不选择 PG 目标、不取消连库保护
+LLM_GATEWAY_LEGACY_ALIGN_ENV	component	报告用的环境标签（★ 例 `211`）：不选择 PG 目标、不取消连库保护
+LLM_GATEWAY_LEGACY_ALIGN_PSQL_CMD	dsn_exclusive	真库腿的 psql 执行命令：它指定「读哪一个 PG 的列序」⇒ 必须指向被授权读的那台库（★ 本轮实测指向生产 211、★ 只读）⇒ 不能与通用 DSN 同值（否则真库腿的前置条件被通用化 ⇒ 门会拿一个没被授权的库去读列序）
 LLM_GATEWAY_LIVE_XIAOMI_BASE	component	外部服务 base URL（线上音频）
 LLM_GATEWAY_LIVE_XIAOMI_KEY	component	外部服务 key（线上音频）
 LLM_GATEWAY_MODEL_ALIAS_PREFIX	component	模型别名前缀（配置），不选库
@@ -66,10 +69,10 @@ ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）
 PATH	component	环境杂项（PATH），测试只用来拼可执行路径
 PROVIDER_CONTRACT_KEY	component	外部 provider 契约测试用 key
+RECONCILIATION_TEST_DSN	dsn_exclusive	请求/会话对账集成腿的专用 DSN：★ 文件头明写「Run only against an owned, empty reconciliation_fixture_* database」且腿内往 legacy_drift / request_wal_with_current_month / request_context_attrs / session_dim / usage_facts / provider_call_attempts / credit_ledger_with_current_month **批量 INSERT** ⇒ ★ 必须指向「本腿自有的空隔离库」⇒ 与通用 DSN 同值＝把夹具写进共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-23 合并轮六代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游未登记 ⇒ 本门判「没人答」）
 REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
 REPORT_E2E_ALLOW_DESTRUCTIVE	dangerous	显式承认「本次 E2E 会破坏数据」；打开即取消保护
-RECONCILIATION_TEST_DSN	dsn_exclusive	请求/会话对账集成腿的专用 DSN：★ 文件头明写「Run only against an owned, empty reconciliation_fixture_* database」且腿内往 legacy_drift / request_wal_with_current_month / request_context_attrs / session_dim / usage_facts / provider_call_attempts / credit_ledger_with_current_month **批量 INSERT** ⇒ ★ 必须指向「本腿自有的空隔离库」⇒ 与通用 DSN 同值＝把夹具写进共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-23 合并轮六代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游未登记 ⇒ 本门判「没人答」）
 REPORT_E2E_TEST_DATABASE_URL	dsn_exclusive	reportrollup 破坏性 E2E 的专用 DSN：会 DELETE report_snapshots / usage_facts ⇒ 必须指向一次性 scratch 库 ⇒ 不能与通用 DSN 同值（R86 轮把共享名 TEST_DATABASE_URL/TEST_DB_URL 拆成专用名）
 RJ_PGVAL_DOWN_SQL	component	迁移 down 脚本路径（夹具覆盖），不改变选库
 ROUTEINCIDENT_IT_DSN	dsn_exclusive	routeincident 集成腿的专用 DSN：会在目标库 CREATE TABLE route_incidents（715 表形）⇒ 文件头写明 Cleanup: DROP DATABASE llm_routeincident_it ⇒ 必须指向一次性库 ⇒ 不能与通用 DSN 同值（R86 轮移出事实源 + 给该腿补库名守卫）
@@ -85,8 +88,8 @@ TEST_CONTENT_ARRAY_SAMPLE	component	夹具参数：真库读数的采样行数�
 TEST_DUAL_FULL_PGURL	dsn_exclusive	双模全量腿的 PG 连接串，必须与通用 DSN 区分（否则会打到共享库）
 TEST_DUAL_FULL_REDISURL	component	双模全量腿的 Redis 连接串，绝不能填 PG DSN
 TEST_MAAS_BILLS_DATABASE_URL	dsn_exclusive	maas 月账单真库 e2e 的专用 DSN：会写 maas_monthly_bills / maas_credit_consumption_buckets 并建删测试租户 ⇒ 必须指向 _test 结尾的一次性库，库名不合规即 Fatal ⇒ 不能与通用 DSN 同值，故不进事实源（2026-10-31 实施包审计 §8 新增）
-TEST_MAAS_CHARGE_IDEMPOTENCY_DATABASE_URL	dsn_exclusive	maas 计费幂等真库腿的专用 DSN：★ 测试消息明写「requires a dedicated *_test database」且腿内 **INSERT tenants / tenant_credit_wallets** 并在 defer 里 DELETE credit_ledger_hot / maas_credit_consumption_buckets / tenant_credit_wallets / tenants ⇒ ★ 写的是**生产表** ⇒ ★ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值＝把计费写操作打到共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-23 合并轮六代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游未登记 ⇒ 本门判「没人答」）
 TEST_MAAS_BUDGET_GATE_DATABASE_URL	dsn_exclusive	maas 租户预算门真库腿的专用 DSN：守卫读 current_database() 并要求库名以 _test 结尾（不合规即 Fatal）⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（死腿）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-23 211 配置优化执行报告 §9.24 轮）
+TEST_MAAS_CHARGE_IDEMPOTENCY_DATABASE_URL	dsn_exclusive	maas 计费幂等真库腿的专用 DSN：★ 测试消息明写「requires a dedicated *_test database」且腿内 **INSERT tenants / tenant_credit_wallets** 并在 defer 里 DELETE credit_ledger_hot / maas_credit_consumption_buckets / tenant_credit_wallets / tenants ⇒ ★ 写的是**生产表** ⇒ ★ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值＝把计费写操作打到共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-23 合并轮六代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游未登记 ⇒ 本门判「没人答」）
 TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL	dsn_exclusive	被动指纹真库腿的专用 DSN（2026-11-11 48h 审计第二轮登记；来源=11-10/11 被动指纹轮新增 domains/modelcredibility/store_passive_realdb_test.go）：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿写被动指纹基线表 ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（与同包 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL 同款先例）
 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL	dsn_exclusive	modelcredibility rollup 真库腿的专用 DSN：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿会写 provider_model_credibility ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（2026-11-01 12h 审计 P0 修复引入）
 TEST_PG_CONTRACTS_ISOLATED	isolation	隔离声明：该腿跑在隔离库上；必须与 DSN 成对设置，不能默认开
