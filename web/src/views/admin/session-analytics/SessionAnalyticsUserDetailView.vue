@@ -159,10 +159,34 @@
         </button>
       </div>
 
+      <!-- ★★ 2026-11-23（L16）：tab 级错误/陈旧态的出口。
+           ★ 此前 tab 自己的 loader 报错**没有任何承接** ⇒ 端点 500 被渲染成
+           「暂无数据」空态 ⇒ 用户看不出后端挂了。★ 同一时刻只有一个 tab 可见，
+           所以**一个共用横幅**即可（不必每个 tab 各写一份）。
+           ★ 文案**复用既有键**（`sessionAnalytics.error.*` / `sessionAnalytics.state.stale*`
+           / `sessionAnalytics.action.retry|refresh`）⇒ **零新增 i18n 键**。 -->
+      <SaStateBanner
+        v-if="tabError"
+        kind="error"
+        :title="t('sessionAnalytics.error.userDetailFailed')"
+        :reason="tabError"
+        :action-label="t('sessionAnalytics.action.retry')"
+        @action="reloadActiveTab"
+      />
+
+      <SaStateBanner
+        v-if="tabStale"
+        kind="stale"
+        :title="t('sessionAnalytics.state.staleTitle')"
+        :reason="t('sessionAnalytics.state.staleReason')"
+        :action-label="t('sessionAnalytics.action.refresh')"
+        @action="reloadActiveTab"
+      />
+
       <section v-if="tab === 'projects'" class="sa-section">
         <DataTable
           :loading="projectsLoading"
-          :empty="!projectsLoading && projects.length === 0"
+          :empty="!projectsLoading && !tabError && !tabStale && projects.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultUserProjects')"
           min-width="720px"
         >
@@ -205,7 +229,7 @@
       <section v-else-if="tab === 'tasks'" class="sa-section">
         <DataTable
           :loading="tasksLoading"
-          :empty="!tasksLoading && tasks.length === 0"
+          :empty="!tasksLoading && !tabError && !tabStale && tasks.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultProjectTasks')"
           min-width="720px"
         >
@@ -244,7 +268,7 @@
       <section v-else-if="tab === 'models'" class="sa-section">
         <DataTable
           :loading="modelsLoading"
-          :empty="!modelsLoading && models.length === 0"
+          :empty="!modelsLoading && !tabError && !tabStale && models.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultUserModels')"
           min-width="900px"
           data-testid="sa-user-models-table"
@@ -281,7 +305,7 @@
       <section v-else-if="tab === 'apiKeys'" class="sa-section">
         <DataTable
           :loading="apiKeysLoading"
-          :empty="!apiKeysLoading && apiKeys.length === 0"
+          :empty="!apiKeysLoading && !tabError && !tabStale && apiKeys.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultUserAPIKeys')"
           min-width="900px"
           data-testid="sa-user-apikeys-table"
@@ -387,6 +411,45 @@ const models = ref<UserModelUsage[]>([])
 const apiKeys = ref<UserAPIKeyUsage[]>([])
 const selectedProject = ref('')
 const tab = ref<'projects' | 'tasks' | 'models' | 'apiKeys'>('projects')
+
+
+// ★★ 2026-11-23（L16 修复轮）：**tab 级 loader 的错误/陈旧态此前完全没有出口**。
+//
+// ★ 事故机制（实测，详见 docs/audit/2026-11-20-会话分析系统前端实施报告.md §7.11）：
+//   ① 页面级 `error` 绑定的是 **detailLoader.error** ⇒ tab 自己的 loader 报错时
+//      **没有任何横幅承接**；
+//   ② DataTable 的 `empty` 条件是「`!loading && 行数===0`」⇒ 加载**失败**后
+//      `loading=false`、数据数组仍为空 ⇒ **`empty=true`** ⇒ 渲染出
+//      **「暂无数据」空态**。
+//   ⇒⇒ 合起来：**端点 500 被渲染成「该 owner 恰好没数据」** ⇒ 用户完全看不出后端挂了。
+//
+// ★ 所以修法有**两半**，缺一不可：
+//   ① **让 tab 级错误可见**：按当前 tab 取它自己的 loader 的 error/stale，渲染横幅；
+//   ② **禁止在错误态下渲染空态**：`:empty` 必须额外要求「无 error 且无 stale」。
+//   ⇒ ★ 只做 ① 不做 ② ⇒ 横幅下面还会挂一个「暂无数据」，自相矛盾；
+//   ⇒ ★ 只做 ② 不做 ① ⇒ 表格区域全空，用户更懵。
+const tabLoader = computed(() => {
+  switch (tab.value) {
+    case 'projects': return projectsLoader
+    case 'tasks': return tasksLoader
+    case 'models': return modelsLoader
+    case 'apiKeys': return apiKeysLoader
+    default: return null
+  }
+})
+const tabError = computed(() => tabLoader.value?.error.value ?? '')
+const tabStale = computed(() => tabLoader.value?.stale.value ?? false)
+
+/** 重载当前 tab（横幅的「重试」动作）—— 只重载该 tab，不动页面级数据。 */
+function reloadActiveTab(): void {
+  switch (tab.value) {
+    case 'projects': void loadProjects(); break
+    case 'tasks': void loadTasks(); break
+    case 'models': void loadModels(); break
+    case 'apiKeys': void loadAPIKeys(); break
+    default: void load()
+  }
+}
 
 /**
  * 项目表 / 任务表的名称列本地排序：none（默认，服务端按会话数排）→ asc → desc → none。
