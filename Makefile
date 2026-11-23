@@ -278,7 +278,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
+guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-select-star-order guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -620,6 +620,32 @@ guards-deploy-ledger: guards-deploy-ledger-selftest ## 部署通道投递面 ↔
 guards-deploy-ledger-selftest: ## 部署通道覆盖门的夹具测试（★ 七臂 · 快门 · 零外部依赖 · 进 CI 快门族）
 	@bash scripts/checks/deploy-ledger-coverage-gate.test.sh
 
+# ── legacy 跨面 SELECT * 视图的**运行时列序对拍门** ──────────────────────
+#
+# ★ 2026-11-24 L34 五轮新增：★ 补的是 **L32 那道缺口的【运行时那半】** ★
+#   ★ 仓里**早有静态那半**：★ `sql/migrations/startup/hot_surface_select_star_contract_test.go`
+#     ★ 它禁止**新建**跨面 `SELECT * UNION ALL` 视图、★ 并把**历史写法**登记进
+#     ★ `legacyCrossSurfaceSelectStar`（★ 11 条 ★★）★★
+#   ★ ⇒ ★★ **但那只是【静态那半】：★ 「登记表里这 11 对、★ 在今天这台库上两侧的
+#     ★★ 列序是否仍然对齐」从来没人核对过** ★★ ⇒ ★★ ⇒ ★★ **那才是会炸的那一半** ★★
+#   ★ 机制：★ `UNION ALL` **逐位置比类型** ⇒ ★★ 两侧列数相同但顺序不同 ⇒ 视图重建必炸 ★★
+#   ★ 三态：★ 没给 DB 地址 ⇒ **显式 SKIP**（rc=0、★ 不伪装成通过 ★）；
+#     ★ 量具自身坏了 ⇒ **ABORT**（rc=2）；★ 有列序漂移 ⇒ FAIL（rc=1）；★ 否则 PASS（rc=0）。
+#   ★ 进 `make guards` **慢门族**（★ 不进快门族：★ 它需要一个可读的 PG 地址 ★★）。
+.PHONY: guards-select-star-order
+guards-select-star-order: guards-select-star-order-selftest ## legacy 跨面 SELECT * 视图的运行时列序对拍门（★ 只读 · 慢门：需要一个可读的 PG 地址）
+	@bash scripts/checks/legacy-select-star-column-order-gate.sh
+
+# ★★ 列序对拍门**自身**的夹具测试（★ 八臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
+# ★ ★★ 它的判据是【两串列序的比对】⇒ ★★ **不需要真的连上 PG** ⇒ ★★ ⇒ ★ ⇒
+# ★★ **判据逻辑可以在没有 docker 的机器上验证** ⇒ ★★ ⇒ ★ ⇒ 进 **CI 快门族** ★★
+# ★ 八臂：★ 无地址（⇒ SKIP ★ 不伪装成通过 ★）/ 全对齐 / 列序漂移 / 列数不同 /
+# ★ ★ 两侧都不在场（⇒ 绿 ★ 不恒红 ★）/ 只有一侧在场 / 登记表解析面坏（⇒ ABORT ★）/
+# ★ ★ **查询面坏（⇒ ABORT ★）★ ＝ 本轮真跑时撞到的那类恒绿形态** ★★。
+.PHONY: guards-select-star-order-selftest
+guards-select-star-order-selftest: ## 列序对拍门的夹具测试（★ 八臂 · 快门 · 零外部依赖 · 进 CI 快门族）
+	@bash scripts/checks/legacy-select-star-column-order-gate.test.sh
+
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
 #
 # ★ 2026-11-02 第二十二轮：仓里有**两份**审计档，各带一份**登记册**：
@@ -698,7 +724,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-deploy-ledger-selftest ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门 + **部署通道覆盖门的夹具测试（方案 C · 七臂 · 纯 shell 零依赖）**；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-deploy-ledger-selftest guards-select-star-order-selftest ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门 + **部署通道覆盖门的夹具测试（方案 C · 七臂 · 纯 shell 零依赖）**；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
