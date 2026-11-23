@@ -2279,7 +2279,7 @@ func (r *Runner) applySQL(filename string) error {
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("psql 失败: %w\n%s", err, truncate(string(out), 500))
+		return fmt.Errorf("psql 失败: %w\n%s", err, truncate(string(out), 20000))
 	}
 	return nil
 }
@@ -2302,7 +2302,7 @@ func (r *Runner) execSQL(sql string) error {
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("psql 失败: %w\n%s", err, truncate(string(out), 500))
+		return fmt.Errorf("psql 失败: %w\n%s", err, truncate(string(out), 20000))
 	}
 	return nil
 }
