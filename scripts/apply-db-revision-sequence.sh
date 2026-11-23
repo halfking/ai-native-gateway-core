@@ -2772,6 +2772,27 @@ files=(
   #     不是 sessions 裸表；日桶用 (ts AT TIME ZONE 'Asia/Shanghai')::date（CST）。
   #   ★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。
   "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
+  # ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
+  #   teams / user_teams / api_keys.team_id / team_budgets 四件套。
+  #   ★ ★ 为什么必须重编号（★ 原件**永远不会被应用**，★ 三条通道都不投）：
+  #     ① **本通道**（files=(...) 数组）只投点名的 ⇒ 原件没点名；
+  #     ② **存量升级通道**（deploy-lib 的 _deploy_pending_startup_migrations）
+  #        只投「版本号 ≥ 对账地板 412」或「登记进低版本清单」的
+  #        ⇒ 原 055-058 落在地板以下**且**不在清单里；
+  #     ③ **installer 通道**只投 StartupFiles 点名的 ⇒ 原件没点名。
+  #   ⇒ ⇒ ★ 三条通道一条都没登记 ⇒ 新装与存量都缺这三张表与这一列
+  #        ⇒ ★ 而现役代码无条件写 api_keys.team_id ⇒ 生产「发 API key」必失败
+  #        （★ 2026-11-23 生产实测：api_keys 无 team_id 列、teams/user_teams/
+  #          team_budgets 三表不存在、schema_migrations 水位 999）。
+  #   ★ ★ 重编号为 982-985（★ > 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免；
+  #     ★ 而投递判据是「版本号不在账本里」、★ 不是「大于水位」⇒ 新号会被正常投递）。
+  #   ★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS ＋ ADD COLUMN IF NOT EXISTS
+  #     ＋ 自登记 ON CONFLICT DO NOTHING）⇒ 重放安全、已在场也不报错。
+  #   ★ 次序：982 → 983/984/985（★ 后三条的外键指向 teams.id ⇒ teams 先建）。
+  "$ROOT_DIR/sql/migrations/startup/982_teams_table.sql"
+  "$ROOT_DIR/sql/migrations/startup/983_user_teams.sql"
+  "$ROOT_DIR/sql/migrations/startup/984_api_keys_team_id.sql"
+  "$ROOT_DIR/sql/migrations/startup/985_team_budgets.sql"
   # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
   #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
   #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
@@ -3653,6 +3674,18 @@ ledger_artifact_probe "998_session_summaries_task_association.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
 ledger_artifact_probe "999_session_summary_layers.sql" \
   "to_regclass('public.session_summary_layers') IS NOT NULL"
+# ★ 982-985 的产物 = 三张表 + 一列 + 各自主键/唯一约束与索引（★ 只点本组
+#   引入的对象；★ teams 的两个索引与 user_teams/team_budgets 的索引都在场）。
+#   ★ 列探针用 information_schema（★ api_keys.team_id 是普通列 ⇒ 口径正确，
+#     994 的 pg_catalog 教训只针对物化视图）。
+ledger_artifact_probe "982_teams_table.sql" \
+  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='teams' AND indexname IN ('idx_teams_owner_id','idx_teams_tenant_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='teams_tenant_name_key' AND conrelid='public.teams'::regclass) = 1"
+ledger_artifact_probe "983_user_teams.sql" \
+  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='user_teams' AND indexname IN ('idx_user_teams_user_id','idx_user_teams_team_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='user_teams_user_team_key' AND conrelid='public.user_teams'::regclass) = 1"
+ledger_artifact_probe "984_api_keys_team_id.sql" \
+  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
+ledger_artifact_probe "985_team_budgets.sql" \
+  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

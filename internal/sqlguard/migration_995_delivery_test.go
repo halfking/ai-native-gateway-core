@@ -23,7 +23,9 @@ func TestMigration995ErrorPlaybookDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 995 正本失败（投递面断裂）: %v", err)
 	}
-	exec := string(body)
+	// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+	exec := sgStripSQLComments(string(body))
+	rawUp := string(body)
 
 	// ① 两张表必须幂等建出（可被内容指纹重放）。
 	for _, ddl := range []string{
@@ -64,7 +66,7 @@ func TestMigration995ErrorPlaybookDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 995 embeddata 副本失败: %v", err)
 	}
-	if string(embedBody) != exec {
+	if string(embedBody) != rawUp {
 		t.Fatalf("995 正本与 embeddata 副本不一致（installer 会应用另一份内容）")
 	}
 	down := filepath.Join("..", "..", "sql", "migrations", "startup", "995_error_playbook.down.sql")
@@ -86,10 +88,13 @@ func TestMigration995ErrorPlaybookDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 apply-db-revision-sequence.sh 失败: %v", err)
 	}
-	if !strings.Contains(string(seq), pb995File) {
+	// ★ 精确到 files=(...) 的整条条目（★ 只判「文件名出现过」⇒ 同名出现在
+	//   产物探针行里也会命中 ⇒ ★ 注释掉 files 条目照样绿 ⇒ ★ 实测本轮踩到）。
+	if !strings.Contains(sgStripShellComments(string(seq)),
+		`"$ROOT_DIR/sql/migrations/startup/`+pb995File+`"`) {
 		t.Fatalf("docker 部署通道序列清单缺 995 ⇒ 211 部署不会应用该迁移")
 	}
-	if !strings.Contains(string(seq), `ledger_artifact_probe "995_error_playbook.sql"`) {
+	if !strings.Contains(sgStripShellComments(string(seq)), `ledger_artifact_probe "995_error_playbook.sql"`) {
 		t.Fatalf("docker 部署通道缺 995 产物探针（指纹命中跳过路径无法对账）")
 	}
 
@@ -136,7 +141,7 @@ func TestMigration995ErrorPlaybookDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 995 installer/migrations 副本失败: %v", err)
 	}
-	if string(offlineUp) != string(exec) {
+	if string(offlineUp) != rawUp {
 		t.Fatalf("995 正本与 installer/migrations 副本不一致")
 	}
 	offlineDown, err := os.ReadFile(filepath.Join("..", "..", "installer", "migrations",

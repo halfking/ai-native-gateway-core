@@ -26,7 +26,9 @@ func TestMigration990StatsConsistencyFixesDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 990 正本失败（投递面断裂）: %v", err)
 	}
-	exec := string(body)
+	// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+	exec := sgStripSQLComments(string(body))
+	rawUp := string(body)
 
 	// ① 幂等形态：ADD COLUMN IF NOT EXISTS（内容指纹重放零冲突的前提）。
 	if !strings.Contains(exec, "ADD COLUMN IF NOT EXISTS total_credits_charged BIGINT") ||
@@ -54,7 +56,7 @@ func TestMigration990StatsConsistencyFixesDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 990 embeddata 副本失败: %v", err)
 	}
-	if string(embedBody) != exec {
+	if string(embedBody) != rawUp {
 		t.Fatalf("990 正本与 embeddata 副本不一致（installer 会应用另一份内容）")
 	}
 
@@ -63,7 +65,9 @@ func TestMigration990StatsConsistencyFixesDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 apply-db-revision-sequence.sh 失败: %v", err)
 	}
-	if !strings.Contains(string(seq), "990_stats_consistency_fixes.sql") {
+	// ★ 精确到 files=(...) 的整条条目（★ 只判文件名会命中同名探针行）。
+	if !strings.Contains(sgStripShellComments(string(seq)),
+		`"$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"`) {
 		t.Fatalf("docker 部署通道序列清单缺 990 ⇒ 211 部署不会应用该迁移")
 	}
 	// ⑦ update_session_summary clobber 链尾（通道纪律：链内最后一次定义）。
@@ -72,7 +76,7 @@ func TestMigration990StatsConsistencyFixesDelivered(t *testing.T) {
 	chain := "'update_session_summary|572_session_summary_large_token_ratio.sql|" +
 		"563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|" +
 		"661_session_summary_token_ratio_reassert.sql|990_stats_consistency_fixes.sql|'"
-	if !strings.Contains(string(seq), chain) {
+	if !strings.Contains(sgStripShellComments(string(seq)), chain) {
 		t.Fatalf("990 未登记为 update_session_summary clobber 链尾 ⇒ 部署会在应用任何文件之前 abort（exit 5）")
 	}
 }
@@ -83,7 +87,9 @@ func TestMigration991TimezoneStandardizationDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 991 正本失败（投递面断裂）: %v", err)
 	}
-	exec := string(body)
+	// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+	exec := sgStripSQLComments(string(body))
+	rawUp := string(body)
 
 	// ① 三个 UTC 日边界函数必须都在（本迁移的全部产物）。
 	for _, fn := range []string{
@@ -127,7 +133,7 @@ func TestMigration991TimezoneStandardizationDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 991 embeddata 副本失败: %v", err)
 	}
-	if string(embedBody) != exec {
+	if string(embedBody) != rawUp {
 		t.Fatalf("991 正本与 embeddata 副本不一致（installer 会应用另一份内容）")
 	}
 
@@ -136,12 +142,14 @@ func TestMigration991TimezoneStandardizationDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 apply-db-revision-sequence.sh 失败: %v", err)
 	}
-	if !strings.Contains(string(seq), "991_stats_timezone_standardization.sql") {
+	// ★ 剥整行 shell 注释 ＋ 精确到 files=(...) 的整条条目。
+	if !strings.Contains(sgStripShellComments(string(seq)),
+		`"$ROOT_DIR/sql/migrations/startup/991_stats_timezone_standardization.sql"`) {
 		t.Fatalf("docker 部署通道序列清单缺 991 ⇒ 211 部署不会应用该迁移")
 	}
 	// ⑦ 内容指纹重放清单已登记（990/991 在本清单登记前已被手工应用到
 	//    252 与本地测试库，台账 sha 为 NULL 遗留记账 ⇒ 必须按指纹收口）。
-	if !strings.Contains(string(seq), "'991_stats_timezone_standardization.sql|") {
+	if !strings.Contains(sgStripShellComments(string(seq)), "'991_stats_timezone_standardization.sql|") {
 		t.Fatalf("991 未登记进 legacy_content_replays 指纹清单 ⇒ 遗留记账永远收不了口")
 	}
 }

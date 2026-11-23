@@ -62,7 +62,9 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读 %s 正本失败（投递面断裂）: %v", spec.version, err)
 			}
-			exec := string(body)
+			// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+			exec := sgStripSQLComments(string(body))
+			rawUp := string(body)
 
 			// ① 超时守卫（995/996 同口径：会话级 SET，docker 流式通道 SET LOCAL 静默失效）。
 			for _, guard := range []string{
@@ -88,15 +90,16 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s 缺 down 迁移: %v", spec.version, err)
 			}
-			downExec := string(downBody)
+			downExec := sgStripSQLComments(string(downBody))
+			rawDown := string(downBody)
 			if !strings.Contains(downExec, "DELETE FROM public.schema_migrations WHERE version = '"+spec.version+"'") {
 				t.Fatalf("%s down 缺台账 DELETE（与 up 自登记对偶）", spec.version)
 			}
 
 			// ④ embeddata 副本逐字一致（installer 会应用另一份内容 = 投递分裂）。
 			for pair, want := range map[string]string{
-				filepath.Join("embeddata", "startup", spec.upFile):   exec,
-				filepath.Join("embeddata", "startup", spec.downFile): downExec,
+				filepath.Join("embeddata", "startup", spec.upFile):   rawUp,
+				filepath.Join("embeddata", "startup", spec.downFile): rawDown,
 			} {
 				cop, err := os.ReadFile(filepath.Join("..", "..", "installer", "cmd", "llm-gw-installer", pair))
 				if err != nil {
@@ -112,7 +115,8 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读 installer main.go 失败: %v", err)
 			}
-			main := collapseSpaces(string(mainSrc))
+			// ★ 剥整行 Go 注释（★ 保留 `//go:embed` 指令本身）。
+			main := collapseSpaces(sgStripGoCommentsKeepEmbed(string(mainSrc)))
 			for _, frag := range []string{
 				"//go:embed embeddata/startup/" + spec.upFile,
 				"//go:embed embeddata/startup/" + spec.downFile,
@@ -129,7 +133,7 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读 dbinit runner.go 失败: %v", err)
 			}
-			if !strings.Contains(string(runnerSrc), `"`+spec.upFile+`",`) {
+			if !strings.Contains(sgStripGoCommentsKeepEmbed(string(runnerSrc)), `"`+spec.upFile+`",`) {
 				t.Fatalf("dbinit runner.go StartupFiles 缺 %s", spec.version)
 			}
 
@@ -138,7 +142,7 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读 installed_startup_migrations.tsv 失败: %v", err)
 			}
-			if !strings.Contains(string(tsvBody), spec.tsvIndex+"\t"+spec.upFile) {
+			if !strings.Contains(sgStripShellComments(string(tsvBody)), spec.tsvIndex+"\t"+spec.upFile) {
 				t.Fatalf("tsv 缺 %s 登记行（%s\\t%s）", spec.version, spec.tsvIndex, spec.upFile)
 			}
 
@@ -147,7 +151,8 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读 apply-db-revision-sequence.sh 失败: %v", err)
 			}
-			deployText := string(deploySrc)
+			// ★ 剥整行 shell 注释（★ 被 `#` 注掉的登记不算登记）。
+			deployText := sgStripShellComments(string(deploySrc))
 			for _, frag := range []string{
 				`"$ROOT_DIR/sql/migrations/startup/` + spec.upFile + `"`,
 				`ledger_artifact_probe "` + spec.upFile + `"`,
@@ -162,14 +167,14 @@ func TestMigration997to999SessionSummaryDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatalf("读 %s installer/migrations 副本失败: %v", spec.version, err)
 			}
-			if string(offlineUp) != exec {
+			if string(offlineUp) != rawUp {
 				t.Fatalf("%s 正本与 installer/migrations 副本不一致", spec.version)
 			}
 			offlineDown, err := os.ReadFile(filepath.Join("..", "..", "installer", "migrations", strings.TrimSuffix(spec.upFile, ".sql"), "down.sql"))
 			if err != nil {
 				t.Fatalf("读 %s installer/migrations down 副本失败: %v", spec.version, err)
 			}
-			if string(offlineDown) != downExec {
+			if string(offlineDown) != rawDown {
 				t.Fatalf("%s down 正本与 installer/migrations 副本不一致", spec.version)
 			}
 		})

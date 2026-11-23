@@ -21,7 +21,9 @@ func TestMigration980ViewAlignmentDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 980 正本失败（投递面断裂）: %v", err)
 	}
-	exec := string(body)
+	// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+	exec := sgStripSQLComments(string(body))
+	rawUp := string(body)
 
 	// ① 视图重建必须是幂等的 DROP+CREATE（可被内容指纹重放）。
 	//   ★ 首版用 CREATE OR REPLACE 并对调了 977 的列序 ⇒ 三台部署活体打回
@@ -56,7 +58,7 @@ func TestMigration980ViewAlignmentDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 980 embeddata 副本失败: %v", err)
 	}
-	if string(embedBody) != exec {
+	if string(embedBody) != rawUp {
 		t.Fatalf("980 正本与 embeddata 副本不一致（installer 会应用另一份内容）")
 	}
 
@@ -65,7 +67,10 @@ func TestMigration980ViewAlignmentDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 apply-db-revision-sequence.sh 失败: %v", err)
 	}
-	if !strings.Contains(string(seq), "980_pi_analysis_stats_view_alignment.sql") {
+	// ★ 精确到 files=(...) 的**整条条目**（★ 只判「文件出现过」⇒ 同名出现在
+	//   产物探针/台账行里也会命中 ⇒ ★ 注释掉 files 条目照样绿 ⇒ ★ 实测本轮踩到）。
+	if !strings.Contains(sgStripShellComments(string(seq)),
+		`"$ROOT_DIR/sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql"`) {
 		t.Fatalf("docker 部署通道序列清单缺 980 ⇒ 211 部署不会应用该迁移")
 	}
 }

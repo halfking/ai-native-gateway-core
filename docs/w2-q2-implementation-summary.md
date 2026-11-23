@@ -5,7 +5,8 @@
 ### Backend (100% Complete - Production Ready)
 
 #### Database Layer
-- ✅ **4 migration files** (055-058) - Validated on PostgreSQL 17.11
+- ✅ **4 migration files** (982-985, ★ 2026-11-23 由 055-058 重编号) - Validated on PostgreSQL 17.11
+  - ★ **重编号原因**：★ 原编号落在对账地板 412 以下**且**三条投递通道（installer StartupFiles / 211 seamless files 数组 / 存量升级通道）**一条都没登记** ⇒ ★ **原件永远不会被应用**（★ 2026-11-23 生产实测：`api_keys` 无 `team_id` 列、`teams`/`user_teams`/`team_budgets` 三表不存在）⇒ ★ 现役代码无条件写 `api_keys.team_id` ⇒ 生产「发 API key」必失败。★ 重编号为 982-985（★ > 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免）并完成多点位登记。
 - ✅ `teams`, `user_teams`, `team_budgets` tables with proper constraints
 - ✅ Foreign keys with CASCADE delete behavior
 - ✅ Unique constraints and indexes for performance
@@ -166,10 +167,11 @@
 ### For Backend Deployment
 ```bash
 # 1. Run migrations (if not already run)
-psql -d your_database -f sql/migrations/startup/055_teams_table.sql
-psql -d your_database -f sql/migrations/startup/056_user_teams.sql
-psql -d your_database -f sql/migrations/startup/057_api_keys_team_id.sql
-psql -d your_database -f sql/migrations/startup/058_team_budgets.sql
+# ★ 2026-11-23: ★ 原 055-058 已重编号为 982-985（★ 原件从未被任何通道投递 ⇒ 生产与新装都缺）
+psql -d your_database -f sql/migrations/startup/982_teams_table.sql
+psql -d your_database -f sql/migrations/startup/983_user_teams.sql
+psql -d your_database -f sql/migrations/startup/984_api_keys_team_id.sql
+psql -d your_database -f sql/migrations/startup/985_team_budgets.sql
 
 # 2. Build and deploy
 go build ./cmd/your-app

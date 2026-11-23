@@ -1820,6 +1820,36 @@ var sessionAnalyticsFoundation981 []byte
 //go:embed embeddata/startup/981_session_analytics_foundation.down.sql
 var sessionAnalyticsFoundation981Down []byte
 
+// ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
+//
+//	teams / user_teams / api_keys.team_id / team_budgets 四件套。
+//	★ 重编号原因（三条通道都没登记原件 ⇒ 永远不会被应用）见
+//	installer/internal/dbinit/runner.go 的 StartupFiles 注释。
+//
+//go:embed embeddata/startup/982_teams_table.sql
+var teamsTable982 []byte
+
+//go:embed embeddata/startup/982_teams_table.down.sql
+var teamsTable982Down []byte
+
+//go:embed embeddata/startup/983_user_teams.sql
+var userTeams983 []byte
+
+//go:embed embeddata/startup/983_user_teams.down.sql
+var userTeams983Down []byte
+
+//go:embed embeddata/startup/984_api_keys_team_id.sql
+var apiKeysTeamId984 []byte
+
+//go:embed embeddata/startup/984_api_keys_team_id.down.sql
+var apiKeysTeamId984Down []byte
+
+//go:embed embeddata/startup/985_team_budgets.sql
+var teamBudgets985 []byte
+
+//go:embed embeddata/startup/985_team_budgets.down.sql
+var teamBudgets985Down []byte
+
 // ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 //
 //	★ 2026-11-19 文档一致性轮补五点同步——并行车首提交只写了正典，
@@ -2538,6 +2568,15 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 981（2026-11-19 会话分析系统基础轮）：元数据列 + 物化视图。
 	"startup/981_session_analytics_foundation.sql":      sessionAnalyticsFoundation981,
 	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
+	// ★ 982-985（2026-11-23 团队功能底座轮，★ 原 055-058 重编号）：teams 四件套。
+	"startup/982_teams_table.sql":           teamsTable982,
+	"startup/982_teams_table.down.sql":      teamsTable982Down,
+	"startup/983_user_teams.sql":            userTeams983,
+	"startup/983_user_teams.down.sql":       userTeams983Down,
+	"startup/984_api_keys_team_id.sql":      apiKeysTeamId984,
+	"startup/984_api_keys_team_id.down.sql": apiKeysTeamId984Down,
+	"startup/985_team_budgets.sql":          teamBudgets985,
+	"startup/985_team_budgets.down.sql":     teamBudgets985Down,
 	// ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,

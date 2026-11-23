@@ -406,3 +406,7 @@
 388	997_tasks_dimension_table.sql
 389	998_session_summaries_task_association.sql
 390	999_session_summary_layers.sql
+391	982_teams_table.sql
+392	983_user_teams.sql
+393	984_api_keys_team_id.sql
+394	985_team_budgets.sql

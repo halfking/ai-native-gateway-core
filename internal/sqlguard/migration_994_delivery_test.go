@@ -24,7 +24,9 @@ func TestMigration994OwnerKeyAndClosePathDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 994 正本失败（投递面断裂）: %v", err)
 	}
-	exec := string(body)
+	// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+	exec := sgStripSQLComments(string(body))
+	rawUp := string(body)
 
 	// ① 视图重建必须是 DROP + CREATE IF NOT EXISTS（252 上视图不存在时 CREATE 生效；
 	//   211 上先 DROP 再建 ⇒ 两态自愈）。
@@ -79,7 +81,7 @@ func TestMigration994OwnerKeyAndClosePathDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 994 embeddata 副本失败: %v", err)
 	}
-	if string(embedBody) != exec {
+	if string(embedBody) != rawUp {
 		t.Fatalf("994 正本与 embeddata 副本不一致（installer 会应用另一份内容）")
 	}
 	inst := filepath.Join("..", "..", "installer", "migrations",
@@ -88,7 +90,7 @@ func TestMigration994OwnerKeyAndClosePathDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 994 installer/migrations 副本失败: %v", err)
 	}
-	if string(instBody) != exec {
+	if string(instBody) != rawUp {
 		t.Fatalf("994 正本与 installer/migrations 副本不一致")
 	}
 
@@ -97,7 +99,7 @@ func TestMigration994OwnerKeyAndClosePathDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 installer main.go 失败: %v", err)
 	}
-	mgs := string(mg)
+	mgs := sgStripGoCommentsKeepEmbed(string(mg))
 	for _, want := range []string{
 		"embeddata/startup/994_session_analytics_owner_key_and_close_path.sql",
 		"\"startup/994_session_analytics_owner_key_and_close_path.sql\":",
