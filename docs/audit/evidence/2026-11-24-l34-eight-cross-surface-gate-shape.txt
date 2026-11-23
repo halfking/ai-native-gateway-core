@@ -203,6 +203,23 @@
 ★ L20 剩余 3 条台账红（★ 941 vs 959 ×2、★ 387 vs 392/396 ★★）＝ 既有
 ★ `ci_carrier_ir_conversion_wiring_test.sh` 的「IR harness 没进清单」＝ 既有
 
+★ ★★ **【全套 `go test ./scripts/ursmcheck/` 的 10 条红】★ 归因对照（★ 本轮零新增红 ★★）★★
+  ★ 本轮改的是 pipefail 台账 ＋ AGENTS.md ＋ 报告 ⇒ ★ 先跑**定向门禁**（★ `Pipefail|
+  ★   AgentsMdSize|SectionNumbering|CrossDoc` ★★）⇒ ★ **ok（28.509s）** ★★
+  ★ 随后跑**全套** ⇒ ★ **红 10 条**（★ 449s ★★）：
+  ★   TestAdminRoutesSnapshotMatchesGenerator / TestAdminRoutesSnapshotRowCount
+  ★   TestRealDBLegsUseDeclaredDSNEnvNames
+  ★   TestDbObjectExpectSetMatchesIndependentDerivation
+  ★   TestDbObjectGapLedgerIsFullyRecomputable / TestDeployEnvFlagNoGapRemains
+  ★   TestInstallerReachabilityLedgerIsRecomputable / …PinsItsInputs
+  ★   TestPGTestEnvRegistryCoversEveryGapName / TestRequestSurfaceDocEvidenceStillHolds
+  ★ ⇒ ★★ **这 10 条一条都不是本轮的**（★ 全是 admin 路由快照／DB 对象台账／installer 可达性
+  ★   ／PG 测试环境登记／请求面文档证据 ★★ ⇒ ★ **属 metrics 列车那一批** ★★）
+  ★ ⇒ ★★ **【对照实测】**：★ 在 `origin/main^`（★ `41d1eca87`、★ **不含本轮任何改动** ★★）的
+  ★   独立 worktree 上**只跑这 10 条** ⇒ ★★ **逐字同款 10 条全红**（★ 9.074s ★★）★★
+  ★ ⇒ ⇒ ★★ **⇒ 本轮【零新增红】**（★ ★★ 失败集合差集为空 ★★）★★
+  ★ ⇒ ★★ **「仓里有门」与「门此刻是绿的」是两件事** ★★（★ ★★ 本轮全绿的只有**定向那组** ★★）★★
+
 ────────────────────────────────────────────────────────────────────────────
 ⑩ ★★ 通用式新增（★ 本轮四条 ★★）
 ────────────────────────────────────────────────────────────────────────────
