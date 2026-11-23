@@ -228,7 +228,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/correlations"
 - extendedWaitUntil:
-    visible: 'Auto-Route 关联分析 (Correlations)'
+    visible: 'Auto-Route 关联分析 \(Correlations\)'
     timeout: 20000
 - evalScript: "${output.ms__correlations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -240,7 +240,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/routing/overrides"
 - extendedWaitUntil:
-    visible: '路由覆盖 (Routing Overrides)'
+    visible: '路由覆盖 \(Routing Overrides\)'
     timeout: 20000
 - evalScript: "${output.ms__routing_overrides = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
