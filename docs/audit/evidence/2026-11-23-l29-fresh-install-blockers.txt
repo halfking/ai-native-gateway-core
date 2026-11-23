@@ -1,0 +1,298 @@
+================================================================================
+L29 证据：新装路径在当前水位的 2 个硬阻断（空库安装必断链）
+采集日期：2026-11-23
+采集者：本机一次性容器 + 安装器真实路径（零生产写 / 零 schema 变更 / 零共享树改动）
+主档：docs/audit/2026-11-20-会话分析系统前端实施报告.md §7.29
+================================================================================
+
+--------------------------------------------------------------------------------
+① 环境（一次性容器；口令随机生成、不落盘、不回显）
+--------------------------------------------------------------------------------
+容器名    : l20-fresh-pg
+镜像      : kx-citus-pg17:offline-arm64（★ 项目本地同一镜像）
+--shm-size: 1g
+命名卷    : l20-fresh-pg-data
+DB / USER : llm_gateway / llm_gateway
+扩展可用  : pg_trgm / vector / citus（3 个）
+
+--------------------------------------------------------------------------------
+② 执行面：安装器真实路径（不是手搓 SQL、不是 mock）
+--------------------------------------------------------------------------------
+代码路径  : installer/internal/dbinit.NewRunner(container, user, db, sqlDir).InitSchema()
+SQLDir    : installer/cmd/llm-gw-installer/embeddata
+            （含 00-prereqs.sql / 01-schema.sql / 02-seed.sql + startup/）
+★ 等价性 : 真实安装器 llm-gw-installer 的 setupSQLDir() 把 embeddedSQLFiles 落到临时目录，
+           再交给同一个 dbinit.NewRunner，跑的是同一份 StartupFiles ⇒ 探针与真实安装器同路径。
+★ 模块   : installer 是独立 Go module（github.com/kaixuan/llm-gateway-go/installer）
+★ 相对路径以 installer 模块根为基准（cmd/llm-gw-installer/embeddata）
+
+--------------------------------------------------------------------------------
+③ StartupFiles 条数 = 392（与仓内门 "installer manifest now has 392" 逐字吻合）
+--------------------------------------------------------------------------------
+$ python3 - <<'PY'
+import re
+src=open('installer/internal/dbinit/runner.go').read()
+i=src.index('StartupFiles: []string{'); k=src.index('{',i); depth=0
+for idx in range(k,len(src)):
+    if src[idx]=='{': depth+=1
+    elif src[idx]=='}':
+        depth-=1
+        if depth==0: break
+names=[n for n in re.findall(r'"([^"]+\.sql)"',src[k:idx+1]) if not n.endswith('.down.sql')]
+print(len(names))
+PY
+392
+
+--------------------------------------------------------------------------------
+④ 第 1 轮：真实路径（零旁路）⇒ 在 956 中止
+--------------------------------------------------------------------------------
+=== PG 就绪（0.1s）
+  [1]   ▶ 应用 00-prereqs.sql (扩展依赖) ...
+  [2]   ✅ 00-prereqs.sql 完成
+  [3]   ▶ 应用 01-schema.sql (完整 schema) ...
+  [4]   ✅ 01-schema.sql 完成
+  [5]   ▶ 应用 02-seed.sql (配置字典数据) ...
+  [6]   ✅ 02-seed.sql 完成
+  [50]   ✅ startup migration 515_state_transitions_seq_unique.sql 完成
+  ...
+  [700]   ✅ startup migration 946_sales_quote_items.sql 完成
+InitSchema 失败：应用 startup migration 956_minimax_m31_flash_featured.sql 失败: psql 失败: exit status 3
+BEGIN
+WARNING:  there is already a transaction in progress
+SET
+SET
+ERROR:  migration 956 aborted: canonical_name=minimax-m3.1-flash does not exist or is not active
+CONTEXT:  PL/pgSQL function inline_code_block line 10 at RAISE
+
+★ 956 在 StartupFiles 的位置 = 356 ⇒ 其后 37 条从未跑过
+★ 失败态快照：
+    schema_migrations : 102 行, version 025..955
+    teams 表          : (无)
+    api_keys.team_id : 0 列
+    session_analytics_foundation 表 : 0
+    models_canonical : 19 行（含 minimax-m3.1-flash 的行数 = 0）
+
+--------------------------------------------------------------------------------
+⑤ 阻断点①根因：956 的守卫 + 空库的 canonical 宇宙
+--------------------------------------------------------------------------------
+956 的前置守卫（sql/migrations/startup/956_minimax_m31_flash_featured.sql）：
+    IF NOT EXISTS (
+        SELECT 1 FROM models_canonical
+        WHERE canonical_name = 'minimax-m3.1-flash' AND status = 'active'
+    ) THEN
+        RAISE EXCEPTION 'migration 956 aborted: canonical_name=minimax-m3.1-flash does not exist or is not active';
+
+★ 空库建出的 models_canonical 全名单（19 行）：
+    gemini-3-flash-preview | gemini-3-pro-image | gemini-3.1-flash-image |
+    gemini-3.1-flash-lite | gemini-3.1-flash-lite-image | gemini-3.1-pro-preview |
+    gemini-3.5-flash | gemini-3.5-flash-lite | gemini-3.6-flash | gemini-omni-flash |
+    glm-5 | glm-5.1 | glm-5.2 | glm-5.3 | grok-4.6 | kimi-k2.6 |
+    kimi-k2.7-code | kimi-k2.7-code-highspeed | kimi-k3（featured=true，来自 953）
+  ⇒ 无 minimax-m3.1-flash ⇒ 守卫必红
+
+★ 956 本身写得对（它的注释专门交代 953 那份手写名单有 11 个幻觉名、静默失效，
+  956 才加「必须真实存在」的硬守卫）⇒ 问题在「空库本来就没有业务模型目录」这个前提。
+
+★ 生产侧（211）：956 记账 2026-11-10 13:16:14 ⇒ 生产 models_canonical 有真实目录 ⇒ 守卫恒绿。
+
+--------------------------------------------------------------------------------
+⑥ 第 2 轮：仅旁路 956（守卫放宽）⇒ 在 981 中止
+--------------------------------------------------------------------------------
+旁路方式（★ 只改 /tmp 下的本地副本，仓内零改动）：
+    IF NOT EXISTS (...) THEN   ⇒   IF FALSE THEN  -- L20-FRESH-PROBE: guard relaxed
+★ 该副本与仓内文件的 diff（仅 2 处）：
+    53,56c53
+    <     IF NOT EXISTS (
+    <         SELECT 1 FROM models_canonical
+    <         WHERE canonical_name = 'minimax-m3.1-flash' AND status = 'active'
+    <     ) THEN
+    ---
+    >     IF FALSE THEN  -- L20-FRESH-PROBE: guard relaxed (one-off local copy)
+
+★ 结果：
+  [750]   ✅ startup migration 971_pi_error_analysis_system.sql 完成
+InitSchema 失败：应用 startup migration 981_session_analytics_foundation.sql 失败: psql 失败: exit status 3
+SET
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+COMMENT
+CREATE FUNCTION
+COMMENT
+ERROR:  column ss.total_credits_charged does not exist
+LINE 13:     COALESCE(SUM(ss.total_credits_charged), 0)     AS extern...
+★ 981 在 StartupFiles 的位置 = 380 ⇒ 其后 13 条从未跑过
+
+--------------------------------------------------------------------------------
+⑦ 阻断点②根因：迁移集内部的顺序倒置（直击会话分析域）
+--------------------------------------------------------------------------------
+★ 981 建的是会话分析的 4 个聚合物化视图
+  （user_session_aggregates / project_task_aggregates /
+    agent_usage_aggregates / model_usage_aggregates），
+  它们读 session_summaries.total_credits_charged。
+
+★ 该列由 990 添加：
+  sql/migrations/startup/990_stats_consistency_fixes.sql:23
+    ADD COLUMN IF NOT EXISTS total_credits_charged BIGINT NOT NULL DEFAULT 0;
+
+★ 全仓 grep「谁加 total_credits_charged」：只有 990（其余命中都是 981/994 的**引用**）。
+
+★ 两条通道的顺序（都把 981 排在 990 之前）：
+  安装器 dbinit runner.go  StartupFiles：981 = 位置 380，990 = 位置 381
+  部署   apply-db-revision-sequence.sh：981 = 第 2774 行，990 = 第 2787 行
+
+★ 依赖是「改写」才引入的：
+  git log -- sql/migrations/startup/981_session_analytics_foundation.sql
+    78cef308f 2026-11-20 00:48:59 fix(db): 迁移 981 按真库重写并接活端点（方案 3 完整修正）
+    b394b197c 2026-11-20 00:12:59 fix(db): 添加迁移 981 的 no-transaction 标记和 canonical source
+  $ git show 78cef308f^:sql/migrations/startup/981_session_analytics_foundation.sql | grep total_credits_charged
+    （无输出 ⇒ 改写前版本不引用该列）
+  改写前版本的 ADD COLUMN 全在 sessions 表：project / task / task_category / is_probe
+
+★ 部署脚本的注释在写下时就是错的（原文）：
+  "★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。"
+  ⇒ 实测：不依赖是错的 —— 它依赖 990 加的那一列。
+
+--------------------------------------------------------------------------------
+⑧ 生产为何幸存：历史顺序巧合（211 实测）
+--------------------------------------------------------------------------------
+$ docker exec acc-pg17 psql -U llm_gateway -d llm_gateway -Atc \
+    "select version || ' | ' || applied_at from schema_migrations where version in (...) order by applied_at"
+953 | 2026-11-09 10:54:44.041199+08
+955 | 2026-11-10 00:03:47.490409+08
+956 | 2026-11-10 13:16:14.184827+08
+990 | 2026-11-19 23:21:57.801296+08
+991 | 2026-11-19 23:21:58.263295+08
+994 | 2026-11-20 12:43:19.060463+08
+993 | 2026-11-21 12:52:44.714084+08
+★ 981 在 schema_migrations 里【没有记账行】，但 4 个会话分析物化视图全部存在：
+  $ select count(*) from pg_matviews where matviewname like '%aggregates%'  → 4
+★ ⇒ 981 落地时（11-19 23:21 之后、11-20 12:43 之前）990 早已 applied ⇒ 列已在 ⇒ 981 通过。
+★ ⇒ 生产能跑 = 历史顺序巧合，不是当前文件集的顺序保证。
+★ 生产侧 teams 面：teams 表 = 0、api_keys.team_id = 0（⇒ L22 结论在生产复验）
+
+--------------------------------------------------------------------------------
+⑨ 第 3 轮：956 + 981 都旁路 ⇒ 392 条全绿（尾部无第三颗雷）
+--------------------------------------------------------------------------------
+★ 981 的旁路（自足化，★ 只改 /tmp 本地副本）：
+    -- L20-FRESH-PROBE: 一次性自足化补丁（仅本地副本）
+    ALTER TABLE IF EXISTS session_summaries
+        ADD COLUMN IF NOT EXISTS total_credits_charged BIGINT NOT NULL DEFAULT 0;
+    （插在 981 的第一个 CREATE MATERIALIZED VIEW 之前）
+
+=== StartupFiles 条数：392
+=== SQLDir：/tmp/l20-fresh-embeddata
+=== PG 就绪（0.1s）
+  ...
+  [750]   ✅ startup migration 971_pi_error_analysis_system.sql 完成
+=== InitSchema 完成（87.6s）
+=== public 表数：576
+=== PROBE OK
+★ 重跑一轮（干净库）：InitSchema 完成（60.4s） / public 表数：576 / PROBE OK
+★ ⇒ 尾部 982–995（含 994 会话分析）实测无雷；阻断点恰好 2 个。
+
+--------------------------------------------------------------------------------
+⑩ census 三档 fresh 底稿（★ 官方采集器，不手拼产物）
+--------------------------------------------------------------------------------
+采集器：python3 scripts/audit/db-object-census.py collect --env <E> --from-stdin --out <F>
+采集 SQL：python3 scripts/audit/db-object-census.py census-sql  （78 行）
+执行形态：docker exec -i l20-fresh-pg psql -U llm_gateway -d llm_gateway -tA -q -f - < census.sql
+
+  env                 口径                                   对象行数
+  ------------------  -------------------------------------  --------
+  fresh_realpath      真实路径（止步于 956 的那个库）            2672
+  fresh_bypass        956+981 旁路后的完整新装环境（392 条）     2795
+  fresh_bypass_teams  上面 + 手工应用 055-058                   2814
+
+★ 差集（按 kind/schema/relkind/name 去重后逐字比对）：
+  956 阻断造成在完整新装里缺席的对象 = 123（idx 95 + rel 28）
+     前 12 个：idx_sessions_is_probe / idx_sessions_project / idx_sessions_task_category /
+               api_key_concurrency_minute_pkey / approval_casdoor_mapping_pkey /
+               auth_id_mapping_pkey / auth_id_mapping_provider_external_tenant_key /
+               auth_id_mapping_provider_username_tenant_key /
+               credential_total_requests_rollup_pkey /
+               error_analysis_queue_pkey / error_analysis_results_analysis_id_key /
+               error_analysis_results_pkey
+  055-058 手工应用带进的对象 = 19
+     teams / teams_id_seq / teams_pkey / teams_tenant_name_key /
+     idx_teams_owner_id / idx_teams_tenant_id /
+     user_teams / user_teams_id_seq / user_teams_pkey / user_teams_user_team_key /
+     idx_user_teams_team_id / idx_user_teams_user_id /
+     team_budgets / team_budgets_id_seq / team_budgets_pkey / team_budgets_team_id_key /
+     idx_team_budgets_team_id / idx_api_keys_team_id / idx_api_keys_tenant_team
+  ★ 其中 7 条索引与 census expect 集里的 teams 行数一致（db-object-expect.tsv 里 055-058 共 7 条）
+
+--------------------------------------------------------------------------------
+⑪ A2：055-058 在完整新装环境上【实测跑通】（L22 修法 A 的前提从推断升级为实测）
+--------------------------------------------------------------------------------
+★ 三份拷贝一致性（md5）：
+  055_teams_table    canonical=1ec065b8ead5a6f60e12cc992c5e4c16  embeddata=同值  installer/migrations=NA(不存在)
+  056_user_teams     canonical=7e16c37c6312d54a0ad5d8ec07f6c1fa  embeddata=同值  installer/migrations=NA
+  057_api_keys_team_id canonical=79c7edf9a4449914cc5c71b7ad56326e embeddata=同值 installer/migrations=NA
+  058_team_budgets  canonical=5bcfa3f493a67522e5f5e63208da9761  embeddata=同值  installer/migrations=NA
+  ★ ⇒ 只落两面（canonical + embeddata），★ 缺的第三面（installer/migrations/<name>/up.sql）确认不存在
+  ★ ⇒ 字节一致 ⇒ ★ 从未 applied ⇒ ★ 字节冻结约束不适用
+
+★ 在完整新装环境（392 条已全绿）上手工应用（psql -v ON_ERROR_STOP=1 -f -）：
+  --- 055_teams_table ---   COMMENT/COMMENT/COMMENT/INSERT 0 1   exit=0
+  --- 056_user_teams ---    DROP POLICY/CREATE POLICY/COMMENT/INSERT 0 1   exit=0
+  --- 057_api_keys_team_id --- DROP POLICY/CREATE POLICY/COMMENT/INSERT 0 1   exit=0
+  --- 058_team_budgets ---  NOTICE: policy "team_budgets_admin_select" ... skipping / CREATE POLICY / COMMENT / INSERT 0 1   exit=0
+★ ⇒ 4/4 全跑通 ⇒ ★★ 「055-058 在当前水位跑得通」由【读代码推断】升级为【真库实测】
+
+--------------------------------------------------------------------------------
+⑫ 为什么长期没人发现：仓里没有任何一条测试在空库上真跑过完整安装链
+--------------------------------------------------------------------------------
+★ installer/internal/dbinit 的 16 条测试全是清单/静态级：
+  TestNoTransactionMarkerIsJustified / TestNoTransactionMarkerOnlyInComment /
+  TestRequiresNoTransactionMatching / TestStartupFilesPlace541BeforeItsConsumer568 /
+  TestStartupFilesExistInEmbeddata / TestStartupFilesPlace801AfterItsDependencies /
+  TestStartupFilesRegisterIPRuleDisable / TestLedgerQueryPinned /
+  TestMigrationVersionOf / TestStartupPendingIncrementalSemantics /
+  TestStartupFilesIncrementalAgainstRealManifest /
+  TestStartupFilesIncludeRequestJourneyOutboxPrerequisites /
+  TestStartupFilesIncludeSessionSummaryAndCacheRepairs / TestStartupFilesHaveNoDuplicates /
+  TestStartupManifestMatchesStartupFiles / TestStartupManifestFilesExist /
+  TestStartupFilesWithUntransactableStatementsAreMarked / TestStripSQLComments14397SelfCheck
+  ⇒ 零条真跑安装链
+
+★ .github/workflows/installer-ci.yml：只跑 go test + 构建二进制 ⇒ 不做新装
+★ installer/cmd/e2e-bootstrap/main.go：★ 它就是 fresh-install 烟测（调同一个 InitSchema），
+  但 grep -rn "e2e-bootstrap" .github/ scripts/ Makefile* ⇒ 不在任何 workflow 里
+  ⇒ 「仓里有烟测，没人跑它」
+
+--------------------------------------------------------------------------------
+⑬ 附带：L19 的 211 只读取证（★ SSH 改走内网 192.168.31.211 即通；断的是 mesh 中继 100.106.67.198）
+--------------------------------------------------------------------------------
+★ acc-pg17 的 ShmSize = 67108864（64M）
+★ acc-pg17 内 /dev/shm：64M 已用 41M（64%），剩 24M
+  占用者：PostgreSQL.* 共享内存段（十几段 × 196736–2097152 字节）
+  ⇒ L19 的成因在 211 上现场复现，不是推测
+★ acc-pg17 的网络 IP：
+  acc-pg-dataplane=192.168.0.2  ai-session-manager=172.24.0.3  llm-gateway-net=172.21.0.9
+  redclaw-local-stack=172.19.0.2  shared-infra=172.18.0.16  shiyi_backend=172.25.0.3
+  ⇒ 192.168.0.2 就是 acc-pg17 自己在 acc-pg-dataplane 网段的 IP
+★ 有无服务硬依赖 192.168.0.2：遍历全部运行中容器的 env + 挂载 + 启动命令行 ⇒ 0 命中
+  ⇒ L19 授权单里「重建前须确认硬依赖」的前置条件已排除
+
+--------------------------------------------------------------------------------
+⑭ 独立佐证（L22「分发包带着文件、安装器却从不读它」）：★ 分发包 396 vs StartupFiles 392
+--------------------------------------------------------------------------------
+★ 从 manifest 侧独立复算（★ 与 §7.28.1 的 grep 口径互为独立证据）：
+  StartupFiles（非 down）                  = 392
+  分发包 embeddata/startup（非 down）      = 396
+  ★ 在包里但不在 StartupFiles = ['055_teams_table.sql', '056_user_teams.sql',
+                                 '057_api_keys_team_id.sql', '058_team_budgets.sql']
+  ★ 在 StartupFiles 但不在包里 = []
+⇒ ★★ **差的正好是 teams 那 4 条** ⇒ ★★ 「分发包带着文件、安装器却从不读它」在**清单口径**上再次坐实
+⇒ ★★ 同一条门禁消息里也能读到这条差（★ 不靠本次复算）：
+  "★ reachability ledger was generated against a manifest of 387 files, the installer manifest now has 392
+   ★ 台账【比安装器清单旧】…"
+  "★ the package now has 396"
