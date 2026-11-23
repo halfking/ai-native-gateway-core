@@ -107,7 +107,8 @@ func mig905Read(t *testing.T, root, rel string) string {
 // mig905StripComments 剥掉 SQL 行注释（-- 到行尾）与 /* */ 块注释。
 //
 // ★ 必须剥：迁移头部的说明里就写着「public.session_turns_hot」等字面量，
-//   不剥的话「索引表名」类断言会命中注释 ⇒ 门恒绿。
+//
+//	不剥的话「索引表名」类断言会命中注释 ⇒ 门恒绿。
 func mig905StripComments(s string) string {
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
@@ -353,15 +354,17 @@ func TestMigration905_RegisteredAtAllDeliveryPoints(t *testing.T) {
 // ── ★★ 语义耦合门：索引的过滤列必须与 Go 侧过滤列逐字一致 ──────────────────
 //
 // ★ 这是本门**最有价值**的一条：它把「数据库里的索引形态」与「Go 侧查询的
-//   过滤列」绑在一起。
+//
+//	过滤列」绑在一起。
 //
 // 事故形态（正是它要防的）：有人改了 admin/turns_sessions.go 的过滤列
 // （比如把 model 换成别的列）**没有同步改索引** ⇒ 索引仍在位、迁移仍在台账里、
 // 端点却悄悄回到 500@30s ⇒ 而**没有任何门会红**。
 //
 // ★ 为什么用 go/ast 而不是正则：Go 源里到处是**解释**这些列的注释
-//   （注释里就写着 `t.model`），正则会命中注释 ⇒ 门恒绿。
-//   AST 只取真实的字符串字面量。
+//
+//	（注释里就写着 `t.model`），正则会命中注释 ⇒ 门恒绿。
+//	AST 只取真实的字符串字面量。
 func TestMigration905_IndexColumnMatchesGoFilterColumn(t *testing.T) {
 	root := mig905Tree(t)
 
@@ -427,13 +430,15 @@ func TestMigration905_IndexColumnMatchesGoFilterColumn(t *testing.T) {
 // mig905GoCallArgs 抽出某个函数调用点的**三个参数**（colExpr / colName / pred）。
 //
 // ★★ R92 变异臂 M6 当场暴露的改进点：
-//   第一版只抽**前两个**参数 ⇒ pred（第三个）不在判据面里 ⇒
-//   「colName 与谓词列名不一致」这个错误**没有任何门会红**。
-//   ⇒ 现在抽三个，并逐个调用点核对「colName ≡ pred 里引用的 ft.<col>」。
+//
+//	第一版只抽**前两个**参数 ⇒ pred（第三个）不在判据面里 ⇒
+//	「colName 与谓词列名不一致」这个错误**没有任何门会红**。
+//	⇒ 现在抽三个，并逐个调用点核对「colName ≡ pred 里引用的 ft.<col>」。
 //
 // ★ arg[0]（colExpr）允许是**选择器表达式**（如 db.SessionFamilyAPIKeyIDExpr）
-//   ⇒ 这类调用点不能被跳过，否则 api_key_id 那一支就完全不在判据面里
-//   ⇒（第一版正是因此让「故意不建索引」清单里的 api_key_id 条目成为**死条目**）。
+//
+//	⇒ 这类调用点不能被跳过，否则 api_key_id 那一支就完全不在判据面里
+//	⇒（第一版正是因此让「故意不建索引」清单里的 api_key_id 条目成为**死条目**）。
 func mig905GoCallArgs(t *testing.T, path, funcName string) [][3]string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -481,9 +486,10 @@ func mig905StrLit(e ast.Expr) string {
 // mig905LitStrings 收集表达式里的全部字符串字面量（按出现顺序拼接）。
 //
 // ★★ 为什么不能只认单个 *ast.BasicLit：第三个参数（pred）是**拼接式**的
-//   —— `"ft.model = $"+strconv.Itoa(argIdx)` ⇒ 只认 BasicLit 会把
-//   **全部四个调用点都漏掉** ⇒ 判据面直接空了（第一版就栽在这里：
-//   门不是红，而是「找不到调用点」的红 —— 读数上像形态漂移，实则是提取器缺陷）。
+//
+//	—— `"ft.model = $"+strconv.Itoa(argIdx)` ⇒ 只认 BasicLit 会把
+//	**全部四个调用点都漏掉** ⇒ 判据面直接空了（第一版就栽在这里：
+//	门不是红，而是「找不到调用点」的红 —— 读数上像形态漂移，实则是提取器缺陷）。
 func mig905LitStrings(e ast.Expr) string {
 	var out []string
 	ast.Inspect(e, func(n ast.Node) bool {
@@ -512,8 +518,26 @@ func mig905ArgText(e ast.Expr) string {
 // mig905PredColRe 抽「ft.<列> = $N」形态的谓词列。
 //
 // ★ 序号部分允许**为空**（源码里是拼接式：`"ft.model = $"+strconv.Itoa(...)`
-//   ⇒ 抽出来的字面量前缀只有 `$`）⇒ 序号段用 `[0-9]*`。
-var mig905PredColRe = regexp.MustCompile(`\bft\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$[0-9]*`)
+//
+//	⇒ 抽出来的字面量前缀只有 `$`）⇒ 序号段用 `[0-9]*`。
+//
+// ★★ 2026-11-23（L20 修红轮）：**补上 `= ANY($N)` 形态**。
+//
+//	事实：Go 侧在 2026-11-19「?model= 逗号分隔多值」轮（0eb0017b2）引入了
+//	多值形态 `"ft.model = ANY($"+strconv.Itoa(argIdx)+")"`（参数为 []string）。
+//	本正则**只认单值等值形态** ⇒ 多值调用点被抽不出列 ⇒ 门报
+//	「谓词不是『ft.<col> = $N』形态 —— 派生表形态下这种谓词无法生效」。
+//
+//	★ 那是**假红**：多值形态**仍然引用 ft.<col>**（ANY 是等值谓词族，
+//	不引入 OR ⇒ R92 派生表 UNION ALL 的 pull-up 优化不被破坏）⇒ 本门
+//	真正要守的那件事（**索引首列 ≡ Go 侧过滤列 ≡ 谓词引用的列**）**成立**。
+//	⇒ 真正过期的是**门的正则**，不是 Go 代码。
+//
+//	★★ 为什么这里只放宽**形态**、不放宽**语义**：放宽后的正则仍然只抽
+//	`ft.<列>`，列名仍要与投影别名逐字一致（下面的 `col != p[1]` 判据照旧）
+//	⇒ **门有牙这件事没有被削弱**，见同文件
+//	TestMigration905PredColAcceptsAnyForm（形态表驱 + 反向对照）。
+var mig905PredColRe = regexp.MustCompile(`\bft\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:ANY\s*\(\s*\$[0-9]*\s*\)|\$[0-9]*)`)
 
 // mig905PredCol 返回 pred 里引用的派生表列名；不是该形态时返回 ""。
 func mig905PredCol(pred string) string {
@@ -522,4 +546,60 @@ func mig905PredCol(pred string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// TestMigration905PredColAcceptsAnyForm —— ★★ 形态表驱 + 反向对照。
+//
+// ★ 这道门存在的意义是「门自己的放宽必须被自己的判据咬过」：
+//
+//	放宽正则（补 `= ANY($N)` 形态）是一个**典型的弱化动作**——
+//	如果只放宽不验证，下一个人可以把正则改成 `.*` 让门彻底躺平，
+//	而全绿看起来与「修复前一样绿」。
+//	⇒ 本门把「哪些形态该被接受 / 哪些必须仍被拒」逐条钉死。
+//
+// ★ 判据分三组：
+//
+//	① **必须接受的**（单值等值 / 多值 ANY / 拼接式无序号）
+//	② **必须仍被拒的**（非 `ft.` 别名 / 非等值谓词 / 缺占位符 / 别的表别名）
+//	③ **必须仍被拒的**（列名错配：谓词引用 `ft.provider` 而投影别名是 `model`）
+//	   —— 这一条是本门**真正的牙**（R92 变异臂 M6 暴露的运行期 500 缺口）。
+func TestMigration905PredColAcceptsAnyForm(t *testing.T) {
+	// ① 必须接受
+	for _, tc := range []struct{ pred, want string }{
+		{"ft.model = $1", "model"},
+		{"ft.model = $", "model"},            // 源码拼接式：序号是运行期 int
+		{"ft.model = ANY($1)", "model"},      // 多值形态（0eb0017b2 引入）
+		{"ft.model = ANY($)", "model"},       // 多值形态 + 拼接式
+		{"ft.model = ANY( $3 )", "model"},    // 多值形态 + 空格
+		{"ft.provider = ANY($)", "provider"}, // 别的列也照抽
+		{"ft.status_code = $2", "status_code"},
+	} {
+		if got := mig905PredCol(tc.pred); got != tc.want {
+			t.Errorf("谓词 %q 应抽出列 %q，实际 %q（★ 单值/多值两种形态都必须被认出）", tc.pred, tc.want, got)
+		}
+	}
+
+	// ② 必须仍被拒（放宽不能变成「什么都认」）
+	for _, pred := range []string{
+		"t.model = $1",      // 不是派生表别名
+		"gwft.model = $1",   // 别名前缀不是词边界
+		"ft.model IN ($1)",  // 非等值谓词族
+		"ft.model = ANY(3)", // 缺占位符
+		"ft.model = ANY()",  // 空 ANY
+		"model = $1",        // 少了表别名
+		"",                  // 空谓词
+	} {
+		if got := mig905PredCol(pred); got != "" {
+			t.Errorf("谓词 %q 必须仍被拒（抽出 %q）—— ★ 放宽 ANY 形态不等于放宽语义", pred, got)
+		}
+	}
+
+	// ③ 真正的牙：**列名错配必须仍被抓**（谓词引用 ft.provider，投影别名是 model）
+	//    —— 运行时才会报 column does not exist ⇒ 端点 500 ⇒ 第一版门没抽这第三段。
+	mismatched := "ft.provider = ANY($)"
+	if col := mig905PredCol(mismatched); col == "" {
+		t.Errorf("谓词 %q 必须抽出列名（错配由调用点的 colName 判据负责）", mismatched)
+	} else if col == "model" {
+		t.Errorf("谓词 %q 不该抽出 model", mismatched)
+	}
 }

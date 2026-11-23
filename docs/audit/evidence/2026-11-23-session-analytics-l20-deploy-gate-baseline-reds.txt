@@ -1,0 +1,145 @@
+L20 修红轮证据——部署闸门「基线红认领层」的分诊与修红
+日期：2026-11-23 ｜ 树：隔离 worktree /tmp/lgw-l9l10（origin/main tip b74be0669）
+口径声明：★ 本轮**零生产写、零 schema 变更、零在役身份切换**；★ 对生产的全部动作＝**只读查询**
+（211 的 schema_migrations / pg_class 读取、252 台账转储比对）；★ 唯一写生产的是**新增迁移 989**，
+★ 它**只落在仓内**（canonical + embeddata + 离线升级副本 + 九面登记），★ **尚未部署、尚未应用**。
+
+── ① 起因：认领层的入口条件是「选出的包有红」 ⇒ 先把红的清单取准 ──────────
+★ 上游 82957efe2：基线红必须已被 scripts/deploygate/baseline_red_exemptions.tsv 显式认领
+  ⇒ 未认领 ⇒ 闸门 die。★ 该表**故意留空**（只有 25 行注释、0 行数据）。
+★ L17 轮订正：认领层**只在「选出的包有红」时才生效** ⇒ 当前树无红 ⇒ 直接通过、根本不去比基线。
+★ ⇒ 上一轮登记里的「认领最常被选中的 5 个包」是**估计值** ⇒ ★ 本轮实测替换它。
+
+── ② ★★ 实测（go test 逐包，origin/main tip）────────────────────────────────
+  ./internal/sqlguard            → ok   （★ 上一轮登记说红 ⇒ 已被上游修）
+  ./cmd/gateway                  → ok   （★ 从未红）
+  ./sql/schema                   → 1 条  → TestCanonicalObjectsCoverEveryMigratedSessionTable
+  ./sql/migrations/startup        → 4 条  → TestMigration905_IndexColumnMatchesGoFilterColumn
+                                        → TestMigrationLedgerSelfRegistration
+                                        → TestHeavyDDLModernMigrationsDeclareMeasuredBudget（★ 内部 4 条违例）
+  ./scripts/ursmcheck            → 4 条  → TestDbObjectExpectSetMatchesIndependentDerivation
+                                        → TestDbObjectGapLedgerIsFullyRecomputable
+                                        → TestInstallerReachabilityLedgerIsRecomputable
+                                        → TestInstallerReachabilityLedgerPinsItsInputs
+★ ⇒ 共 8 条红。★ ★★ 「1 条红」这个读数本身不完整：t.Fatalf 只报首条 ⇒ 隐藏 3 条。
+
+── ③ ★★ 8 条全部是「基线红」：在 211 现役 42ae8b70 树上逐字相同地红 ─────────
+★ 建树：git worktree add /tmp/lgw-base211 42ae8b70
+★ 实测：
+  cd /tmp/lgw-base211 && go test ./sql/migrations/startup/ \
+      -run 'TestMigration905_IndexColumnMatchesGoFilterColumn|TestMigrationLedgerSelfRegistration|TestHeavyDDLModernMigrationsDeclareMeasuredBudget'
+    → --- FAIL: TestMigration905_IndexColumnMatchesGoFilterColumn
+    → --- FAIL: TestMigrationLedgerSelfRegistration
+    → --- FAIL: TestHeavyDDLModernMigrationsDeclareMeasuredBudget
+  cd /tmp/lgw-base211 && go test ./sql/schema/ -run TestCanonicalObjectsCoverEveryMigratedSessionTable
+    → --- FAIL: TestCanonicalObjectsCoverEveryMigratedSessionTable
+★ ⇒ 闸门走「基线红未认领 ⇒ die」分支（不是「新红 ⇒ die」）。
+
+── ④ ★★★ 分诊：假红 / 真缺口 / 字节冻结 / 陈旧 ────────────────────────────
+① TestMigration905_IndexColumnMatchesGoFilterColumn = ★★ 假红
+     Go 侧 0eb0017b2（2026-11-19 逗号多值轮）引入 "ft.model = ANY($"+itoa+")"
+     门正则只认 `ft.<col> = $N` ⇒ 多值形态被判非法
+     ★ ANY 仍引用 ft.<col>（等值谓词族、不引入 OR）⇒ 门要守的语义成立 ⇒ 过期的是正则
+② TestCanonicalObjectsCoverEveryMigratedSessionTable = ★★ 真缺口
+     999 建 public.session_summary_layers，正典目录缺 sql/objects/tables/session_summary_layers.sql
+     ⇒ 「缺条目 = 读出一张不存在的表」（判据原话）
+③ TestHeavyDDL…（981/997/998/999）= ★★ 字节冻结
+     252 台账 checksum：981=4b6c5fc3ef28491316e6648543f86d456fcdbc7f2fcc6b8ff8eb5703b86dc91e
+                        997=08c0f6695d0c3fb1165d3bfc383e33961f1eb58304df3802dbe140cdd17009bb
+                        998=682c5f43d3ba8e00f67925deb65cfc3ed44d82ba453274d20e3ca5aec9e355a5
+                        999=3f374cd050e36a0eb852647168447dee3342dd96836ccc57455a1988a3711921
+     ★ 与磁盘 sha256 **逐字一致** ⇒ 改字节 = L23 同款分叉 ⇒ 只能走豁免表
+     ★ 981：18 条非并发 CREATE INDEX（3 条在 public.sessions 上、15 条在本文件新建的 4 个空视图上），
+       文件无 SET statement_timeout ⇒ maxSeconds=0 ⇒ 判红；无上限 ⇒ 不会主动中止
+     ★ 997/998/999：预算段已过（statement_timeout=10min）★ 缺的只是「实测」注释
+     ★ 「实测」事实上已发生：211/252 的 schema_migrations 都有对应行 ⇒ 真存量上跑完 ⇒ 10min 预算被验证
+④ TestMigrationLedgerSelfRegistration（981）= ★★ 真缺口（211 记账断层）
+⑤⑥⑦⑧ db-object 台账族 = ★ 陈旧（详见 ⑥）
+
+── ⑤ ★★ 本轮已修 5 条（含变异自证）────────────────────────────────────────
+[A1] 905 门正则：\bft\.([A-Za-z_]\w*)\s*=\s*(?:ANY\s*\(\s*\$[0-9]*\s*\)|\$[0-9]*)
+     ★ 新增 TestMigration905PredColAcceptsAnyForm（①必须接受 7 条 ②必须仍被拒 7 条 ③列名错配仍被抓）
+     ★ 变异臂 M1（正则退回旧形态）→ 精确报红 4 处：「谓词 "ft.model = ANY($1)" 应抽出列 "model"，实际 ""」
+     ★ 变异臂 M2（正则过度放宽成 .*）→ 精确报红 2 处：「谓词 "ft.model = ANY(3)" 必须仍被拒」
+     ★ 恢复后 sql/migrations/startup 整包绿
+[A2] 新增 sql/objects/tables/session_summary_layers.sql（快照体例：来源 + 非权威声明 + CREATE TABLE）
+     ★ sql/schema 整包绿
+[A3] migration_version_unique_test.go 的 grandfathered 表新增 981/997/998/999 四条（理由写实）
+[A4] 新增迁移 989_migration_ledger_session_analytics_981_repair.sql（守卫式回填，见 ⑥）
+[A5] db-object-expect.tsv 离线重生成：941 → 959 行
+     ★ python3 scripts/audit/db-object-census.py expect --out scripts/audit/asset/db-object-expect.tsv
+     ★ 新增 15 个索引（055-058 的 7 个 + 997/998/999 的 8 个）+ 1 个归属改写
+       （655 idx_session_summaries_task → 998 idx_session_summaries_task）
+
+── ⑥ ★★ 989：211 记账断层的修复（守卫表达式已在真库只读验证）────────────────
+★ 211 实测（docker exec acc-pg17 psql，只读）：
+  SELECT version FROM public.schema_migrations WHERE version IN ('980','981','990','994')
+    → 980 | pi_analysis_stats_view_alignment: v_error_analysis
+    → 990 | stats_consistency_fixes: 统计数据一致性修复（session_summari…
+    → 994 | session_analytics_owner_key_and_close_path: 981 会话…
+    → ★★ 独缺 '981'
+  SELECT relname, relkind FROM pg_class WHERE relname IN (…)
+    → agent_usage_aggregates | m ／ model_usage_aggregates | m ／ project_task_aggregates | m
+    → session_dim | r ／ session_owners | r ／ session_summary_layers | r ／ user_session_aggregates | m
+    → ★★ 981 的产物全部在场 ⇒ 跑过、只是没记账
+★ 守卫表达式在 211 上只读求值：
+  SELECT (to_regclass('public.user_session_aggregates') IS NOT NULL AND … 8 项 …)::text
+    → true
+  SELECT count(*) FROM public.schema_migrations WHERE version='981'
+    → 0
+  ⇒ 989 在 211 上会精确补一行
+★ 九面投递链：canonical ／ embeddata×2（sha a66a2edd… 三份逐字一致）／ main.go go:embed×2+map×2 ／
+  dbinit StartupFiles ／ installed_startup_migrations.tsv index 391 ／ 211 通道 files=()+ledger_artifact_probe ／
+  installer/migrations/989_.../{up,down}.sql ／ db-changelog.md 台账行 ／ sqlguard migration_989_delivery_test.go
+★ 自证门（两个变异臂）：守卫合取换成恒真 ⇒ 必被抓；回填改成裸 INSERT ⇒ 必被抓
+★ 编号取 989（不是 1000）：sqlguard migrationNumPrefix=^[0-9]{3}_ ⇒ 四位数对全部守卫隐形（996 台账行记过同款）
+
+── ⑦ ★★ 剩余 3 条（db-object 台账族）：为什么本轮没重生成 ───────────────────
+★ 根因：expect 台账生成于 2026-11-20，此后 startup 迁移目录新增 8 个文件 ⇒ 三张台账全部比事实旧
+★ ★★ 其中 7 个索引来自上游「团队层级管理」列车的 055/056/057/058 四个迁移，
+  它们**只落两面**（canonical + embeddata 分发包）：
+  ★ 不在 dbinit runner.go 的 StartupFiles ／ 不在 installed_startup_migrations.tsv ／
+    不在 apply-db-revision-sequence.sh 的 files=() ／ 不在 docs/db-changelog.md
+  ⇒ 新装环境不会应用它们 ⇒ fresh 段必然判 missing
+  ⇒ ★★ 照现在的（陈旧）fresh 底账重生成 ⇒ 它们会被判成 installer-bug ⇒ 打破「installer-bug 必须为 0」棘轮
+★ ★★ fresh 段无环境：R164 轮（2026-11-09）记录 fresh 段采自 llm_gateway_fresh_r184（水位 920），
+  本轮靠「克隆该库 + 逐条应用 921..952」把水位抬到 952（★ 原因正是：旧 fresh 会把新索引误判成 installer-bug）
+  ⇒ ★★ 本轮实测：本机已无 llm_gateway_fresh_r184 库
+★ ★★ local 段不可采：R164 轮显式登记「local 段自 2026-10-30 起未再采集」——
+  原 local 实例（127.0.0.1:54318 的 llm_gateway 库）已下线；本机现存唯一可连的 llm_gateway 库是
+  llm-gateway-pg 容器里的**多项目共库**（dal/platform/agents/a2a 等别的项目的 schema）
+  ⇒ ★ 拿它冒充 local ⇒ 会把别的项目的对象写进本仓底账 ⇒ 口径分叉 ⇒ 不可采
+★ ⇒ ⇒ 三张台账的诚实重生成需要 fresh + local 两个环境 ⇒ 环境/授权轴 ⇒ 施工单见报告 §7.23.8
+★ ⇒ ⇒ ★★ 「缺一个环境」时，正确答案是「不生成」，而不是「生成一份看起来对的」
+
+── ⑧ ★ 另记：999 文件里带 3 个 U+FFFD 替换字符（已 applied ⇒ 字节冻结 ⇒ 只登记）────
+★ sql/migrations/startup/999_session_summary_layers.sql:83
+  -- 按创建时间查询 (用���清理旧窗口)
+  ★ 字节为 ef bf bd ×3（合法的 U+FFFD 替换字符，**不是**非法编码）⇒ SQL 注释里无害
+  ★ 但 999 已 applied 且 checksum 与磁盘逐字一致 ⇒ 改它 = 新分叉 ⇒ 只登记、不改
+
+── ⑧★ ★★★ 实测：「用陈旧底账硬重生成」两个方向都错（本轮真的跑了）────────────
+★ ① reachability 侧 ⇒ 假绿（会骗人）：
+  python3 scripts/audit/db-object-census.py reachability --expect …/db-object-expect.tsv \
+    --census …/db-object-census.tsv --columns …/db-object-columns.tsv \
+    --manifest sql/schema/installed_startup_migrations.tsv \
+    --package installer/cmd/llm-gw-installer/embeddata/startup --out /tmp/l20-reach-stale.tsv
+  ⇒ rows=959  counts={baseline-dependent:342, reachable-and-legitimately-retired:143,
+                   reachable-and-present:423, unreachable-and-missing:51}
+  ⇒ severity={baseline-dependent:342, new-install-gap:13, none:566, prod-gap:38}
+  ⇒ ★★ 棘轮**没破**（new-install-gap 仍 13、installer-bug 仍 0）⇒ ★★ 那 3 条红会「变绿」
+  ⇒ ★★★ 但 **23 个索引被写成「合法退役」（severity=none）**：
+      · 16 个 = 994 建的会话分析 MV 索引（★ 明明在 211/252 上活着 ⇒ 994 是 11-08 之后才跑的）
+      ·  7 个 = 055/056/058 的 teams 索引（★ 表在生产上活着，只是没进 11-08 的底账）
+  ⇒ ★★★ 「台账比事实旧」的最坏形态＝**写下关于活对象的假死亡证明**
+  ⇒ ★★★ 且 055-058「没进投递链 ⇒ 新装必然缺」的真缺口在**这份新台账里是隐形的**
+     （判据把「不在底账里」判成 retired ⇒ severity=none）⇒ **门绿着骗人**
+★ ② gap 侧 ⇒ 假红（会顶破棘轮）：
+  python3 scripts/audit/db-object-census.py reconcile --census …/db-object-census.tsv \
+    --expect …/db-object-expect.tsv --columns …/db-object-columns.tsv --out /tmp/l20-gap-stale.tsv --json
+  ⇒ rows=959  gaps_by_env={211:51, 252:58, fresh:51, local:60}
+  ⇒ 棘轮基线={211:49, 252:56, fresh:49, local:56} ⇒ ★★ 每环境 +2（local +4）
+  ⇒ ★★ 「生产缺口棘轮」当场破 ⇒ ★ 那 2 条「缺口」是假的（其实是 11-08 之后新建的索引）
+★ ⇒ ⇒ 两个方向都错 ⇒ ★★★ 「本轮不生成」是唯一诚实的答案
+★ ⇒ ⇒ 通用式：「可复跑」≠「有人会重算」 ⇒ ★★「有人重算」≠「重算的输入是当天的」
+      ⇒ 陈旧输入下的重算会把台账从「旧」变成「撒谎」

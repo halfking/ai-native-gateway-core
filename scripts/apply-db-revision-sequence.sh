@@ -2821,6 +2821,16 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/997_tasks_dimension_table.sql"
   "$ROOT_DIR/sql/migrations/startup/998_session_summaries_task_association.sql"
   "$ROOT_DIR/sql/migrations/startup/999_session_summary_layers.sql"
+  # ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件
+  #   **缺 schema_migrations 自登记行** ⇒ 211 的记账链在 980 与 990 之间
+  #   **断一格**（实测：211 的 public.schema_migrations 有 '980' 与 '990'、
+  #   独缺 '981'；而 981 的产物【全部在场】⇒ 它确实跑过、只是没记账）。
+  #   ★ 守卫式回填（981 头产物在场才记账 ⇒ 幂等、可重放、fail-safe）+ 自身自登记。
+  #   ★ 新迁移而非改 981 字节：981 在 211/252 都已 applied 且 252 台账 checksum
+  #     与磁盘逐字一致 ⇒ 改字节即 L23 同款分叉（914/928 教训同款）。
+  #   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix 钉死
+  #     ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 台账行记过同款）。
+  "$ROOT_DIR/sql/migrations/startup/989_migration_ledger_session_analytics_981_repair.sql"
 )
 
 
@@ -3653,6 +3663,12 @@ ledger_artifact_probe "998_session_summaries_task_association.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
 ledger_artifact_probe "999_session_summary_layers.sql" \
   "to_regclass('public.session_summary_layers') IS NOT NULL"
+# ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
+#   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
+#   '981' 行已存在（两件事都成立才算记账修好了）。
+#   ★ 与 960 同款：960 的产物也是记账行（950/951/957/958 的回填）。
+ledger_artifact_probe "989_migration_ledger_session_analytics_981_repair.sql" \
+  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regclass('public.session_dim') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '981') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

@@ -2005,6 +2005,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"997_tasks_dimension_table.sql",
 			"998_session_summaries_task_association.sql",
 			"999_session_summary_layers.sql",
+			// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 ——
+			//   981 的文件**缺 schema_migrations 自登记行** ⇒ 211 的记账链在
+			//   980 与 990 之间**断一格**（实测：211 有 '980' 与 '990'、独缺 '981'，
+			//   而 981 的产物全部在场 ⇒ 它确实跑过、只是没记账）。
+			//   ★ 另立迁移而非改 981 字节：981 在 211/252 都已 applied 且
+			//     252 台账 checksum 与磁盘逐字一致 ⇒ 改字节即 L23 同款分叉
+			//     （914/928 教训同款）。
+			//   ★ 守卫式回填（981 头产物在场才记账）+ 自身自登记（≥952 约定）。
+			//   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix
+			//     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 的台账行记过同款）。
+			"989_migration_ledger_session_analytics_981_repair.sql",
 		},
 	}
 }

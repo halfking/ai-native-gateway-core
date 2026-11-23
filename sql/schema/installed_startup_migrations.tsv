@@ -406,3 +406,4 @@
 388	997_tasks_dimension_table.sql
 389	998_session_summaries_task_association.sql
 390	999_session_summary_layers.sql
+391	989_migration_ledger_session_analytics_981_repair.sql
