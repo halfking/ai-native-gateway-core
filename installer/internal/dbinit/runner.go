@@ -2140,6 +2140,32 @@ ON CONFLICT (canonical_name) DO UPDATE
 //	  （★ 已被部署通道按同一内容指纹应用过的文件 ⇒ 不重放；★ 这与部署通道
 //	  ★ 自己的跳过判据同款 ⇒ ★ 两条通道从此对「什么算已应用」口径一致）。
 func (r *Runner) InitSchema(logger func(string)) error {
+	// ★★★ 2026-11-23（L30 轮·补②⑤）：★ **重号守卫（fail-closed）**。
+	//
+	//	★ 为什么这道守卫必须住在【安装器】里、而不只住在测试套件里：
+	//	★ 仓里已有 `sql/migrations/startup` 那道目录级重号门
+	//	★ （TestNumericUpMigrationVersionsAreUnique）⇒ ★ 它能抓住
+	//	★ 「同一个目录里两个文件同号」⇒ ★ 但它**只在那道门被跑到时**生效。
+	//	★ 而本安装器**可以被绕过测试套件直接跑**（★ 灾备重建 / 新节点首装 /
+	//	★ 运维手工执行安装器）⇒ ★★ **那时重号的后果是【静默的】**：
+	//
+	//	★★ 机制：★ 增量通道按【版本号】跳过（★ startupPending ⇒ 台账里有该
+	//	★★ 版本 ⇒ 跳过）⇒ ★★ 于是**同号的第二份文件被静默跳过** ⇒
+	//	★★ 「一个版本号两份 schema」＝ 其中一份【永久缺席】、★ 且**不报错**；
+	//	★★ 全新装路径下两份都会跑（F1 补记时第二份被 WHERE NOT EXISTS 吞掉）
+	//	★★ ⇒ 台账只记一行 ⇒ **台账与实际不符**。
+	//
+	//	★★ **实测过的真事故（★ 2026-11-23）**：★ origin/main 的
+	//	★★ `982_provider_call_attempts.sql`（★ 供应商逐次调用落库）
+	//	★★ 与并行车分支的 `982_teams_table.sql`（★ teams 族首件）
+	//	★★ 同号 ⇒ 合并后 StartupFiles 里两行同号（★ 实测 2049/2064 行）。
+	//
+	//	★ 处置：★ **在任何数据库动作之前**校验清单 ⇒ 重号即中止、★ 明确报错
+	//	★ （★ fail-closed ⇒ 宁可拒绝启动、★ 不可静默缺席）。
+	if err := validateStartupVersionsUnique(r.StartupFiles); err != nil {
+		return fmt.Errorf("startup 迁移清单版本号重号，拒绝启动（fail-closed，不做任何数据库动作）: %w", err)
+	}
+
 	applied, hasLedger, err := r.appliedVersions()
 	if err != nil {
 		return err
@@ -2423,6 +2449,30 @@ func (r *Runner) psqlQuery(query string) (string, error) {
 		return "", fmt.Errorf("%w\n%s", err, truncate(string(out), 300))
 	}
 	return string(out), nil
+}
+
+// validateStartupVersionsUnique 校验 startup 清单里没有两个文件共用同一个数字版本号。
+//
+// ★ 判据口径（★ 与仓内 `sql/migrations/startup` 的目录级重号门同款）：
+//   - 版本号＝文件名第一个下划线前的数字前缀（★ 复用 migrationVersionOf ⇒
+//     `361b_...prelude` 这类「数字＋字母」前缀解析不出 ⇒ 不参与重号判定、
+//     ★ 与增量通道「无版本号 ⇒ 恒执行」的口径一致）；
+//   - `.down.sql` 不在 StartupFiles 里（★ 清单只投递 up 迁移）⇒ 不额外排除；
+//   - 同号即报错、★ **不设豁免表**（★ 新清单不该有重号；★ 真要豁免必须写清
+//     「量在哪」★ 而不能像历史目录级门那样把旧账留在表里）。
+func validateStartupVersionsUnique(files []string) error {
+	seen := make(map[int]string, len(files))
+	for _, name := range files {
+		v, ok := migrationVersionOf(name)
+		if !ok {
+			continue
+		}
+		if prev, dup := seen[v]; dup {
+			return fmt.Errorf("startup migration version %d is duplicated by %s and %s", v, prev, name)
+		}
+		seen[v] = name
+	}
+	return nil
 }
 
 // startupPending 报告增量模式下该 startup 文件是否需要执行：
