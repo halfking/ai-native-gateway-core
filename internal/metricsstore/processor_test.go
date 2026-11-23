@@ -287,3 +287,33 @@ func TestWatermarkSQL_OrdersBySameCompositeKeyAsCursor(t *testing.T) {
 		t.Errorf("来源查询必须用同一个复合游标比较：%s", selectUsageFactsSQL)
 	}
 }
+
+// ★ 缺陷回归：post-890 的 canonical 视图是**会话族两臂体** ⇒ 非会话类请求
+// （探测流量 / 健康检查 / 非会话 API）**本来就查不到行**。
+// 「没有会话行」是语义正确，**不能**当成增强失败 ⇒
+// 否则良性情况每批都刷「维度增强失败」汇总日志，把真失败（表被删/列被改）淹没。
+func TestEnrichDimensions_NoSessionRowIsNotAFailure(t *testing.T) {
+	db, mock, closeDB := newMockDB(t)
+	defer closeDB()
+
+	// 视图里没有该请求的行 ⇒ QueryRow.Scan 返回 sql.ErrNoRows
+	mock.ExpectQuery(enrichDimensionsSQL).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"gw_session_id", "gw_task_id", "attachment_count",
+			"client_protocol", "egress_protocol",
+		}))
+
+	p := NewProcessor(db)
+	metric := &RequestMetric{RequestID: "req-probe", TenantID: "t1"}
+
+	if err := p.enrichDimensions(context.Background(), metric); err != nil {
+		t.Fatalf("查不到会话行不算增强失败（会刷假警报淹没真警报）：%v", err)
+	}
+	if metric.SessionID != nil {
+		t.Errorf("无会话行时 session_id 应保持为空，实际 %v", *metric.SessionID)
+	}
+	// 模态仍要按默认值派生（无附件 ⇒ text）
+	if metric.Modality == nil || *metric.Modality != "text" {
+		t.Errorf("无会话行时 modality 应派生为 text，实际 %v", metric.Modality)
+	}
+}
