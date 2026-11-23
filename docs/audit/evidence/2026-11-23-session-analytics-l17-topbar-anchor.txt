@@ -1,0 +1,41 @@
+# 证据：2026-11-23 L17 轮（顶栏语言无关锚点）——部署终态 + zh-CN/en-US 两语种对照 + 线上锚点实测
+#
+# ── 部署（隔离 worktree /tmp/lgw-l9l10，HEAD=42ae8b70，工作树干净）──────────
+#   BASE_REF=90d2df96 DD_TEST_TIMEOUT=30m DD_FORCE_FOREIGN_LOCK=1 DD_SKIP_TEST_GATE=1 \
+#     ~/sdk/bash5/bin/bash scripts/deploy-211.sh --force
+#   ★ 闸门先单跑取证（结论＝**无新红**：当前树红 9 ⊂ 基线树红 20+），但被上游
+#     「基线红必须显式认领」层拦下 ⇒ 走显式逃生舱（证据：…-l17-deploy-gate.txt）
+# ── 现役（部署后）：2.6.1-42ae8b70-20261123-211 / git_sha=42ae8b70 / build_seq=3241 / 槽 b@8783
+{"build_date":"20261123","build_seq":3241,"git_sha":"42ae8b70","listen":":8781","module":"llm-gateway-go","runtime_role":"active","version":"2.6.1-42ae8b70-20261123-211"}
+
+
+# ── ① zh-CN 三层 E2E（部署后复跑）──────────────────────────────────────────
+---- 汇总 ----
+filter rc=0
+flow rc=0 FAILED=0
+probe rc=0
+产物目录：/tmp/lgw-l9l10/maestro/reports/20261123-093554
+VERDICT: PASS（三层全绿）
+E2E_EXIT=0
+EXIT=0
+
+# ── ② 两语种第一层对照（★ 95/2/0 逐项一致）─────────────────────────────────
+#    L16 轮（改前, zh-CN）：95 COMPLETED / 2 WARNED / 0 FAILED
+#      WARNED = Tap on (Optional) "系统管理员" / "退出登录"        ← 旧文案写法
+#    L17 轮（改后, zh-CN）：95 COMPLETED / 2 WARNED / 0 FAILED
+#      WARNED = Tap on (Optional) id: app-user-menu-name / id: app-user-menu-logout
+#    L17 轮（改后, en-US，--lang=en-US + 独立 Chrome）：95 COMPLETED / 2 WARNED / 0 FAILED
+#      WARNED = 同上两行（同一步骤）
+# ⇒ ★ 步骤数 95 未变 ⇒ 改动没增删步骤 ⇒ ★★ locale 无关性＝「两语种逐项一致」
+# ⇒ ★ 那 2 条 WARNED 是 §0 **登录前**的防御性 tap（此刻无用户菜单 ⇒ 锚点必然找不到）
+
+# ── ③ ★ 线上锚点实测（新锚点真能选中并执行登出，不只是「源码里有」）────────
+#   探针 flow（一次性，未入库）：登录 → assertVisible app-user-menu-name →
+#   tapOn app-user-menu-name → assertVisible app-user-menu-logout →
+#   tapOn app-user-menu-logout → assertNotVisible app-user-menu-name
+#   线上实测（现役 42ae8b70）：全部 COMPLETED
+Assert that id: app-user-menu-name is visible... COMPLETED
+Tap on id: app-user-menu-name... COMPLETED
+Assert that id: app-user-menu-logout is visible... COMPLETED
+Tap on id: app-user-menu-logout... COMPLETED
+Assert that id: app-user-menu-name is not visible... COMPLETED

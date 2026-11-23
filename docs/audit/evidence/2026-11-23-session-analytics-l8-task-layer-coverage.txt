@@ -1,0 +1,29 @@
+# 证据：2026-11-23 L8 轮——任务层「有数据」分支在生产被实测覆盖（零写生产、零造数据）
+#
+# ── ① 真源澄清（★ 原登记「sessions.task 无数据」查错了列）─────────────────
+#   端点⑤ 的 task 来自 MV `project_task_aggregates.task` ← `session_dim.task_id`
+#   （**不是** `sessions.task`）；★ 生产 `sessions.task` 实测 **264,739 行全空**
+#   （v2 记录器 `domains/session/v2/session_aggregator.go` 的 INSERT 列清单里
+#   **没有 task/project** ⇒ 结构性缺口）；★ `session_dim.task_id` 非空 **265,101** 行，
+#   其中 default=183,715、auto-title:%=789 ⇒ **真实任务值 ≈ 80,597 行**，
+#   ★★ **但唯一产出真实任务值的 owner 是 `asm-session-agent`**（19 行，task 恒为
+#   `asm-session-agent-v1`、project=`default`）⇒ ⇒ **用户侧 owner 名下带任务行数 = 0**。
+#   ⇒ ★★ **「一个用户多个任务」的形态在当前架构下不可达**（⇒ 需后端写入路径补 task 维度）。
+#
+# ── ② 两个分支的实测覆盖（★ 换 owner，不造数据）──────────────────────────
+#   · 空态分支：owner=kaixuan-1 ⇒ 端点⑤ rows=0 ⇒ 页面「任务层无数据时显示该层空态」
+#   · 有数据分支：owner=asm-session-agent ⇒ 端点⑤ rows=1（task=asm-session-agent-v1，
+#     session_count=19962）⇒ 页面「任务列表表头齐全且有行」
+#
+151:✅ 人员详情页：点项目行 ⇒ 切到「任务列表」tab  — tabs=项目列表 / 任务列表(active) / 模型用量 / API Key用量 project=default
+152:✅ 人员详情页：任务列表表头齐全且有行  — rows=1 headers=任务|会话数|请求数|Token 数|花费|最近活跃
+
+178:RESULT: PASS（64 条）
+201:RESULT: PASS（20 条）
+204:flow rc=0 FAILED=0
+207:VERDICT: PASS（三层全绿）
+
+# ── ③ 本轮修的两个量具缺口 ────────────────────────────────────────────────
+#   ① runner 支持 `SESSION_OWNER=xxx` 覆盖（默认仍取窗口内第一个有会话的人 ⇒ 行为不变）
+#   ② ★★ 探针原来用 `users[0].owner`、flow 用 `SESSION_OWNER` ⇒ **两层可能看的不是同一个人**
+#      ⇒ 现在 runner 把 `--owner "${SESSION_OWNER}"` 透传给探针 ⇒ 两层同 owner

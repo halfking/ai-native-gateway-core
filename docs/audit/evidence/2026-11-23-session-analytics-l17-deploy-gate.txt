@@ -1,0 +1,103 @@
+# 证据：2026-11-23 L17 轮部署闸门（BASE_REF=90d2df96）——判据结论=无新红；被「基线红认领层」拦下
+#
+# ── 运行参数（隔离 worktree /tmp/lgw-l9l10，HEAD=3a3b4ff91，工作树干净）──────
+#   BASE_REF=90d2df96 DD_TEST_TIMEOUT=30m ~/sdk/bash5/bin/bash scripts/deploy-test-gate.sh
+#   ★ 注意：闸门脚本声明 `# requires-bash: 4` ⇒ macOS 自带 bash 3.2 跑它会 **exit 127**
+#     （实测：第一次用系统 bash 跑 ⇒ GATE_EXIT=127 ⇒ 误以为闸门坏了）
+# ── 现役（部署前）：2.6.1-90d2df96-20261123-211 / git_sha=90d2df96 / build_seq=3240 / 槽 a@8781
+# ── 本轮改动：前端 1 文件（顶栏锚点）+ flow 16 §0 + 契约钉测 1 改（零后端/零迁移/零 schema）
+# ── 选包（★ 关键）：只有 2 个包 —— ./scripts/ursmcheck ./sql/schema
+#     ⇒ ★ 纯前端/脚本改动会被**映射**到台账类包 ⇒ ★★ 「认领层」的射程比想象的宽
+#
+[test-gate] 要跑的包：./scripts/ursmcheck ./sql/schema
+[test-gate] ★ 原生 go 候选核对（required=1.27.4 /Users/niuer/homebrew/bin/go=1.27.3 /Users/niuer/sdk/go/bin/go=1.27.4 ）⇒ 选中 /Users/niuer/sdk/go/bin/go
+[test-gate] 跑法：原生 go（go1.27.4，复用本机构建缓存；超时 30m；主模块根 -mod=vendor）
+[test-gate] 首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…
+2026/11/23 09:14:27 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+--- FAIL: TestDbObjectExpectSetMatchesIndependentDerivation (0.24s)
+    db_object_census_gate_test.go:844: expect set size: tool=941 go=959
+    db_object_census_gate_test.go:863: 18 indexes in Go's set but not in the tool's: [idx_api_keys_team_id idx_api_keys_tenant_team idx_session_summaries_canonical idx_session_summaries_dedup_candidates idx_session_summaries_layered_pending idx_summary_layers_created idx_summary_layers_hash idx_summary_layers_session ...]
+    db_object_census_gate_test.go:871: index "idx_session_summaries_task": tool=(655,session_summaries) go=(998,session_summaries)
+    db_object_census_gate_test.go:896: expected=959 created=1011 dropped=93 transient=1
+--- FAIL: TestDbObjectGapLedgerIsFullyRecomputable (0.24s)
+    db_object_census_gate_test.go:910: ledger has 941 rows, expected 959
+[guard-test] FATAL: 部署未走到完成标记却将以 0 退出（bash set -eu 的隐式失败会丢退出码）—— 按失败处理
+/bin/bash: line 12: __nonexistent_var_for_guard_test__: unbound variable
+[guard-test] FATAL: 部署未走到完成标记却将以 0 退出（bash set -eu 的隐式失败会丢退出码）—— 按失败处理
+--- FAIL: TestInstallerReachabilityLedgerIsRecomputable (0.24s)
+    installer_reachability_gate_test.go:144: reachability ledger has 941 rows, expected set has 959
+--- FAIL: TestInstallerReachabilityLedgerPinsItsInputs (0.00s)
+    installer_reachability_gate_test.go:331: ★ reachability ledger was generated against a manifest of 387 files, the installer manifest now has 391 (★ 台账【比安装器清单旧】⇒ 必须用仓库内生成器重生成：db-object-census.py reachability)
+    installer_reachability_gate_test.go:336: ★ reachability ledger was generated against a distribution package of 387 migrations, the package now has 395 (★ 台账【比分发包旧】⇒ 必须重生成)
+    installer_reachability_gate_test.go:382: reachability ledger pinned inputs: manifest=387 package_up=387 rows=941 census_bundled_at=2026-11-08T23:15:30+00:00
+2026/11/23 09:19:37 WARN interceptor_chain: interceptor failed index=0 error=magpie-p2-ledger-probe session_id=""
+量具自证：扫描器对事故形态报出 3 处
+--- FAIL: TestPipefailRaceThresholdMentionsCarryPlatform (0.01s)
+    pipefail_race_threshold_wording_test.go:203: ★ scripts/audit/auto-monitor.sh:23 引了阈值却**没有平台标注**（★ linux 与 macOS 的边界可差 4–16 倍 ⇒ 本机读数不能判生产）
+    pipefail_race_threshold_wording_test.go:203: ★ scripts/audit/auto-monitor.sh:36 引了阈值却**没有平台标注**（★ linux 与 macOS 的边界可差 4–16 倍 ⇒ 本机读数不能判生产）
+    pipefail_race_threshold_wording_test.go:203: ★ scripts/checks/maestro-id-selector-shadow-gate.sh:92 引了阈值却**没有平台标注**（★ linux 与 macOS 的边界可差 4–16 倍 ⇒ 本机读数不能判生产）
+    pipefail_race_threshold_wording_test.go:203: ★ scripts/checks/session-analytics-checklist-gate.sh:99 引了阈值却**没有平台标注**（★ linux 与 macOS 的边界可差 4–16 倍 ⇒ 本机读数不能判生产）
+    pipefail_race_threshold_wording_test.go:203: ★ scripts/verify-211-deployment.sh:118 引了阈值却**没有平台标注**（★ linux 与 macOS 的边界可差 4–16 倍 ⇒ 本机读数不能判生产）
+--- FAIL: TestPipefailRaceCriterionMatchesWording (0.00s)
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/audit/auto-monitor.sh:23 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/audit/auto-monitor.sh:36 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/checks/maestro-id-selector-shadow-gate.sh:92 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/checks/session-analytics-checklist-gate.sh:99 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/quick-verify-211.sh:27 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/test-211-full.sh:27 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/test-211-full.sh:51 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/test-211-full.sh:62 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-211-deployment.sh:118 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-statistics-api-endpoints.sh:28 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-statistics-api-endpoints.sh:38 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-statistics-api-endpoints.sh:48 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-statistics-api-endpoints.sh:58 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-statistics-api-endpoints.sh:68 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+    pipefail_race_threshold_wording_test.go:217: ★ scripts/verify-statistics-api-endpoints.sh:78 没有规范判据句「判据量 = **…**」（★ 该行引了阈值 ⇒ 必须写清判据量）
+scq 台账 22 行；候选集 21 个
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	429.941s
+--- FAIL: TestCanonicalObjectsCoverEveryMigratedSessionTable (0.13s)
+    session_family_canonical_ddl_test.go:173: 迁移 999_session_summary_layers.sql 创建的表 session_summary_layers 在正典目录里没有条目（../../sql/objects/tables/session_summary_layers.sql）
+          正典目录是静态 jsonb lint 的列映射来源，也是下一轮审计读形状的地方；  缺条目 = 读出一张不存在的表
+    session_family_canonical_ddl_test.go:184: 扫描到 27 张迁移创建的 session_* 表，正典目录缺 1 个条目
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/sql/schema	106.735s
+FAIL
+[test-gate] ★ 当前树有红（TestCanonicalObjectsCoverEveryMigratedSessionTable TestDbObjectExpectSetMatchesIndependentDerivation TestDbObjectGapLedgerIsFullyRecomputable TestInstallerReachabilityLedgerIsRecomputable TestInstallerReachabilityLedgerPinsItsInputs TestPipefailRaceCriterionMatchesWording TestPipefailRaceThresholdMentionsCarryPlatform github.com/kaixuan/llm-gateway-go/scripts/ursmcheck github.com/kaixuan/llm-gateway-go/sql/schema）★ ⇒ 比对基线（90d2df96）
+[test-gate] 跑法：原生 go（go1.27.4，复用本机构建缓存；超时 30m；主模块根 -mod=vendor）
+[test-gate] 首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…
+2026/11/23 09:22:15 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+--- FAIL: TestDatasourceEnvTargetGuardNoUnregisteredMismatch (1.29s)
+...
+--- FAIL: TestCanonicalObjectsCoverEveryMigratedSessionTable (0.12s)
+    session_family_canonical_ddl_test.go:173: 迁移 999_session_summary_layers.sql 创建的表 session_summary_layers 在正典目录里没有条目（../../sql/objects/tables/session_summary_layers.sql）
+          正典目录是静态 jsonb lint 的列映射来源，也是下一轮审计读形状的地方；  缺条目 = 读出一张不存在的表
+    session_family_canonical_ddl_test.go:184: 扫描到 27 张迁移创建的 session_* 表，正典目录缺 1 个条目
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/sql/schema	109.467s
+FAIL
+[test-gate] ★ 基线（90d2df96c541cd3619a61b0a1f145ea386a44e55）**本来就红**：TestCanonicalObjectsCoverEveryMigratedSessionTable TestDatasourceEnvTargetGuardNoUnregisteredMismatch TestDbObjectExpectSetMatchesIndependentDerivation TestDbObjectGapLedgerIsFullyRecomputable TestGateInjectsEveryDBCredentialName TestInstallerReachabilityLedgerIsRecomputable TestInstallerReachabilityLedgerPinsItsInputs TestPGTestEnvRegistryCoversEveryGapName TestPipefailRaceLedgerCoversCandidateSet TestPostSurfaceLedgerCoversEveryRoute TestRequestSurfaceDocEvidenceStillHolds TestRequestSurfaceDocEvidenceStillHolds/D09_的_v2_request-id_合成与写回（★_存在_⇒_那条差异不是「没实现」） TestRequestSurfaceDocEvidenceStillHolds/HTTP_中间件链本体（Recovery_起、SecurityHeaders_止）★_与认证表_A1_同一语义对象 TestRequestSurfaceDocEvidenceStillHolds/v2_开关的读取（默认关、启动时读一次） TestRequestSurfaceDocEvidenceStillHolds/v2_打开时的那条启动日志 TestRequestSurfaceDocEvidenceStillHolds/「Logging_必须在_Auth_之外」的**自陈注释** TestRequestSurfaceDocEvidenceStillHolds/「maintain/mobile_必须组合在链内」的**自陈注释** TestSection1975CandidateListMatchesGeneratorByteForByte github.com/kaixuan/llm-gateway-go/scripts/ursmcheck github.com/kaixuan/llm-gateway-go/sql/schema★
+[test-gate] ★   ⇒ 这些红灯**不是**本次改动带来的 ★
+TestCanonicalObjectsCoverEveryMigratedSessionTable
+TestDatasourceEnvTargetGuardNoUnregisteredMismatch
+TestDbObjectExpectSetMatchesIndependentDerivation
+TestDbObjectGapLedgerIsFullyRecomputable
+TestGateInjectsEveryDBCredentialName
+TestInstallerReachabilityLedgerIsRecomputable
+TestInstallerReachabilityLedgerPinsItsInputs
+TestPGTestEnvRegistryCoversEveryGapName
+TestPipefailRaceLedgerCoversCandidateSet
+TestPostSurfaceLedgerCoversEveryRoute
+TestRequestSurfaceDocEvidenceStillHolds
+TestRequestSurfaceDocEvidenceStillHolds/D09_的_v2_request-id_合成与写回（★_存在_⇒_那条差异不是「没实现」）
+TestRequestSurfaceDocEvidenceStillHolds/HTTP_中间件链本体（Recovery_起、SecurityHeaders_止）★_与认证表_A1_同一语义对象
+TestRequestSurfaceDocEvidenceStillHolds/v2_开关的读取（默认关、启动时读一次）
+TestRequestSurfaceDocEvidenceStillHolds/v2_打开时的那条启动日志
+TestRequestSurfaceDocEvidenceStillHolds/「Logging_必须在_Auth_之外」的**自陈注释**
+TestRequestSurfaceDocEvidenceStillHolds/「maintain/mobile_必须组合在链内」的**自陈注释**
+TestSection1975CandidateListMatchesGeneratorByteForByte
+github.com/kaixuan/llm-gateway-go/scripts/ursmcheck
+github.com/kaixuan/llm-gateway-go/sql/schema
+[test-gate] FAIL: ★ 基线红里存在**未被豁免表认领**的红灯（★ 见上）⇒ 拒绝上线 ★
+GATE_EXIT=1
