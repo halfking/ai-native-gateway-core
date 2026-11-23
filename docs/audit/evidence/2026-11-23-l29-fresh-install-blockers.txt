@@ -419,3 +419,182 @@ $ docker exec acc-pg17 psql -U llm_gateway -d llm_gateway -Atc \
   ⇒ ★★ 那两处倒置被**实测排除**（不是阻断点）⇒ ★ 仍不钉它们
      （★ 钉住＝把「当前的无害排列」固化成不变式）
   ⇒ ★★ 「待专项复核」这个开着的口子以**实测**关闭（★ 不是以推断关闭）
+
+--------------------------------------------------------------------------------
+⑱ ★★★ 「空库新装」烟测门（★ 落地）：★ scripts/checks/fresh-install-smoke.sh
+--------------------------------------------------------------------------------
+★ 判据（三条产物断言，★ 不只看「没报错」）：
+    ① 会话分析 4 个物化视图在（★ ⇒ 981 的产物）
+    ② session_summaries.total_credits_charged 列在（★ ⇒ 990 的产物）
+    ③ models_canonical 里 minimax-m3.1-flash active 且 featured=TRUE（★ ⇒ 956 的守卫与标记）
+★ 三态：★ 环境跑不了（无 docker / 拉不到镜像）⇒ **明确 SKIP**（★ 仓内先例：guards-deploy）
+  ★ 装失败或断言不满足 ⇒ **FAIL（exit 1）** ★ 全过 ⇒ PASS（exit 0）
+★ 双向变异自证（★ 三臂、★ 全部在真库空库上跑、★ 不是模拟）：
+  M1 ★ 把 StartupFiles 的 990 移回 981 之后 ⇒ 门红（EXIT=1）★ 报错：
+     ERROR:  column ss.total_credits_charged does not exist
+     （★ 与 L29 当初撞出的报错逐字一致 ⇒ ★ 这道门确实能抓到 981/990 那类顺序倒置）
+     ⇒ 复原（git checkout -- installer/internal/dbinit/runner.go）★ 复跑 ⇒ PASS（EXIT=0）
+  M2 ★ 把门指向在役开发库容器（FRESH_INSTALL_CONTAINER=llm-gateway-pg）⇒
+     FAIL: 容器名 llm-gateway-pg 已被占用 ⇒ 拒绝执行（EXIT=1）
+     ⇒ ★ 事后核对：在役容器仍在（Up）、public 表数 645 完好
+     ⇒ ★ 隔离补丁被证明有效（★ 正是首版出事的那条路径）
+  M3 ★ 正常路径（自己的临时容器）⇒ PASS
+     ✔ 会话分析物化视图 4 个 ✔ session_summaries.total_credits_charged 在
+     ✔ minimax-m3.1-flash 在位且 featured=TRUE  ℹ public 表数：576
+     ⇒ ★ 实测墙钟 36.8s（real 0m36.787s）★ ⇒ 这是它进慢门族而不进快门族的读数依据
+★ 调用方：★ make guards-fresh-install（★ 进 make guards 慢门族、★ 不进 guards-fast
+  ⇒ ★ codeup 载体的 4 核预算不受影响）★ ＋ 官方门 verify.sh 显式一行
+  （★ 与「切流状态机门」同款处理：★ 单列 Makefile target ＋ 官方门一行）
+★ 为什么**不**接进 .workflow/main-verify.yml（★ 真载体）：★ 真载体是 codeup Flow 的
+  **托管构建容器**（public/cn-eastwood2_4c8g_linux_x86_64）⇒ ★★ 仓内**没有任何证据**
+  表明它有 docker 守护进程 ⇒ ★★ 若接进去却只能 SKIP ⇒ 「门自称有牙、实则恒绿」
+  ⇒ ⇒ 「给它一个能起 PG 的执行环境」是**环境/成本决策**，留给 owner。
+
+--------------------------------------------------------------------------------
+⑲ ★★★★ ★★ 首版自伤事故：★★ 误删了在役开发库容器（★ 共三次）★★ ★ 恢复与逐项对拍
+--------------------------------------------------------------------------------
+★ 三个环节（★ 首版写法 ⇒ 后果）：
+  ① 没传容器名 ⇒ ★ 吃了 e2e-bootstrap 的**默认容器名 llm-gateway-pg**
+     ⇒ ★★ 本机恰好有一个**在役的、多项目共用的开发库容器**同名 ⇒ ★★ 门把自己的安装
+        跑到了那台在役库上
+  ② 启动前 `docker rm -f "$CONTAINER_NAME"` ⇒ ★★ **撞名时把别人的容器删掉**（第一次）
+  ③ 退出 trap `docker rm -f "$CONTAINER_NAME"` ⇒ ★★ **拒绝执行的路径上 trap 仍删**
+     （第二、三次）⇒ ★★ ⇒ **只堵启动路径不够**
+
+★ 后果评估（★ 逐条查过）：
+  ★ 触发迁移 388 ⇒ ★ **幂等空操作**（★ 它的 ADD COLUMN IF NOT EXISTS 被守卫跳过、
+    ★ 实测 request_logs / request_logs_hot 上都没有 billed_despite_cancellation 列）
+  ★ 触发迁移 392 ⇒ ★ **单事务** ⇒ ★ 失败即**整体回滚**
+  ★★ ⇒ **开发库零持久变更**（★ 实测：★ 当天 schema_migrations 记账行 0 条）
+  ★★ ⇒ ★★ 但「在役容器没了」本身是**真实破坏**（★ 本机开发环境、★ 多项目共用的库）
+
+★ 恢复（★ 不手搓参数）：
+  ① 取原容器权威参数（★ 本会话早期那条取证任务的 docker inspect 输出）：
+     image=kx-citus-pg17:offline-arm64 / ShmSize=67108864 / **无端口映射** /
+     网络=默认 run_default / mount=/Users/niuer/kaixuan/postgres:/var/lib/postgresql/data
+  ② 确认无 postgres 进程在跑 ⇒ 移走**陈旧的** postmaster.pid（★ 其中的 PID 是 docker 的 1）
+  ③ 用**原参数**重建（★ 仓内规范脚本 scripts/local-dev/recreate-llm-gateway-pg.sh 的
+     网络归属 shared-infra 与原容器不同、★ 且它硬编码的 envs 路径已随工作区重组失效
+     ⇒ ⇒ 按原参数复原更忠实）
+  ④ 逐项对拍（★ 与误删前读数逐项一致）：
+       public 表数 = 645        库大小 = 735 MB
+       schema_migrations = 121 行 / 最大版本 = 992
+       models_canonical = 280 行    会话分析物化视图 = 4 个
+       candidate_failure_logs = 21 列 / candidate_failure_logs_hot = 21 列
+
+★ 两道隔离补丁（★ 写死在门的第一条判据里）：
+  ① **显式传容器名**（E2E_PG_CONTAINER）⇒ 绝不吃工具默认值
+  ② **装前断言目标库确实是空的**（public 表数必须为 0 ⇒ 非空即拒绝）
+  ③ **容器名撞车即拒绝执行，一个字都不删**
+  ④ **清理只按【我们自己的容器 ID】删**（★ 名字被别人抢走也不会误删）
+
+★ 另外两个当场抓到的自身缺陷（★ 同样如实记录）：
+  ★ bash 的 `$VAR` 吞全角字符：★ `note "…$CONTAINER_NAME（★ …"` ⇒ ★★ bash + UTF-8 locale
+    下**全角括号被吞进变量名** ⇒ `unbound variable`
+    ⇒ ★★ **仓里早就有这道门**（scripts/guards/check-shell-fullwidth-var.sh ＋ Go 门
+    cjk_var_expansion_test.go）⇒ ★★ **⇒ 是我没跑它**（★ 「仓里有门」≠「我跑了门」
+    —— ★★ 本轮的核心通用式在我自己身上又犯了一次）⇒ ⇒ 改法：★ 全部改成 ${VAR} ＋
+    跑仓里那道门（★ 现状：★ ✓ 无隐患）
+  ★ **管道吃掉退出码**：★ `bash 门.sh | tail -N` ⇒ ★★ `$?` 变成 tail 的退出码 ⇒ ★★
+    **失败被伪装成 EXIT=0** ⇒ ★★ ⇒ 门内改 set -euo pipefail ＋ **ERR trap**
+    （★ 任何意外错误立刻带行号判红、★ 绝不静默 0）＋ ★ 调用方不 pipe
+
+--------------------------------------------------------------------------------
+⑳ ★★★ 第三个发现：★ 392 在「列序漂移的老库」上恒失败（★ 而空库上恒过）
+--------------------------------------------------------------------------------
+★ 根因（★ 392 的视图）：
+    CREATE VIEW candidate_failure_logs_with_current_month AS
+    SELECT * FROM candidate_failure_logs_hot
+    UNION ALL
+    SELECT * FROM candidate_failure_logs;
+  ⇒ ★★ UNION ALL **逐位置比类型** ⇒ ★★ 两表列序一旦错位（★ 哪怕列数相同）⇒ 视图必炸
+    （★ 实测报错：UNION types integer and text cannot be matched）
+
+★ 实测对照（本机开发库 vs 全新空库）：
+  ★ 开发库：两表**列数相同（21 vs 21）**★ 但第 19–21 列**顺序不同**
+      hot  = aggregation_id:bigint / extracted_upstream_status_code:integer / diagnosed_error_kind:text
+      父表 = extracted_upstream_status_code:integer / diagnosed_error_kind:text / aggregation_id:bigint
+    ⇒ ★★ 位置 19 起类型对不上 ⇒ 视图创建失败
+  ★ 空库：两表**同序** ⇒ ★★ 视图建得出来
+
+★ 生产侧（211 实测）：★ **无恙** —— ★ 视图在、★ 两表**同序**（21 vs 21）
+  ⇒ ★★ 392 在 211 上重跑无害（★ 它**从不自记账** ⇒ 每次增量都重跑、★ 但每次都成功
+  ⇒ ★ 无害但浪费）
+
+★ ★★★★ ⇒ 「空库」与「老库」是两个不同的世界，★ 一道门只能覆盖一个：
+  ★★ 「空库装得出来」≠「老库升得上去」（★ 392 就是反例）
+  ⇒ ★★ 「空库新装门」必要（★ 抓 956/981 那类）★ 但**不充分**（★ 抓不到「老库列漂移」）
+  ⇒ ★★★ 还缺一类门：★ 对着「有历史的库」跑升级（★ 需要生产同构的库或克隆 ⇒ 环境/成本议题）
+
+★ ★★★★ ★★ 2026-11-23 追加：**「392 在漂移库上必失败」升级为真库实测 ＋ 一处自我订正** ★★
+--------------------------------------------------------------------------------
+★ 【订正】★ 本段初版写「★ 这一类门在仓里缺位」⇒ ★★ **不准确** ⇒ ★★ **仓里早有静态那半**：
+     ★ sql/migrations/startup/hot_surface_select_star_contract_test.go
+       （★ 2026-10-06 审计 §10.48）★
+     ★ ① 禁止【新建】跨面 SELECT * UNION ALL 视图（★ 新视图必须逐列枚举）★
+     ★ ② 把【已存在的历史写法】登记进 legacyCrossSurfaceSelectStar 钉死
+       ⇒ ★ ★ 392 就在那张表里：
+          candidate_failure_logs_with_current_month
+            → 392_candidate_failure_logs_monthly_partition.sql
+     ★ ③ 另有反向门 TestLegacyCrossSurfaceSelectStarRegistryIsExact
+       （★ 防登记表空转或写错名字导致本门恒绿）
+     ★ ★★ 实测（★ 2026-11-23 15:19 本机）：★ PASS（★ 两个用例全绿）
+     ⇒ ★★ ⇒ **真正的缺口是【运行时那半】**：★ 登记表记下了「哪些视图押在列序巧合上」，
+       ★ 但★ 没有任何一道门在真实的老库上核过那些巧合今天是否还成立。
+
+★ 【只读实测 · 本机开发库已漂】★ 读 llm-gateway-pg（★ 只读）：
+     candidate_failure_logs      19|extracted_upstream_status_code|integer
+                                  20|diagnosed_error_kind|text
+                                  21|aggregation_id|bigint
+     candidate_failure_logs_hot  19|aggregation_id|bigint
+                                  20|extracted_upstream_status_code|integer
+                                  21|diagnosed_error_kind|text
+     ⇒ ★★ 列数相同（21 vs 21）★ 但第 19–21 列顺序不同
+     ⇒ ★★ 位置 20 起类型对不上（★ text vs integer）⇒ ★★ 视图重建必炸
+
+★ 【真库实测 · 隔离容器 l30-fresh-e2e · 零风险】★★
+   手法：★ 用上面两表的【真实列定义与真实列序】在隔离容器里造表
+          （★ schema l32_probe.cfl_par / cfl_hot / cfl_par_aligned）
+        ★ 再跑 392 的【原样视图 DDL】（★ SELECT * FROM hot UNION ALL SELECT * FROM par）
+     臂 A（★ 列序漂移 · 本机开发库的形态）：
+        CREATE VIEW l32_probe.cfl_v AS
+          SELECT * FROM l32_probe.cfl_hot
+          UNION ALL
+          SELECT * FROM l32_probe.cfl_par;
+        ⇒ ★★ ERROR:  UNION types integer and text cannot be matched
+           LINE 1: ... SELECT * FROM l32_probe.cfl_hot UNION ALL SELECT * FROM l32_probe.cfl_par
+     臂 B（★ 两表同序 · 空库/对齐库的形态）：
+        CREATE VIEW l32_probe.cfl_v_ok AS
+          SELECT * FROM l32_probe.cfl_hot
+          UNION ALL
+          SELECT * FROM l32_probe.cfl_par_aligned;
+        ⇒ ★★ CREATE VIEW（★ 成功）
+     ⇒ ★★★★ ⇒ 「392 在列序漂移的老库上必失败」★ **不再是读码推断、★ 是真库读数**
+
+★ 【零环境替代方案 · 已实测排除】★
+   ★ 仓内没有任何生产同构的 PG dump 夹具
+     （★ 实测扫过 sql/**、tests/**、deploy/** ⇒ 无 dump）
+   ⇒ ★★ ⇒ 「对着有历史的库跑升级」这道门 ⇒ ★ 必然要 owner 授权一个环境
+   ★ ★★ 但有一条【更便宜的副产品】（★ 本轮已实测可行）：
+     只要给一个【能读列序】的库 ⇒ ★ 就能跑一道
+     「★ 登记表里每个 legacy 跨面视图对、在真库上核列序是否仍对齐 ★」的【只读】对拍门
+     （★ 本轮已用只读 SQL 在本机开发库上做过一次 ⇒ ★★ 立刻抓出 candidate_failure_logs 这一对已漂移）
+     ⇒ ★★ ⇒ 它不需要生产同构库也能做、★ 且能立刻用
+       （★ 前提：★ 有一个【允许读】的库地址 ⇒ ★ 环境授权轴）
+
+★ 【门咬门 · 一道门当场点出另一道门的问题】★★
+   现象：★ 新门上线后跑全量 scripts/ursmcheck ⇒ ★★ TestScriptFamilyCompileSitesUseDedicatedGoCache
+         ★★ 当场报红：「★ 扫到 197 个【在作用域内的编译型脚本】，登记簿记的是 196 个
+         ★⇒ ⇒【作用域漂了】⇒ ⇒★ 本门此刻盖的**不是**登记册上那一套」
+   根因：★ 本轮新门跑 `go run ./cmd/e2e-bootstrap` ⇒ ⇒ **它就是编译型脚本** ⇒ ⇒
+         ★ 而它当时**没有**把 GOCACHE 指向专用目录 ⇒ ⇒ 违反该门判据③
+   处置：★ ① 门脚本改走仓内共享入口 scripts/lib/gocache.sh 的 `gocache_use script`
+            （★ 与仓内同族脚本同款写法：check-win-test-baseline.sh 等）
+         ★ ② 登记簿 scripts/ursmcheck/gocache_script_family_exclusions.json 的
+            measuredCompileFiles 按【已提交树实测】196 → **197**
+            （★ ★★ 不是预调大：★ 增量就是本轮自己新增的那 1 个 ⇒ ⇒ 逐条可查 ⇒ ⇒
+            ★ ★★ 登记簿 note 里也把这条来源写清楚了 ⇒ ⇒「下一个人不必猜」）
+         ★ ③ 复跑 ⇒ ✔ PASS（★ 0.79s）
+   ⇒ ★★ ⇒ 这条插曲本身就是一道证据：★ 新门不是「加个脚本就完事」★
+   ⇒ ★★ ⇒ 它落进仓里之后**立刻被别的门审视了一遍、★ 而且被点出的是真问题**
+   ⇒ ★★ ⇒ 这正是「门要互相咬合」的意义：★ 新东西进来时、★ 旧门会替你看它合不合规

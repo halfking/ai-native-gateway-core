@@ -278,7 +278,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
+guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -564,6 +564,35 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 .PHONY: guards-deploy-state-machine
 guards-deploy-state-machine: ## 切流状态机门（慢门，实测 ≈270s ⇒ 只进 make guards 与 verify.sh）
 	@bash scripts/run-bash4-gate.sh tests/deploy_seamless_state_machine_test.sh
+
+# ── 空库新装烟测门（L29 轮新增）──────────────────────────────────────────
+#
+# ★ 2026-11-23 L29 轮：**「新装会炸」这件事此前没有任何一道门能红**。
+#
+# ★ 起因（★ 真库空库实测）：★ 用**安装器真实路径**在全新空库上装，
+#   ★ 第 1 轮止步于 `956`（★ 数据依赖守卫），★ 旁路后再止步于 `981`
+#   （★ 迁移集内部顺序倒置）⇒ ★★ 而**生产好好的**（★ 历史顺序巧合）
+#   ⇒ ★★ ⇒ 仓里必须有门**自己跑空库安装**。
+#
+# ★ 为什么是**慢门**、不进 `guards-fast`：★ 本门要起一次性 PG 容器 ＋ 真装
+#   392 条迁移（★ 本机实测 **36.8s**（★ 2026-11-23，★ `real 0m36.787s`），★ CI 4 核上更慢）
+#   ⇒ ★★ 进快门族会撑爆
+#   codeup 载体的 4 核预算（★ 同族先例：`guards-deploy-state-machine` 慢门）
+#   ⇒ ★★ **⇒ 它进 `make guards` 与官方门 `verify.sh`，★ 不进 `guards-fast`。**
+#
+# ★ 为什么**不**接进 `.workflow/main-verify.yml`（★ 真载体）：★ 真载体是
+#   codeup Flow 的**托管构建容器**（`public/cn-eastwood2_4c8g_linux_x86_64`），
+#   ★★ **仓内没有任何证据表明它有 docker 守护进程** ⇒ ★★ 若接进去却只能 SKIP，
+#   ★ 那就是「★ 门自称有牙、实则恒绿 ★」⇒ ★★ **⇒ 接入真载体的前提是
+#   ★ 「给 codeup 载体一个能起 PG 的执行环境」，★ 那是环境/成本决策、★ 不是代码问题。**
+#
+# ★ ★★ **本门在有 docker 的机器上是**真门**：★ 真起容器、★ 真跑安装器真实路径、
+#   ★ 真断言装出来的东西对不对（★ 会话分析 4 个物化视图 / total_credits_charged 列 /
+#   ★ minimax-m3.1-flash 在位且 featured）⇒ ★★ **⇒ 任何新迁移再引入数据依赖或
+#   ★ 顺序倒置，★ 这道门当场红。**
+.PHONY: guards-fresh-install
+guards-fresh-install: ## 空库新装烟测门（慢门：起一次性 PG ＋ 真装 392 条迁移 ⇒ 只进 make guards 与 verify.sh）
+	@bash scripts/checks/fresh-install-smoke.sh
 
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
 #

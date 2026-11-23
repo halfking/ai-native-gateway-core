@@ -315,6 +315,20 @@ bash tests/scan_secrets_regex_determinism_test.sh
 echo "[verify] deploy seamless state machine gate (slow gate, via bash4 wrapper)"
 bash scripts/run-bash4-gate.sh tests/deploy_seamless_state_machine_test.sh
 
+# ★ 空库新装烟测门（★ 2026-11-23 L29 轮新增 ★ 慢门：起一次性 PG ＋ 真装 392 条迁移 ★）。
+#   ★ 起因：★ 「迁移在生产 apply 成功」≠「迁移集能装进空库」★ ⇒ ★ 实测新装在
+#     `956`（数据依赖守卫）与 `981`（迁移集内部顺序倒置）两处**硬失败** ★
+#     ⇒ ★ 而生产靠「历史顺序巧合」幸存 ⇒ ★ ⇒ 空库新装此前**没有任何一道门能红**。
+#   ★ 与上面那条切流状态机门**同处理**：★ 单列 Makefile target `guards-fresh-install`
+#     （进 `make guards` 慢门族）＋ 官方门显式一行 ★ ⇒ ★ **不进 CI 快门族**
+#     （★ codeup 载体的 4 核预算会被这 ≈37s 的 PG 安装（★ 本机实测 36.8s）挤占 ★ ★ 且真载体是托管构建容器、
+#     ★ ★ 仓内无证据表明它有 docker ⇒ ★ 接进载体属环境/成本决策 ⇒ ★ ★ 待 owner 拍板 ★★）。
+#   ★ 三态：★ 无 docker 守护进程 ⇒ **显式 SKIP**（rc=0，★ 不伪装成通过 ★）；
+#     ★ 装失败/断言不满足 ⇒ FAIL（rc=1）；★ 全过 ⇒ PASS（rc=0）。
+#   ★ 详见 docs/audit/2026-11-20-会话分析系统前端实施报告.md §7.30。
+echo "[verify] fresh-install smoke gate (slow gate: real empty-db install of all startup migrations)"
+bash scripts/checks/fresh-install-smoke.sh
+
 echo "[verify] session storage audit gate decision contracts"
 bash tests/session_storage_audit_gate_test.sh
 echo "[verify] session storage audit integration suite (required coherence)"
