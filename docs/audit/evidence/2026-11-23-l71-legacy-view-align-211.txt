@@ -1,0 +1,135 @@
+# 证据：★ 「legacy 跨面视图对」在生产 211 / 252 上的活库读数（★ 纯只读）★
+# 生成：★ 2026-11-23 L35 轮 ｜ 门：★ sql/migrations/startup/legacy_cross_surface_live_alignment_test.go ★
+# ★ 口径：★ 判据＝【两表错位 ⇒ 该迁移重放必炸 ⇒ 必须被所有会投递它的通道跳过】★
+# ★ ★ 「会不会被投递」按通道的真实分支建模（★ 部署通道：指纹一致⇒跳过／指纹不同⇒内容重放／遗留行⇒登记在 legacy_content_replays 才重放／无行⇒投递；★ 安装器 F3：指纹一致或版本已记账⇒跳过）★ ★
+
+## ① 逐对位置对齐（hot|parent|hot_cols|parent_cols|type_mismatch|pos_set_diff）
+### 211
+candidate_failure_logs_with_current_month|21|21|4|5|0|t|f
+credential_model_index_with_current_month|17|17|0|0|0|t|f
+credit_ledger_with_current_month|13|13|0|0|0|t|f
+model_probe_runs_with_current_month|13|13|0|0|0|t|f
+request_logs_bodies_with_current_month|0|0|0|0|0|f|f
+request_logs_with_current_month|0|0|0|0|0|t|f
+request_wal_with_current_month|17|17|0|0|0|t|f
+routing_decision_log_with_current_month|36|36|0|0|0|t|f
+tool_usage_stats_with_current_month|11|11|0|0|0|t|f
+usage_ledger_with_current_month|25|20|1|1|5|t|f
+### 252
+candidate_failure_logs_with_current_month|21|21|3|4|0|t|f
+credential_model_index_with_current_month|17|17|0|0|0|t|f
+credit_ledger_with_current_month|13|13|0|0|0|t|f
+model_probe_runs_with_current_month|13|13|0|0|0|t|f
+request_logs_bodies_with_current_month|0|0|0|0|0|f|f
+request_logs_with_current_month|0|0|0|0|0|t|f
+request_wal_with_current_month|17|17|0|0|0|t|f
+routing_decision_log_with_current_month|36|36|0|0|0|t|f
+tool_usage_stats_with_current_month|11|11|0|0|0|t|f
+usage_ledger_with_current_month|25|20|1|1|5|t|f
+
+## ② candidate_failure_logs 族逐位置明细（★ 211）
+--- ① candidate_failure_logs 族：逐位置对照 ---
+1|id|int8|id|int8|same
+2|request_id|text|request_id|text|same
+3|ts|timestamptz|ts|timestamptz|same
+4|tenant_id|text|tenant_id|text|same
+5|credential_id|int4|credential_id|int4|same
+6|provider_id|int4|provider_id|int4|same
+7|raw_model_name|text|raw_model_name|text|same
+8|attempt_index|int4|attempt_index|int4|same
+9|error_kind|text|error_kind|text|same
+10|error_message|text|error_message|text|same
+11|upstream_status_code|int4|upstream_status_code|int4|same
+12|upstream_response_body|text|upstream_response_body|text|same
+13|upstream_response_preview|text|upstream_response_preview|text|same
+14|latency_ms|int4|latency_ms|int4|same
+15|retryable|bool|retryable|bool|same
+16|context|jsonb|context|jsonb|same
+17|aggregation_id|int8|session_id|text|TYPE-MISMATCH
+18|session_id|text|per_attempt_latency_ms|int4|TYPE-MISMATCH
+19|per_attempt_latency_ms|int4|extracted_upstream_status_code|int4|NAME-DIFF
+20|extracted_upstream_status_code|int4|diagnosed_error_kind|text|TYPE-MISMATCH
+21|diagnosed_error_kind|text|aggregation_id|int8|TYPE-MISMATCH
+--- ② usage_ledger 族：逐位置对照 ---
+1|request_id|text|request_id|text|same
+
+## ③ candidate_failure_logs 族逐位置明细（★ 252）
+--- ① candidate_failure_logs 族：逐位置对照 ---
+1|id|int8|id|int8|same
+2|request_id|text|request_id|text|same
+3|ts|timestamptz|ts|timestamptz|same
+4|tenant_id|text|tenant_id|text|same
+5|credential_id|int4|credential_id|int4|same
+6|provider_id|int4|provider_id|int4|same
+7|raw_model_name|text|raw_model_name|text|same
+8|attempt_index|int4|attempt_index|int4|same
+9|error_kind|text|error_kind|text|same
+10|error_message|text|error_message|text|same
+11|upstream_status_code|int4|upstream_status_code|int4|same
+12|upstream_response_body|text|upstream_response_body|text|same
+13|upstream_response_preview|text|upstream_response_preview|text|same
+14|latency_ms|int4|latency_ms|int4|same
+15|retryable|bool|retryable|bool|same
+16|context|jsonb|per_attempt_latency_ms|int4|TYPE-MISMATCH
+17|per_attempt_latency_ms|int4|extracted_upstream_status_code|int4|NAME-DIFF
+18|extracted_upstream_status_code|int4|diagnosed_error_kind|text|TYPE-MISMATCH
+19|diagnosed_error_kind|text|context|jsonb|TYPE-MISMATCH
+20|session_id|text|session_id|text|same
+21|aggregation_id|int8|aggregation_id|int8|same
+--- ② usage_ledger 族：逐位置对照 ---
+1|request_id|text|request_id|text|same
+
+## ④ 两本台账里这批 legacy 版本
+### 211
+--- schema_migrations 里这批 legacy 版本 ---
+--- 部署台账里这批 legacy 文件 ---
+392_candidate_failure_logs_monthly_partition.sql
+### 252
+--- schema_migrations 里这批 legacy 版本 ---
+341
+344
+345
+346
+347
+353
+354
+386
+392
+625
+--- 部署台账里这批 legacy 文件 ---
+
+## ⑤ 门自己的读数（★ 211 ＝ 绿 / 252 ＝ 红）
+--- 211 ｜ CHANNELS=deploy,install ---
+legacy_cross_surface_live_alignment_test.go:616: ★ 环境 211 ｜通道 [deploy install] ｜对数 11
+legacy_cross_surface_live_alignment_test.go:617: ★ 渠道清单：部署通道 360 个文件（重放清单 11 个）｜安装器 398 个文件
+legacy_cross_surface_live_alignment_test.go:618: ★ 台账读数：deploy 360 行 ｜install 155 行
+legacy_cross_surface_live_alignment_test.go:627:   skipped    candidate_failure_logs_with_current_month（392_candidate_failure_logs_monthly_partition.sql）：两表错位（类型错位 4 处、位置差 0 处）⇒ ★ 重放必炸；★ 但本环境的通道都不会投递它 ⇒ 绿（★ deploy：部署台账指纹与当前文件一致 ⇒ 通道跳过｜install：部署台账指纹与安装器要跑的那份字节一致 ⇒ F3 跳过）
+legacy_cross_surface_live_alignment_test.go:627:   aligned    credential_model_index_with_current_month（347_credential_model_index_hot_independence.sql）：两表对齐（17 列 × 17 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    credential_model_index_with_current_month（354_credential_model_index_hot_independence.sql）：两表对齐（17 列 × 17 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    credit_ledger_with_current_month（349_credit_ledger_hot_independence.sql）：两表对齐（13 列 × 13 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    model_probe_runs_with_current_month（386_model_probe_runs_hot_independence.sql）：两表对齐（13 列 × 13 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   n/a        request_logs_bodies_with_current_month（353_request_logs_bodies_hot_independence.sql）：有一边不在（hot 列数 0 / 父表列数 0）⇒ 这对已经下线
+legacy_cross_surface_live_alignment_test.go:627:   n/a        request_logs_with_current_month（341_hot_table_independence.sql）：有一边不在（hot 列数 0 / 父表列数 0）⇒ 这对已经下线
+legacy_cross_surface_live_alignment_test.go:627:   aligned    request_wal_with_current_month（345_request_wal_hot_independence.sql）：两表对齐（17 列 × 17 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    routing_decision_log_with_current_month（346_routing_decision_log_hot_independence.sql）：两表对齐（36 列 × 36 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    tool_usage_stats_with_current_month（348_tool_usage_stats_hot_independence.sql）：两表对齐（11 列 × 11 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   skipped    usage_ledger_with_current_month（344_usage_ledger_hot_independence.sql）：两表错位（类型错位 1 处、位置差 5 处）⇒ ★ 重放必炸；★ 但本环境的通道都不会投递它 ⇒ 绿（★ deploy：不在部署通道的 files=() 里｜install：不在安装器的 StartupFiles 里）
+--- PASS: TestLegacyCrossSurfaceLiveAlignment (1.18s)
+--- 252 ｜ CHANNELS=deploy,install ---
+legacy_cross_surface_live_alignment_test.go:616: ★ 环境 252 ｜通道 [deploy install] ｜对数 11
+legacy_cross_surface_live_alignment_test.go:617: ★ 渠道清单：部署通道 360 个文件（重放清单 11 个）｜安装器 398 个文件
+legacy_cross_surface_live_alignment_test.go:618: ★ 台账读数：deploy 49 行 ｜install 541 行
+legacy_cross_surface_live_alignment_test.go:624: ★★ 地雷：candidate_failure_logs_with_current_month（★ 392_candidate_failure_logs_monthly_partition.sql｜★ 版本 392）★★
+两表错位（类型错位 3 处、位置差 0 处）⇒ ★ 重放必炸；★★ 而通道 deploy **会投递它** ⇒ ★★ 地雷（★ deploy：部署台账无行 ⇒ 通道会投递｜install：版本已在 schema_migrations 台账 ⇒ 跳过）
+legacy_cross_surface_live_alignment_test.go:627:   aligned    credential_model_index_with_current_month（347_credential_model_index_hot_independence.sql）：两表对齐（17 列 × 17 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    credential_model_index_with_current_month（354_credential_model_index_hot_independence.sql）：两表对齐（17 列 × 17 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    credit_ledger_with_current_month（349_credit_ledger_hot_independence.sql）：两表对齐（13 列 × 13 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    model_probe_runs_with_current_month（386_model_probe_runs_hot_independence.sql）：两表对齐（13 列 × 13 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   n/a        request_logs_bodies_with_current_month（353_request_logs_bodies_hot_independence.sql）：有一边不在（hot 列数 0 / 父表列数 0）⇒ 这对已经下线
+legacy_cross_surface_live_alignment_test.go:627:   n/a        request_logs_with_current_month（341_hot_table_independence.sql）：有一边不在（hot 列数 0 / 父表列数 0）⇒ 这对已经下线
+legacy_cross_surface_live_alignment_test.go:627:   aligned    request_wal_with_current_month（345_request_wal_hot_independence.sql）：两表对齐（17 列 × 17 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    routing_decision_log_with_current_month（346_routing_decision_log_hot_independence.sql）：两表对齐（36 列 × 36 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   aligned    tool_usage_stats_with_current_month（348_tool_usage_stats_hot_independence.sql）：两表对齐（11 列 × 11 列）⇒ 这条迁移今天仍可重放
+legacy_cross_surface_live_alignment_test.go:627:   skipped    usage_ledger_with_current_month（344_usage_ledger_hot_independence.sql）：两表错位（类型错位 1 处、位置差 5 处）⇒ ★ 重放必炸；★ 但本环境的通道都不会投递它 ⇒ 绿（★ deploy：不在部署通道的 files=() 里｜install：不在安装器的 StartupFiles 里）
+legacy_cross_surface_live_alignment_test.go:633: ★ 本环境有 1 颗「重放必炸且没人跳过」的地雷
+--- FAIL: TestLegacyCrossSurfaceLiveAlignment (17.67s)
