@@ -78,6 +78,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/httpwrite"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -637,17 +638,19 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 	}
 
 	if proxyFunc != nil {
+		transport := &http.Transport{
+			Proxy:                 proxyFunc,
+			IdleConnTimeout:       90 * time.Second,
+			ResponseHeaderTimeout: probeTimeout,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		}
+		httpwrite.TrackTransport(transport)
 		w.probeClient = &http.Client{
-			Timeout: probeTimeout,
-			Transport: &http.Transport{
-				Proxy:                 proxyFunc,
-				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: probeTimeout,
-				DialContext: (&net.Dialer{
-					Timeout:   10 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-			},
+			Timeout:   probeTimeout,
+			Transport: transport,
 		}
 	} else {
 		w.probeClient = w.client
@@ -3335,7 +3338,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	// (real requests through proxy → timeout), causing the "models briefly
 	// work then 5xx" pattern for non-domestic providers like apiclaude.cc
 	// and integrate.api.nvidia.com.
-	resp, err := platformProbeDo(ctx, w.probeClient, req, credID, bodyModel, "node_probe_direct")
+	resp, err := platformProbeDo(withPlatformProbeProvider(ctx, providerID), w.probeClient, req, credID, bodyModel, "node_probe_direct")
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		code, timedOut := classifyProbeNetworkError(err)
@@ -3360,7 +3363,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		}
 		// 同协议多 pep：primary 成功后再确认兄弟端点（现网 pep>1=0 ⇒ 空操作）。
 		if r.ok {
-			r = w.confirmSiblingEndpoints(ctx, r, plain, protocol, providerID, baseURL, bodyModel, shape)
+			r = w.confirmSiblingEndpoints(ctx, r, plain, protocol, credID, providerID, baseURL, bodyModel, shape)
 		}
 		return r
 	}
@@ -3378,7 +3381,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	if responsesProbe &&
 		providercap.ResponsesUnsupportedError(resp.StatusCode, string(response)) {
 		r.supportsResponses = boolEvidence(false)
-		fallback := responsesChatFallbackRound(ctx, w.probeClient, plain, baseURL, bodyModel)
+		fallback := responsesChatFallbackRound(ctx, w.probeClient, plain, baseURL, bodyModel, credID)
 		r.chatFallback = true
 		r.ok, r.observationOnly = fallback.OK, fallback.Inconclusive
 		r.httpStatus = fallback.HTTPStatus
@@ -3397,7 +3400,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		}
 	}
 	if r.ok {
-		r = w.confirmSiblingEndpoints(ctx, r, plain, protocol, providerID, baseURL, bodyModel, shape)
+		r = w.confirmSiblingEndpoints(ctx, r, plain, protocol, credID, providerID, baseURL, bodyModel, shape)
 	}
 	return r
 }

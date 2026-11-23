@@ -412,6 +412,7 @@ func nextHalfHour() time.Time {
 
 type v2Snapshot struct {
 	ID                     int
+	ProviderID             int
 	Status                 string
 	LifecycleStatus        string
 	ManualDisabled         bool
@@ -445,7 +446,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		       COALESCE(c.default_probe_model, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
 		       COALESCE(p.catalog_code, ''),
-		       COALESCE(c.probe_consecutive_failures, 0)
+		       COALESCE(c.probe_consecutive_failures, 0), p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
@@ -487,7 +488,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
 			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
-			&s.ProbeConsecutiveFailures); err != nil {
+			&s.ProbeConsecutiveFailures, &s.ProviderID); err != nil {
 			if dbrows.SkipOrFail("bg.CredentialProbeV2.cycleAll", err) {
 				continue
 			}
@@ -863,6 +864,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 	if s.BaseURL == "" {
 		return false, "empty base URL"
 	}
+	ctx = withPlatformProbeProvider(ctx, s.ProviderID)
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	// R61 S2-F4 续（2026-09-24）：读面归一——availability_state 的裁决者
@@ -894,7 +896,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					continue
 				}
 				providercap.ApplyAuthHeaders(req, desc, s.APIKey)
-				resp, err := httpClient.Do(req)
+				resp, err := platformProbeDo(ctx, httpClient, req, s.ID, s.DefaultProbeModel, "credential_probe_v2_models")
 				if err != nil {
 					// Network error — record and try next URL within this attempt.
 					lastErr = fmt.Sprintf("models endpoint network error: %s", err.Error())
@@ -952,7 +954,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 				providercap.WarnBlocked("probe_v2.chat", msgURL, reason)
 				return false, "egress blocked: " + reason
 			}
-			return c.miniAnthropic(ctx, httpClient, s.APIKey, model, msgURL, providercap.ProbePingMaxTokens)
+			return c.miniAnthropic(ctx, httpClient, s.APIKey, model, msgURL, providercap.ProbePingMaxTokens, s.ID)
 		}
 		probeURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
 		if blocked, reason := providercap.EgressBlocked(probeURL); blocked {
@@ -974,11 +976,11 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					providercap.WarnBlocked("probe_v2.embeddings", embURL, reason)
 					return false, "egress blocked: " + reason
 				}
-				return c.miniEmbedding(ctx, httpClient, s.APIKey, model, embURL)
+				return c.miniEmbedding(ctx, httpClient, s.APIKey, model, embURL, s.ID)
 			}
 		}
 		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
-			ok, errMsg, respStatus, _ := c.miniResponses(ctx, httpClient, s.APIKey, model, probeURL)
+			ok, errMsg, respStatus, _ := c.miniResponses(ctx, httpClient, s.APIKey, model, probeURL, s.ID)
 			if ok {
 				// F04 §3.4 reverse recovery: this probe's Responses attempt
 				// succeeded, so any prior "unsupported" verdict for this node
@@ -999,7 +1001,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					// 保留原 responses 失败上下文：降级被跳过只作附注，不覆盖归因。
 					return false, errMsg + "; chat fallback skipped (egress blocked: " + reason + ")"
 				}
-				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, model, chatURL, providercap.ProbePingMaxTokens)
+				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, model, chatURL, providercap.ProbePingMaxTokens, s.ID)
 				if chatOK {
 					return true, ""
 				}
@@ -1012,7 +1014,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 			}
 			return ok, errMsg
 		}
-		return c.miniChat(ctx, httpClient, s.APIKey, model, probeURL, providercap.ProbePingMaxTokens)
+		return c.miniChat(ctx, httpClient, s.APIKey, model, probeURL, providercap.ProbePingMaxTokens, s.ID)
 	}
 
 	runChat := func() (bool, string) {
@@ -1245,7 +1247,7 @@ func extractStatusCode(s string) (int, bool) {
 // ⇒ 凭据探针也要能按模态选形态，否则一个 embedding-only 凭据会被自己的
 // 探针判死。回包用 **embeddings 的 wire** 校验（credential_probe_response_validation.go
 // 的 embeddings 臂——此前这条臂**没有任何调用方**）。
-func (c *CredentialProbeV2) miniEmbedding(ctx context.Context, httpClient *http.Client, apiKey, model, embeddingsURL string) (bool, string) {
+func (c *CredentialProbeV2) miniEmbedding(ctx context.Context, httpClient *http.Client, apiKey, model, embeddingsURL string, credIDs ...int) (bool, string) {
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"model": model,
 		"input": "ping",
@@ -1258,7 +1260,11 @@ func (c *CredentialProbeV2) miniEmbedding(ctx context.Context, httpClient *http.
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := httpClient.Do(req)
+	credID := 0
+	if len(credIDs) > 0 {
+		credID = credIDs[0]
+	}
+	resp, err := platformProbeDo(ctx, httpClient, req, credID, model, "credential_probe_v2_embedding")
 	if err != nil {
 		return false, "embeddings unreachable: " + err.Error()
 	}
@@ -1334,7 +1340,7 @@ func (c *CredentialProbeV2) probeModelModality(ctx context.Context, credID int, 
 	return modality
 }
 
-func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Client, apiKey, model, chatURL string, maxTokens int) (bool, string) {
+func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Client, apiKey, model, chatURL string, maxTokens int, credIDs ...int) (bool, string) {
 	chatBody := map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
@@ -1349,7 +1355,11 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := httpClient.Do(req)
+	credID := 0
+	if len(credIDs) > 0 {
+		credID = credIDs[0]
+	}
+	resp, err := platformProbeDo(ctx, httpClient, req, credID, model, "credential_probe_v2_chat")
 	if err != nil {
 		return false, "chat unreachable: " + err.Error()
 	}
@@ -1387,7 +1397,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 // 'messages'", measured on vapeur).
 //
 // Returns (ok, errMsg, httpStatus, bodyPreview). ok=true on 2xx.
-func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.Client, apiKey, model, responsesURL string) (bool, string, int, string) {
+func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.Client, apiKey, model, responsesURL string, credIDs ...int) (bool, string, int, string) {
 	body := map[string]any{
 		"model":             model,
 		"input":             "ping",
@@ -1402,7 +1412,11 @@ func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := httpClient.Do(req)
+	credID := 0
+	if len(credIDs) > 0 {
+		credID = credIDs[0]
+	}
+	resp, err := platformProbeDo(ctx, httpClient, req, credID, model, "credential_probe_v2_responses")
 	if err != nil {
 		return false, "responses unreachable: " + err.Error(), 0, ""
 	}
@@ -1435,7 +1449,7 @@ func truncateBody(b []byte) string {
 // providers (e.g. minimax /anthropic) which don't expose /v1/chat/completions.
 //
 // Returns (true, "") on 2xx; otherwise the upstream status + body preview.
-func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.Client, apiKey, model, msgURL string, maxTokens int) (bool, string) {
+func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.Client, apiKey, model, msgURL string, maxTokens int, credIDs ...int) (bool, string) {
 	body := map[string]any{
 		"model":      model,
 		"max_tokens": maxTokens,
@@ -1451,7 +1465,11 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 		req.Header.Set("x-api-key", apiKey)
 	}
 	req.Header.Set("anthropic-version", "2023-06-01")
-	resp, err := httpClient.Do(req)
+	credID := 0
+	if len(credIDs) > 0 {
+		credID = credIDs[0]
+	}
+	resp, err := platformProbeDo(ctx, httpClient, req, credID, model, "credential_probe_v2_anthropic")
 	if err != nil {
 		return false, "messages unreachable: " + err.Error()
 	}
@@ -2545,7 +2563,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		       COALESCE(c.default_probe_model, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
 		       COALESCE(p.catalog_code, ''),
-		       COALESCE(c.probe_consecutive_failures, 0)
+		       COALESCE(c.probe_consecutive_failures, 0), p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1
@@ -2565,7 +2583,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
 		&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
-		&s.ProbeConsecutiveFailures,
+		&s.ProbeConsecutiveFailures, &s.ProviderID,
 	)
 	if err != nil {
 		slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",

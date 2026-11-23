@@ -164,21 +164,24 @@ if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   bad "容器名 ${CONTAINER_NAME} 已被占用 ⇒ ★★ 拒绝执行（★ ★ 绝不删除既有容器：★ ★ 首版自伤事故的直接补丁）"
   exit 1
 fi
-if ! docker run -d --name "$CONTAINER_NAME" --shm-size=1g \
+if ! WE_CREATED_ID="$(docker run -d --name "$CONTAINER_NAME" --shm-size=1g \
       -e POSTGRES_USER="$PG_USER" \
       -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
       -e POSTGRES_DB="$PG_DB" \
-      "$PG_IMAGE" >/dev/null 2>&1; then
+      "$PG_IMAGE" 2>/dev/null)"; then
+  WE_CREATED_ID=""
   bad "起一次性 PG 容器失败（★ 镜像 ${PG_IMAGE}）"
   exit 1
 fi
-# ★ 记下**我们自己的**容器 ID（★ 清理只按这个 ID 删，★ 不按名字）
-WE_CREATED_ID="$(docker inspect -f '{{.Id}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+if [ -z "$WE_CREATED_ID" ]; then
+  bad "Docker 未返回新容器 ID"
+  exit 1
+fi
 note "一次性容器：${CONTAINER_NAME}（★ ★ 本门只打它，★ 绝不打任何别的容器）"
 
 ready=0
 for i in $(seq 1 90); do
-  if docker exec "$CONTAINER_NAME" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
+  if docker exec "$WE_CREATED_ID" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
     note "postgres ready after ${i}s"
     ready=1
     break
@@ -187,7 +190,7 @@ for i in $(seq 1 90); do
 done
 if [ "$ready" != "1" ]; then
   bad "postgres 90s 内没就绪"
-  docker logs "$CONTAINER_NAME" 2>&1 | tail -20 >&2 || true
+  docker logs "$WE_CREATED_ID" 2>&1 | tail -20 >&2 || true
   exit 1
 fi
 
@@ -202,7 +205,7 @@ fi
 ntables=""
 attempt=1
 while [ "$attempt" -le 6 ]; do
-  if ntables=$(docker exec "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" -Atc \
+  if ntables=$(docker exec "$WE_CREATED_ID" psql -U "$PG_USER" -d "$PG_DB" -Atc \
         "select count(*) from information_schema.tables where table_schema='public'" 2>/dev/null); then
     break
   fi
@@ -238,7 +241,18 @@ tail -3 "$INSTALL_LOG"
 rm -f "$INSTALL_LOG"
 
 # ── 断言：★ 不只看「没报错」，★ 要看「装出来的东西对不对」────────────
-q() { docker exec "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" -Atc "$1" 2>/dev/null; }
+q() { docker exec "$WE_CREATED_ID" psql -U "$PG_USER" -d "$PG_DB" -Atc "$1" 2>/dev/null; }
+
+check_reconciliation_schema() {
+  local phase="$1" schema_ok
+  if schema_ok=$(q "$(cat scripts/checks/request-reconciliation-schema.sql)") && [ "$schema_ok" = "t" ]; then
+    note "  ✔ ${phase}后日对账迁移和读面齐全"
+  else
+    bad "${phase}后缺少日对账迁移或读面"
+  fi
+}
+
+check_reconciliation_schema "新装"
 
 views=$(q "select count(*) from pg_matviews where matviewname like '%aggregates%'")
 if [ "$views" != "4" ]; then
@@ -290,6 +304,7 @@ note "  ℹ public 表数：${tables:-<空>}"
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 跑第二次安装（★ 增量路径：★ 同一个库、★ 同一个容器）…"
 ledger_before=$(q "select count(*) from schema_migrations")
+<<<<<<< Updated upstream
 RUN2_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-run2.XXXXXX")"
 if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
         go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN2_LOG" 2>&1; then
@@ -301,6 +316,7 @@ if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
   exit 1
 fi
 note "  ✔ 第二次安装成功（★ 增量路径）"
+check_reconciliation_schema "增量"
 
 ledger_after=$(q "select count(*) from schema_migrations")
 if [ "${ledger_before:-0}" != "${ledger_after:-0}" ]; then
@@ -455,6 +471,7 @@ else
     # ★★ 删掉目标文件的版本行 ⇒ ★★ 版本规则不再跳过它 ⇒ ★★ 只剩 F3 能跳
     q "DELETE FROM public.schema_migrations WHERE version = '${DEPLOY_VERSION}'" >/dev/null
     q "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${DEPLOY_SEQ}:${DEPLOY_FILE}', '${deploy_sha}') ON CONFLICT (sequence_name) DO NOTHING" >/dev/null
+<<<<<<< Updated upstream
     RUN3_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-run3.XXXXXX")"
     if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
             go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN3_LOG" 2>&1; then

@@ -65,6 +65,21 @@ var startupDependency = []struct {
 		after:  "981_session_analytics_foundation.sql",
 		why:    "981 的会话分析物化视图读 session_summaries.total_credits_charged（990 加的列）",
 	},
+	{
+		before: "982_provider_call_attempts.sql",
+		after:  "986_provider_invoice_evidence.sql",
+		why:    "986 在 982 创建的 provider_call_attempts 上建立账单请求引用索引",
+	},
+	{
+		before: "982_provider_call_attempts.sql",
+		after:  "985_provider_attempt_media_usage.sql",
+		why:    "985 在 982 创建的 provider_call_attempts 上补充媒体计量",
+	},
+	{
+		before: "986_provider_invoice_evidence.sql",
+		after:  "987_provider_invoice_usage_buckets.sql",
+		why:    "987 在 986 创建的 provider_invoice_lines 上增加结构化汇总字段",
+	},
 }
 
 func TestStartupFilesHonourDeclaredDependencies(t *testing.T) {

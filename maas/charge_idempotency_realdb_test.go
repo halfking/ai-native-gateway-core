@@ -26,7 +26,7 @@ func TestChargeRequest_IdempotentConcurrentReplay_RealDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	var database string
 	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&database); err != nil {
 		t.Fatalf("current_database: %v", err)
@@ -58,6 +58,36 @@ func TestChargeRequest_IdempotentConcurrentReplay_RealDB(t *testing.T) {
 
 	svc := NewService(pool)
 	usage := TokenUsage{PromptTokens: 100000}
+	// Reject only this test tenant's bucket write, after the service has staged
+	// wallet and ledger mutations. The entire charge must remain retryable.
+	constraint := fmt.Sprintf("charge_bucket_test_%d", stamp)
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE maas_credit_consumption_buckets
+		ADD CONSTRAINT %s CHECK (tenant_id <> '%s') NOT VALID`, constraint, tenant)); err != nil {
+		t.Fatalf("add test bucket constraint: %v", err)
+	}
+	dropConstraint := `ALTER TABLE maas_credit_consumption_buckets DROP CONSTRAINT IF EXISTS ` + constraint
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer ccancel()
+		_, _ = pool.Exec(cctx, dropConstraint)
+	})
+	if charged, err := svc.ChargeRequestMultimodal(ctx, tenant, requestID, "", usage); charged != 0 || err == nil || !strings.Contains(err.Error(), "post request consumption bucket") {
+		t.Fatalf("bucket rejection charged=%d err=%v", charged, err)
+	}
+	var afterFailureBalance int64
+	var afterFailurePostings int
+	if err := pool.QueryRow(ctx, `SELECT balance_credits,
+		(SELECT count(*) FROM credit_ledger_with_current_month WHERE tenant_id=$1 AND ref_type='request' AND ref_id=$2)
+		FROM tenant_credit_wallets WHERE tenant_id=$1`, tenant, requestID).Scan(&afterFailureBalance, &afterFailurePostings); err != nil {
+		t.Fatalf("read ledger and wallet after bucket rejection: %v", err)
+	}
+	if afterFailureBalance != 2000000 || afterFailurePostings != 0 {
+		t.Fatalf("bucket rejection left balance=%d postings=%d", afterFailureBalance, afterFailurePostings)
+	}
+	if _, err := pool.Exec(ctx, dropConstraint); err != nil {
+		t.Fatalf("remove test bucket constraint: %v", err)
+	}
+
 	var wg sync.WaitGroup
 	results := make(chan int64, 2)
 	errs := make(chan error, 2)
@@ -112,5 +142,15 @@ func TestChargeRequest_IdempotentConcurrentReplay_RealDB(t *testing.T) {
 	}
 	if balance != 2000000-first {
 		t.Fatalf("balance=%d; want initial balance minus one charge (%d)", balance, 2000000-first)
+	}
+	var bucketCredits, bucketRequests int64
+	var utcHour bool
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(sum(credits), 0), COALESCE(sum(request_count), 0),
+		COALESCE(bool_and(bucket_start = date_trunc('hour', bucket_start, 'UTC')), false)
+		FROM maas_credit_consumption_buckets WHERE tenant_id=$1`, tenant).Scan(&bucketCredits, &bucketRequests, &utcHour); err != nil {
+		t.Fatalf("read consumption bucket: %v", err)
+	}
+	if bucketCredits != first || bucketRequests != 1 || !utcHour {
+		t.Fatalf("consumption bucket has %d credits and %d requests, UTC hour=%t, want %d and 1 on a UTC hour", bucketCredits, bucketRequests, utcHour, first)
 	}
 }

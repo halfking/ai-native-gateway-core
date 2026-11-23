@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -46,12 +47,17 @@ type VideosGenerationsHandler struct {
 	rateLimiter ratelimit.RPMLimiter
 	// sanitizeInput / restoreHook 与 ImagesGenerationsHandler 同款（同一 P2 一并
 	// 收口，不留「同一缺陷只修一半」）；nil 时零开销直通。
-	sanitizeInput func(http.Handler) http.Handler
-	restoreHook   *sanitize.SanitizeRestoreInterceptor
+	sanitizeInput   func(http.Handler) http.Handler
+	restoreHook     *sanitize.SanitizeRestoreInterceptor
+	attemptRecorder reconciliation.AttemptStore
 }
 
 func NewVideosGenerationsHandler(resolver videoProviderResolver, upstreamClient *upstream.Client) *VideosGenerationsHandler {
 	return &VideosGenerationsHandler{provider: resolver, upstream: upstreamClient}
+}
+
+func (h *VideosGenerationsHandler) SetAttemptRecorder(r reconciliation.AttemptStore) {
+	h.attemptRecorder = r
 }
 
 // SetSanitizeGuard 与 ImagesGenerationsHandler.SetSanitizeGuard 同一装配来源。
@@ -136,7 +142,7 @@ func (h *VideosGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *htt
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), maxVideosRequestDuration)
+	ctx, cancel := context.WithTimeout(withModalityAttemptKey(r.Context(), keyInfo), maxVideosRequestDuration)
 	defer cancel()
 
 	candidates, _, cerr := h.provider.GetCandidatesByModality(ctx, parsed.Model, profile, tenantID, videoModalityRequest)
@@ -154,7 +160,7 @@ func (h *VideosGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *htt
 	var lastErr error
 	sawNotFound := 0
 	for _, cand := range candidates {
-		status, respBody, ct, perr := h.proxyGenerations(ctx, cand, body)
+		status, respBody, ct, perr := h.proxyGenerations(ctx, cand, body, tenantID, requestID)
 		if perr != nil {
 			lastErr = perr
 			continue
@@ -204,7 +210,7 @@ func (h *VideosGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *htt
 	writeErrorJSON(w, http.StatusBadGateway, requestID, msg, "server_error", "upstream_error")
 }
 
-func (h *VideosGenerationsHandler) proxyGenerations(ctx context.Context, cand provider.Candidate, body []byte) (int, []byte, string, error) {
+func (h *VideosGenerationsHandler) proxyGenerations(ctx context.Context, cand provider.Candidate, body []byte, tenantID, requestID string) (int, []byte, string, error) {
 	endpoint := strings.TrimRight(cand.BaseURL, "/") + "/videos/generations"
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -223,6 +229,7 @@ func (h *VideosGenerationsHandler) proxyGenerations(ctx context.Context, cand pr
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "video_generation")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, h.attemptRecorder, cand, tenantID, requestID, "videos_generations")
 	resp, upErr := h.upstream.Do(upReq)
 	if upErr != nil {
 		return 0, nil, "", upErr
@@ -231,6 +238,15 @@ func (h *VideosGenerationsHandler) proxyGenerations(ctx context.Context, cand pr
 	respBody, err := readLimitedResponse(resp.Body, maxVideosResponseBytes)
 	if err != nil {
 		return 0, nil, "", err
+	}
+	if attemptObserver != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != http.StatusAccepted {
+		media, outcome := generatedVideoUsage(respBody)
+		attemptObserver.RecordResponse(respBody, media)
+		if outcome != "unknown" {
+			attemptObserver.Finish(outcome)
+		}
+	} else {
+		attemptObserver.RecordResponse(respBody)
 	}
 	return resp.StatusCode, respBody, resp.Header.Get("Content-Type"), nil
 }

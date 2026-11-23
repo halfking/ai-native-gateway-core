@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
@@ -35,11 +36,13 @@ func (s *stubAudioMaas) ChargeRequestMultimodalWithMultiplier(ctx context.Contex
 }
 
 func TestChargeTranscription_skipsTrustedPlatformOwner(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED", "true")
 	svc := &AudioService{}
 	stub := &stubAudioMaas{enabled: true}
 	svc.SetMaas(stub)
 	sec := 3.0
-	svc.chargeTranscription(context.Background(), "acme", "credential-selfcheck-worker", "req-platform-audio", "asr", &sec)
+	owner := "credential-selfcheck-worker"
+	svc.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "acme", OwnerUser: &owner, IsSystem: true}, "req-platform-audio", "asr", &sec)
 	if stub.calls != 0 {
 		t.Fatalf("trusted platform origin must not debit tenant wallet, called MaaS %d times", stub.calls)
 	}
@@ -48,12 +51,26 @@ func TestChargeTranscription_skipsTrustedPlatformOwner(t *testing.T) {
 	}
 }
 
+func TestChargeTranscriptionKeepsLegacyBillingWhenExemptionDisabled(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED", "false")
+	svc := &AudioService{}
+	stub := &stubAudioMaas{enabled: true}
+	svc.SetMaas(stub)
+	owner := "credential-selfcheck-worker"
+	key := &authentication.KeyInfo{TenantID: "acme", OwnerUser: &owner, IsSystem: true}
+	sec := 2.0
+	svc.chargeTranscription(context.Background(), key, "req-platform-legacy", "asr", &sec)
+	if stub.calls != 1 {
+		t.Fatalf("with exemption disabled, keep legacy wallet billing; calls=%d", stub.calls)
+	}
+}
+
 func TestChargeTranscription_usesDuration(t *testing.T) {
 	svc := &AudioService{}
 	stub := &stubAudioMaas{enabled: true}
 	svc.SetMaas(stub)
 	sec := 26.325
-	svc.chargeTranscription(context.Background(), "acme", "", "req-1", "minimax-asr-1.0", &sec)
+	svc.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "acme"}, "req-1", "minimax-asr-1.0", &sec)
 	if stub.last.AudioSeconds != 26.325 {
 		t.Fatalf("seconds=%v", stub.last.AudioSeconds)
 	}
@@ -70,7 +87,8 @@ func TestChargeTranscription_passesOwnerUser(t *testing.T) {
 	stub := &stubAudioMaas{enabled: true}
 	svc.SetMaas(stub)
 	sec := 3.5
-	svc.chargeTranscription(context.Background(), "acme", "alice@example.com", "req-owner-1", "minimax-asr-1.0", &sec)
+	owner := "alice@example.com"
+	svc.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "acme", OwnerUser: &owner}, "req-owner-1", "minimax-asr-1.0", &sec)
 	if stub.owner != "alice@example.com" {
 		t.Fatalf("charger owner_user = %q, want alice@example.com", stub.owner)
 	}
@@ -84,7 +102,7 @@ func TestChargeTranscription_passesOwnerUser(t *testing.T) {
 	stub2 := &stubAudioMaas{enabled: true}
 	svc2 := &AudioService{}
 	svc2.SetMaas(stub2)
-	svc2.chargeTranscription(context.Background(), "acme", "", "req-owner-2", "glm-asr", &sec)
+	svc2.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "acme"}, "req-owner-2", "glm-asr", &sec)
 	if stub2.owner != "" {
 		t.Fatalf("empty owner must pass through as empty, got %q", stub2.owner)
 	}
@@ -94,7 +112,7 @@ func TestChargeTranscription_minOneSecondWhenMissing(t *testing.T) {
 	svc := &AudioService{}
 	stub := &stubAudioMaas{enabled: true}
 	svc.SetMaas(stub)
-	svc.chargeTranscription(context.Background(), "acme", "", "req-2", "glm-asr", nil)
+	svc.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "acme"}, "req-2", "glm-asr", nil)
 	if stub.last.AudioSeconds != 1 {
 		t.Fatalf("want min 1s, got %v", stub.last.AudioSeconds)
 	}
@@ -105,7 +123,7 @@ func TestChargeTranscription_skipsDefaultTenant(t *testing.T) {
 	stub := &stubAudioMaas{enabled: true}
 	svc.SetMaas(stub)
 	sec := 9.0
-	svc.chargeTranscription(context.Background(), "default", "", "req-3", "m", &sec)
+	svc.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "default"}, "req-3", "m", &sec)
 	if stub.last.AudioSeconds != 0 {
 		t.Fatalf("default tenant must not charge, got %#v", stub.last)
 	}
@@ -128,7 +146,7 @@ func TestChargeTranscription_writesUsageLog(t *testing.T) {
 	log := &stubUsageLog{}
 	svc.SetUsageLogger(log)
 	sec := 4.2
-	svc.chargeTranscription(context.Background(), "default", "", "req-4", "asr", &sec)
+	svc.chargeTranscription(context.Background(), &authentication.KeyInfo{TenantID: "default"}, "req-4", "asr", &sec)
 	if log.calls != 1 || log.seconds != 4.2 {
 		t.Fatalf("usage log = %+v", log)
 	}

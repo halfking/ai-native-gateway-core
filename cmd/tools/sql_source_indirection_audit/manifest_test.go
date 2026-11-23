@@ -272,16 +272,6 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"退役后果与 maas/usage.go 同族：canonical 视图退场时本查询随切换层一起失效" +
 			"（切换层是唯一表名来源，无第二处字面量）⇒ 响亮 500，不静默空集。",
 	},
-	"maas/credit_buckets.go": {
-		Verdict: verdictCanonicalOnly,
-		Via: "同一套 requestLogsSource(days)（usage.go:66-71，现恒返回 canonical 视图），" +
-			"47 行 `FROM `+logsTable+`，写入小时级 credit 桶（ON CONFLICT DO UPDATE）。",
-		Consequence: "⚠ **与其它几条不同类**：它不是读后展示，而是**写聚合桶**。" +
-			"★ 890 之后源从 v1 底表换成 canonical 视图 ⇒ 桶里会**继续写入会话族的 credits**" +
-			"（不再是 42P01，也不再有「桶被写成 0」那条不可逆后果）。" +
-			"⚠ 口径随之变化：镜像链建立之前的历史的 credits 不再回填进桶" +
-			"（那段行随 v1 族一起消失）⇒ 桶的起点是会话族开始记录的时刻。",
-	},
 
 	// ── 读 canonical 视图 / 会话族（54 文件 / 110 处）─────────────────────
 	// ⚠ 「读 canonical 视图」**不等于**「退役后照常工作」：视图的 v1 臂在
@@ -540,15 +530,10 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Via:         ":262 countTurnsSessionSQL `FROM ` + db.SessionFamilyTurnsForSessionSQL()（S3 波 2 会话族化）。",
 		Consequence: "与 v1 无关。",
 	},
-	// 2026-11-11（48h 审计轮）：bucket 框架轮引入的读点，初版带 v1 双臂
-	// （≤7 天 → `_request_logs`、否则 `_request_logs_partitions`）⇒ 890 后两表
-	// 已删（211 实测 to_regclass 双空）⇒ backfill 必 42P01 且 v1 桶被顶回 1。
-	// 本轮合并为恒走 canonical 视图（maas 同名切换层 890 轮的合并先例）。
-	"internal/bucket/credit/provider.go": {
-		Verdict: verdictNonV1ByInspection,
-		Via:     ":331 requestLogsSource 恒返回 request_logs_with_current_month（会话族两臂视图，启动 ensure 安装）；backfill 的 INSERT..SELECT 走它。",
-		Consequence: "与 v1 无关。历史：该读点在 85d1de3ca 引入时是 v1 基表读（退役后 42P01 地雷），" +
-			"2026-11-11 收敛到 canonical；Phase 1 脚手架暂无生产消费方，接线前无线上路径。",
+	"db/session_probe_arm_source.go": {
+		Verdict:     verdictCanonicalOnly,
+		Via:         "SessionFamilyTurnsSourceWindowedAllSQL 拼接业务两臂和探测臂。探测臂由 SessionFamilyProbeArmSourceSQL 读取 session_turns_probe_hot 与 usage_facts。",
+		Consequence: "包含探测的请求日志使用会话族与 usage_facts，两处拼接均无 v1 表依赖。",
 	},
 	"admin/compression_sessions.go": {
 		Verdict: verdictNonV1ByInspection,
@@ -1741,7 +1726,9 @@ var documentedSnapshot = bucketSnapshot{
 	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 66,
+	// 两个信用桶回填入口改读过账流水，移除两个间接日志读点。
+	// 已提交的会话探测三臂源包含两个间接读点，补登一个文件。
+	CanonFiles: 65,
 	CanonSites: 134,
 	UnresFiles: 15,
 	UnresSites: 30,

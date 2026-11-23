@@ -374,7 +374,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	res.RequestURL = endpoint
 	res.RequestBody = body
 
-	resp, err := e.httpClient.Do(req)
+	resp, err := platformProbeDo(withPlatformProbeProvider(reqCtx, t.ProviderID), e.httpClient, req, t.CredentialID, model, "active_probe_ping")
 	latency := time.Since(start)
 	res.LatencyMs = int(latency.Milliseconds())
 	res.CompletedAt = start.Add(latency)
@@ -466,7 +466,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	if desc.ChatProbeEndpoint == upstreamurl.EpResponses &&
 		providercap.ResponsesUnsupportedError(res.HTTPStatus, string(bodyBytes)) {
 		res.SupportsResponses = boolEvidence(false)
-		fallback := responsesChatFallbackRound(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
+		fallback := responsesChatFallbackRound(ctx, e.httpClient, t.APIKey, t.BaseURL, model, t.CredentialID)
 		fbStatus, fbBody, fbLatency := fallback.HTTPStatus, fallback.Body, fallback.LatencyMs
 		if fallback.OK {
 			// 2026-09-29 (审计二十一轮): 对齐 node_probe（errDetail=注记整体
@@ -663,7 +663,7 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "request_build", ErrMsg: fmt.Sprintf("build request failed: %s (url=%s)", err.Error(), endpoint), StartedAt: start, CompletedAt: time.Now(), Target: *target}
 	}
 	providercap.ApplyAuthHeaders(req, desc, target.APIKey)
-	resp, err := e.httpClient.Do(req)
+	resp, err := platformProbeDo(withPlatformProbeProvider(ctx, target.ProviderID), e.httpClient, req, target.CredentialID, target.RawModel, "active_probe_models")
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
 			return &ProbeResult{Status: ProbeStatusTimeout, ErrCode: "probe_timeout", ErrMsg: fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(e.httpClient.Timeout/time.Second), target.CredentialID, endpoint, target.RawModel), StartedAt: start, CompletedAt: time.Now(), LatencyMs: int(time.Since(start).Milliseconds()), Target: *target, RequestURL: endpoint}

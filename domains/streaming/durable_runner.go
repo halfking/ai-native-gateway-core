@@ -125,6 +125,8 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 		streamRecorder = httptest.NewRecorder()
 	}
 	params := &executors.ExecParams{
+		PlatformOrigin:       platformOriginForKey(ctx, ki),
+		AttemptBusinessKey:   reconciliationBusinessKey(ki),
 		R:                    durableSyntheticRequest(ctx, snapshot),
 		BodyBytes:            snapshot.NormalizedBody,
 		IsStream:             snapshot.Stream,

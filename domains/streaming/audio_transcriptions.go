@@ -21,6 +21,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // AudioTranscriptionsHandler proxies OpenAI-compatible transcription
@@ -53,6 +56,7 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
+	r = r.WithContext(withModalityAttemptKey(r.Context(), keyInfo))
 
 	req, err := parseTranscriptionsMultipart(w, r)
 	if err != nil {
@@ -70,14 +74,10 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 			req.Profile = *keyInfo.DefaultClientProfile
 		}
 	}
-	// F-4（2026-11-04 审计）：扣费 owner 与遥测 api_key_owner_user 同源
-	// （keyMetaFromKeyInfo，与 handler.go 主链取 keyOwner 同一函数）；
-	// authenticate 关闭 key 校验时 keyInfo 为 nil → owner 空串=归属未知。
-	_, keyOwner, _ := keyMetaFromKeyInfo(keyInfo)
 	req.RequestID = requestID
 
 	if req.Stream {
-		h.serveStream(w, r, requestID, req, keyOwner)
+		h.serveStream(w, r, requestID, req, keyInfo)
 		return
 	}
 
@@ -86,14 +86,15 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		writeAudioError(w, requestID, terr)
 		return
 	}
-	h.svc.chargeTranscription(r.Context(), req.TenantID, keyOwner, requestID, req.Model, res.DurationSeconds)
+	h.svc.chargeTranscription(r.Context(), keyInfo, requestID, req.Model, res.DurationSeconds)
+	markTranscriptionRelayOutcome(r, res)
 	writeTranscriptionResult(w, requestID, req.Model, res, req.ResponseFormat)
 }
 
 // serveStream handles stream=true: SSE with transcript.text.delta /
 // transcript.text.done events (OpenAI + zhipu-compatible naming).
-// ownerUser 同 ServeHTTP 主路径：鉴权 KeyInfo 的 owner，随成功扣费入台账。
-func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.Request, requestID string, req *TranscribeRequest, ownerUser string) {
+// keyInfo 同 ServeHTTP 主路径：认证身份与 system-key provenance 一并传给扣费层。
+func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.Request, requestID string, req *TranscribeRequest, keyInfo *authentication.KeyInfo) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErrorJSON(w, http.StatusInternalServerError, requestID, "Streaming unsupported by connection", "server_error", "stream_unsupported")
@@ -131,12 +132,13 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 		writeEvent("transcript.text.delta", map[string]string{"type": "transcript.text.delta", "delta": delta})
 	})
 	if err != nil {
+		markModalityProtocolFailure(r, "audio_transcription_stream_error")
 		writeEvent("error", map[string]string{"type": "error", "message": sanitizeAudioErrorMessage(err.Error())})
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return
 	}
-	h.svc.chargeTranscription(r.Context(), req.TenantID, ownerUser, requestID, req.Model, res.DurationSeconds)
+	h.svc.chargeTranscription(r.Context(), keyInfo, requestID, req.Model, res.DurationSeconds)
 	writeEvent("transcript.transport", map[string]string{"type": "transcript.transport", "transport": res.Transport})
 	// 同 P2-1：流式路径的响应头已随 WriteHeader(200) 发出，IgnoredParams
 	// 只能走事件（与 transport 同理）。未知事件名按 SSE 规范忽略。
@@ -146,6 +148,7 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 			"ignored": res.IgnoredParams,
 		})
 	}
+	markTranscriptionRelayOutcome(r, res)
 	if res.RelayIsSSE && len(res.RelayBody) > 0 {
 		_, _ = w.Write(res.RelayBody)
 		flusher.Flush()
@@ -156,6 +159,15 @@ func (h *AudioTranscriptionsHandler) serveStream(w http.ResponseWriter, r *http.
 	writeEvent("transcript.text.done", map[string]string{"type": "transcript.text.done", "text": res.Text})
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+func markTranscriptionRelayOutcome(r *http.Request, res *TranscribeResult) {
+	switch res.relayOutcome {
+	case "failure":
+		markModalityProtocolFailure(r, "audio_transcription_stream_error")
+	case "unknown":
+		markModalityOutcome(r, telemetry.StatusUnknown, "audio_transcription_terminal_unobserved")
+	}
 }
 
 // writeTranscriptionResult renders the non-stream response per

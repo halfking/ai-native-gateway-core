@@ -8,11 +8,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Request) {
@@ -32,13 +34,17 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if query.Section == "attempts" && !scope.Platform {
-		writeError(w, http.StatusForbidden, "supplier attempt evidence requires platform access")
+	if reconciliation.ReportRequiresPlatformAccess(query.Section) && !scope.Platform {
+		writeError(w, http.StatusForbidden, "report section requires platform access")
+		return
+	}
+	if query.Section == "internal" && scope.TenantID == "" {
+		writeError(w, http.StatusBadRequest, "internal reconciliation requires tenant_id")
 		return
 	}
 	format := params.Get("format")
-	if format != "" && format != "json" && format != "csv" {
-		writeError(w, http.StatusBadRequest, "format must be json or csv")
+	if format != "" && format != "json" && format != "csv" && format != "csv-summary" {
+		writeError(w, http.StatusBadRequest, "format must be json, csv, or csv-summary")
 		return
 	}
 	if h.db == nil {
@@ -54,19 +60,34 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	if format == "csv" {
-		data, err := requestReconciliationCSV(report)
+	if format == "csv" || format == "csv-summary" {
+		var data []byte
+		name := query.Section
+		if format == "csv-summary" {
+			name += "-summary"
+			data, err = requestReconciliationSummaryCSV(report.Summary)
+			w.Header().Set("X-Report-Export", "summary")
+		} else {
+			data, err = requestReconciliationCSV(report)
+			w.Header().Set("X-Report-Export", "page")
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "report export unavailable")
 			return
 		}
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="request-reconciliation-`+query.Section+`.csv"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="request-reconciliation-`+name+`.csv"`)
 		w.Header().Set("X-Report-Version", report.Version)
 		w.Header().Set("X-Report-Read-At", report.ReadAt.UTC().Format(time.RFC3339Nano))
 		w.Header().Set("X-Report-Start", report.Start.Format(time.RFC3339Nano))
 		w.Header().Set("X-Report-End", report.End.Format(time.RFC3339Nano))
 		w.Header().Set("X-Report-Timezone", report.Timezone)
+		if report.Day != "" {
+			w.Header().Set("X-Report-Day", report.Day)
+		}
+		if report.Month != "" {
+			w.Header().Set("X-Report-Month", report.Month)
+		}
 		w.Header().Set("X-Report-Coverage", report.Coverage)
 		w.Header().Set("X-Report-Limit", strconv.Itoa(report.Limit))
 		w.Header().Set("X-Report-Offset", strconv.Itoa(report.Offset))
@@ -74,6 +95,34 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func requestReconciliationSummaryCSV(raw json.RawMessage) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var data bytes.Buffer
+	out := csv.NewWriter(&data)
+	if err := out.Write([]string{"metric", "value"}); err != nil {
+		return nil, err
+	}
+	for _, key := range keys {
+		value := string(fields[key])
+		if value == "null" {
+			value = ""
+		}
+		if err := out.Write([]string{key, value}); err != nil {
+			return nil, err
+		}
+	}
+	out.Flush()
+	return data.Bytes(), out.Error()
 }
 
 func requestReconciliationScope(r *http.Request, requestedTenant string) (reconciliation.ReportScope, bool) {
@@ -91,27 +140,52 @@ func requestReconciliationScope(r *http.Request, requestedTenant string) (reconc
 
 func parseRequestReconciliationQuery(r *http.Request) (reconciliation.ReportQuery, error) {
 	params := r.URL.Query()
-	query := reconciliation.ReportQuery{Section: params.Get("section"), Timezone: params.Get("timezone"), Limit: 200}
+	query := reconciliation.ReportQuery{Section: params.Get("section"), Timezone: params.Get("timezone"), Day: params.Get("day"), Month: params.Get("month"), Limit: 200}
 	if query.Section == "" {
 		query.Section = "requests"
 	}
 	if len(reconciliation.ReportColumns(query.Section)) == 0 {
-		return query, errors.New("section must be requests, attempts, postings, or sessions")
+		return query, errors.New("section must be requests, attempts, postings, sessions, coverage, or internal")
+	}
+	calendar := params.Has("day") || params.Has("month")
+	if reconciliation.ReportRequiresCalendarPeriod(query.Section) && !calendar {
+		return query, errors.New("section requires day=YYYY-MM-DD or month=YYYY-MM")
+	}
+	if query.Timezone == "" && calendar {
+		if params.Has("day") {
+			query.Timezone = settings.SystemTimezoneName()
+		} else {
+			query.Timezone = reconciliation.DefaultMonthTimezone
+		}
 	}
 	if query.Timezone == "" || query.Timezone == "Local" {
 		return query, errors.New("timezone must be explicit (IANA name or UTC)")
 	}
-	if _, err := time.LoadLocation(query.Timezone); err != nil {
-		return query, errors.New("invalid IANA timezone")
-	}
 	var err error
-	query.Start, err = time.Parse(time.RFC3339Nano, params.Get("start"))
-	if err != nil {
-		return query, errors.New("start must be an RFC3339 timestamp")
-	}
-	query.End, err = time.Parse(time.RFC3339Nano, params.Get("end"))
-	if err != nil || !query.End.After(query.Start) || query.End.Sub(query.Start) > 366*24*time.Hour {
-		return query, errors.New("end must be after start with a window of at most 366 days")
+	if calendar {
+		if (params.Has("day") && params.Has("month")) || params.Has("start") || params.Has("end") {
+			return query, errors.New("day, month, and explicit start/end are mutually exclusive")
+		}
+		if params.Has("day") {
+			query.Start, query.End, err = reconciliation.NaturalDay(query.Day, query.Timezone)
+		} else {
+			query.Start, query.End, err = reconciliation.NaturalMonth(query.Month, query.Timezone)
+		}
+		if err != nil {
+			return query, err
+		}
+	} else {
+		if _, err := time.LoadLocation(query.Timezone); err != nil {
+			return query, errors.New("invalid IANA timezone")
+		}
+		query.Start, err = time.Parse(time.RFC3339Nano, params.Get("start"))
+		if err != nil {
+			return query, errors.New("start must be an RFC3339 timestamp")
+		}
+		query.End, err = time.Parse(time.RFC3339Nano, params.Get("end"))
+		if err != nil || !query.End.After(query.Start) || query.End.Sub(query.Start) > 366*24*time.Hour {
+			return query, errors.New("end must be after start with a window of at most 366 days")
+		}
 	}
 	if limit, set := params["limit"]; set {
 		query.Limit, err = strconv.Atoi(limit[0])
@@ -129,13 +203,16 @@ func parseRequestReconciliationQuery(r *http.Request) (reconciliation.ReportQuer
 }
 
 func requestReconciliationCSV(report reconciliation.Report) ([]byte, error) {
-	columns := reconciliation.ReportColumns(report.Section)
+	return reconciliationRowsCSV(reconciliation.ReportColumns(report.Section), report.Rows)
+}
+
+func reconciliationRowsCSV(columns []string, rows []json.RawMessage) ([]byte, error) {
 	var data bytes.Buffer
 	out := csv.NewWriter(&data)
 	if err := out.Write(columns); err != nil {
 		return nil, err
 	}
-	for _, raw := range report.Rows {
+	for _, raw := range rows {
 		var row map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &row); err != nil {
 			return nil, err
@@ -155,7 +232,9 @@ func requestReconciliationCSV(report reconciliation.Report) ([]byte, error) {
 			}
 			// Amount strings are produced from numeric values by PostgreSQL.
 			// Protect user-controlled identifiers and labels in spreadsheets.
-			if name != "estimated_amount" && name != "reported_amount" && name != "internal_amount" {
+			switch name {
+			case "estimated_amount", "reported_amount", "internal_amount", "invoice_amount", "bill_amount_cents", "captured_estimate", "captured_reported", "comparable_estimate", "comparable_reported", "estimated_minus_invoiced_amount", "reported_minus_invoiced_amount":
+			default:
 				trimmed := strings.TrimLeft(fields[i], " \t\r\n")
 				if len(trimmed) > 0 && strings.ContainsRune("=+-@", rune(trimmed[0])) {
 					fields[i] = "'" + fields[i]

@@ -11151,15 +11151,25 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 998 | `998_session_summaries_task_association.sql` | `682c5f43d3ba8e00f67925deb65cfc3ed44d82ba453274d20e3ca5aec9e355a5` | applied+verified |
 | 999 | `999_session_summary_layers.sql` | `3f374cd050e36a0eb852647168447dee3342dd96836ccc57455a1988a3711921` | applied+verified |
 
-## 2026-11-23 — 请求与会话对账（982 新增）
+## 2026-11-23 至 11-24 — 请求与会话对账（982、985–989）
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 982 | `982_provider_call_attempts.sql` | `5421564ddbb0b894689b87ff2ca2adb3c701c72143e0bf6b30ab8faaae3f106a` | pending deploy。逐次记录供应商发送证据、用量、测算与供应商返回金额。首次安装及增量通道均追加执行，离线升级副本同步。无历史补写。 |
-| 983 | `983_request_metrics.sql` | `4441d11d03acbd154e568c41fa4e94ae717c40a66523db35aff120e6cc55da5e` | 2026-11-24 | request_metrics统计基础表 | 创建统计专用表，支持多维度聚合查询，含多模态字段 |
+| 983 | `983_request_metrics.sql` | `4441d11d03acbd154e568c41fa4e94ae717c40a66523db35aff120e6cc55da5e` | 2026-11-24 | request_metrics统计基础表 | 创建统计专用表，支持多��度聚合查询，含多模态字段 |
 
 ## 2026-11-24 — P1 会话宇宙探测误杀修复（984 新增）
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 984 | `984_session_universe_cost_aware_probe_scope.sql` | `5292e73dd5c240600953b641758e3cc70fb5a8554e70823d86811a4582f4e40b` | pending deploy（P1：会话宇宙谓词加「**真实计费豁免**」。★ **根因（211 生产实测，非推断）**：会话统计与看板（usage_facts，business only）的费用差 **$7,021.91（79%）**、请求数差 2.3 倍；逐项拆解后差额主体落在「会话宇宙把真实业务会话当探测剔掉」，而**唯一误杀根因 = owner 名字正则命中 `(^deployment-gate)`**——30 天窗口内被剔会话中带真实计费的部分 **99.9% 集中于该账号**（16,698 会话 / $7,163.51）。★ **该账号不是探测流量（实测）**：request_preview 是 MCode/minimax-code 的真实 agent 系统提示词、模型是 claude-opus-5-5 / sonnet-5-5 / opus-4-8、16,292 会话里 16,290 是单请求会话（avg 1.01 req/session）、24h 连续分布；且真探测（origin_stage='node_probe'）已被迁移 928 **物理隔离**进 session_turns_probe_hot（与 sessions 表交集 = 0）。★ **修法**：把「名字命中」与「会话是否有真实计费」解耦——新谓词 = owner 非空 ∧ ( 有真实计费 ∨ ( ¬is_probe ∧ ¬session_analytics_is_probe(...) ) ) ⇒ **花了钱的会话一律计入**，零成本会话沿用旧排除语义（零成本门禁/探测会话仍被剔 ⇒「人员榜不被零成本门禁流量霸榜」的原意保留）；这是**收窄**而非删正则（删正则会让 7 天 138 个零成本门禁会话涌入统计）。★ **不去刷 sessions.is_probe 缓存**（实测后放弃）：该列是 981 旧正则的纯缓存（30 天实测「is_probe=1 且函数不命中」= 0 行 ⇒ 无运维手工标记），改它要对按天分区的大表做十万级行 UPDATE ⇒ 生产写风险 + 抹掉手工排除语义 ⇒ 改为谓词层豁免（零写）。★ **作用面**：user_session_aggregates / project_task_aggregates / agent_usage_aggregates（会话级，按 ss.total_cost_usd）+ model_usage_aggregates（请求级，按 rl.cost_usd）四个物化视图重建 + 15 索引重建；Go 侧 domains/analytics.SessionUniverseWhere 同步加 ssAlias 与豁免项（契约门改为对拍 984）。★ **为什么是新迁移而不是改 981/994 字节**：二者已 applied+verified ⇒ 改字节即内容指纹分叉（914/928/989 教训同款）。★ 沿用 994 的 DROP+CREATE 形态、**不引入临时 MV 名**（对象普查门会从迁移文件反解期望索引集 ⇒ 临时名会永久进入期望集而生产上从不存在）。★ SET（会话级）超时守卫 + max_parallel_workers_per_gather=0（docker 通道非事务流式 psql 上 SET LOCAL 静默失效；关并行避免 211 的 /dev/shm 64MB DSM 段 53100）。★ 投递链九面登记齐备：canonical ＋ embeddata 副本×2（逐字节一致）＋ installer main.go go:embed×2/map×2 ＋ dbinit runner.go StartupFiles ＋ installed_startup_migrations.tsv（index 394，由 StartupFiles 派生）＋ docker 通道 files=() 与 ledger_artifact_probe（四视图 + 15 索引 + 定义含 cost_usd + '984' 台账行）＋ 离线升级通道 installer/migrations/984_session_universe_cost_aware_probe_scope/{up,down}.sql ＋ 本台账行。SHA 为文件实测值，canonical／embeddata／offline 三份逐字节一致） |
+
+## 2026-11-23 至 11-24 — 请求对账迁移（985–989）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 985 | `985_request_reconciliation_links.sql` | `5be6e05afc279f47d8e86af153ae5d0d3de1503d8b67e3182686cd62c906c70c` | pending deploy。保存原始客户端请求和内部编排请求的关联，供按日去重及逐次调用、过账追溯。首次安装、增量通道与离线升级副本同步。 |
+| 986 | `986_provider_attempt_media_usage.sql` | `c923c76635059f6a33383f971b22e967060ef9fe5d2aad48e521ad990b5c20d4` | pending deploy。为 982 的逐次调用表增加可空的媒体计量和来源。保留旧记录，首次安装、增量通道与离线升级副本同步。 |
+| 987 | `987_provider_invoice_evidence.sql` | `9b068a3a5ff3fac0c62fc5361aef3fd37649d3b16d6e02a224026757d441aad9` | pending deploy。账单及明细逐行存证，冻结账户与账期，追加索引支持逐次调用精确匹配。依赖 982，首次安装、增量通道与离线升级副本同步。 |
+| 988 | `988_provider_invoice_usage_buckets.sql` | `8433c53c988824256c18bfb223be072ffdf27280319c05c4e66726df8c785236` | pending deploy。保留旧账单，增加发送笔数、Token 和媒体计量的结构化汇总行字段与精确账期查询索引。依赖 986，首次安装、增量通道与离线升级副本同步。 |
+| 989 | `989_supplier_contract_rates.sql` | `b32e8fb99b6e156ce85c30198cf5bb71d157b4a66970333d0a32020c961b87ed` | pending deploy。追加凭据和模型范围内的供应商合同版本，按实际发送时间选用。首次安装、增量通道与离线升级副本同步。 |

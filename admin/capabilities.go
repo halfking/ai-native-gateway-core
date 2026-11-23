@@ -28,6 +28,11 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // FeatureCapabilities 描述当前实例实际启用的可选功能。
@@ -35,7 +40,13 @@ import (
 // ★ 字段名 = 前端 `NavItem.requiresCapability` 用的能力名（**逐字相等**）。
 type FeatureCapabilities struct {
 	// CostReconciliation：「费用对账」已装配（端点已注册）。
-	CostReconciliation bool `json:"cost_reconciliation"`
+	CostReconciliation         bool                    `json:"cost_reconciliation"`
+	DailyReconciliationDefault *reconciliationCalendar `json:"daily_reconciliation_default,omitempty"`
+}
+
+type reconciliationCalendar struct {
+	Day      string `json:"day"`
+	Timezone string `json:"timezone"`
 }
 
 // featureCapabilities 派生能力位。
@@ -44,9 +55,23 @@ type FeatureCapabilities struct {
 // （`providerCostReconciliationHandler != nil`）⇒ ⇒ ⇒ 不存在
 // 「能力位说开着、端点却 404」的可能。
 func (h *Handler) featureCapabilities() FeatureCapabilities {
-	return FeatureCapabilities{
+	caps := FeatureCapabilities{
 		CostReconciliation: h.providerCostReconciliationHandler != nil,
 	}
+	if h.db != nil && os.Getenv("LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED") == "true" {
+		caps.DailyReconciliationDefault = previousReconciliationDay(time.Now(), settings.SystemTimezoneLocation())
+	}
+	return caps
+}
+
+func previousReconciliationDay(now time.Time, zone *time.Location) *reconciliationCalendar {
+	today := now.In(zone).Format(time.DateOnly)
+	start, _, err := reconciliation.NaturalDay(today, zone.String())
+	if err != nil {
+		return nil
+	}
+	yesterday := start.Add(-time.Nanosecond).In(zone).Format(time.DateOnly)
+	return &reconciliationCalendar{Day: yesterday, Timezone: zone.String()}
 }
 
 // handleCapabilities GET /api/admin/capabilities
@@ -57,6 +82,7 @@ func (h *Handler) featureCapabilities() FeatureCapabilities {
 // super_admin 之外的人看到**错误的**入口集。★ 所以这里用 admin 档。
 func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(h.featureCapabilities())
 }

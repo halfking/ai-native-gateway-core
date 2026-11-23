@@ -130,9 +130,9 @@ func TestKeyVerifier_AcceptedStaysSilent(t *testing.T) {
 		"id", "tenant_id", "application_id", "application_code", "key_prefix",
 		"default_client_profile", "owner_user", "rate_limit_rpm",
 		"rate_limit_concurrent", "rate_limit_tpm", "key_tier", "budget_usd",
-		"status", "key_alias", "customer_id", "expires_at",
+		"status", "key_alias", "customer_id", "expires_at", "is_system",
 	}).AddRow(7, "tenant-x", 1, "app1", "sk-7****", nil, nil, nil, nil, nil,
-		"default", nil, "active", nil, nil, nil)
+		"default", nil, "active", nil, nil, nil, false)
 	mp.ExpectQuery(`SELECT`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(rows)

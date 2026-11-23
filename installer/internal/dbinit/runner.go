@@ -2043,6 +2043,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 依赖 994 的四个物化视图（它重建它们）⇒ 必须排在 994 之后。
 			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
 			"984_session_universe_cost_aware_probe_scope.sql",
+			// ★ 985-989（2026-11-23 至 11-24 请求与会话对账）：逐次供应商调用记录、
+			//   请求关联、媒体用量、账单存证、用量汇总、供应商合同费率。
+			"985_request_reconciliation_links.sql",
+			"986_provider_attempt_media_usage.sql",
+			"987_provider_invoice_evidence.sql",
+			"988_provider_invoice_usage_buckets.sql",
+			"989_supplier_contract_rates.sql",
 		},
 	}
 }

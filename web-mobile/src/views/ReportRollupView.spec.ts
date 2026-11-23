@@ -4,6 +4,8 @@ import ReportRollupView from './ReportRollupView.vue'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setLocale } from '@/i18n'
+import { fetchDailyEvidence, fetchSupplierDayInvoice, listSupplierDayInvoices, type DailyEvidence, type DailyEvidenceQuery } from '@/api/dailyReconciliation'
+import { fetchCapabilities } from '@/api/featureCapabilities'
 import {
   fetchReportRollupSummary,
   fetchReportRollupDimensions,
@@ -139,6 +141,12 @@ vi.mock('@/api/reportRollup', async (importOriginal) => {
   return { ...actual, fetchReportRollupSummary: vi.fn(), fetchReportRollupDimensions: vi.fn() }
 })
 
+vi.mock('@/api/dailyReconciliation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/dailyReconciliation')>()
+  return { ...actual, fetchDailyEvidence: vi.fn(), fetchSupplierDayInvoice: vi.fn(), listSupplierDayInvoices: vi.fn() }
+})
+vi.mock('@/api/featureCapabilities', () => ({ fetchCapabilities: vi.fn() }))
+
 const mSum = fetchReportRollupSummary as unknown as ReturnType<typeof vi.fn>
 const mDims = fetchReportRollupDimensions as unknown as ReturnType<typeof vi.fn>
 
@@ -177,11 +185,143 @@ function viewSource(): string {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(fetchDailyEvidence).mockReset()
+  vi.mocked(fetchSupplierDayInvoice).mockReset()
+  vi.mocked(listSupplierDayInvoices).mockReset()
+  vi.mocked(fetchCapabilities).mockReset().mockResolvedValue({ cost_reconciliation: false })
   setLocale('zh-CN')
   authState.role = 'super_admin'
   authState.userInfo = { role: 'super_admin', tenant_id: 't-1' }
   mSum.mockResolvedValue(summaryPayload())
   mDims.mockResolvedValue(dimPayload())
+})
+
+it('reads live evidence for the selected reconciliation day without loading the snapshot', async () => {
+  vi.mocked(fetchDailyEvidence).mockResolvedValue({
+    section: 'coverage', day: '2026-11-23', timezone: 'Asia/Shanghai', platform_scope: true,
+    start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z',
+    summary: { received_requests: 12, terminal_usage_without_retained_receipt: 0, recorded_sends: 14, recorded_sends_without_reported_amount: 3 },
+    limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z', rows: [],
+  })
+  const wrapper = await mountView()
+  expect(fetchDailyEvidence).not.toHaveBeenCalled()
+  const evidence = byId(wrapper, 'rr-daily-evidence')
+  await evidence.get('input[type="date"]').setValue('2026-11-23')
+  await evidence.get('form').trigger('submit')
+  await flushPromises()
+  expect(fetchDailyEvidence).toHaveBeenCalledWith(expect.objectContaining({ day: '2026-11-23', section: 'coverage' }), expect.objectContaining({ signal: expect.anything() }))
+  expect(mSum).not.toHaveBeenCalled()
+  expect(evidence.text()).toContain('Asia/Shanghai')
+  expect(evidence.text()).toContain('终态用量缺接收记录0')
+  wrapper.unmount()
+})
+
+it('opens the server calendar automatically and brings back snapshots on request', async () => {
+  vi.mocked(fetchCapabilities).mockResolvedValue({
+    cost_reconciliation: false,
+    daily_reconciliation_default: { day: '2026-11-21', timezone: 'America/Los_Angeles' },
+  })
+  vi.mocked(fetchDailyEvidence).mockResolvedValue({
+    section: 'coverage', day: '2026-11-21', timezone: 'America/Los_Angeles', platform_scope: true,
+    start: '2026-11-21T08:00:00Z', end: '2026-11-22T08:00:00Z', summary: { received_requests: 12 },
+    limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z', rows: [],
+  })
+  const wrapper = await mountView()
+  expect(fetchDailyEvidence).toHaveBeenCalledWith(expect.objectContaining({ day: '2026-11-21', timezone: 'America/Los_Angeles' }), expect.anything())
+  expect(byId(wrapper, 'rr-daily-evidence').attributes('open')).toBeDefined()
+  expect(byId(wrapper, 'rr-mode-daily').attributes('aria-pressed')).toBe('true')
+  expect(hasId(wrapper, 'rr-load')).toBe(false)
+  expect(mSum).not.toHaveBeenCalled()
+  await byId(wrapper, 'rr-mode-legacy').trigger('click')
+  await byId(wrapper, 'rr-load').trigger('click')
+  await flushPromises()
+  expect(mSum).toHaveBeenCalledTimes(1)
+  wrapper.unmount()
+})
+
+function evidenceResponse(query: DailyEvidenceQuery, rows: DailyEvidence['rows']): DailyEvidence {
+  return {
+    ...query, tenant_id: query.tenantId, timezone: query.timezone ?? 'Asia/Shanghai', platform_scope: true,
+    start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z', read_at: '2026-11-25T00:00:00Z',
+    summary: { recorded_attempts: 21, sent: 21 }, rows,
+  }
+}
+
+it('keeps tenant and timezone on detail pages and discards a cancelled tenant read', async () => {
+  let deliverOld: (() => void) | undefined
+  vi.mocked(fetchDailyEvidence).mockImplementation(query => {
+    if (query.tenantId === 'tenant-a') {
+      return new Promise(resolve => {
+        deliverOld = () => resolve(evidenceResponse(query, [{ attempt_id: 'discard-this-row' }]))
+      })
+    }
+    const rows = Array.from({ length: query.offset === 0 ? 20 : 1 }, (_, index) => ({
+      attempt_id: `attempt-${query.offset + index}`, tenant_id: 'tenant-b', estimated_amount: '0.000000000000000123',
+      estimated_currency: 'USD', reported_amount: '0', reported_currency: 'USD',
+    }))
+    return Promise.resolve(evidenceResponse(query, rows))
+  })
+  const wrapper = await mountView()
+  const evidence = byId(wrapper, 'rr-daily-evidence')
+  await evidence.get('input[type="date"]').setValue('2026-11-23')
+  await byId(wrapper, 'rr-evidence-section').setValue('attempts')
+  await byId(wrapper, 'rr-evidence-tenant').setValue('tenant-a')
+  await evidence.get('form').trigger('submit')
+  const oldSignal = vi.mocked(fetchDailyEvidence).mock.calls[0]?.[1]?.signal
+  await byId(wrapper, 'rr-evidence-tenant').setValue('tenant-b')
+  await evidence.get('form').trigger('submit')
+  await flushPromises()
+  expect(oldSignal?.aborted).toBe(true)
+  deliverOld?.()
+  await flushPromises()
+  expect(evidence.text()).toContain('供应商测算金额0.000000000000000123')
+  expect(evidence.text()).toContain('供应商返回金额0')
+  expect(evidence.text()).not.toContain('discard-this-row')
+  await byId(wrapper, 'rr-evidence-next').trigger('click')
+  await flushPromises()
+  expect(fetchDailyEvidence).toHaveBeenLastCalledWith({
+    day: '2026-11-23', timezone: 'Asia/Shanghai', tenantId: 'tenant-b', section: 'attempts', limit: 20, offset: 20,
+  }, expect.anything())
+  expect(evidence.text()).toContain('attempt-20')
+  expect(hasId(wrapper, 'rr-evidence-next')).toBe(false)
+  expect(hasId(wrapper, 'rr-evidence-prev')).toBe(true)
+  wrapper.unmount()
+})
+
+it('requires a tenant for internal credits and opens exact-day supplier invoice evidence', async () => {
+  const invoice = { invoice_id: 'bill-one', invoice_ref: 'nov23', provider_id: 18, account_ref: 'acct-one',
+    currency: 'USD', stated_total: '0.12', window_start: '2026-11-22T16:00:00Z', window_end: '2026-11-23T16:00:00Z' }
+  vi.mocked(listSupplierDayInvoices).mockResolvedValue({
+    day: '2026-11-23', timezone: 'Asia/Shanghai', limit: 20, offset: 0, items: [invoice],
+  })
+  vi.mocked(fetchSupplierDayInvoice).mockResolvedValue({
+    invoice, limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z', summary: { invoice_lines: 1, matched_lines: 1 },
+    lines: [{ line_ref: 'line-one', kind: 'request_total', match_status: 'matched', invoice_amount: '0.12', invoice_currency: 'USD' }],
+  })
+  const wrapper = await mountView()
+  const evidence = byId(wrapper, 'rr-daily-evidence')
+  await evidence.get('input[type="date"]').setValue('2026-11-23')
+  await byId(wrapper, 'rr-evidence-section').setValue('internal')
+  expect(evidence.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+  await evidence.get('form').trigger('submit')
+  expect(fetchDailyEvidence).not.toHaveBeenCalled()
+  await byId(wrapper, 'rr-evidence-tenant').setValue('scope-a')
+  expect(evidence.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+  await byId(wrapper, 'rr-evidence-section').setValue('invoices')
+  expect(hasId(wrapper, 'rr-evidence-tenant')).toBe(false)
+  await evidence.get('form').trigger('submit')
+  await flushPromises()
+  expect(listSupplierDayInvoices).toHaveBeenCalledWith({
+    day: '2026-11-23', timezone: undefined, limit: 20, offset: 0,
+  }, expect.anything())
+  await byId(wrapper, 'rr-evidence-invoice').trigger('click')
+  await flushPromises()
+  expect(fetchSupplierDayInvoice).toHaveBeenCalledWith(invoice, { limit: 20, offset: 0 }, expect.anything())
+  expect(evidence.text()).toContain('匹配状态已关联逐笔调用')
+  expect(evidence.text()).toContain('账单金额0.12')
+  await byId(wrapper, 'rr-evidence-invoices-back').trigger('click')
+  expect(hasId(wrapper, 'rr-evidence-invoice')).toBe(true)
+  wrapper.unmount()
 })
 
 // ── ① 降级是 200 + 两键信封 ───────────────────────────────────────────────

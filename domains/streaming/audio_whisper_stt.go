@@ -93,6 +93,7 @@ func (s *AudioService) transcribeViaWhisperInference(ctx context.Context, cand p
 	upReq.Header.Set("Content-Type", mw.FormDataContentType())
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "audio_transcription")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, s.attemptRecorder, cand, req.TenantID, req.RequestID, "audio_transcription_whisper")
 	resp, upErr := s.upstream.Do(upReq)
 	if upErr != nil {
 		return nil, upErr
@@ -118,13 +119,22 @@ func (s *AudioService) transcribeViaWhisperInference(ctx context.Context, cand p
 	if rf != "json" {
 		res.RelayIsTextOnly = true
 		res.Text = string(body)
+		if len(body) > 0 {
+			attemptObserver.Finish("success")
+		}
 		return res, nil
 	}
 	var parsed struct {
-		Text string `json:"text"`
+		Text *string `json:"text"`
 	}
 	if jerr := json.Unmarshal(body, &parsed); jerr == nil {
-		res.Text = parsed.Text
+		if parsed.Text != nil {
+			res.Text = *parsed.Text
+			if attemptObserver != nil {
+				attemptObserver.RecordResponse(body, transcriptionMediaUsage(body, "provider_whisper_transcription", false))
+			}
+			attemptObserver.Finish("success")
+		}
 	} else {
 		// 上游 2xx 但不是 JSON：如实带原文给调用方，不静默清空。
 		return nil, fmt.Errorf("whisper /inference returned non-JSON body (http %d): %.200s",

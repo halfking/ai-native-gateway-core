@@ -2847,6 +2847,13 @@ files=(
   #   ★ 依赖 994 的四个物化视图（它重建它们）⇒ 必须排在 994 之后（已满足）。
   #   ★ 幂等：四个视图 DROP+CREATE + 索引 IF NOT EXISTS + 自登记 ON CONFLICT。
   "$ROOT_DIR/sql/migrations/startup/984_session_universe_cost_aware_probe_scope.sql"
+  # ★ 985-989（2026-11-23 至 11-24 请求对账）：请求关联、媒体用量、账单存证、
+  #   用量汇总、供应商合同费率。
+  "$ROOT_DIR/sql/migrations/startup/985_request_reconciliation_links.sql"
+  "$ROOT_DIR/sql/migrations/startup/986_provider_attempt_media_usage.sql"
+  "$ROOT_DIR/sql/migrations/startup/987_provider_invoice_evidence.sql"
+  "$ROOT_DIR/sql/migrations/startup/988_provider_invoice_usage_buckets.sql"
+  "$ROOT_DIR/sql/migrations/startup/989_supplier_contract_rates.sql"
 )
 
 
@@ -3694,6 +3701,16 @@ ledger_artifact_probe "983_request_metrics.sql" \
 #     的 definition 断言它（★ information_schema 不覆盖物化视图 ⇒ 994 教训）。
 ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('idx_user_session_agg_pk','idx_user_session_agg_date','idx_user_session_agg_tenant','idx_user_session_agg_owner','idx_project_task_agg_pk','idx_project_task_agg_owner','idx_project_task_agg_project','idx_project_task_agg_tenant','idx_agent_usage_agg_pk','idx_agent_usage_agg_agent','idx_agent_usage_agg_tenant','idx_model_usage_agg_pk','idx_model_usage_agg_model','idx_model_usage_agg_provider','idx_model_usage_agg_tenant')) = 15 AND (SELECT count(*) FROM pg_matviews WHERE schemaname='public' AND matviewname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates') AND definition LIKE '%cost_usd%') = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984') = 1"
+ledger_artifact_probe "985_request_reconciliation_links.sql" \
+  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985') = 1"
+ledger_artifact_probe "986_provider_attempt_media_usage.sql" \
+  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_call_attempts' AND column_name IN ('audio_input_duration_us','audio_billed_duration_us','audio_output_duration_us','generated_images','video_output_duration_us','media_usage_source')) = 6 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '986') = 1"
+ledger_artifact_probe "987_provider_invoice_evidence.sql" \
+  "to_regclass('public.provider_invoices') IS NOT NULL AND to_regclass('public.provider_invoice_lines') IS NOT NULL AND to_regclass('public.idx_provider_invoices_provider_month') IS NOT NULL AND to_regclass('public.idx_provider_invoice_lines_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_provider_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_account_time') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '987') = 1"
+ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
+  "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988') = 1"
+ledger_artifact_probe "989_supplier_contract_rates.sql" \
+  "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '989') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

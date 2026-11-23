@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import AppSheet from '@/components/common/AppSheet.vue'
 import { t, locale } from '@/i18n'
 
-const props = defineProps<{ modelValue: boolean; contentId: string; contextKey: string }>()
+const props = defineProps<{ modelValue: boolean; contentId?: string; contextKey: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 
 // Consume the desktop help source and shared standards directly. Vite bundles these
@@ -16,6 +16,7 @@ const standardsFiles = import.meta.glob<string>('../../../../web/content/statist
   eager: true, query: '?raw', import: 'default',
 })
 const rawHelp = computed(() => {
+  if (!props.contentId) return ''
   const lang = locale.value
   return helpFiles[`../../../../web/content/page-help/${props.contentId}.${lang}.md`]
     ?? helpFiles[`../../../../web/content/page-help/${props.contentId}.zh-CN.md`]

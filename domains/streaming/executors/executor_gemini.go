@@ -16,6 +16,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // matches executor.go
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelname"
@@ -1034,6 +1035,8 @@ func (e *Executor) executeGemini(
 	if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "gemini-native"), bodyBytes); err != nil {
 		return nil, err
 	}
+	callAttempt := newProviderAttempt(params, cand, "executor_gemini")
+	req, attemptBatch := e.observeProviderCalls(req, params, cand, callAttempt)
 
 	reqStart := time.Now()
 	// 2026-11-17（全链路日志审计轮）：对齐 executor_chat.go 的
@@ -1055,13 +1058,18 @@ func (e *Executor) executeGemini(
 		resp, uErr = e.Upstream.Do(req)
 	} else {
 		var doErr error
-		resp, doErr = http.DefaultClient.Do(req)
+		resp, doErr = upstreampkg.DoObserved(req, http.DefaultClient)
 		if doErr != nil {
 			uErr = &upstreampkg.Error{
 				Kind:    errorsx.ClassifyError(doErr, nil),
 				Message: doErr.Error(),
 				Err:     doErr,
 			}
+		}
+	}
+	if attemptBatch != nil {
+		if last := attemptBatch.latestAttempt(); last.ID != "" {
+			callAttempt = last
 		}
 	}
 	latencyMs := int(time.Since(tTotal).Milliseconds())
@@ -1129,6 +1137,7 @@ func (e *Executor) executeGemini(
 			captured = captured[:maxPassthroughErrorBody]
 		}
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "gemini-native"), captured)
+		e.recordAttemptUsage(callAttempt, reconciliation.ParseUsageEvidence(captured, cand.Protocol), captured, reconciliation.ResponseEndpoint(resp))
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, captured)
 		// ★ Context-length recovery: the upstream rejected the request as
 		// too long. Reuse the shared recovery coordinator (the same one
@@ -1218,6 +1227,7 @@ func (e *Executor) executeGemini(
 			params.OnStreamReady = nil
 		}
 		outcome := ge.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
+		e.finishObservedStream(callAttempt, params.Capture, outcome, cand.Protocol)
 		if outcome.Interrupted && isClientStreamInterruption(outcome.Kind, outcome.Reason) {
 			slog.Info("executor: client disconnected during gemini stream",
 				"credential_id", cand.CredentialID,
@@ -1296,6 +1306,14 @@ func (e *Executor) executeGemini(
 		}}
 	}
 	body, werr := ge.WriteNonStreamResponse(responseSink(params), resp, params.ClientModel, cand.QualityFixMode, nil)
+	if len(body) > 0 {
+		e.recordAttemptUsage(callAttempt, reconciliation.ParseUsageEvidence(body, cand.Protocol), body, reconciliation.ResponseEndpoint(resp))
+	}
+	if werr == nil && e.AttemptRecorder != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = e.AttemptRecorder.Finish(ctx, callAttempt.ID, "success")
+		cancel()
+	}
 	if werr != nil {
 		var ue *upstreampkg.Error
 		if errors.As(werr, &ue) && ue != nil {

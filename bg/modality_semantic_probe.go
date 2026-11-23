@@ -252,7 +252,7 @@ func postVisionChallenge(ctx context.Context, endpoint, apiKey string, payload [
 	}
 
 	client := &http.Client{Timeout: semanticProbeTimeout}
-	resp, err := client.Do(req)
+	resp, err := platformProbeDo(ctx, client, req, 0, "", "modality_semantic_probe")
 	if err != nil {
 		return "", 0, &challengeErr{"network", err.Error()}
 	}

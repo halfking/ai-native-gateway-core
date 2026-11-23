@@ -271,7 +271,8 @@ const keyStoreSelectSQL = `
 		COALESCE(ak.status, 'active') AS status,
 		ak.key_alias,
 		app.customer_id,
-		ak.expires_at
+		ak.expires_at,
+		COALESCE(ak.is_system, FALSE)
 	FROM api_keys ak
 	JOIN applications app ON app.id = ak.application_id
 `
@@ -311,6 +312,7 @@ func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, er
 		&info.KeyAlias,
 		&info.CustomerID,
 		&info.ExpiresAt,
+		&info.IsSystem,
 	); err != nil {
 		return keyStoreRow{}, err
 	}

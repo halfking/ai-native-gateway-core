@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -399,17 +400,14 @@ func (e *Executor) invokeOpenAISummarize(ctx context.Context, params *ExecParams
 		return "", err
 	}
 
-	resp, err := e.doCompactionUpstream(ctx, params, cand, payload, false)
+	resp, attempt, err := e.doCompactionUpstream(ctx, params, cand, payload, false)
 	if err != nil {
 		return "", err
 	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("openai summarize upstream %d: %s", resp.StatusCode, truncateForLogMasked(body, 200))
-	}
+	return e.consumeCompactionResponse(resp, attempt, "openai", "openai-completions", decodeOpenAICompaction)
+}
 
+func decodeOpenAICompaction(body []byte) (string, error) {
 	var parsed struct {
 		Choices []struct {
 			Message struct {
@@ -439,17 +437,14 @@ func (e *Executor) invokeAnthropicSummarize(ctx context.Context, params *ExecPar
 		return "", err
 	}
 
-	resp, err := e.doCompactionUpstream(ctx, params, cand, payload, true)
+	resp, attempt, err := e.doCompactionUpstream(ctx, params, cand, payload, true)
 	if err != nil {
 		return "", err
 	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("anthropic summarize upstream %d: %s", resp.StatusCode, truncateForLogMasked(body, 200))
-	}
+	return e.consumeCompactionResponse(resp, attempt, "anthropic", "anthropic-messages", decodeAnthropicCompaction)
+}
 
+func decodeAnthropicCompaction(body []byte) (string, error) {
 	var parsed struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -471,24 +466,55 @@ func (e *Executor) invokeAnthropicSummarize(ctx context.Context, params *ExecPar
 	return b.String(), nil
 }
 
+func (e *Executor) consumeCompactionResponse(resp *http.Response, attempt reconciliation.Attempt, providerName, protocol string, decode func([]byte) (string, error)) (string, error) {
+	defer resp.Body.Close() //nolint:errcheck // best-effort close
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
+	complete := readErr == nil && len(body) <= maxBodySize
+	if len(body) > maxBodySize {
+		body = body[:maxBodySize]
+	}
+	if complete && attempt.ID != "" {
+		usage := reconciliation.ParseProviderResponseEvidence(body, protocol, reconciliation.ResponseEndpoint(resp))
+		if usage.Source != "" || usage.ReportedAmount != nil {
+			e.recordAttemptUsage(attempt, usage, nil, "")
+		}
+		recordAttemptResponseBodyID(e.AttemptRecorder, attempt.ID, resp, body)
+	}
+	if resp.StatusCode >= 400 {
+		// The transport observer already recorded the failure from the status.
+		return "", fmt.Errorf("%s summarize upstream %d: %s", providerName, resp.StatusCode, truncateForLogMasked(body, 200))
+	}
+	summary, err := decode(body)
+	outcome := "unknown"
+	if complete && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		outcome = "success"
+		if err != nil || strings.TrimSpace(summary) == "" {
+			outcome = "failure"
+		}
+	}
+	e.finishObservedAttempt(attempt, outcome)
+	return summary, err
+}
+
 func (e *Executor) doCompactionUpstream(
 	ctx context.Context,
 	params *ExecParams,
 	cand provider.Candidate,
 	payload []byte,
 	anthropic bool,
-) (*http.Response, error) {
+) (*http.Response, reconciliation.Attempt, error) {
+	var attempt reconciliation.Attempt
 	budgetParams := &ExecParams{}
 	if params != nil {
 		*budgetParams = *params
 	}
 	budgetParams.R = (&http.Request{}).WithContext(ctx)
 	if err := e.checkCandidateContextBudget(budgetParams, cand, "summary", payload); err != nil {
-		return nil, err
+		return nil, attempt, err
 	}
 	// W1 缺口① (2026-11-19): 改为 per-model 粒度
 	if e.Circuit != nil && !e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand)) {
-		return nil, fmt.Errorf("compaction: circuit open for credential %d model %s", cand.CredentialID, cand.RawModel)
+		return nil, attempt, fmt.Errorf("compaction: circuit open for credential %d model %s", cand.CredentialID, cand.RawModel)
 	}
 
 	var releaseLimiter func()
@@ -501,7 +527,7 @@ func (e *Executor) doCompactionUpstream(
 			if e.Circuit != nil {
 				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			}
-			return nil, fmt.Errorf("compaction: limiter: %w", err)
+			return nil, attempt, fmt.Errorf("compaction: limiter: %w", err)
 		}
 		releaseLimiter = rel
 	}
@@ -527,13 +553,29 @@ func (e *Executor) doCompactionUpstream(
 		if e.Circuit != nil {
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
-		return nil, err
+		return nil, attempt, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	e.applyCompactionRequestHeaders(req, params, cand, anthropic)
+	var batch *providerAttemptBatch
+	if e.AttemptRecorder != nil {
+		attempt = newProviderAttempt(budgetParams, cand, "context_compaction")
+		attempt.AttemptNo = max(1, attempt.AttemptNo)
+		req, batch = e.observeProviderCalls(req, budgetParams, cand, attempt)
+	}
 
 	resp, err := e.doCompactionHTTP(req)
+	attempt = batch.latestAttempt()
 	if err != nil {
+		if resp != nil {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if resp.StatusCode >= 400 {
+				// This also covers replies the upstream client rejected after HTTP success.
+				e.finishObservedAttempt(attempt, "failure")
+			}
+		}
 		// W1 缺口① (2026-11-19): 改为 per-model 粒度
 		if e.Circuit != nil && !freeCredentialsTolerateTransient(cand.BillingMode, errorsx.KindNetwork) {
 			e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), errorsx.KindNetwork)
@@ -542,7 +584,7 @@ func (e *Executor) doCompactionUpstream(
 			// so release a consumed half-open probe.
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
-		return nil, err
+		return nil, attempt, err
 	}
 	if e.Circuit != nil {
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
@@ -569,7 +611,7 @@ func (e *Executor) doCompactionUpstream(
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
 	}
-	return resp, nil
+	return resp, attempt, nil
 }
 
 func (e *Executor) applyCompactionRequestHeaders(req *http.Request, params *ExecParams, cand provider.Candidate, anthropic bool) {
@@ -611,13 +653,13 @@ func (e *Executor) doCompactionHTTP(req *http.Request) (*http.Response, error) {
 		resp, uErr := e.Upstream.Do(req)
 		if uErr != nil {
 			if uErr.Err != nil {
-				return nil, uErr.Err
+				return resp, uErr.Err
 			}
-			return nil, fmt.Errorf("upstream: %s", uErr.Message)
+			return resp, fmt.Errorf("upstream: %s", uErr.Message)
 		}
 		return resp, nil
 	}
-	return http.DefaultClient.Do(req)
+	return upstreampkg.DoObserved(req, http.DefaultClient)
 }
 
 func extractConversationText(body []byte, clientProtocol string) (string, error) {

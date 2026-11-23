@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/httpwrite"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
@@ -143,7 +144,7 @@ func NewWithRetries(maxRetries int) *Client {
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
-	var transport http.RoundTripper = &http.Transport{
+	baseTransport := &http.Transport{
 		Proxy:                 proxy.ProxyFunc(),
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: responseHeaderTimeout(),
@@ -156,6 +157,8 @@ func NewWithRetries(maxRetries int) *Client {
 		MaxIdleConns:        128,
 		MaxIdleConnsPerHost: 32,
 	}
+	httpwrite.TrackTransport(baseTransport)
+	var transport http.RoundTripper = baseTransport
 	if proxy.StrictMode() {
 		transport = &strictProxyTransport{base: transport, resolver: proxy}
 	}
@@ -325,7 +328,8 @@ func (c *Client) doWithClient(req *http.Request, httpClient *http.Client) (*http
 		}
 
 		var doErr error
-		resp, doErr = httpClient.Do(req)
+		var observed observedAttempt
+		resp, doErr, observed = doObserved(req, httpClient)
 		if doErr == nil {
 			if err := nonAPIReply(resp, req); err != nil {
 				return resp, err
@@ -349,8 +353,12 @@ func (c *Client) doWithClient(req *http.Request, httpClient *http.Client) (*http
 		var earlyBody []byte
 		bodyAvailable := false
 		if doErr == nil && resp != nil {
-			earlyBody = captureErrorBody(resp, true)
+			var complete bool
+			earlyBody, complete = captureBoundedErrorBody(resp, true)
 			bodyAvailable = true
+			if complete && len(earlyBody) > 0 && observed.bodyObserver != nil {
+				observed.bodyObserver.ObserveErrorBody(observed.handle, resp, earlyBody)
+			}
 		}
 
 		kind := errorsx.ClassifyError(doErr, resp)
@@ -506,16 +514,22 @@ func ErrorFromResponse(resp *http.Response) *Error {
 // captureErrorBody consumes an error response once and restores a readable
 // body so callers can still inspect or relay the response after Do returns.
 func captureErrorBody(resp *http.Response, restore bool) []byte {
+	body, _ := captureBoundedErrorBody(resp, restore)
+	return body
+}
+
+func captureBoundedErrorBody(resp *http.Response, restore bool) ([]byte, bool) {
 	if resp == nil || resp.Body == nil {
-		return nil
+		return nil, false
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	//nolint:errcheck // best-effort close
 	resp.Body.Close()
 	if restore {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	return body
+	// At the limit, a full response body needs explicit HTTP framing.
+	return body, err == nil && (len(body) < maxErrorBodyBytes || resp.ContentLength == int64(len(body)))
 }
 
 // BuildUpstreamRequest creates an HTTP request to the upstream LLM provider.
