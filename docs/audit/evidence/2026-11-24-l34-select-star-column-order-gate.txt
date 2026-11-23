@@ -151,3 +151,59 @@
   ② tests/ci_carrier_ir_conversion_wiring_test.sh 的「★ 磁盘上的 IR harness 没进清单 ★★
      （★ ir-round2-*.sh 四条 ★★）」——★ 在 origin/main 对拍树上同样 PASS=20 FAIL=1 ⇒ 非本轮引入 ★★
   ③ deploy-lib symlink resolves（★ 隔离 worktree 位置相关、★ blob 与 origin/main 逐字相同 ★★）
+
+--------------------------------------------------------------------------------
+⑨ L34 六轮追加块（2026-11-24）：把只读列序对拍门推到第二台生产库（252 共享 PG）
+--------------------------------------------------------------------------------
+★ 全程只读（★ 252 上只 SELECT、★ 零写库、★ 零 schema 变更、★ 零在役切换 ★★）
+
+★ ① 252 的列序对拍门读数（★ 容器 pg-252-pg17 / 库 llm_gateway / 用户 postgres ★★）
+  public schema 关系数 788｜列序读取 21,039 行｜登记表 11 对
+  对齐 7｜★ 列序漂移 2｜单侧在场 0｜两侧都不在场 2 ⇒ EXIT=1
+  ★ 漂移①：usage_ledger_with_current_month（344）
+      第 20 位：hot＝reasoning_tokens integer ↔ 父表＝rate_multiplier double precision
+      ⇒ ★★ 与 211 同一位、同一形态 ★★
+  ★ 漂移②：candidate_failure_logs_with_current_month（392）
+      第 16 位：hot＝context jsonb ↔ 父表＝per_attempt_latency_ms integer
+      ⇒ ★★ 与 211 的第 17 位不同 ⇒ 两台库历史不同、但漂的是同一类 ★★
+  ★ 两个视图都在：candidate_failure_logs_with_current_month 21 列、
+    usage_ledger_with_current_month 19 列 ⇒ ⇒ 今天零生产影响（列清单在创建时已冻结）
+
+★ ② 252 的通道账形态（★ 只读 ★★）
+  public.gateway_db_revision_sequences：49 行、★ 全部无指纹的 legacy 行
+  L34 覆盖门在 252 上的读数：
+    投递面 356｜覆盖（指纹一致）0｜legacy 47｜内容加固重放 0｜★ 断层 306
+    ｜待部署 3｜磁盘不在场 0 ⇒ EXIT=1
+  ⇒ ★★ 通道在 252 上会重放 309 个文件 ★★
+  ★ 392 在投递面里排第 22 位（★ 安装器 StartupFiles 里是第 380 位 ⇒ 两通道位置不同 ★★）
+  ⇒ ★★ 预测（★ 只读推断、★ 未实测 —— ★ 真跑通道＝生产写 ★★）：
+    ★ 211：392 指纹一致 ⇒ 通道跳过 ⇒ 雷是潜伏的
+    ★ 252：392 不在本序列的账里 ⇒ 通道会真跑它 ⇒ ⇒ 会在第 22 条因列序漂移而失败
+      （★ 392 是单事务 ⇒ 回滚 ⇒ 数据与视图都不损、但部署被挡住 ★★）
+
+★ ③ ★★★ 方案 A 的一条新收益（★ 事实、★ 只读 ★★）
+  ★ 252 的 public.schema_migrations **有 392 的记账行**：
+    392|2026-11-11 18:12:14.585866+08
+    （★ 同表另有 344|2026-07-05、390、391、394 ★★）
+  ★ 对照：★ 211 的 public.schema_migrations **没有 392 行**（★ 只查得到 983 ★★）
+  ⇒ ★★ 方案 A（★ 让部署通道也认 schema_migrations ★★）在 252 上会把 392 跳过
+    ⇒ ⇒ 「392 因列序漂移而炸」这条风险在 252 上直接消失
+    ⇒ ⇒ ★★ 这是 L35 待决项（A／A′／C）对价表里之前没有的一条 ★★
+  ★ 顺带：★ 现行 392 的全 history 只有一次提交（git log --follow ⇒ 5dceeb70c）
+    ⇒ ★★ 从未有过自登记段 ★★ ⇒ ★★ 那一行不是 392 自己写的 ★★
+    ⇒ ★ 部署通道根本不写 schema_migrations（★ 实测该脚本无 INSERT INTO schema_migrations ★★）
+    ⇒ ★★ ⇒ 是别的路径代写的 ⇒ 「记账靠逐文件的历史偶然」这个病灶仍在 ★★
+
+★ ④ 154/245 本体的覆盖关系（★ 只读探测 ★★）
+  ★ 245：容器 acc-pg-245（postgres:17-alpine）、库 postgres/acc_db
+    ⇒ acc_db 的 public 有 1,116 个关系、但**不含**本轮这 11 对跨面视图 ⇒ 不是网关库
+  ★ 154：宿主有 psql、网关库指向 172.16.2.210 / acc_db_154 / acc_app_154
+    ⇒ acc_db_154 的 public 同样 1,116 个关系、★ 同样不含这 11 对 ⇒ 也是 acc 业务库
+  ★ ★★ ⇒ 本轮覆盖的是【它们与 252 共用的那个 llm_gateway】★★
+
+★ ⑤ 本轮的边界
+  ★ 本轮**没有改任何代码**：只有归档 ＋ 证据 ⇒ 门的行为与 L34 五轮逐字相同
+  ★ 「252 上会在第 22 条失败」是**预测**：两个前提都已实测（列序漂移 ＋ 账里没有 392）、
+    ★ 但真跑一次通道＝生产写 ⇒ 未实测
+  ★ ★★ 全程只读：★ 两台库上没有做过任何写操作、★ 没有改任何 schema、
+    ★ 没有切换任何在役实例 ★★
