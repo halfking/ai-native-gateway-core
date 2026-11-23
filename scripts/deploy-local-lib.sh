@@ -939,6 +939,14 @@ dl_write_env() {
     # ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` 直接回退 false
     # ⇒ ⇒ 补这一行是让 env 那条路可达的**最小修法**（未设时写空行，行为不变）。
     dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED:-}"
+    # 2026-11-23（上游 aac6602ab「逐次供应商调用事实落库」引入）：★ 代码用 env 读
+    # `LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED`（★ cmd/gateway/main.go:2007 读、
+    # ★ == "true" 时开对账影子通道）⇒ ★ 而白名单是**白名单式**的 ⇒ 不补 ⇒
+    # **容器形态下它被静默丢弃**（不报错、不警告，只是开关不生效）⇒
+    # 「以为开了」比「没开」更危险 ⇒ ⇒ 按 R72f 决策项 #9 的既定体例补一行。
+    # ★ 写法与同族一致：★ `${KEY:-}` ⇒ 未设时写**空行** ⇒ gateway 侧视为「未设置」
+    # ⇒ 行为与改动前**逐字一致** ⇒ 零语义风险。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED "${LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED:-}"
     # 2026-10-21 R72f（属主决策项 #9 = ★「逐个补进白名单」）：把「代码用 env 读、
     # 但白名单漏掉」的那 23 个 feature flag 一次性补齐。
     #
