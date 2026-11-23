@@ -22,6 +22,11 @@ package analytics
 //   - owner 非空：物化视图按 owner 键聚合，owner 空的会话**不在**视图里
 //     ⇒ 对齐面也必须排除（否则会话数比对视图多）。
 //
+// ★ 2026-11-24 P1：探测排除项现在带「**真实计费豁免**」（有真实计费的会话
+//   一律计入）—— 详见 SessionUniverseWhere 的注释与迁移 984 的头注。
+//   迁移侧的**现行真源**是 984（它重建四个物化视图）；981/994 是历史基线，
+//   契约门对拍的是 984。
+//
 // # 日历窗口为什么不用 settings.SystemDayRangeUtc
 //
 // 981/994 的日桶是 `(first_request_at AT TIME ZONE 'Asia/Shanghai')::date`
@@ -63,16 +68,40 @@ func SessionUniverseJoin(ssAlias, sAlias, sdAlias string) string {
 }
 
 // SessionUniverseWhere 返回会话宇宙的 WHERE 合取项（owner 非空 + 探测排除）。
-// 与 994 重建 user_session_aggregates 的 WHERE 逐字同语义；sAlias = sessions
-// 别名，sdAlias = session_dim 别名。
-func SessionUniverseWhere(sAlias, sdAlias string) string {
+// 与 984 重建 user_session_aggregates 的 WHERE 逐字同语义；sAlias = sessions
+// 别名，sdAlias = session_dim 别名，ssAlias = session_summaries 别名。
+//
+// ★ 2026-11-24 P1（探测误杀修复）：探测排除项加「**真实计费豁免**」。
+//
+//	旧形态（981/994）：owner 非空 ∧ ¬is_probe ∧ ¬session_analytics_is_probe(...)
+//	  ⇒ 账号名命中探测正则（实测根因：(^deployment-gate)）的**真实业务会话**
+//	    被整片剔掉（211 实测 30 天 16,698 会话 / $7,163.51，占会话统计与看板
+//	    费用差的 79%）。
+//	新形态（984）：
+//	  owner 非空 ∧ ( 有真实计费 ∨ ( ¬is_probe ∧ ¬session_analytics_is_probe(...) ) )
+//	  ⇒ **花了钱的会话一律计入**；零成本会话沿用旧排除语义
+//	    （零成本探测会话仍被剔 ⇒「人员榜不被零成本门禁流量霸榜」的原意保留）。
+//
+//	★ 为什么豁免挂在「有真实计费」而不是「删掉那条正则」：删正则会让零成本的
+//	  deployment-gate 探测会话（实测 7 天 138 个会话）一起涌进统计。
+//	★ 为什么不去刷 sessions.is_probe 缓存：那张表按天分区、十万级行 ⇒ 生产写
+//	  风险；且会抹掉「运维手工排除位」的语义。谓词层豁免 = 零写。
+//
+// ★ ssAlias 为什么是必需参数：豁免判据要读**会话的真实计费**
+//   （ss.total_cost_usd）⇒ 该列只在 session_summaries 上，sessions 上没有。
+func SessionUniverseWhere(sAlias, sdAlias, ssAlias string) string {
 	owner := fmt.Sprintf(SessionOwnerKeyExpr, sAlias, sdAlias)
 	return fmt.Sprintf(
 		"%[1]s IS NOT NULL\n"+
-			"  AND NOT COALESCE(%[2]s.is_probe, false)\n"+
-			"  AND NOT session_analytics_is_probe(\n"+
-			"      COALESCE(%[2]s.owner_user, %[3]s.api_key_owner_user), %[2]s.client_type, %[2]s.title)",
-		owner, sAlias, sdAlias)
+			"  AND (\n"+
+			"    COALESCE(%[4]s.total_cost_usd, 0) > 0\n"+
+			"    OR (\n"+
+			"      NOT COALESCE(%[2]s.is_probe, false)\n"+
+			"      AND NOT session_analytics_is_probe(\n"+
+			"          COALESCE(%[2]s.owner_user, %[3]s.api_key_owner_user), %[2]s.client_type, %[2]s.title)\n"+
+			"    )\n"+
+			"  )",
+		owner, sAlias, sdAlias, ssAlias)
 }
 
 // shanghaiLoc 是与迁移 SQL `'Asia/Shanghai'` 同一把尺的固定 +08 时区

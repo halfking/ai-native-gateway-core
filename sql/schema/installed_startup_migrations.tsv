@@ -409,3 +409,4 @@
 391	989_migration_ledger_session_analytics_981_repair.sql
 392	982_provider_call_attempts.sql
 393	983_request_metrics.sql
+394	984_session_universe_cost_aware_probe_scope.sql

@@ -234,8 +234,8 @@ func TestRequestMetricArgs_OrderMatchesPlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("requestMetricArgs: %v", err)
 	}
-	if len(args) != 42 {
-		t.Fatalf("参数个数应为 42，实际 %d", len(args))
+	if len(args) != 43 {
+		t.Fatalf("参数个数应为 43，实际 %d", len(args))
 	}
 
 	// 占位符个数必须与参数个数一致
@@ -250,29 +250,31 @@ func TestRequestMetricArgs_OrderMatchesPlaceholders(t *testing.T) {
 	if args[3] != "2026-11-20" {
 		t.Errorf("args[3] 应为 occurred_date 文本，实际 %v", args[3])
 	}
-	if got := strArg(args[14]); got != "sess-1" {
-		t.Errorf("args[14] 应为 session_id，实际 %v", got)
+	if got := strArg(args[15]); got != "sess-1" {
+		t.Errorf("args[15] 应为 session_id，实际 %v", got)
 	}
-	if got := strArg(args[15]); got != "task-1" {
-		t.Errorf("args[15] 应为 task_id，实际 %v", got)
+	if got := strArg(args[16]); got != "task-1" {
+		t.Errorf("args[16] 应为 task_id，实际 %v", got)
 	}
-	if got := strArg(args[20]); got != "text" {
-		t.Errorf("args[20] 应为 modality，实际 %v", got)
+	if got := strArg(args[21]); got != "text" {
+		t.Errorf("args[21] 应为 modality，实际 %v", got)
 	}
-	if got := strArg(args[21]); got != "openai" {
-		t.Errorf("args[21] 应为 protocol，实际 %v", got)
+	if got := strArg(args[22]); got != "openai" {
+		t.Errorf("args[22] 应为 protocol，实际 %v", got)
 	}
-	if args[22] != int32(2) {
-		t.Errorf("args[22] 应为 attachment_count，实际 %v", args[22])
+	if args[23] != int32(2) {
+		t.Errorf("args[23] 应为 attachment_count，实际 %v", args[23])
 	}
-	if args[32] != int64(115) {
-		t.Errorf("args[32] 应为 cost_cents，实际 %v", args[32])
+	if args[33] != int64(115) {
+		t.Errorf("args[33] 应为 cost_cents，实际 %v", args[33])
 	}
-	if args[40] != nil {
-		t.Errorf("args[40] 应为 NULL（无 attributes），实际 %v", args[40])
+	// args[40] = TTFTMs（本例无值）
+	// args[41] = attributesJSON（本例无值应为 nil）
+	if args[41] != nil {
+		t.Errorf("args[41] 应为 attributes（本例无值应为 nil），实际 %v", args[41])
 	}
-	if args[41] != "async_processor" {
-		t.Errorf("args[41] 应为 source，实际 %v", args[41])
+	if args[42] != "async_processor" {
+		t.Errorf("args[42] 应为 source，实际 %v", args[42])
 	}
 }
 
@@ -291,9 +293,9 @@ func TestRequestMetricArgs_AttributesMarshaledToJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("requestMetricArgs: %v", err)
 	}
-	got, ok := args[40].(string)
+	got, ok := args[41].(string)
 	if !ok {
-		t.Fatalf("attributes 应序列化为字符串，实际 %T", args[40])
+		t.Fatalf("attributes 应序列化为字符串，实际 %T", args[41])
 	}
 	if got != `{"k":"v"}` {
 		t.Errorf("attributes JSON 不符：%s", got)
