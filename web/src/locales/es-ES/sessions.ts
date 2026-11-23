@@ -113,6 +113,7 @@ export default {
   },
   stats: {
     scopeNoticeTitle: 'Nota de alcance:',
+    scopeHintLabel: 'Nota de alcance',
     scopeNoticeBody: 'Esta página cuenta todas las solicitudes y los costes de las sesiones cuya primera solicitud ocurrió en los últimos {days} días.',
     scopeNoticeHint: 'Nota: esta página excluye las sesiones de sondeo según las reglas del «universo de sesiones»; las mediciones en producción muestran que todas las solicitudes excluidas así son tráfico de negocio real en el registro de solicitudes, por lo que los costes aquí son sensiblemente inferiores a los de la página «Dashboard» (que excluye las sondas por clase de tráfico). Tampoco se cuentan las sesiones cuya primera solicitud es anterior a la ventana pero que siguen activas dentro de ella. Para ver el coste completo dentro de la ventana, consulte la página «Dashboard» o los «Estándares de cálculo».',
     loading: "Cargando estadísticas de sesión…",

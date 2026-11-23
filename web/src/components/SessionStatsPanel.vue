@@ -38,8 +38,8 @@ import PageHelpDrawer from './help/PageHelpDrawer.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
 import { ElIcon } from 'element-plus'
-import KxDateRangePicker from './ui/KxDateRangePicker.vue'
-import { makeDateRangePresets, rangeFromSpanDays, rangeSpanDays } from './ui/kxDatePresets'
+import StatsDateRangePicker from './analytics/StatsDateRangePicker.vue'
+import { rangeFromSpanDays, rangeSpanDays } from './ui/kxDatePresets'
 import type { KxDateRange } from './ui/kx-date-types'
 import { boardRangeFromKxRange, boardRangeToKxRange, type BoardTimeRange } from '../utils/boardTimeRange'
 const { t } = useI18n()
@@ -57,7 +57,7 @@ const props = withDefaults(defineProps<{ showStandardsHelp?: boolean; range?: Kx
   range: null,
 })
 
-// 外部受控模式（会话分析页把本页的 Top5 时间窗交给本面板）���
+// 外部受控模式（会话分析页把本页的 Top5 时间窗交给本面板）。
 // 面板只负责「把用户选的新区间交回页面」，落点由页面决定。
 const emit = defineEmits<{ 'update:range': [value: KxDateRange] }>()
 
@@ -264,8 +264,6 @@ function formatPct(value: number) {
 //   换成参数化的 [start, end)（end 独占）⇒ 显示的区间 = 数据窗口。
 // ★ 旧实现的 4 个滚动档位（近24小时/7/30/90 天）+ presets-only 已移除：
 //   那套是「滚动窗口 + 无自定义」，与看板的「日历日 + 可自定义」既不同形也不同尺。
-const statsPresets = computed(() => makeDateRangePresets('date'))
-
 // 应用新范围：
 //   ① 仪表盘页 ⇒ 改的是**看板那份共享状态** ⇒ 两页同步（看板数据同时重取）。
 //   ② 外部受控（会话分析页）⇒ 把新区间交回页面（页面再决定落点）。
@@ -332,17 +330,11 @@ defineExpose({
       {{ t('sessions.stats.probeScopeDegraded') }}
     </div>
 
-    <!-- 2026-11-23 统计口径说明：告知用户当前统计方法及其局限性 -->
-    <!-- ★ 2026-11-23 12h 修订审计轮：★ 本段原先是**硬编码中文** ⇒ ★ 被
-         「硬编码 CJK 棘轮门」计入（★ 计数 4360 → 4375 > baseline 4369 ⇒ main 上红）
-         ⇒ ★ 正规化为 8 语种 i18n 键（★ sessions.stats.scopeNotice*）。 -->
-    <div class="alert alert-info" role="status" data-testid="stats-scope-info">
-      <strong>{{ t('sessions.stats.scopeNoticeTitle') }}</strong>{{ t('sessions.stats.scopeNoticeBody', { days }) }}
-      <br>
-      <small style="opacity: 0.9;">
-        {{ t('sessions.stats.scopeNoticeHint') }}
-      </small>
-    </div>
+    <!-- ★ 2026-11-24 紧凑轮：「统计说明」从**常驻横幅**收成**刷新按钮旁的
+         点击提示符**（components/analytics/StatsScopeHint.vue）——
+         解释性内容不该占据页面最显眼的位置，却必须在用户正要读数字时触手可及。
+         ⇒ 本面板不再渲染说明块；仪表盘页与「会话分析·用户」页各自在刷新按钮
+           旁挂同一枚提示符（同一份 i18n 键 ⇒ 两页文案完全一致）。 -->
 
     <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">
       <!-- Loading indicator -->
@@ -370,10 +362,8 @@ defineExpose({
                  与自定义区间都在 92 天内）。
                · 控件显示的区间 = 请求发的区间（start_date/end_date）⇒
                  界面显示的 = 数据反映的（自定义入口因此**可以**开）。 -->
-          <KxDateRangePicker
+          <StatsDateRangePicker
             :model-value="effectiveRange"
-            :presets="statsPresets"
-            :max-span-days="92"
             :disabled="loading"
             @apply="applyStatsRange"
           />

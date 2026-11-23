@@ -5,6 +5,24 @@
   <div class="session-analytics-users-view" data-testid="sa-page-users">
     <PageHeader :title="t('sessionAnalytics.title')" :subtitle="t('nav.item.sessionAnalyticsUsers')">
       <template #actions>
+        <!-- ★ 2026-11-24 统一轮：时间范围控件与「看板」「会话与统计」页
+             **完全同一个组件**（固定档位 + 自定义起止，见
+             components/analytics/StatsDateRangePicker.vue）。
+             ★ 同时**上移到页头**：本页的时间范围同时管着会话统计面板、Top5 四件套
+               与 Top10 排行三块内容，此前控件却埋在第二块（Top10 标题行）里
+               ⇒ 上面两块的内容改了区间、控件却在下面，找不到也够不着。 -->
+        <div class="sa-range">
+          <span class="sa-range__label" data-testid="sa-range-label">{{ t('sessionAnalytics.range.label') }}</span>
+          <StatsDateRangePicker v-model="draftRange" @apply="onApplyRange" />
+        </div>
+        <!-- 「统计说明」提示符：点击才展开（与仪表盘页同一枚、同一份文案）。 -->
+        <StatsScopeHint :days="scopeDays" />
+        <!-- 「统计标准」抽屉：口径正文（原先由面板提供，现与刷新按钮同处页头）。 -->
+        <PageHelpDrawer
+          route-path="/admin/session-analytics/users"
+          content-id="dashboard-stats-standards"
+          :label="t('pageHelp.button.standards')"
+        />
         <button
           class="sa-btn"
           type="button"
@@ -15,6 +33,11 @@
           {{ t('sessionAnalytics.action.refresh') }}
         </button>
       </template>
+
+      <!-- ★ 2026-11-24 统一轮：当前生效区间的文字披露放在页头**下一行**
+           （操作区只留控件本身 ⇒ 头部不被长文本撑开；控件显示的可能是草稿值，
+           这一行才是**真正生效**的区间）。 -->
+      <SaRangeHint :start="range.start" :end="range.end" />
     </PageHeader>
 
     <!-- 会话统计面板 (来自 Dashboard) -->
@@ -29,6 +52,7 @@
       <SessionStatsPanel
         ref="statsPanelRef"
         :range="range"
+        :show-standards-help="false"
         style="margin-bottom: 24px;"
         @update:range="onApplyRange"
       />
@@ -72,13 +96,8 @@
     <div class="top-users-section">
       <div class="section-header">
         <h2 class="section-title">{{ t('sessionAnalytics.topUsersTitle') }}</h2>
-        <div class="section-actions">
-          <div class="sa-range">
-            <span class="sa-range__label" data-testid="sa-range-label">{{ t('sessionAnalytics.range.label') }}</span>
-            <KxDateRangePicker v-model="draftRange" :presets="presets" @apply="onApplyRange" />
-            <SaRangeHint :start="range.start" :end="range.end" />
-          </div>
-        </div>
+        <!-- ★ 2026-11-24：时间范围控件已上移到页头（与刷新按钮同一行）——
+             它管的是**整页**三块内容，不只是下面这块排行。 -->
       </div>
 
       <SaStateBanner
@@ -167,9 +186,11 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
 import SessionStatsPanel from '../../../components/SessionStatsPanel.vue'
 import DataTable from '../../../components/ui/DataTable.vue'
-import KxDateRangePicker from '../../../components/ui/KxDateRangePicker.vue'
-import { rangeFromSpanDays } from '../../../components/ui/kxDatePresets'
-import type { KxDateRange, KxDateRangePreset } from '../../../components/ui/kx-date-types'
+import StatsDateRangePicker from '../../../components/analytics/StatsDateRangePicker.vue'
+import StatsScopeHint from '../../../components/analytics/StatsScopeHint.vue'
+import PageHelpDrawer from '../../../components/help/PageHelpDrawer.vue'
+import { rangeFromSpanDays, rangeSpanDays } from '../../../components/ui/kxDatePresets'
+import type { KxDateRange } from '../../../components/ui/kx-date-types'
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
 import SaTop5Rankings from './components/SaTop5Rankings.vue'
@@ -211,10 +232,12 @@ const draftRange = ref<KxDateRange>(range.value)
 const taskFilter = ref(taskFilterFromQuery(route.query))
 const topUsers = ref<UserRankingRow[]>([])
 
-const presets = computed<KxDateRangePreset[]>(() => [
-  { id: 'sa-7d', labelKey: 'sessionAnalytics.range.preset7', resolve: () => rangeFromSpanDays(7) },
-  { id: 'sa-30d', labelKey: 'sessionAnalytics.range.preset30', resolve: () => rangeFromSpanDays(30) },
-])
+// ★ 2026-11-24 统一轮：本页不再自持一套预设（原先只有「近 7 天 / 近 30 天」
+//   两个档位，且与看板/会话统计页形态不同）⇒ 改用全站统一的
+//   StatsDateRangePicker（固定档位 = 今天/昨天/近7/14/30天/本月/上月 + 自定义起止）。
+
+/** 当前生效区间的日历日跨度（含首尾）——「统计说明」正文里的 {days} 用它。 */
+const scopeDays = computed(() => Math.max(1, rangeSpanDays(range.value)))
 
 function onApplyRange(newRange: KxDateRange) {
   range.value = newRange

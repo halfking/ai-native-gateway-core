@@ -44,9 +44,11 @@ describe('会话统计图表初始化竞态（数据晚到必须补 init）', ()
 })
 
 describe('会话统计工具栏布局（owner 图批：选择器左上 + 删统计周期块 + 紧凑轮）', () => {
-  it('③ KxDateRangePicker 在 panel-toolbar 的起始组内（左侧）', async () => {
+  it('③ 时间范围选择器在 panel-toolbar 的起始组内（左侧）', async () => {
     const src = await read('SessionStatsPanel.vue')
-    const pickerIdx = src.indexOf('<KxDateRangePicker')
+    // ★ 2026-11-24 统一轮：控件换成共享组件 StatsDateRangePicker
+    //   （固定档位 + 自定义起止，与看板/会话分析页同一套）⇒ 布局契约不变。
+    const pickerIdx = src.indexOf('<StatsDateRangePicker')
     const startIdx = src.indexOf('class="panel-toolbar__start"')
     expect(pickerIdx).toBeGreaterThanOrEqual(0)
     expect(startIdx).toBeGreaterThanOrEqual(0)
@@ -84,7 +86,7 @@ describe('会话统计工具栏布局（owner 图批：选择器左上 + 删统�
   // 顶到页面中间，离控件很远——主人图批「放到时间范围选择的右边」）。
   it('⑥ 「包含探测」开关紧跟时间范围选择器（同组、其后）', async () => {
     const src = await read('SessionStatsPanel.vue')
-    const pickerIdx = src.indexOf('<KxDateRangePicker')
+    const pickerIdx = src.indexOf('<StatsDateRangePicker')
     const probeIdx = src.indexOf('class="session-probe-scope"')
     expect(pickerIdx).toBeGreaterThanOrEqual(0)
     expect(probeIdx).toBeGreaterThan(pickerIdx)

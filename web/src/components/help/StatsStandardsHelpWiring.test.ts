@@ -145,4 +145,16 @@ describe('统计标准帮助入口接线', () => {
     // 面板侧在仪表盘页必须被显式关掉
     expect(src).toContain(':show-standards-help="false"')
   })
+
+  // 2026-11-24 统一轮：「会话分析·用户」页也把「统计标准」入口收到了页头
+  // （与刷新按钮同一行），面板那份关掉 ⇒ 入口不重复、且与另两页同一篇正文。
+  it('④ 会话分析·用户页：页头提供入口，面板那份关掉（不重复）', async () => {
+    const src = await readFile(
+      resolve(process.cwd(), 'web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue'),
+      'utf8',
+    ).catch(() => readFile(resolve(process.cwd(), 'src/views/admin/session-analytics/SessionAnalyticsUsersView.vue'), 'utf8'))
+    expect(src).toContain('<PageHelpDrawer')
+    expect(src).toContain(`content-id="${STANDARDS_ID}"`)
+    expect(src).toContain(':show-standards-help="false"')
+  })
 })

@@ -1,10 +1,9 @@
 <script setup lang="ts">
 // BoardFilterBar.vue — 看板全局筛选条（2026-09-30 重构轮，对齐效果图）。
-// 时间范围（统一 KxDateRangePicker）+ 粒度（首期只读「自动」）+ 刷新 + 数据源徽标（特有）。
+// 时间范围（统一 StatsDateRangePicker）+ 粒度（首期只读「自动」）+ 刷新 + 数据源徽标（特有）。
 import { computed, useSlots } from 'vue'
 import { useI18n } from 'vue-i18n'
-import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
-import { makeDateRangePresets } from '../ui/kxDatePresets'
+import StatsDateRangePicker from '../analytics/StatsDateRangePicker.vue'
 import type { KxDateRange } from '../ui/kx-date-types'
 import { boardTrendBucketMinutes, type BoardTimeRange } from '../../utils/boardTimeRange'
 
@@ -35,8 +34,12 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const slots = useSlots()
 
-const presets = computed(() => makeDateRangePresets('date'))
-
+// ★ 2026-11-24 统一轮：时间范围控件改用**全站统一封装**
+//   components/analytics/StatsDateRangePicker.vue。
+//   ★ 等价替换，行为不变：原写法 = KxDateRangePicker + makeDateRangePresets('date')
+//     + max-span-days=92；新封装内部正是这三项（逐项相同）。
+//   ★ 收益：看板 / 「会话与统计」/ 「会话分析·用户」三处**结构上共用同一个组件文件**
+//     ⇒ 以后改档位或改跨度只改一处，不会再出现「三处各写一套、同名不同义」。
 const granularityLabel = computed(() => {
   const mins = boardTrendBucketMinutes(props.timeRange)
   if (mins >= 60) return t('dashboard.board.granHour')
@@ -66,10 +69,8 @@ const sourceKey = computed(() => {
   <div class="bfb" :class="{ 'bfb--compact': props.compact }">
     <div class="bfb__item">
       <span class="bfb__label">{{ t('dashboard.board.filterRange') }}</span>
-      <KxDateRangePicker
+      <StatsDateRangePicker
         :model-value="rangeValue"
-        :presets="presets"
-        :max-span-days="92"
         :disabled="loading"
         @apply="emit('apply-range', $event)"
       />
