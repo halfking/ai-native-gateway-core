@@ -252,6 +252,26 @@ function textsOf(closure, localeValues, routePath) {
       const s = m[1]
       if (/[一-鿿]/.test(s) || /[A-Za-z]{4,}/.test(s)) literals.add(s)
     }
+    // ★★ 2026-11-23（L30 轮·补②⑦）：★ **模板裸文本也要算「可达」**。
+    //
+    //	★ 为什么必须补这一段（★ 实测出来的工具缺陷、★ 不是推演）：
+    //	★ 上一段只收**引号里的字符串字面量** ⇒ ★ 而 Vue 模板里绝大多数可见文案
+    //	★ 是**裸文本节点**（★ `<h1>队列瀑布图</h1>` ★ 里一个字都没引号）
+    //	★ ⇒ ★★ 于是「页面明明渲染得出、工具却判 not-found」。
+    //	★ ★★ 实测反例（★ 2026-11-23）：★ `05-routing.yaml` 第 291 行断言
+    //	★ 「队列瀑布图」、★ 页面 `/dispatch/waterfall` 的组件
+    //	★ `views/DispatchWaterfallView.vue` **第 122 行就是 `<h1>队列瀑布图</h1>`**
+    //	★ ⇒ 工具判它 not-found ⇒ ★ **纯工具误报**（★ 该页确实渲染得出）。
+    //
+    //	★ 口径：★ 只收 **标签之间的裸文本**（★ `>` 与 `<` 之间）、★ 长度 2–80、
+    //	★ 含中日韩字符或 ≥4 位英文字母者；★ **先剥 HTML 注释**（★ 注释里的字
+    //	★ 不上屏）；★ 不收属性值（★ 属性值已由上面的引号字面量那条覆盖）。
+    const templateSrc = src.replace(/<!--[\s\S]*?-->/g, ' ')
+    for (const m of templateSrc.matchAll(/>([^<>{}]{2,80})</g)) {
+      const s = m[1].trim()
+      if (!s) continue
+      if (/[一-鿿]/.test(s) || /[A-Za-z]{4,}/.test(s)) literals.add(s)
+    }
   }
   // 页面帮助正文：**只取该路由在 pageHelpRegistry 里登记的那一篇**
   // （★ 全量 page-help 文件都算「可达」⇒ 又一次把工具变成恒绿）
