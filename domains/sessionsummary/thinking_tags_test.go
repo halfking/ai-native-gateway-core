@@ -1,6 +1,7 @@
 package sessionsummary
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,16 @@ func TestStripThinkingTags(t *testing.T) {
 			name:     "simple thinking tag",
 			input:    `<think>Some thinking content</think>{"title":"test"}`,
 			expected: `{"title":"test"}`,
+		},
+		{
+			name:     "thinking variant tag (F-D)",
+			input:    `<thinking>Long reasoning here</thinking>{"title":"test"}`,
+			expected: `{"title":"test"}`,
+		},
+		{
+			name:     "unclosed thinking variant tag (F-D)",
+			input:    `<thinking>Reasoning content{"title":"test"}`,
+			expected: `Reasoning content{"title":"test"}`,
 		},
 		{
 			name:     "thinking tag with JSON inside",
@@ -157,5 +168,44 @@ func TestParseSummaryResponse_WithThinkingTags(t *testing.T) {
 	}
 	if summary.AgentType != "cursor" {
 		t.Errorf("AgentType = %q, want %q", summary.AgentType, "cursor")
+	}
+}
+
+// 2026-11-24 批判审计轮回归测试：生产 6h 实测三种失败形态的定案样本。
+// F-A：thinking 吃光 max_tokens ⇒ 输出只剩 "{"（111 次/6h 的主导形态）。
+
+func TestGenerateTitle_StripsThinkingAndFallsBack(t *testing.T) {
+	// F-C：thinking 包裹的标题必须剥出正文；空剥离结果走首句降级不落垃圾。
+	if got := stripThinkingTags("<think>计划先分析消息主题</think>数据库迁移审计"); got != "数据库迁移审计" {
+		t.Errorf("stripThinkingTags(title) = %q, want 数据库迁移审计", got)
+	}
+	if got := stripThinkingTags("<think>只有思考没有正文"); got != "只有思考没有正文" {
+		t.Errorf("stripThinkingTags(unclosed title) = %q, want 残余正文保留", got)
+	}
+	if got := stripThinkingTags("<think>思考段</think>"); got != "" {
+		t.Errorf("stripThinkingTags(empty body) = %q, want empty (触发首句降级)", got)
+	}
+}
+
+func TestMaxSummaryCompletionTokens_RaisedForThinking(t *testing.T) {
+	// F-A 守护：600 会被 thinking 吃光导致 JSON 截断（生产 111 次/6h）；
+	// 上限必须给 thinking + JSON 本体留余量。
+	if maxSummaryCompletionTokens < 1024 {
+		t.Errorf("maxSummaryCompletionTokens = %d, want >= 1024 (thinking 余量)", maxSummaryCompletionTokens)
+	}
+}
+
+func TestPromptsForbidEchoAndEllipsis(t *testing.T) {
+	// F-E 守护：两条 prompt 都必须包含禁止回声与省略号的硬性要求。
+	s := &Summarizer{}
+	full := s.buildSummaryPrompt([]SessionMessage{{RequestID: "r1", Role: "user", Content: "hello"}}, "")
+	rolling := s.buildRollingPrompt("", []SessionMessage{{RequestID: "r1", Role: "user", Content: "hello"}}, "")
+	for name, p := range map[string]string{"full": full, "rolling": rolling} {
+		if !strings.Contains(p, "不要复述或引用对话内容") {
+			t.Errorf("%s prompt missing echo prohibition", name)
+		}
+		if !strings.Contains(p, "禁止用省略号") {
+			t.Errorf("%s prompt missing ellipsis prohibition", name)
+		}
 	}
 }
