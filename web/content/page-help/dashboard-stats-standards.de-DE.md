@@ -43,8 +43,8 @@ Probe-Verkehr (Health-Check / Selbsttest) steht in der Faktentabelle separat als
 | Aktive Modelle / Anbieter | Anzahl der in der Zeit tatsächlich aktiven Modelle/Anbieter | Nicht die „insgesamt verfügbaren" |
 | Aktive Schlüssel | Anzahl der derzeit aktivierten Schlüssel | **Konfigurationsbasiert, unabhängig vom Zeitfenster** |
 | Fehlerzahl | Summe je Fehlerklasse aus der Fehlerverteilung; ohne diese Schätzung über „Gesamt-Anfragen × (1 − Erfolgsquote)" | Die Schätzung kann um ein paar Zeilen abweichen |
-| Kreisdiagramme (Modell / Anbieter / Mandant / Client…) | Anfragen, Token, Kosten je Dimension gruppiert | Aus der Minutentabelle — nicht dieselbe Quelle wie die Karten oben |
-| Nutzungstrend | Anfragen, Token, Kosten, Credits je Zeitbucket | Ebenfalls aus der Minutentabelle |
+| Kreisdiagramme (Modell / Anbieter / Mandant / Client…) | Anfragen, Token, Kosten je Dimension gruppiert | Aus dem Anfrage-Log — dieselbe Quelle wie die Karten oben (gleicher Probe-Umfang) |
+| Nutzungstrend | Anfragen, Token, Kosten, Credits je Zeitbucket | **Dieselbe Quelle wie die Karten oben**: dieselbe Anfrage-Faktentabelle `usage_facts` und dieselbe Probe-Bedingung ⇒ die Buckets summieren sich zur Karte |
 
 ### Wie das Zeitfenster berechnet wird
 
@@ -57,7 +57,7 @@ Probe-Verkehr (Health-Check / Selbsttest) steht in der Faktentabelle separat als
 Die Credit-Karte zeigt **nicht** die im gewählten Fenster verbrauchten Credits: Die Credit-Spalte der Anfrage-Faktentabelle ist derzeit immer 0 (gemessen: alle 298.037 Zeilen sind 0), angezeigt wird die **Live-Differenz nach dem Cache-Stand**. Daher gilt:
 
 - Der Wechsel zwischen „Heute / letzte 7 Tage / letzte 30 Tage" lässt die Credit-Karte **unverändert** (gemessen: alle drei 86.925).
-- Der Nutzungstrend derselben Seite führt eine eigene Credit-Summe (Minutentabelle, 7 Tage 1.767.183), die nicht der Zahl der Karte entspricht.
+- Nutzungstrend und Credit-Karte derselben Seite stammen jetzt **aus derselben Quelle** (beide lesen die Anfrage-Faktentabelle `usage_facts`) ⇒ die Credits der Buckets summieren sich zur Karte.
 
 Für ein belastbares Credit-Konto nutzen Sie die Seiten „Nutzung & Kosten" und „Abgleich"; die Credit-Karte des Boards taugt nicht für Zeitreihenvergleiche.
 
@@ -153,7 +153,7 @@ Die Anbieterzeilen der Abgleich-Seite (einschließlich „Nicht zugeordnet") **s
 3. **Dann die Probe-Berechnungsgrundlage angleichen**: Das Board lässt sich auf „Probes einschließen" umstellen; die Sitzungsstatistik schließt nach den Regeln des Sitzungsuniversums aus; **der Abgleich enthält immer die Probes**. Weichen die Anfragenzahlen stark ab, während die Kosten ähnlich bleiben ⇒ zuerst die Probes prüfen.
 4. **Dann den Reifegrad angleichen**: Der Abgleich ist ein T+1-Snapshot, **die Daten des laufenden Tages hinken zwingend hinterher**; vor dem Vergleich prüfen, bis zu welchem Tag der Snapshot reicht.
 5. **Auf Degradierungsmarkierungen achten**: Zeigt eine Karte „degradiert / nicht vertrauenswürdig / nicht berechenbar", bedeuten diese Nullen nicht „kein Verkehr".
-6. **Trenddiagramm des Boards ≠ Karten des Boards**: Das Trenddiagramm stammt aus der Minutentabelle, also aus einer anderen Quelle als die Karten darüber (Anfrage-Faktentabelle) (im 30-Tage-Fenster gemessen rund 13,8 % Abweichung).
+6. **Trenddiagramm und Karten des Boards stammen jetzt aus derselben Quelle**: beide lesen die Anfrage-Faktentabelle `usage_facts` mit derselben Probe-Bedingung ⇒ die Buckets sollten sich zur Karte summieren. Wenn nicht: zuerst das `degraded`-Flag in der Nutzlast prüfen (bei Rückfall auf die voraggregierten Tabellen weicht der Probe-Umfang ab), dann die Zeitfenster abgleichen.
 7. **„Heute" konnte fehlschlagen (behoben am 2026-11-23)**: Die Voreinstellung „Heute" der Sitzungsstatistik lief reproduzierbar in ein 30-Sekunden-Timeout, weil auf der Datenbankseite der Join-Index fehlte (Index am 2026-11-23 ergänzt: Abfragezeit von 121,8 s auf 0,19 s). Zeigt die Seite den Fehler wieder an, ist der Index erneut verschwunden — dann bitte den Bereitschaftsdienst prüfen lassen, ob `idx_session_dim_session_key` vorhanden ist.
 
 ## Bekannte Einschränkungen (gemessen 2026-11-23)
@@ -163,4 +163,4 @@ Die Anbieterzeilen der Abgleich-Seite (einschließlich „Nicht zugeordnet") **s
 3. **Aufrufe ohne Sitzungsbezug (F)**: 381 direkte API- / Skriptaufrufe haben keine Sitzung; das Board zählt sie, die Sitzungsstatistik nicht.
 4. **Verzögerung des Abgleich-Snapshots am selben Tag**: Der Abgleich ist T+1, **die Daten des heutigen Tages sind unvollständig**; direkt von den Echtzeit-Zahlen des Boards abgezogen entsteht daher immer eine Differenz.
 5. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
-6. Trenddiagramm (Minutentabelle) und Karten (Anfrage-Faktentabelle) des Boards unterscheiden sich im 30-Tage-Fenster um rund 13,8 % (160.451 vs. 140.969 Anfragen).
+6. **Probe-Umfang im degradierten Zustand**: Wenn Pie-Charts und Trend des Boards nach einem Fehler des Hauptpfads auf die voraggregierten Tabellen zurückfallen, sind diese immer „ohne Sonden“ ⇒ im Modus „Sonden enthalten“ weichen sie vom Hero-Summary ab (die Nutzlast trägt dann ein `degraded`-Flag — es ist kein stiller Degradationsfall).
