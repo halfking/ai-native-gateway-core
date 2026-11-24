@@ -182,7 +182,11 @@ if [ -n "$TAG_NEW" ] && git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/nul
   [ -z "$BASE" ] && BASE=$(git -C "$ROOT" rev-parse --short "${TAG_NEW}~1" 2>/dev/null)
   # ★ 期望文件数写在**标签消息**里（files=N）⇒ 判据随发布单元走，不写死在脚本里。
   EXP=$(tag_field "${TAG_NEW}" "files")
-  CH=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
+  # ★ -z 化（2026-11-25 12h 修订审计轮）：★ `git diff --name-only` 默认受
+  # ★ core.quotePath 转义 ⇒ 非 ASCII 路径被转成八进制＋外层双引号 ★ ⇒
+  # ★ 而本处只取**行数** ⇒ 转义不改判定 ★ ⇒ 但为让「枚举面契约门」能逐条
+  # ★ 判定（而不是靠豁免表登记），★ 这里统一走 `-z` ＋ `tr '\0' '\n'` ★
+  CH=$(git -C "$ROOT" diff --name-only -z "$BASE" "${TAG_NEW}^{commit}" 2>/dev/null | tr '\0' '\n' | wc -l | tr -d ' ')
   # ══════ 2026-11-18 判据基准改造：把「场景化写死」的判据换成随发布单元走 ══════
   # ★ 旧判据把两件事**写死**了：
   #   ① 「并行车在途文件（admin/pi_analysis_handler.go、web/public/menu-config.json）
@@ -213,7 +217,7 @@ if [ -n "$TAG_NEW" ] && git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/nul
     | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
   LEAK=0
   if [ -n "$SRV_MC" ] && [ -n "$TREE_MC" ] && [ "$SRV_MC" != "$TREE_MC" ]; then LEAK=1; fi
-  PI=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}^{commit}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
+  PI=$(git -C "$ROOT" diff --name-only -z "$BASE" "${TAG_NEW}^{commit}" -- domains/promptinjection 2>/dev/null | tr '\0' '\n' | wc -l | tr -d ' ')
   CH_OK=1
   if [ -n "$EXP" ] && [ "$CH" != "$EXP" ]; then CH_OK=0; fi
   if [ "$LEAK" = "0" ] && [ "$CH_OK" = "1" ] && [ "$TAG_OK" = "1" ]; then
@@ -251,7 +255,7 @@ if [ -n "$TAG_OLD" ] && git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/nul
   OH=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}^{commit}")
   OB=$(tag_field "${TAG_OLD}" "base")
   [ -z "$OB" ] && OB=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}~1" 2>/dev/null)
-  ON=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
+  ON=$(git -C "$ROOT" diff --name-only -z "$OB" "${TAG_OLD}^{commit}" 2>/dev/null | tr '\0' '\n' | wc -l | tr -d ' ')
   OEXP=$(tag_field "${TAG_OLD}" "files")
   # ① 台账自洽
   LEDGER_OK=1
@@ -274,8 +278,8 @@ if [ -n "$TAG_OLD" ] && git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/nul
     no)  REL_OK="no" ;;
     *)   REL_OK="未评估" ;;   # SSH 不可达 ⇒ 未评估，不是失败
   esac
-  SUPER=$(git -C "$ROOT" diff --name-only "${TAG_OLD}^{commit}" "${TAG_NEW}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
-  OPI=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}^{commit}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
+  SUPER=$(git -C "$ROOT" diff --name-only -z "${TAG_OLD}^{commit}" "${TAG_NEW}^{commit}" 2>/dev/null | tr '\0' '\n' | wc -l | tr -d ' ')
+  OPI=$(git -C "$ROOT" diff --name-only -z "$OB" "${TAG_OLD}^{commit}" -- domains/promptinjection 2>/dev/null | tr '\0' '\n' | wc -l | tr -d ' ')
   if [ "$LEDGER_OK" = "1" ] && [ "$FWD" = "1" ] && [ "$ODEL" = "0" ] \
      && { [ "$REL_OK" = "yes" ] || [ "$REL_OK" = "未评估" ]; }; then
     ok "⑧ 上一版部署可追溯 + 内容超集" "tag ${TAG_OLD}（${OH}，基点 ${OB:0:8} + ${ON} 文件${OEXP:+（tag 记 files=${OEXP}）}）；台账自洽=${LEDGER_OK}／前进关系=${FWD}（上一版是新版权威）／新版未删文件=${ODEL}／上一版 release 目录 ${OLD_REL} 留存=${REL_OK}；→新版差异 ${SUPER} 个文件（PI 域 ${OPI} 处，仅报告）"

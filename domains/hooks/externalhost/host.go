@@ -157,11 +157,12 @@ func (h *Host) OnRequest(ctx context.Context, hookCtx *contract.Context, req *co
 //
 // ★ 2026-11-24（L7）：原注释写「捕获副本有界（8MiB），因此不会阻塞 EOF 路径」，
 // ★★ 这是一句**失实断言**——当时的实现把调用方的 payload **原样**送出，
-//   **没有**走 contract.BoundedCopy ⇒ 送出侧正文并没有 8MiB 上限。
-//   ⇒ 这里改为陈述**实际语义**，并把「契约期望」与「当前实现」分开标注，
-//   免得下游继续把契约当现状。
-//   ★ 另：读入侧的 32MiB 上限（4*MaxBodyBytes）限的是**钩子的回复体**，
-//   与「捕获副本」不是同一个东西。
+//
+//	**没有**走 contract.BoundedCopy ⇒ 送出侧正文并没有 8MiB 上限。
+//	⇒ 这里改为陈述**实际语义**，并把「契约期望」与「当前实现」分开标注，
+//	免得下游继续把契约当现状。
+//	★ 另：读入侧的 32MiB 上限（4*MaxBodyBytes）限的是**钩子的回复体**，
+//	与「捕获副本」不是同一个东西。
 func (h *Host) OnResponse(ctx context.Context, hookCtx *contract.Context, resp *contract.ResponsePayload) *Outcome {
 	if hookCtx == nil || resp == nil {
 		return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureProtocol,

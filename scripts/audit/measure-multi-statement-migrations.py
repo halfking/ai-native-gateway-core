@@ -78,13 +78,17 @@ def is_transaction_wrapped(text: str) -> bool:
 def baseline_files(repo_root: str, pin: str) -> set:
     """列基线 pin 时已存在的启动迁移文件（★ 用 git 读历史树 ★）。"""
     out = subprocess.run(
-        ["git", "-C", repo_root, "ls-tree", "-r", "--name-only", pin, "--", STARTUP_DIR],
+        ["git", "-C", repo_root, "ls-tree", "-r", "--name-only", "-z", pin, "--", STARTUP_DIR],
         capture_output=True, text=True,
     )
     if out.returncode != 0:
         raise SystemExit(f"★ 读基线 pin 失败（★ {pin} ★）：{out.stderr.strip()}")
     names = set()
-    for p in out.stdout.split("\n"):
+    # ★ -z 化（2026-11-25 12h 修订审计轮）：★ `--name-only` 默认受 core.quotePath
+    # ★ 转义 ⇒ 非 ASCII 文件名被转成八进制＋外层双引号 ⇒ ★ 而这里取的是
+    # ★ **真实基名**（要与仓内文件名逐字比对）⇒ ★ 转义形态会把非 ASCII 迁移
+    # ★ 文件判成「基线里没有」⇒ ★ ⇒ 必须走 `-z` 拿原始 UTF-8 字节 ★
+    for p in out.stdout.split("\0"):
         if not p.strip():
             continue
         base = os.path.basename(p)

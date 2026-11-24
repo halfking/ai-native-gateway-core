@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/externalhost/contract"
 )
@@ -21,21 +22,63 @@ import (
 //   - onRequest: check for banned content, block if found
 //   - onResponse: log metadata for audit (no content modification)
 //   - State flow: request metadata → response correlation
+//
+// ★★ 并发安全（2026-11-25 12h 修订审计轮 P1 修正）：★★
+// ★★ onResponse 由 CaptureResponse 放在**每个响应一个 goroutine** 里调用
+// ★★ （domains/hooks/externalhost/pipeline_integration.go）⇒ ★★ 同一个 hook 实例
+// ★★ 会被**多个 goroutine 并发**调用 OnResponse ⇒ ★★ AuditLog 的 append 与
+// ★★ GetAuditReport 的读取**必须**加锁。
+// ★★ 旧实现无锁 ⇒ `go test -race` 实测报 2 处 DATA RACE
+// ★★ （Read/Previous write 同指 AuditLog 的 append）⇒ ★★ 后果不止「丢审计条目」：
+// ★★ slice 头（len/cap/ptr）并发改写会损坏 ⇒ ★★ 可能 panic。
+// ★★ 本参考实现是 INTEGRATION_GUIDE 推荐的首个可部署钩子 ⇒ ★★ 竞争必须在这里消掉。
 type ComplianceHook struct {
 	// BannedKeywords are case-insensitive patterns that trigger blocks
 	BannedKeywords []string
-	// AuditLog collects request/response pairs for compliance reporting
-	AuditLog []AuditEntry
+
+	// mu guards auditLog (append from concurrent OnResponse goroutines vs
+	// read from AuditEntries/GetAuditReport).
+	mu sync.RWMutex
+
+	// auditLog collects request/response pairs for compliance reporting.
+	//
+	// ★★ **刻意不导出**：★★ 一个**导出的可变切片**无法在并发下自证安全
+	// ★★ （外部代码可以无锁读写它 ⇒ race detector 仍会报竞争、且无法由本包修复）。
+	// ★★ 外部一律通过 AuditEntries() 取**快照**。
+	auditLog []AuditEntry
+}
+
+// AuditEntries 返回审计条目的**快照**（并发安全）。
+//
+// ★★ 这是读取审计日志的**唯一**入口：★★ 返回的是副本 ⇒ 调用方拿到后
+// ★★ 即使此刻还有 onResponse goroutine 在追加，也不会与之竞争。
+func (h *ComplianceHook) AuditEntries() []AuditEntry {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]AuditEntry, len(h.auditLog))
+	copy(out, h.auditLog)
+	return out
+}
+
+// SetAuditEntries 用给定的条目**整体替换**审计日志（并发安全）。
+//
+// ★ 供测试/夹具预置审计条目使用（★ 取代旧实现里「直接给导出字段赋值」的做法
+// ★ ——★ 那条路绕过了锁 ⇒ 与并发 onResponse 竞争）。
+func (h *ComplianceHook) SetAuditEntries(entries []AuditEntry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.auditLog = make([]AuditEntry, len(entries))
+	copy(h.auditLog, entries)
 }
 
 // AuditEntry records a request-response pair for compliance review.
 type AuditEntry struct {
-	RequestID   string
-	SessionID   string
-	Model       string
-	Blocked     bool
-	BlockReason string
-	InputTokens int
+	RequestID    string
+	SessionID    string
+	Model        string
+	Blocked      bool
+	BlockReason  string
+	InputTokens  int
 	OutputTokens int
 }
 
@@ -46,7 +89,7 @@ func NewComplianceHook() *ComplianceHook {
 			"exploit", "hack", "bypass", "jailbreak",
 			"ignore previous instructions", "disregard safety",
 		},
-		AuditLog: make([]AuditEntry, 0),
+		auditLog: make([]AuditEntry, 0),
 	}
 }
 
@@ -83,7 +126,7 @@ func (h *ComplianceHook) OnRequest(inv *contract.Invocation) *contract.Reply {
 
 	// Extract metadata for audit correlation
 	inputTokens := estimateTokens(bodyText)
-	
+
 	// Set state for onResponse correlation (W3.3)
 	if inv.Context.State == nil {
 		inv.Context.State = make(map[string]string)
@@ -133,7 +176,11 @@ func (h *ComplianceHook) OnResponse(inv *contract.Invocation) *contract.Reply {
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 	}
-	h.AuditLog = append(h.AuditLog, entry)
+	// ★ 并发安全：onResponse 会被多个 goroutine 并发调用（每个响应一个 goroutine）
+	// ⇒ append 必须持写锁。
+	h.mu.Lock()
+	h.auditLog = append(h.auditLog, entry)
+	h.mu.Unlock()
 
 	// No response modification (audit only)
 	return &contract.Reply{
@@ -205,25 +252,33 @@ func (h *ComplianceHook) ServeHTTP(endpoint string, body []byte) ([]byte, error)
 }
 
 // GetAuditReport returns a formatted compliance audit report.
+//
+// ★ 并发安全：读取 AuditLog 必须持读锁（写侧是并发 OnResponse goroutine）。
 func (h *ComplianceHook) GetAuditReport() string {
+	// ★ 先在读锁内**快照**一份，再在锁外格式化（避免长时间持锁）。
+	h.mu.RLock()
+	entries := make([]AuditEntry, len(h.auditLog))
+	copy(entries, h.auditLog)
+	h.mu.RUnlock()
+
 	var buf bytes.Buffer
 	buf.WriteString("=== Compliance Audit Report ===\n")
-	buf.WriteString(fmt.Sprintf("Total Requests: %d\n", len(h.AuditLog)))
-	
+	buf.WriteString(fmt.Sprintf("Total Requests: %d\n", len(entries)))
+
 	blocked := 0
 	totalInput := 0
 	totalOutput := 0
-	for _, entry := range h.AuditLog {
+	for _, entry := range entries {
 		if entry.Blocked {
 			blocked++
 		}
 		totalInput += entry.InputTokens
 		totalOutput += entry.OutputTokens
 	}
-	
+
 	buf.WriteString(fmt.Sprintf("Blocked: %d\n", blocked))
 	buf.WriteString(fmt.Sprintf("Total Input Tokens: %d\n", totalInput))
 	buf.WriteString(fmt.Sprintf("Total Output Tokens: %d\n", totalOutput))
-	
+
 	return buf.String()
 }
