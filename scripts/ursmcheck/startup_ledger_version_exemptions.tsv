@@ -67,8 +67,3 @@
 665_provider_error_details_fingerprint_index_repair.sql	663	duty	形态⑤：★ 写的是**663_training_export.sql 的号**，★ 而那件**自己没有自登记段** ⇒ ★★ 即「替没记账的件记账」★★（★ 681 后来把 '665' 标成 SUPERSEDED 时 description 里写的是「was mis-recorded as 663」⇒ ★ 与本判读一致）
 681_provider_error_details_fingerprint_restore_8part.sql	665	duty	形态①：★ 代他人补记账：★ 替 665 补 '665'（★ 681 自己的 '681' 不豁免 ⇒ ★ 豁免按 (文件, 版本号) 对）
 923_schema_migrations_ledger_backfill.sql	900	duty	形态②③：★ 台账回填迁移（★ 文件名含 ledger_backfill），★ 一次补记 '900'~'920' 共 20 行、★ 缺 '918'、★ 且**自己不登记 '923'** ⇒ ★ 不是错位
-925_supplier_contract_rates.sql	988	skew	★ 真错位：★ 写 '988'（★ 原名 989_supplier_contract_rates，★ L2 轮还号到 925 时**刻意不改字节**⇒ ★ 自登记仍是 '988'）
-985_request_reconciliation_links.sql	984	skew	★ 真错位：★ 写 '984' ⇒ ★★ **覆盖了 984 那行自己的 description** ⇒ ★★ 生产账上 '984' 行显示的是 985 的描述
-986_provider_attempt_media_usage.sql	985	skew	★ 真错位：★ 写 '985' ⇒ ★★ 覆盖 985 那行
-987_provider_invoice_evidence.sql	986	skew	★ 真错位：★ 写 '986' ⇒ ★★ 覆盖 986 那行
-988_provider_invoice_usage_buckets.sql	987	skew	★ 真错位：★ 写 '987' ⇒ ★★ 覆盖 987 那行

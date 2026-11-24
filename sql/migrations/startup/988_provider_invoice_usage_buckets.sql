@@ -35,6 +35,6 @@ CREATE INDEX IF NOT EXISTS idx_provider_invoices_window
     ON public.provider_invoices (window_start, window_end, invoice_id);
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('987', 'structured supplier invoice usage buckets')
+VALUES ('988', 'structured supplier invoice usage buckets')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 COMMIT;

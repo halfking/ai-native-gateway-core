@@ -9,5 +9,5 @@ ALTER TABLE public.provider_call_attempts
     DROP COLUMN IF EXISTS generated_images,
     DROP COLUMN IF EXISTS video_output_duration_us,
     DROP COLUMN IF EXISTS media_usage_source;
-DELETE FROM public.schema_migrations WHERE version = '985';
+DELETE FROM public.schema_migrations WHERE version = '986';
 COMMIT;

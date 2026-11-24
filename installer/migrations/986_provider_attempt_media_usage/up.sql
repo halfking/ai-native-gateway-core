@@ -12,6 +12,6 @@ ALTER TABLE public.provider_call_attempts
     ADD COLUMN IF NOT EXISTS media_usage_source text;
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('985', 'measured supplier attempt media usage')
+VALUES ('986', 'measured supplier attempt media usage')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 COMMIT;
