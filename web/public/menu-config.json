@@ -305,6 +305,13 @@
           "pluginScope": "*"
         },
         {
+          "path": "/admin/session-analytics/users/overview",
+          "labelKey": "nav.item.sessionAnalyticsUsers",
+          "icon": "📈",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
           "path": "/admin/request-registry",
           "labelKey": "nav.item.requestRegistry",
           "icon": "📑",
@@ -663,5 +670,5 @@
       "pluginScope": "*"
     }
   ],
-  "exported_fingerprint": "sha256:9cc5f44a3d413dd9"
+  "exported_fingerprint": "sha256:bea5dd4f304a9023"
 }

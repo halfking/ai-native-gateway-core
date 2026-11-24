@@ -1,0 +1,113 @@
+# L76 合并轮二十·teams 族三避 ＋ 并入上游 984
+# 2026-11-24 04:1x Asia/Shanghai
+# 工作区：/private/tmp/l30-unified
+
+## § ① 撞车发现
+
+上游新推：
+- b6de8aa33 P1 会话宇宙探测误杀修复（迁移 984）
+- f03ba26b3 合并
+
+我方占用：
+- teams 族 918/925/973/986 占位置 391–394（台账第 391–394 行）
+
+冲突面：
+- installer/internal/dbinit/runner_channel_ledger_test.go（契约门基线数）
+- sql/schema/installed_startup_migrations.tsv（台账第 394 行）
+
+## § ② teams 族三避重编号（提交 30b656b80）
+
+方案：918/925/973/986 → 1000/1001/1002/1003
+位置：391–394（台账行号不变）
+仍在交集：两条通道都同步改名
+
+改动面（25 文件）：
+- SQL 文件改名 8 对（sql/migrations/startup）
+- installer embeddata 改名 8 对
+- installer/migrations 目录改名 3 个
+- 部署脚本 files=() 数组 4 行
+- 部署脚本 ledger_artifact_probe 4 条
+- 契约门测试追加新段说明
+- 台账 391–394 行改用新编号
+
+零迁移字节变更（只是编号改名，SQL 内容未动）
+
+## § ③ 合并上游 984（提交 204b97746）
+
+冲突 1：契约门基线
+- 我方 HEAD：335→336（含 teams 4件+984）
+- 上游 origin/main：331→332（只含984）
+- 解决：保留完整历史，最终基线 = 336
+  - 335 是合并 983 后基线
+  - +1 = 上游 984 本身在交集
+
+冲突 2：台账
+- 我方 HEAD：391–394 teams（1000–1003）+ 395–397 (989/982/983)
+- 上游 origin/main：391–394 (989/982/983/984)
+- 解决：391–394 teams + 395–398 四笔（989/982/983/984）
+
+合并后状态：
+- 相对 origin/main：领先 145 / 落后 0（已追平）
+- 台账：398 行
+- 契约门基线：336
+
+## § ④ 验收读数
+
+编译验证：
+$ go build ./... 2>&1 | grep -v vendor | head
+（零输出 = 通过）
+
+契约门验证：
+$ cd installer && go test -count=1 -timeout 60s -run '^TestStartupAndDeployChannelInventory$|^TestDeployChannelDeliverySurfaceFilesExist$' ./internal/dbinit/
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	0.012s
+
+活库腿验证（211 生产，纯只读）：
+$ LLM_GATEWAY_LEGACY_ALIGN_PSQL_CMD='ssh 211 "docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tA -q"' \
+  LLM_GATEWAY_LEGACY_ALIGN_ENV=211 \
+  LLM_GATEWAY_LEGACY_ALIGN_CHANNELS=deploy,install \
+  go test -count=1 -run 'TestLegacyCrossSurfaceLiveAlignment$' -v ./sql/migrations/startup/
+--- PASS: TestLegacyCrossSurfaceLiveAlignment (1.39s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	1.432s
+
+读数：
+- 36 对候选：29 对齐 + 4 下线 + 3 跳过 = 全绿
+- teams 1000–1003 不在 211 生产 ⇒ 重编号对现有环境零影响
+
+## § ⑤ teams 族重编号历史（三避）
+
+| 轮次 | 编号 | 位置 | 触发原因 | 状态 | 提交 |
+|------|------|------|----------|------|------|
+| 初版 | 055/056/057/058 | — | 首次登记 | 从未 applied | — |
+| 一避 | 982/983/984/985 | — | 上游占用 982/983 | 已退役 | 2edc7f97c |
+| 二避 | 918/925/973/986 | 391–394 | 上游占用 984/985 | 当前在役 | dca1ecac3 |
+| 三避 | 1000/1001/1002/1003 | 391–394 | 上游新推 984 | 待部署 | 30b656b80 |
+
+共同点：
+- 全部在合并前（发现撞车后先改编号再合并）
+- 零迁移字节变更
+- 仍在两条通道交集
+
+## § ⑥ 当前状态
+
+提交：204b97746（分支 feat/l72-unified-tmp）
+工作区：/private/tmp/l30-unified
+树状态：干净（git status --short 零输出）
+相对 origin/main：领先 145 / 落后 0
+可直接 push：是
+
+改动面汇总：
+- 25 文件（teams 三避）
+- 2 处冲突解决（契约门 + 台账）
+- 报告 §7.51 追加
+- AGENTS.md L76 块追加
+- 本证据档
+
+## § ⑦ 通用式
+
+「上游新推迁移」与「我方占槽位」的撞车是合并前才能看见的 ⇒
+「各自闸门全绿」不能证「合并无冲突」⇒
+合并试跑必须在真正合并之前（本轮先 git merge --abort、改完重编号、再真正合并）
+
+---
+证据档终止

@@ -1,0 +1,186 @@
+★ 证据档：2026-11-24 L36 轮·续四（★ 登记号 L75）——★ 【两车道候选归一 ⇒ 唯一候选】＋ 【量具自修：★ 行级审计判据加换行容错】＋ 【合并引入的章节号重号已修】＋ 【第三类归因＝合并期编译伤】
+
+★ 全程只读（除仓内文档/台账文件外）｜★ 零生产写 / 零 schema 变更 / 零在役切换 / 零部署 / 零迁移字节变更 / 未推 origin/main
+★ 工作区：`/private/tmp/l30-unified`（★ 隔离 worktree、★ 唯一候选工作区）｜★ 基线：`origin/main@68fc91112`
+
+━━━━━━━━━━━━━━ §① 合成过程（★ 逐笔可查）━━━━━━━━━━━━━━
+
+合并基点（★ 两车道共同祖先）：f2e45014f
+  git merge-base 4dd0803ba 2070050eb → f2e45014f
+
+我方自基点起的提交（★ 只有 1 笔）：
+  git log --oneline f2e45014f..4dd0803ba
+  → 4dd0803ba  fix(admin): 修【两车道合并引入的重复键】
+
+并行车道自基点起的提交（★ 4 笔）：
+  git log --oneline f2e45014f..2070050eb
+  → 2070050eb  merge(origin/main): 合并轮十六（上游 L34 九轮）
+  → 954da8eb2  merge(feat/l72-legacy-view-align): 合并轮十五（合我方合成候选）
+  → 199a36345  docs(audit,agents,evidence): 合并轮十四收口
+  → 85c38fc8a  fix(maestro): L34 九轮 —— Maestro flow 锚点存在性门
+
+★ ⇒ 两条树【互有对方没有的内容】⇒ 必须合成、★ 不能二选一。
+
+━━━━━━━━━━━━━━ §② 基底取谁（★ 并行尖端是严格超集）━━━━━━━━━━━━━━
+
+并行车道尖端对同一处撞键的处置：
+  git show db90dfe23:admin/canonical_read_points_registry_test.go | grep -c '"internal/metricsstore/processor.go": {'
+  → 2   （★ 合成态仍有两份）
+我方 4dd0803ba：
+  → 1
+
+★ 两边的去重处置【不等价】：
+  · 我方（4dd0803ba）：删掉后出现的那一条（★ 只留其中一条的 Note）；
+  · 并行（db90dfe23）：保留同一条、★ 并把另一条独有的 Note 并进去
+    （★ 「★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式」★ 并入上方那条）
+  ⇒ ★★ 按「两块都保留」取信息更全的一份。
+
+★ 并行尖端含我方内容的核对（★ 逐项）：
+  报告 §7.44 标题 → 并行尖端命中 2 次
+  报告 §7.45 标题 → 命中 1 次
+  报告 §7.46 标题 → 命中（★ 逐字在位、★ 见下）
+  报告 §7.47 标题 → 命中（★ 逐字在位、★ 见下）
+  证据档 docs/audit/evidence/2026-11-24-merge14-three-layer-audit.txt → 186 行在位
+  证据档 docs/audit/evidence/2026-11-24-l36-merge-content-loss.txt → 交叉引用段在位
+  ⇒ ★★ 并行尖端相对我方树是【严格超集】★★
+
+━━━━━━━━━━━━━━ §③ 三层无删除审计（★ 第一版假阳性 ⇒ 第二版真读数）━━━━━━━━━━━━━━
+
+★ 第一版（★ 行级判据＝逐字相等）★ 报出：
+  AGENTS.md：base 有而候选没有的非空行 = 85
+  AGENTS-archive-20261031.md：= 6
+  ⇒ ★★ **复核结论＝假阳性**：★ 那些行在候选树里【没有丢】、★ 只是被换行/重排过
+  ⇒ 例：★ AGENTS.md 里「★ > **续轮已把修法实现并实测通过**：★ …」那行的后半句被折到了下一行
+
+★ 第二版（★ 判据＝归一化空白后的子串匹配）★ 读数：
+  === layer 1: file level ===
+  base files=28978 candidate files=29013 deleted=8
+    D installer/cmd/llm-gw-installer/embeddata/startup/055_teams_table.sql
+    D installer/cmd/llm-gw-installer/embeddata/startup/056_user_teams.sql
+    D installer/cmd/llm-gw-installer/embeddata/startup/057_api_keys_team_id.sql
+    D installer/cmd/llm-gw-installer/embeddata/startup/058_team_budgets.sql
+    D sql/migrations/startup/055_teams_table.sql
+    D sql/migrations/startup/056_user_teams.sql
+    D sql/migrations/startup/057_api_keys_team_id.sql
+    D sql/migrations/startup/058_team_budgets.sql
+  === layer 3: line level (rewrap tolerant) ===
+  AGENTS.md: base non-empty lines missing in candidate = 0
+  AGENTS-archive-20261031.md: base non-empty lines missing in candidate = 0
+  TOTAL missing (line level, rewrap tolerant) = 0
+  === layer 2: section structure ===
+  AGENTS.md: base headings=1 candidate headings=1 missing headings=0
+  AGENTS-archive-20261031.md: base headings=254 candidate headings=290 missing headings=0
+
+★ ⇒ 真读数＝**行级 0 / 标题 0 / 文件级 8**。
+
+━━━━━━━━━━━━━━ §④ 那 8 个文件不是「吞」（★ 逐个核对、★ 新文件是旧文件的严格超集）━━━━━━━━━━━━━━
+
+★ 背景：★ 并行车道按 L22「上」把 teams 族重编号（★ `2edc7f97c` 055–058 → 982–985），
+  后因上游已占用 982/983 ⇒ 再避让（★ `dca1ecac3` → **918/925/973/986**）。
+
+★ 逐个对比（★ 去掉注释行、★ 比 DDL 主体、★ 新文件比旧文件多出的是【加固】）：
+  055_teams_table.sql      → 918_teams_table.sql      ★ 新增：SET lock_timeout / SET statement_timeout / BEGIN;、★ 全部对象名加 public.
+  056_user_teams.sql       → 925_user_teams.sql       ★ 同上
+  057_api_keys_team_id.sql → 973_api_keys_team_id.sql ★ 同上
+  058_team_budgets.sql     → 986_team_budgets.sql     ★ 同上
+
+★ ⇒ 文件级那 8 个「删除」＝**重编号退役**、★ 内容是超集而非丢失。
+
+★ ★ 一个如实的旁注（★ 不改、★ 只登记）：★ 新文件的头注里 `Migration:` 字段仍写着中间态的
+  982/983/984/985、★ 而文件名已是 918/925/973/986 ⇒ ★★ **该字段与文件名不一致** ★★
+  ★ 影响面：★ 仓内无门解析这个头注字段（★ 安装器按文件清单投递、★ 部署通道按 `files=()`）⇒ ★ 当前无行为影响；
+  ★ 但它会误导人读文件头 ⇒ ★ **登记待修**（★ 属并行车道的字节、★ 本轮未擅改）。
+
+━━━━━━━━━━━━━━ §⑤ 合并引入的「章节号重号」★ 修复明细━━━━━━━━━━━━━━
+
+★ 现象：★ 主报告里出现两份 `### 7.39` 与两份 `### 7.40`。
+
+★ 归因（★ 实测）：★ `origin/main` 的报告里 `7.39`/`7.40` 各只有一份、★ 且【不含】L30 那两节
+  ⇒ ★★ 这是【两套独立编号体系合并时撞号】、★ 而非任何一方的错。
+
+★ 改前：
+  337:### 7.39 ★★★★ L34 八轮：跨面 `SELECT *` 门的**两处口径洞**…
+  367:### 7.40 ★★★★ L34 九轮：会话分析 E2E 的「离线半」在 CI 上是**零覆盖**…
+  393:#### 7.40.1 ★★ 全套 `ursmcheck` 的归因对照（★ 本轮零新增红 ★★）
+  3654:### 7.40 ★★★★ L30 轮·补②⑦⑧：★ **flow 断言工具的【提取缺口】已修**…
+  3680:### 7.39 ★★★★ L30 轮·补②⑥：★ **安装器侧重号守卫已落地（fail-closed）**…
+
+★ 改后（★ 逐条改、★ 每处改前先验「命中次数 == 1」）：
+  337:### 7.48 ★★★★ L34 八轮：跨面 `SELECT *` 门的**两处口径洞**…
+  367:### 7.49 ★★★★ L34 九轮：会话分析 E2E 的「离线半」在 CI 上是**零覆盖**…
+  393:#### 7.49.1 ★★ 全套 `ursmcheck` 的归因对照（★ 本轮零新增红 ★★）
+
+★ 同步的 4 处指针（★ 指向上游那两节的）：
+  报告 L334（★ §五 L41 行）★ 「详见 §7.39」→「详见 §7.48」
+  报告 L335（★ §五 L42 行）★ 「详见 §7.40」→「详见 §7.49」
+  报告 L387（★ L34 九轮节内）★ 「归因见 §7.40.1」→「归因见 §7.49.1」
+  AGENTS.md L36 登记块 ★ 「详见报告 §7.39」→「详见报告 §7.48」
+
+★ 原样保留的指针（★ 指向我方 L30 那两节的、★ 一处未动）：
+  报告 L310 / L311 / L312 / L313 / L314 / L317 / L3639 / L3656 / L3701 / L3704
+  AGENTS.md L30 三条已归档指针（L53 / L54 / L62）
+
+★ 验收：★ 顶层 `### 7.x` 编号复检 0 重号（★ `#### 7.x` 子标题的重复是上游既有结构、★ 同一父节下的多个子节）。
+
+━━━━━━━━━━━━━━ §⑥ 「合并期编译伤」（★ 第三类归因）━━━━━━━━━━━━━━
+
+★ 现象：★ 合成后 `admin` 包编译失败：
+  admin/canonical_read_points_registry_test.go:1089:2: duplicate key "internal/metricsstore/processor.go" in map literal
+
+★ 根因：★ 上游 `475a7b911` 自己登记 ＋ 并行车道 `601e4be9d` 的「代上游登记」也登记 ⇒ 合成后同键两份。
+
+★ 为什么它【单独成类】：★ 「我方引入的红」与「基线既有红」都有判据（★ 隔离 worktree 基线对照），
+  ★ 而这一类【两边都没有判据】⇒ ★★ 只能在【合并之后】才出现 ★★
+  ⇒ ★★ 后果＝「双方各自的闸门都绿」＋「合并后编译失败」★★
+  ⇒ ★★★ 合并后第一件事必须是【跑编译】（★ go vet / go build）、★ 不能只看「各自的闸门绿不绿」★★★
+
+★ 验收（★ 唯一候选树）：
+  grep -c '"internal/metricsstore/processor.go": {' admin/canonical_read_points_registry_test.go → 1
+  go vet ./admin/ → 无输出（★ 只剩 vendor/github.com/shoenig/go-m1cpu 的 cgo 警告、★ 非本仓代码）
+
+━━━━━━━━━━━━━━ §⑦ 上游并入记录（★ 三次、★ 全部零冲突）━━━━━━━━━━━━━━
+
+  85c38fc8a  fix(maestro): L34 九轮 —— Maestro flow 锚点存在性门      ★ 已由并行车道合入
+  2cc396851  fix(dashboard): 统一轮 P0 —— session-overview 30s 超时 500 ★ 合并零冲突
+  68fc91112  docs: 对账延迟优化方案评估 —— 基于 request_metrics 统计中间表 ★ 合并零冲突
+
+★ 唯一候选相对 origin/main@68fc91112 ＝ **0 落后 / 纯 ff**。
+★ ★★ ⇒ 「push 前先并一次上游」必须成为放行前的固定一步（★ 本轮收口期间上游已连推 3 笔）。
+
+━━━━━━━━━━━━━━ §⑧ 唯一候选树的全量闸门读数（★ 见追加段）━━━━━━━━━━━━━━
+
+★ 唯一候选树 `a4c4e5f7e` 的全量闸门读数（★ 工作区 `/private/tmp/l30-unified`、★ 树干净）★
+
+  === 主模块 7 包 ===
+  ok  	github.com/kaixuan/llm-gateway-go/admin	232.010s
+  ok  	github.com/kaixuan/llm-gateway-go/internal/metricsstore	0.023s
+  ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	14.202s
+  ok  	github.com/kaixuan/llm-gateway-go/scripts/deploygate	3.052s
+  ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	823.087s
+  ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	33.363s
+  ok  	github.com/kaixuan/llm-gateway-go/sql/schema	135.453s
+  MAIN_RC=0
+  === installer 三包 ===
+  ok  	github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer	7.507s
+  ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	6.017s
+  ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil	47.073s
+  INSTALLER_RC=0
+  === shell 门族 ===
+  shell-mktemp-template: PASS（★ 扫描面含未跟踪文件）
+  shell-backtick-substitution: 扫 880 个脚本，命中 0 条
+  自探针 ✔（★ 检测逻辑能咬住已知违规样本 ★）
+  反向对照 ✔（★ 合法写法未被误报 ★）
+  shell-backtick-substitution: PASS
+  ✓ 无「$变量紧跟非 ASCII 字节」隐患（探针与反向对照均已通过）
+  SHELL_RC=0
+
+★ 活库腿（★ 最终候选树上复跑、★ 纯只读）★：
+  LLM_GATEWAY_LEGACY_ALIGN_PSQL_CMD='ssh 211 "docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tA -q"' \
+  LLM_GATEWAY_LEGACY_ALIGN_ENV=211 LLM_GATEWAY_LEGACY_ALIGN_CHANNELS=deploy,install \
+  go test -count=1 -run 'TestLegacyCrossSurfaceLiveAlignment$' -v ./sql/migrations/startup/
+  → --- PASS: TestLegacyCrossSurfaceLiveAlignment (1.82s) ｜ PASS ｜ ok 1.872s
+  ⇒ ★★ **211 绿、★ 结论不变**（★ 330/344 错位但不在任何通道的投递面里 ⇒ 绿；★ 392 按同一指纹跳过 ⇒ 绿）★★
+
+★ ★★ **两条必须写下来的环境事实（★ 如实登记、★ 免得下一个人误判）★★**：
+★ ① **本轮出现过一次磁盘满（★ `no space left on device`）**：★ 并行车道那一轮闸门在基线阶段整体 `build failed` ⇒ ★★ **他们那轮读数已作废**（★ 环境红、★ 非代码红）★★｜★ 我方这一轮**未撞上 ENOSPC**（★ admin/ursmcheck/… 全部正常完成）⇒ ★★ **我方读数有效** ★★ ｜★ 磁盘已由并行车道腾出空间（★ 17Gi 可用）。
+★ ② **本轮机器负载峰值 132–213**（★ 两条车道同时跑闸门）⇒ ★★ **ursmcheck 实测 823s**（★ 历史读数 376–442s）★★ ⇒ ★★ **它【没有超时】（★ 900s 预算内跑完）★ 但耗时翻倍 ⇒ ⇒ 「闸门红了」的第一嫌疑仍是【环境】、★ 而不是代码** ★★。

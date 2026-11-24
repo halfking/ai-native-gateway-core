@@ -54,28 +54,35 @@
 >      ⇒ path 条目 129→**131**、运行时 134→**136**、动态段 22→**23**、
 >        需要登录 117→**119**、任意登录用户档 54→**56**
 >        （纯 redirect 仍 20、公开仍 17 ⇒ 这两项不变）。
+>   ③ **第三次**（2026-11-23，**L14 落地轮**）：★ L14 把用户画像列表页挂回原 URL、
+>      **另立整合页** `/admin/session-analytics/users/overview`（★ `router.ts:362`）
+>      ⇒ ★ path 条目 131→**132**、运行时 136→**137**、需要登录 119→**120**、
+>        任意登录用户档 56→**57**（★ 纯 redirect 仍 20、动态段仍 23、公开仍 17）
+>      ⇒ ★★★ **★ 而这一次的漂移【当场被 `--check` 抓到】（★ 前两次没有工具、★ 这次有）**：
+>        ★ 落地时只改了 `router.ts`、★ **`maestro/README.md` 一个字没改**
+>        ⇒ ★★ `--check` 的 5 条判据红（★ 每条都正好差 1）⇒ ★★ ⇒ **红灯在、★ 但它没进闸门**
 
 | 指标 | 数值 | 来源 |
 |---|---|---|
-| `path:` 条目 | **131** | `web/src/router.ts` 的 `routes:` 数组（行 241–468）**AST 逐条计数**。★ 不能用正则数：`redirect: { path: '/x' }` 里的 `path:` 也会被数上；且 dev-only 的 3 条是 `...(import.meta.env.DEV ? [...] : [])` 条件展开，正则与朴素 AST 都会漏 |
+| `path:` 条目 | **132** | `web/src/router.ts` 的 `routes:` 数组（行 241–468）**AST 逐条计数**。★ 不能用正则数：`redirect: { path: '/x' }` 里的 `path:` 也会被数上；且 dev-only 的 3 条是 `...(import.meta.env.DEV ? [...] : [])` 条件展开，正则与朴素 AST 都会漏 |
 | `externalMaintainRedirect(...)` 调用 | **5** | `router.ts`（`/ops/licenses`、`/ops/faults`、`/ops/autoupdate`、`/ops/center`、`/ops`） |
-| **运行时路由总数** | **136** | 131 + 5 |
+| **运行时路由总数** | **137** | 132 + 5 |
 | 其中纯 redirect（没有自己的组件，只跳走） | **20** | 数组内带 `redirect:` 的条目（其中 1 条是 catch-all `/:pathMatch(.*)*`）。★ 含 6 条**箭头函数形态**的 redirect（`/catalog`、`/maas/*` 族） |
 | 其中带命名动态段（`:param`，不含 glob） | **23** | 见 §1.3 |
 | 其中 glob 兜底（`:pathMatch(.*)*`） | **2** | `/maintain/:pathMatch(.*)*`、`/:pathMatch(.*)*` |
 | **不需要登录** | **17** | 12 条 `meta.public === true`（含 3 条 dev-only `/dev/*`）+ 5 条「自身无 `meta`、但重定向到公开页」的路由（见下方口径说明） |
-| **需要登录** | **119** | 136 − 17 |
+| **需要登录** | **120** | 137 − 17 |
 
 需要登录的 119 条，按 `router.ts` 的 `beforeEach` 再分档：
 
 | 档位 | 条数 | 守卫出处 |
 |---|---|---|
-| 任意登录用户（目标路由无 `meta` 权限位，**或**显式 `requiresAuth`） | **56** | `router.ts` 的 `isAuthed()` 早退（无 meta 的 35 + `requiresAuth` 族的 21） |
+| 任意登录用户（目标路由无 `meta` 权限位，**或**显式 `requiresAuth`） | **57** | `router.ts` 的 `isAuthed()` 早退（无 meta 的 35 + `requiresAuth` 族的 21） |
 | `requiresSuper`（仅 super_admin） | **50** | `router.ts` 的 super 闸 |
 | `requiresPlatformOps`（super_admin + default 租户） | **11** | `router.ts` 的 platformOps 闸 |
 | `requiresProviderConsole`（super_admin 或 default 租户 tenant_admin） | **2** | `router.ts` 的 providerConsole 闸 |
 
-> 56 + 50 + 11 + 2 = **119** ✔ 与「需要登录 119」自洽（可作口径自检）。
+> 57 + 50 + 11 + 2 = **120** ✔ 与「需要登录 120」自洽（可作口径自检）。
 
 > ★ **计数口径（重要，和「直接看 `meta`」会差 5 条）**：
 > vue-router 4 在 `pushWithRedirect()` 里**先**执行 `handleRedirectRecord()`、**后**才跑导航守卫
@@ -125,7 +132,7 @@
 | `/maas/orders/:id` | `/tenant/orders/:id` | 327 |
 | `/maas/usage` | `/tenant/usage` | 328 |
 | `/routing` | `/routing-v2` | 334 |
-| `/admin/session-analytics` | `/admin/session-analytics/users` | 373（★ 2026-11-23 审计轮：原「会话分析总览页」按 owner 指令取消，内容已重组迁入 users 页 ⇒ 路由改为重定向，收藏链接兼容） |
+| `/admin/session-analytics` | `/admin/session-analytics/users/overview` | 373（★ 2026-11-23 审计轮：原「会话分析总览页」按 owner 指令取消，内容已重组迁入【整合页】⇒ 路由改为重定向，收藏链接兼容；★ ★ L30 轮·补②④：★ L14 轮把整合页迁到 `/users/overview` 后，本重定向随之改指 —— ★ 否则旧 URL 落到【列表页】、且打断 `16-session-analytics-system.yaml` 的 3 条断言） |
 | `/operations/price-compare` | `/model-pricing` | 412（2026-11-19 合并轮：价格对比面并入比较与定价页） |
 | `/customer/site` | `/customer/update-activate` | 436 |
 | `/customer/activate` | `/customer/update-activate` | 437 |
@@ -438,7 +445,7 @@ node maestro/tools/assert-stage-tree.mjs \
 
 | 路由 path | 需要登录 | flow 文件 | 断言点（data-testid） | 源码位置 |
 |---|---|---|---|---|
-| `/admin/session-analytics` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | ★ **重定向落点**：Top10 表头 `sa-users-col-rank`（表头出现＝数据到位）+ `sa-page-users` / `sa-range-label` / `sa-refresh-btn` / `sa-top5-section` / `sa-users-table` | web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue（路由 `web/src/router.ts:369` 重定向到 `/admin/session-analytics/users`） |
+| `/admin/session-analytics` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | ★ **重定向落点**：Top10 表头 `sa-users-col-rank`（表头出现＝数据到位）+ `sa-page-users` / `sa-range-label` / `sa-refresh-btn` / `sa-top5-section` / `sa-users-table` | web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue（★ 路由 `web/src/router.ts:373` 重定向到 `/admin/session-analytics/users/overview` —— ★ ★ 2026-11-23 L30 轮·补②④：★ L14 轮把整合页迁到 `/users/overview` 后、★ 本重定向随之改指，★ **旧 URL 的行为与 L14 之前一致**、★ 且 `16-session-analytics-system.yaml` 的 3 条断言恢复可达） |
 | `/admin/session-analytics/user-ranking` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | 排名列头 `sa-user-ranking-col-rank` + `sa-page-user-ranking` / `sa-user-ranking-filters` | web/src/views/admin/session-analytics/SessionAnalyticsUserRankingView.vue |
 | `/admin/session-analytics/user-ranking/:owner` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | 指标卡 `sa-metric-rank`（+ `sa-user-detail-identity` / `sa-back-btn` / `sa-metric-session-count`） | web/src/views/admin/session-analytics/SessionAnalyticsUserDetailView.vue |
 | `/admin/session-analytics/agent-ranking` | 是 · 任意登录用户 | `16-session-analytics-system.yaml` | 排名列头 `sa-agent-ranking-col-rank` + `sa-page-agent-ranking` | web/src/views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue |
@@ -455,7 +462,7 @@ node maestro/tools/assert-stage-tree.mjs \
   —— 对拍基准是**页面自己收到的那份响应**（CDP Network 域 + getResponseBody），
   而不是探针另发一次 API（活流量下必然假红）⇒ 严格相等、无需容差。
 
-### 3.13 已知缺口：**未被任何 flow 的 `openLink` 直接打开**的 20 条路由
+### 3.13 已知缺口：**未被任何 flow 的 `openLink` 直接打开**的 21 条路由
 
 ★ 2026-11-23（L10 复核轮）补记。清单由
   `node maestro/tools/audit-route-coverage.mjs` 实测产出（**可复跑**），
@@ -494,6 +501,7 @@ node maestro/tools/assert-stage-tree.mjs \
 | `/operations/price-compare` | C 真实缺口 | P3（重定向到 `/model-pricing` ⇒ 只需断言「跳转到位」） |
 | `/admin/teams` | C 真实缺口 | P3（★ 2026-11-23 上游 `41fb572f3`「团队层级管理前端切片落地」新增；`appNav.ts` **无菜单入口** ⇒ 上游自己已在 `web/src/config/navCoverage.test.ts` 把它登记为**孤儿路由**（菜单归属待产品确认）⇒ 与 `/admin/plugin-settings` 同族口径） |
 | `/admin/teams/:id` | C 真实缺口 | P3（★ 详情页**只能从列表页点击**到达（上游注释：详情页用路径字面量 `/admin/teams/${teamId}`）⇒ 静态工具不可判定；★ 但**列表页本身也没有任何 flow** ⇒ 团队层级这族两条路由**都没有 flow 覆盖**） |
+| `/admin/session-analytics/users/overview` | C **真实缺口** | P2（★ **2026-11-23 L14 落地轮新增**（`router.ts:362`、★ `component: SessionAnalyticsUsersView`、★ `meta.requiresAuth`）⇒ ★ 它是【会话分析整合页】、★ 可从 `appNav.ts` 的菜单点入、★ 但【没有任何 flow 直接打开它】） ⇒ ★ ★ **本行的存在本身就是一次【登记漏项】的证据**：★ 该路由落地时只改了 `router.ts`、★ **`maestro/README.md` 一个字没改** ⇒ ★★ ⇒ `audit-route-coverage.mjs --check` 的 5 条判据当场红（★ 每条都正好差 1）⇒ ★★★ **⇒ 纪律：★ 「新增路由」与「登记路由」是同一件事的两半 —— ★ 只做一半、★ 门会红** |
 
 ★ 「缺口」是**事实登记**，不是**红门**：本 README 不对覆盖率判红
   （哪些路由值得写 flow 属产品优先级，见 `maestro/L10-uncovered-routes.md` §3.1）。

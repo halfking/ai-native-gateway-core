@@ -30,7 +30,9 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 1000 正本失败（投递面断裂）: %v", err)
 	}
-	exec := string(body)
+	// ★ 剥整行 SQL 注释（★ 「注释掉的语句」不该被当成已登记）。
+	exec := sgStripSQLComments(string(body))
+	rawUp := string(body)
 
 	// ① 幂等加列（「表已在但列不齐」的环境修得回来 —— 932 补列教训）。
 	for _, ddl := range []string{
@@ -76,7 +78,8 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("1000 缺 down 迁移: %v", err)
 	}
-	downExec := string(downBody)
+	downExec := sgStripSQLComments(string(downBody))
+	rawDown := string(downBody)
 	for _, frag := range []string{
 		"DROP COLUMN IF EXISTS enforcement_mode",
 		"DELETE FROM public.schema_migrations WHERE version = '996'",
@@ -95,7 +98,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 1000 embeddata 副本失败: %v", err)
 	}
-	if string(embedBody) != exec {
+	if string(embedBody) != rawUp {
 		t.Fatalf("1000 正本与 embeddata 副本不一致（installer 会应用另一份内容）")
 	}
 	embedDown := filepath.Join("..", "..", "installer", "cmd", "llm-gw-installer", "embeddata", "startup", "996_tenant_budget_enforcement_mode.down.sql")
@@ -103,7 +106,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 1000 down embeddata 副本失败: %v", err)
 	}
-	if string(embedDownBody) != downExec {
+	if string(embedDownBody) != rawDown {
 		t.Fatalf("1000 down 正本与 embeddata 副本不一致")
 	}
 
@@ -120,7 +123,8 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 installer main.go 失败: %v", err)
 	}
-	main := collapseSpaces(string(mainSrc))
+	// ★ 剥整行 Go 注释（★ 保留 `//go:embed` 指令本身）。
+	main := collapseSpaces(sgStripGoCommentsKeepEmbed(string(mainSrc)))
 	for _, frag := range []string{
 		"//go:embed embeddata/startup/" + tbem1000File,
 		"//go:embed embeddata/startup/996_tenant_budget_enforcement_mode.down.sql",
@@ -138,7 +142,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 dbinit runner.go 失败: %v", err)
 	}
-	if !strings.Contains(string(runnerSrc), `"996_tenant_budget_enforcement_mode.sql",`) {
+	if !strings.Contains(sgStripGoCommentsKeepEmbed(string(runnerSrc)), `"996_tenant_budget_enforcement_mode.sql",`) {
 		t.Fatalf("dbinit runner.go StartupFiles 缺 1000 ⇒ 全新安装的 tenant_budgets 无 enforcement_mode 列")
 	}
 
@@ -149,7 +153,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 installed_startup_migrations.tsv 失败: %v", err)
 	}
-	if !strings.Contains(string(tsvBody), "387\t996_tenant_budget_enforcement_mode.sql") {
+	if !strings.Contains(sgStripShellComments(string(tsvBody)), "387\t996_tenant_budget_enforcement_mode.sql") {
 		t.Fatalf("tsv 缺 996 登记行（387\\t996_tenant_budget_enforcement_mode.sql）")
 	}
 
@@ -159,7 +163,8 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 apply-db-revision-sequence.sh 失败: %v", err)
 	}
-	deployText := string(deploySrc)
+	// ★ 剥整行 shell 注释（★ 被 `#` 注掉的登记不算登记）。
+	deployText := sgStripShellComments(string(deploySrc))
 	for _, frag := range []string{
 		`"$ROOT_DIR/sql/migrations/startup/996_tenant_budget_enforcement_mode.sql"`,
 		`ledger_artifact_probe "996_tenant_budget_enforcement_mode.sql"`,
@@ -176,7 +181,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 1000 installer/migrations 副本失败: %v", err)
 	}
-	if string(offlineUp) != exec {
+	if string(offlineUp) != rawUp {
 		t.Fatalf("1000 正本与 installer/migrations 副本不一致")
 	}
 	offlineDown, err := os.ReadFile(filepath.Join("..", "..", "installer", "migrations",
@@ -184,7 +189,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 1000 installer/migrations down 副本失败: %v", err)
 	}
-	if string(offlineDown) != downExec {
+	if string(offlineDown) != rawDown {
 		t.Fatalf("1000 down 正本与 installer/migrations 副本不一致")
 	}
 }

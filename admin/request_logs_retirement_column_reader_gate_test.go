@@ -176,12 +176,12 @@ func retirementColumnsSelectedSomewhere(t *testing.T, root string) map[string]bo
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		var cleaned []string
+		var lits []string
 		fileHasSelect := false
 		for _, lit := range goStringLiterals(t, path) {
 			lit = sqlBlockCommentRe.ReplaceAllString(lit, " ")
 			lit = sqlLineCommentRe.ReplaceAllString(lit, " ")
-			cleaned = append(cleaned, lit)
+			lits = append(lits, lit)
 			if selectRe.MatchString(lit) {
 				fileHasSelect = true
 			}
@@ -189,19 +189,33 @@ func retirementColumnsSelectedSomewhere(t *testing.T, root string) map[string]bo
 		if !fileHasSelect {
 			return nil // 这个文件里没有任何查询，不可能读任何列
 		}
-		// 逐字面量判定，**刻意不把整个文件的字面量合并**。
+		// ★★★ 2026-11-23 L30 轮·补：★ **字面量只扫一次**。
+		// ★ 原形态是【每列重算一遍】——★ `sqlReadsColumn(lit, re)` 与
+		//   `looksLikeProjectionList(lit)` **都只依赖 lit 本身**、★ 却各跑【列数】遍
+		//   ⇒ ★ 量＝【列数 × 字面量数】。
+		// ★ ★★ CPU profile 实测（★ 本机 `-cpuprofile`、★ 单跑这道门 10.38s）：
+		//   ★ `sqlReadsColumn` **占 42.07%**、★ `looksLikeProjectionList` **占 28.51%**
+		//   ⇒ ★★ **两者的乘数都恰好是【列数】** ⇒ ★ **先把它们提到【每字面量一次】**。
+		// ★ ★★ 语义等价性（★ ★ 必须写清楚、★ 否则「为了快而改判据」没人敢信）：
+		//   ★ 切语句规则（★ 按 `;`）、★ 写语句跳过（★ INSERT/UPDATE/DELETE）、
+		//   ★ 非 SELECT 语句跳过、★ 读区定义（★ `selectRegionRe` 的非空捕获组）、
+		//   ★ 投影清单兜底（★ 整段字面量匹配）—— ★ **全部逐字不变**；
+		//   ★ ★ 唯一的变化是【同一段解析从【每列一次】变成【每字面量一次】】。
+		// ★ ★★ 逐字面量判定，**刻意不把整个文件的字面量合并**。
 		// 合并过一次，失败得很具体：合并后产生「假语句」——
 		// 真实查询的 `;` 不在字面量里，于是 `WHERE … $` 的读区一路吞到合并文本末尾，
 		// 把后面的裸列名常量（canonicalColumnOrderV2）也算成读方。
 		// ⇒ **拼接的正确解法不是合并文本，是识别「投影段」这种形状。**
+		scans := make([]litScan, 0, len(lits))
+		for _, lit := range lits {
+			scans = append(scans, scanLiteral(lit))
+		}
 		for i, re := range anchored {
-			for _, lit := range cleaned {
-				if sqlReadsColumn(lit, re) {
-					hit[cols[i]] = true
-					break
-				}
-				// 拼接兜底：像投影列清单的片段（SELECT 段与 FROM 段之间的那部分）。
-				if looksLikeProjectionList(lit) && re.MatchString(lit) {
+			if hit[cols[i]] {
+				continue // 这一列已经有读方了 ⇒ 不用再扫剩下的字面量
+			}
+			for _, ls := range scans {
+				if literalReadsColumn(ls, re) {
 					hit[cols[i]] = true
 					break
 				}
@@ -263,6 +277,16 @@ var selectRegionRe = regexp.MustCompile(`(?is)\bSELECT\b(.*?)\bFROM\b` +
 //
 // 按 `;` 切语句后逐条判：写语句整条跳过，读语句再看它有没有落在读区里。
 // 「先切语句」是必要的——不切的话，读区的终止条件会在拼接文本里跨界。
+//
+// ★ 2026-11-23 L30 轮·补：★ **本函数保持原样、★ 一个字节都没改**。
+// ★ 它现在只被**等价性自证测试**调用（★ `TestRetirementReaderScanMatchesLegacyPath`）
+//
+//	—— ★ 因为热路径已改成「字面量只扫一次」的 `scanLiteral` 形态，
+//	★ 而这份【原实现】正是【那条自证的基准】。
+//
+// ★ ⇒ 留着的理由不是「兼容」、★ 而是「**要有东西可比**」：
+//
+//	★ 一份没人对照过的「更快实现」不叫优化、★ 叫改口径。
 func sqlReadsColumn(sql string, colRe *regexp.Regexp) bool {
 	for _, stmt := range strings.Split(sql, ";") {
 		if writeRe.MatchString(stmt) {
@@ -285,6 +309,62 @@ func regionsMention(stmt string, colRe *regexp.Regexp) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// litScan 是一个 SQL 字面量的**一次**扫描结果。
+//
+// ★ 2026-11-23 L30 轮·补：★ 原形态把「这段 SQL 读到了哪些列」这件事
+//
+//	**对每一列各算一遍** ⇒ ★ 量＝【列数 × 字面量数】。
+//
+// ★ litScan 把「只依赖字面量本身」的那部分（★ 读区文本、★ 是否投影清单）
+//
+//	**提到字面量层级算一次**，★ 列这一层只剩「这段文本里有没有这个列名」。
+type litScan struct {
+	regions []string // 读区文本（★ 写语句与非 SELECT 语句已剔除）
+	isProj  bool     // 是否像投影列清单（★ 对整段字面量判断）
+	whole   string   // 字面量原文（★ 投影兜底要拿它整段匹配）
+}
+
+// scanLiteral 扫一个 SQL 字面量一次，返回它自己的读区与形状判断。
+//
+// ★ 与 `sqlReadsColumn` 的语义**逐条等价**（★ 等价性由
+//
+//	`TestRetirementReaderScanMatchesLegacyPath` 在**真实语料**上逐列对拍验证）：
+//	★ 按 `;` 切语句、★ 写语句跳过、★ 非 SELECT 语句跳过、
+//	★ 读区＝`selectRegionRe` 的非空捕获组、★ 投影清单兜底＝整段字面量匹配。
+func scanLiteral(lit string) litScan {
+	out := litScan{whole: lit, isProj: looksLikeProjectionList(lit)}
+	for _, stmt := range strings.Split(lit, ";") {
+		if writeRe.MatchString(stmt) {
+			continue // INSERT/UPDATE/DELETE：写列表里的列名不是读
+		}
+		if !selectRe.MatchString(stmt) {
+			continue
+		}
+		for _, m := range selectRegionRe.FindAllStringSubmatch(stmt, -1) {
+			for _, g := range m[1:] {
+				if g != "" {
+					out.regions = append(out.regions, g)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// literalReadsColumn 报告这个**已扫描**的字面量是否读到了该列。
+func literalReadsColumn(ls litScan, colRe *regexp.Regexp) bool {
+	for _, g := range ls.regions {
+		if colRe.MatchString(g) {
+			return true
+		}
+	}
+	// 拼接兜底：像投影列清单的片段（SELECT 段与 FROM 段之间的那部分）。
+	if ls.isProj && colRe.MatchString(ls.whole) {
+		return true
 	}
 	return false
 }
@@ -347,4 +427,175 @@ func TestRetirementListedColumnsHaveAProductionReader(t *testing.T) {
 	t.Logf("退役清单共 %d 列，其中 %d 列登记为无生产读方，%d 列确认有读方。",
 		len(retirementListedColumns()), len(retirementColumnsWithoutReaders),
 		len(retirementListedColumns())-len(retirementColumnsWithoutReaders))
+}
+
+// TestRetirementReaderScanMatchesLegacyPath 是「提速后的扫描」与「提速前的扫描」
+// 的**逐列对拍自证**。
+//
+// # 为什么这道门自己需要一道门
+//
+// 2026-11-23 L30 轮·补把本文件的扫描改成了「字面量只扫一次」的形态
+// （`scanLiteral` ＋ `literalReadsColumn`），**热路径不再调用** `sqlReadsColumn`。
+// ★ ⇒ 那一刻 `sqlReadsColumn` 变成【没人对照过的实现】——★ 而「没人对照过的更快实现」
+//
+//	不叫优化、★ **叫改口径**（★ 这正是本仓反复记过的那个坑）。
+//
+// ★ ⇒ 所以本测试把**原实现原样留下**（★ `sqlReadsColumn` 一个字节都没改）
+//
+//	并在**真实语料**上逐列对拍：★ 任何一列、任何一句字面量、★ 两种判定必须一致。
+//
+// # 判据
+//
+// 对每个采样到的生产 .go 文件、每条 SQL 字面量、每一列：
+//
+//	sqlReadsColumn(lit, re)            ← 提速前（★ 原始实现）
+//	literalReadsColumn(scanLiteral(lit), re) ← 提速后（★ 新实现）
+//
+// 两者必须**逐条相等**。不等即判红——★ 并在失败信息里打印
+// **是哪一列、哪一个文件、哪一句字面量**。
+//
+// # 为什么采样而不是全仓
+//
+// 全仓对拍要按【列数 × 字面量数】跑原始实现 ⇒ 那是这道门被提速掉的那份开销
+// （★ 实测约 10s）⇒ ★ 把省下来的时间又还回去就白改了。
+// ⇒ ★ 取**真实语料的一个足够宽的切片**：★ 默认最多 60 个文件、
+//
+//	★ 且**必含含读方的那些文件**（★ 否则对拍的都是空字面量、★ 等于没对）。
+func TestRetirementReaderScanMatchesLegacyPath(t *testing.T) {
+	root := repoRootFromCaller(t)
+	cols := retirementListedColumns()
+	anchored := make([]*regexp.Regexp, len(cols))
+	for i, c := range cols {
+		anchored[i] = regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(c) + `\b`)
+	}
+
+	// ★ ★ 成本按【比较次数】封顶、★ 而不是按【文件数】。
+	// ★ 为什么不用文件数：★ 实测 60 个文件要 11.95s、★ 而 20 个文件反而要 15.61s
+	//   ⇒ ★★ **墙钟读数被机器负载主导（★ 当时 load average 234+）**
+	//   ⇒ ★★ **按秒数调采样＝按噪声调采样** ⇒ ★★ **按【工作量】封顶才稳**。
+	// ★ 4 万次比较 ≈ 原实现的正则工作量（★ 每次比较都要跑一遍原实现的读区解析）。
+	const maxComparisons = 40000
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", "web":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("扫描生产源码失败: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("没有扫到任何生产 .go 文件 —— 对拍样本为空即等于没对")
+	}
+
+	// ★ 优先采「含读方的文件」：★ 它们才是这条判据真正起作用的场景。
+	var withReaders, withoutReaders []string
+	for _, p := range files {
+		lits := strippedSQLLiterals(t, p)
+		if len(lits) == 0 {
+			continue
+		}
+		has := false
+		for _, lit := range lits {
+			for _, re := range anchored {
+				if legacyColumnPredicate(lit, re) {
+					has = true
+					break
+				}
+			}
+			if has {
+				break
+			}
+		}
+		if has {
+			withReaders = append(withReaders, p)
+		} else {
+			withoutReaders = append(withoutReaders, p)
+		}
+	}
+	sample := append(withReaders, withoutReaders...)
+	if len(withReaders) == 0 {
+		t.Fatal("样本里一个「含读方」的文件都没有 ⇒ 对拍样本失去意义")
+	}
+
+	compared, mismatches, filesUsed := 0, 0, 0
+	for _, p := range sample {
+		if compared >= maxComparisons {
+			break
+		}
+		filesUsed++
+		for _, lit := range strippedSQLLiterals(t, p) {
+			if compared >= maxComparisons {
+				break
+			}
+			ls := scanLiteral(lit)
+			for i, re := range anchored {
+				if compared >= maxComparisons {
+					break
+				}
+				legacy := legacyColumnPredicate(lit, re)
+				fast := literalReadsColumn(ls, re)
+				compared++
+				if legacy == fast {
+					continue
+				}
+				mismatches++
+				if mismatches <= 5 {
+					t.Errorf("提速前后判定不一致：列 `%s`、文件 %s\n  字面量：%q\n"+
+						"  提速前＝%v、★ 提速后＝%v\n"+
+						"  ⇒ 提速后的扫描**改了判据**（★ 而不只是改了算法）⇒ 必须回退。",
+						cols[i], p, lit, legacy, fast)
+				}
+			}
+		}
+	}
+	if mismatches > 5 {
+		t.Errorf("提速前后共有 %d 处判定不一致（★ 只报了前 5 处）", mismatches)
+	}
+	t.Logf("对拍样本：%d 个文件（★ 其中含读方 %d 个、★ 优先入样）、%d 列、%d 次逐列比较、%d 处不一致",
+		filesUsed, len(withReaders), len(cols), compared, mismatches)
+}
+
+// legacyColumnPredicate 是**提速前热路径**对「字面量 × 列」的完整判定。
+//
+// ★ ★ 它必须**两步都算**：★ 原热路径先问 `sqlReadsColumn`（同一条语句里含 SELECT
+//
+//	且落在读区）、★ 再问投影兜底（★ 字面量像投影列清单且整段含该列名）。
+//
+// ★ ★★ 第一版自证只拿 `sqlReadsColumn` 当基准 ⇒ ★ **当场对拍出 17 处不一致**
+//
+//	（★ 如 `"COALESCE(rdl.model, rdl.client_model, rdl.outbound_model)"`：
+//	★ ★ 它没有 SELECT、★ 所以 `sqlReadsColumn` 判 false、★ 但它是投影清单形态
+//	★ ★ ⇒ 原热路径判 **true**）⇒ ★★ **基准写错、不是实现写错** —— ★
+//	★★ 而这恰恰证明这道自证有用：★ ★ **它把「我以为的等价」当场证伪了**。
+func legacyColumnPredicate(lit string, colRe *regexp.Regexp) bool {
+	if sqlReadsColumn(lit, colRe) {
+		return true
+	}
+	// 拼接兜底：像投影列清单的片段（SELECT 段与 FROM 段之间的那部分）。
+	return looksLikeProjectionList(lit) && colRe.MatchString(lit)
+}
+
+// strippedSQLLiterals 取一个文件的 SQL 字面量并剥掉注释（★ 与本门热路径同口径）。
+func strippedSQLLiterals(t *testing.T, path string) []string {
+	t.Helper()
+	var out []string
+	for _, lit := range goStringLiterals(t, path) {
+		lit = sqlBlockCommentRe.ReplaceAllString(lit, " ")
+		lit = sqlLineCommentRe.ReplaceAllString(lit, " ")
+		out = append(out, lit)
+	}
+	return out
 }

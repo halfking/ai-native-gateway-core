@@ -5,7 +5,7 @@
 > 判据纪律：**本页的每条断言都有 file:line，且有门禁对拍现实**
 > （★ `scripts/ursmcheck/request_surface_doc_currency_test.go` ——
 > ★ **专为本页而写**：逐条核对本页引用的 `file:line` 仍指向它声称的那段代码）。
-> 最后更新：2026-11-23（第二十二次重钉：N3 真实目录接线轮给 `cmd/gateway/main.go` 与 `cmd/gateway/main_pipeline.go` **加了几行** ⇒ ★ 证据行号整体后移（★ main.go 的链 8918⇒9126、★ main_pipeline.go 的 v2 开关 160⇒171、★ 启动日志 1290⇒1515、★ v2pipe- 829⇒1030）⇒ ★ 按现状重钉；★ 2026-11-18 那次是「并行提交再推移 main.go + 上游 PI 阶段重排 main_pipeline.go」；★ 漂移门始于 2026-10-24）
+> 最后更新：2026-11-24（第二十三次重钉：上游 `41d1eca87`（request_metrics 集成轮）在 `cmd/gateway/main.go` 的 `func main()` **早期**插了 18 行 ⇒ ★ 证据行号整体后移（★ main.go 的链 9126⇒9144）⇒ ★ 按现状重钉；★ 2026-11-23 那次是「N3 真实目录接线轮加了几行」；★ 2026-11-18 那次是「并行提交再推移 main.go + 上游 PI 阶段重排 main_pipeline.go」；★ 漂移门始于 2026-10-24）
 
 ---
 
@@ -20,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:9126-9145`（2026-11-23 第二十二次重钉）：
+`cmd/gateway/main.go:9206-9225`（2026-11-24 第二十四次重钉）：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
@@ -31,9 +31,9 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 两处顺序是踩坑后改的，有注释自陈：
 
 - **Logging 必须在 Auth 之外** —— 否则 401 不落日志，客户端拿 `X-Request-Id` 去查命中 0 次
-  （`cmd/gateway/main.go:9129-9136`）。
+  （`cmd/gateway/main.go:9208-9215`）。
 - **maintain/mobile 必须组合在链内**（`publicSurface`）—— 否则运维面不带安全响应头
-  （`cmd/gateway/main.go:9086-9091`）。
+  （`cmd/gateway/main.go:9161-9168`）。
 
 ### 2.2 数据面：v1（生产默认）与 v2（默认关）
 
@@ -56,7 +56,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 
 | 机制 | 位置 | 裁决 | 生产 | 阶段 |
 |---|---|---|---|---|
-| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:9126-9145` | **主链** | ✅ | — |
+| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:9206-9225` | **主链** | ✅ | — |
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
 | `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |

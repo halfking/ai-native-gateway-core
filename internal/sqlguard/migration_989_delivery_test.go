@@ -28,6 +28,10 @@ import (
 const (
 	mig989UpFile   = "989_migration_ledger_session_analytics_981_repair.sql"
 	mig989DownFile = "989_migration_ledger_session_analytics_981_repair.down.sql"
+	// ★★ 2026-11-24 合并轮二十一订正：★ 下标由 395 改为 **391** —— ★ 上游把
+	//   989 放回位置 391（★ 我方上一轮曾把它排到 395 以让开 teams 族）⇒ ★
+	//   ★ 而 teams 族现已归位回上游的 055-058（★ 位置 401–404）⇒ ★★ **本号
+	//   ★★ 随之回到 391** ★★。
 	mig989TSVIndex = "391"
 )
 

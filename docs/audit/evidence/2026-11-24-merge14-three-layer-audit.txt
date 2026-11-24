@@ -1,0 +1,186 @@
+# 证据档：2026-11-24 合并轮十四 —— ★★ 「合并会不会吞上游内容」的【三层审计】＋ ★★★ 三条红的【隔离 worktree 基线对照】＋ ★★ 代上游修两条上游红
+
+★ 全程只读（除仓内文档/台账/快照文件外）｜★ 零生产写 / 零 schema 变更 / 零在役切换 / 零部署 / 零迁移字节变更 / 未推 origin/main
+★ 尖端 = `87502dc9b`｜★ 分支 `feat/211-config-todos-l1l5`｜★ 与 `origin/main` = **0 落后 / 121 领先**（★ 纯快进）
+
+---
+
+## ① 触发（★ 一句「只差一句授权」把「能不能推」变成了【先修伤再推】）
+
+★ 并行车道在其候选树上实测：**「每一笔 merge 提交都吞一次上游归档内容」** ⇒ ★★ **7 次 merge、★ 7 次吞**（★ 证据：★ 上游自己的提交上命中数＝2、★ 每到一笔 merge 提交就掉到 0）⇒ ★★ **根因＝`git merge-file --union` 的参数顺序是 `<current> <base> <other>`（★ 中间那个才是 base）⇒ ★ 传成 `(ours, theirs, base)` 会把 theirs 当 base ⇒ ★★ 静默丢弃、★ rc=0、★ 无冲突标记 ⇒ ★★ 肉眼与 rc 都发现不了**（★ 详细取证见同目录 `2026-11-24-l36-merge-content-loss.txt`、★ 由并行车道产出）。
+
+★★★ ⇒ ★★ **本轮合并轮十四【刻意不走那条路径】**：★ 用标准 `git merge`（三路合并）＋ ★★ **脚本化「保留双方」解算**（★ 不手抄 ⇒ 不二次损坏；★ 不丢任一侧 ⇒ 防吞）⇒ ⇒ ★★ **本档的读数就是「那个机制有没有再咬」的直接检验**。
+
+---
+
+## ② 判据一（★★ 文件级 · ★★ 最严格、★ 假阳性最低）
+
+★★ **判据＝`origin/main` 的每个【文件】是否在候选树里存在**。★ **文件存在 ⇒ 内容差异属「重写/落后」、★ 不算丢失**；★ **文件不存在 ⇒ 被删 ⇒ 逐个定性**。
+
+```
+$ python3 /tmp/file_level_audit.py HEAD
+候选 = ea418d105   origin/main = 41d1eca87
+origin/main 文件数 28960   候选文件数 28993
+★★ origin/main 有、候选树**没有**的文件 = 8 个
+```
+
+★ 8 个文件的定性（★ **全部是同一个机制的正常后果**）：
+
+| 文件 | 定性 |
+|---|---|
+| `sql/migrations/startup/055_teams_table.sql` | ★★ **重编号退役**（★ 我方 055-058 → 982-985 → 撞上游 982 ⇒ 避让为 **918/925/973/986**）★ 且**原件从未被任何通道投递** ⇒ ★ 生产与新装都缺 ⇒ ★★ **退役比保留更正确** |
+| `sql/migrations/startup/056_user_teams.sql` | ★ 同上 |
+| `sql/migrations/startup/057_api_keys_team_id.sql` | ★ 同上 |
+| `sql/migrations/startup/058_team_budgets.sql` | ★ 同上 |
+| `installer/cmd/llm-gw-installer/embeddata/startup/055_teams_table.sql` | ★ 同上 |
+| `installer/cmd/llm-gw-installer/embeddata/startup/056_user_teams.sql` | ★ 同上 |
+| `installer/cmd/llm-gw-installer/embeddata/startup/057_api_keys_team_id.sql` | ★ 同上 |
+| `installer/cmd/llm-gw-installer/embeddata/startup/058_team_budgets.sql` | ★ 同上 |
+
+★★ **反向核对（★ 退役不是「丢」）**：★ 候选树里 teams 族 **24 面齐全**（★ canonical 8（4 族 × up/down）＋ embeddata 8 ＋ installer/migrations 8）⇒ ★★ **比 `origin/main` 的 8 面更完整**（★ origin/main 的 055-058 **只有 canonical 4 ＋ embeddata 4**、★ 缺 `.down.sql` ＋ 缺离线升级通道副本）⇒ ⇒ ★★ **push 后 origin/main 的 8 个文件由 24 面取代 ⇒ 内容不丢、★ 且更完整**。
+
+★★★ **★ 同判据对并行车候选的读数（★ 用来回答「推哪条」）★★**：
+```
+$ python3 /tmp/file_level_audit.py 7ec518293
+★★ origin/main 有、候选树**没有**的文件 = 8 个   ★★ 与我方**完全相同**
+```
+⇒ ★★ **两条候选在「内容丢失」这个维度上【等价】** ⇒ ★★ **「推哪条」不是由内容丢失决定的、★ 而是由【内容覆盖度】决定的**。
+
+---
+
+## ③ 判据二（★★ 段结构级 · ★★ 「归档指针会不会悬空」的全量判据）
+
+★★ **判据＝`origin/main` 归档档的每个 `# 追加：` 段头 ⇒ 候选树归档档是否有对应段头**（★ 归一化后比对：★ 去 `★☆` 装饰、去括号内的搬运说明、★ 取前 40 字作键）。
+
+```
+$ python3 /tmp/heads_audit.py
+origin/main 归档档段头 55 个；HEAD 归档档段头 84 个
+★★ origin/main 有、HEAD **没有**的段头 = 0 个
+```
+
+⇒ ★★★ **55/55 全配对 ⇒ ★★ 零缺失** ⇒ ⇒ ★★ **我方 `AGENTS.md` 里每一个「全文见归档档」的指针、★ 都能在归档档里解析到段头** ⇒ ★★ **无悬空指针**。
+
+★★★★ **★ 本轮自己修掉的三处悬空指针（★ 合并前发现的）★★★★**：
+① 归档档里「**# 追加：2026-11-23 N4 收尾订正轮**」★ **整段（段头＋正文 11 行）不见了** ⇒ ★ 而 `AGENTS.md` 的指针块仍写着「★ 全文见归档档」⇒ ★★ **假指针** ⇒ ★ 已从 origin/main 逐字切片回填；
+② 「**# 追加：2026-11-23 L14 取证轮**」★ **段头不见了**（★ 正文在）⇒ ★★ 同款假指针 ⇒ ★ 已回填段头；
+③ 「**# 追加：2026-11-20 时区轮批判式审计**」★ 我方 `AGENTS.md` 早有指针说「全文见归档档」、★ 而我方归档档里**没有**那段 ⇒ ★★ 同款假指针 ⇒ ★★ **合并上游时由 origin/main 侧带来的那段【正好修好它】** ⇒ ★★ ⇒ **合并的价值之一** ★★。
+
+⇒ ★★ **通用式：★「合并会吞内容」要按【段结构】查、★ 不只按【行】查 —— ★★ 行级 diff 看着像正常删除（★ 段体还在）⇒ ★★ 只有按段头/段体配对看才抓得到。**
+
+---
+
+## ④ 判据三（★★ 行级 · ★★ 用来解释「行级判据为何会骗人」）
+
+★★ **行级判据（★ origin/main 每行是否在候选树同文件或归档档）在本仓会给出约 1,100 行的假阳性** ⇒ ★★ **原因＝`docs/03-design/02-feature-design/*.html` 三个文档在上游被**大幅重写**（★ 菜单计数 67→68、★ 折叠 53→54、★ 文案整段改写）⇒ ★★ **旧版的行在新版文件里「整批不在」⇒ ★★ 但那不是「吞」、★ 是「落后」**。
+
+⇒ ★★ **⇒ 这就是为什么最终判据要分三层、★ 且以【文件级】为准**：
+| 层级 | 回答什么问题 | 本轮读数 |
+|---|---|---|
+| ★ **文件级** | ★ 有没有文件被整体删掉 | ★★ **8 个、★ 全部是重编号退役** |
+| ★ **段结构级** | ★ 归档指针会不会悬空 | ★★ **0 缺失（55/55 配对）** |
+| ★ **行级** | ★ 内容差异在哪（★ **含大量假阳性**） | ★★ `AGENTS.md` 119 行「真吞候选」⇒ ★ **109 行在归档档**（★ 主动归档）＋ **9 行在其它文档/措辞变体** ＋ **1 行是上游的字面冲突标记**（★ `origin/main:AGENTS.md:192` 的 `=======`、★ 我方已清理 ⇒ **属修复、★ 不是丢失**）⇒ ⇒ ★★ **零真吞** |
+
+---
+
+## ⑤ ★★★ 三条红的归属（★ 隔离 worktree 基线对照、★ 本轮最关键的一步）
+
+★ 第一轮闸门（★ 尖端 `ea418d105`）出 **3 条红** ⇒ ★★ **★ 关键＝归因、★ 不是「修红」**：★ ★★ **在 `origin/main@41d1eca87` 的【隔离 worktree】（★ `git worktree add --detach`）上逐字复跑** ⇒ ★★
+
+| 红 | ★ 我方树 | ★ 基线 `origin/main` | ★ **归属** |
+|---|---|---|---|
+| ★ `TestLiteRequestLogSink_TurnNoContinuesAcrossRestart`（★ `cmd/gateway`） | ★ 闸门内红、★ **复跑 ×5 全绿** | ★ **×5 全绿** | ★★ **竞态 flaky**（★ 错误原文 `async file writer: mkdir …: no such file or directory`、★ 发生在**第一个** `PersistRequestLog` ⇒ 非 restart 语义、★ 是 mkdir 竞态）★ **与分支无关、★ 高负载下偶发** |
+| ★ `TestAdminRoutesSnapshotMatchesGenerator`（★ `ursmcheck`） | ★ 稳定红 | ★ 稳定红（★ 「生成器 728 行 vs 快照 727 行」＋「第 1 行不一致」） | ★★ **上游既有**（★ ★ **我方已修一半**：★ 我方快照行数已对齐、★ 只剩第 1 行内容不一致） |
+| ★ `TestRequestSurfaceDocEvidenceStillHolds`（★ `ursmcheck`、★ 3 个子例） | ★ 稳定红 | ★ 稳定红（★ 同 4 个子例、★ RC=1） | ★★ **上游既有**（★ 上游 `41d1eca87` 在 `func main()` 早期插 18 行 ⇒ 行号窗口整体位移、★ **上游未同步对拍表**） |
+
+⇒ ★★★ **⇒ 本轮【无新红】** ★★★
+
+★★★ **★ 而且我方比基线更绿（★ 一条反向读数）★★★**：★ 第一轮闸门我方 `admin` 包 **ok 192.301s**、★ 而**基线 `admin` 包 FAIL（213.303s）** ⇒ ★★ 那正是我方 `601e4be9d` 代上游修的 canonical 读点登记簿（★ 基线日志原文：`internal/metricsstore/processor.go` 不在 `canonicalReadPointRegistry` 里）⇒ ★★ **⇒ 我方在这条上【比上游绿】** ★★。★ 基线侧单独复跑确认：
+```
+$ go test ./admin/ -run 'TestCanonicalReadPoint' -count=1     （★ 在 /tmp/wt-base ★ origin/main）
+--- FAIL: TestCanonicalReadPointRegistryCoversEveryMentionedFile (0.42s)
+    canonical_read_points_registry_test.go:1912: 1 个生产文件提及 canonical 视图（request_logs_with_current_month），但**不在** canonicalReadPointRegistry 里：
+          internal/metricsstore/processor.go
+FAIL
+```
+
+---
+
+## ⑥ ★★★ 代上游修那两条上游红（★ 提交 `87502dc9b`、★ 与并行车道【同题同解】）★★★
+
+★ ★★ **归因**＝先问「是不是我方引入的」⇒ 隔离 worktree 上在 `origin/main@41d1eca87` 逐字复现（★ 同 4 个子例、★ RC=1）⇒ ★★ **是上游引入的、★ 不是我方合并伤** ⇒ ★★ **但它会挡住 push**（★ 闸门的基线红认领层对未认领的红会 die）⇒ 按仓内先例【代上游修】★★。
+
+★★ **修法一**：★ **官方生成器**刷新 admin 路由快照（★ `bash scripts/audit/extract-admin-routes.sh --update-snapshot`、★★ **官方生成器、★ 不手改快照**）⇒ ★★ **728 条登记 / 685 条唯一 path、★ path+method 集合逐行差 0 条**（★ 零丢失对拍）：
+```
+$ diff <(cut -f1,2 <before> | sort) <(cut -f1,2 <after> | sort)   ⇒ 空
+```
+
+★★ **修法二**：★ **中间件链行号窗口第二十三次重钉（★ 位移 +18）、★ 三面同钉**（★ C8 要求三面【精确相等】）：★ ① 门的事实源 `scripts/ursmcheck/request_surface_doc_currency_test.go` 三条区间 ｜★ ② 设计页 `docs/subsystems/request-surface.md` 四处引用 ｜★ ③ 认证表 A1 行（★ `docs/audit/2026-10-24-magpie-v0.1.1367-改造落地审计.md`）★★
+
+★ ★★ 链体 **9126-9145 → 9144-9163**｜★ Logging 注释 **9129-9136 → 9147-9154**｜★ maintain 注释 **9091-9098 → 9109-9116** ｜★ 认证表逐项锚点顺带订正为实测值（★ Recovery `:9127`→`:9152`、★ Auth `:9142`→`:9167`、★ 旧值本就偏旧）★★
+
+★ ★★ **★ 行号是【逐锚点实测】的、★ 不是照抄 +18 的**：★ 我方 `cmd/gateway/main.go` 另有我方自己的改动 ⇒ ★★ **我方树上实测**：★ Recovery **9152** / ★ Logging 注释 **9154** / ★ maintain 注释 **9111** / ★ SecurityHeaders **9170** ⇒ ⇒ **与并行车道实测值逐项一致** ⇒ ★★ **⇒ 推 main 时不会互相覆盖** ★★。
+
+★ ★★ **改动面 4 文件、★ 与并行车道 `b600a8d05` 完全相同** ⇒ ★★ **同题同解** ★★ ｜★ 验收：★ **两条门复跑全绿（ok 3.975s）** ★★。
+
+---
+
+## ⑦ ★★ 闸门读数（★ 尖端 `87502dc9b`、★ 改动已提交 ＋ 读数期间工作树连续不变）
+
+★ 跑法：★ `~/sdk/bash5/bin/bash scripts/deploy-test-gate.sh`（★ bash 5.2、★ go 1.27.4、★ PID 3070、★ 日志 `/tmp/gate15.log`）★
+
+```
+ok   github.com/kaixuan/llm-gateway-go/admin              112.884s
+ok   github.com/kaixuan/llm-gateway-go/internal/metricsstore   0.011s
+ok   github.com/kaixuan/llm-gateway-go/internal/sqlguard      15.743s
+ok   github.com/kaixuan/llm-gateway-go/scripts/deploygate      2.546s
+ok   github.com/kaixuan/llm-gateway-go/scripts/ursmcheck     389.101s
+ok   github.com/kaixuan/llm-gateway-go/sql/migrations/startup  18.364s
+ok   github.com/kaixuan/llm-gateway-go/sql/schema             15.890s
+ok   github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer   5.603s
+ok   github.com/kaixuan/llm-gateway-go/installer/internal/dbinit       5.787s
+ok   github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil   47.037s
+[test-gate] ★ 闸门通过：./admin ./internal/metricsstore ./internal/sqlguard ./scripts/deploygate ./scripts/ursmcheck ./sql/migrations/startup ./sql/schema 全绿 ★
+```
+
+★ ★★ **★ 口径必须写清：★ 这不是「全仓全绿」、★ 而是【选中的 10 个包全绿】★★**：★ 闸门按「基线树 vs 当前树」的差异选包 ⇒ ★★ **本轮 `cmd/gateway` 不在选包内**（★ 上轮它在选包内、★ 因为 `origin/main` 那笔改了 `cmd/gateway/main.go`）⇒ ★★ **⇒ 那条 flaky 本轮【未被闸门跑到】、★ 其归属由 ⑤ 的定向基线对照闭合** ★★。
+
+---
+
+## ⑧ ★★ ★ 新发现：★ 闸门量具的【基线阶段跑全包 ⇒ 双倍预算 ⇒ 读数不全 ⇒ 判死】缺陷 ★★
+
+★ ★★ **现象**（★ 第一轮闸门 `ea418d105`）：★ 闸门在【当前树有红】时会跑【基线树】的**全部选中的包**（★ **不是只跑有红的包**）⇒ ★★ **耗时≈当前阶段耗时** ⇒ ★★ 基线阶段被 **SIGTERM**（★ 日志原文 `Terminated: 15`、★ 出现在 deploygate 结果行之后、ursmcheck 结果行之前 ⇒ ★★ **掐断点＝基线阶段的 `ursmcheck` 那一包**、★ 那是基线上最慢的一包）⇒ ★★ **ursmcheck / sql/migrations/startup / sql/schema 三包「没有任何结果行」** ⇒ ★★ 闸门判 **「读数不全 ⇒ 宁可红报、不许伪绿」** ⇒ ★★★ **⇒ 即使当前红全是基线既有、★ 闸门也会判死** ★★★ ⇒ ★★ **⇒ 这两件事必须分开登记：★ 「读数不全」是【量具】的问题、★ 不是【产品】的问题** ★★。
+
+★ ★★ **★ 边界必须写清（★ 别把它读成「闸门在无红时也跑基线」）★★**：★ `scripts/deploy-test-gate.sh` 第 665 行 `current_reds="$(red_names "$out_current")"` ⇒ ★★ **为空 ⇒ 第 667–670 行 `log "★ 闸门通过：… 全绿 ★"` ＋ `exit 0`** ⇒ ★★ **基线阶段【根本不会启动】** ★★ ⇒ ★★ **⇒ 缺陷只存在于【有红】路径** ★★。
+
+★ ★★ **修法建议（★ 本轮只登记、★ 不擅自改）**：★ **基线只跑【当前有红的包】**（★ 省 ~10 分钟、★ 且【有红】路径下这道闸门才谈得上可用）＋ ★★ **★ 但豁免检查的作用域会随之收窄**（★ 「基线红必须已被豁免表认领」那层的语义）⇒ ★★ **⇒ 属口径轴、★ 待 owner 定** ★★ ｜★ ★★ **该缺陷两条车道都会撞上**（★ 只要闸门进基线阶段就会撞）★★。
+
+---
+
+## ⑨ ★★ push 候选的横向对比（★ 供 owner 拍板）★★
+
+```
+$ git diff --name-status HEAD ce0bf1619
+A  docs/audit/evidence/2026-11-24-l36-merge-content-loss.txt   ← 并行车独有（★ 本轮已取入我方 ⇒ 归零）
+D  （无）                                                          ← 我方独有文件 = 0
+M  AGENTS.md / AGENTS-archive-20261031.md / cmd/gateway/main.go
+M  docs/audit/2026-11-20-会话分析系统前端实施报告.md
+M  docs/operations/2026-11-23-211配置优化执行报告.md
+M  scripts/apply-db-revision-sequence.sh
+M  sql/migrations/startup/legacy_cross_surface_live_alignment_test.go
+```
+
+★ ★★ **结论：★★ 两条候选在【内容丢失】与【上游覆盖度】上【完全等价】★★**：① ★★ 文件级净删除 **两边完全相同**（★ 都只少 8 个 `055-058` ＝ 重编号退役）；② ★★ **都含上游 4 笔**（★ 含 `41d1eca87` request_metrics 集成）；③ ★★ **同款两处修法**（★ 快照 728 条 ＋ 三面重钉 9144-9163 / 9147-9154 / 9109-9116）；④ ★★ **A1 行逐字一致** ⇒ ★★ **推 main 不会互相覆盖** ★★。
+
+★ ★★ **★ 剩下的差别只有【内容覆盖面】与【分支名/提交历史】★★**：★ 我方多出 ① `docs/operations/2026-11-23-211配置优化执行报告.md` 的 **§9.30 ㉒ / ㉓ / ㉓-14 全套回填**（★ 含本档三层审计的完整读数）｜② 983 豁免论证（★ 「★ 生产已有 983 记账行 ⇒ 字节冻结适用、★ 我方未改其字节 ⇒ 零分叉」）｜③ canonical 读点登记簿代修（★ **★ 就是我方 `admin` 包比基线绿的那一条**）｜④ 游标挡空 4xx 功能轮（★ 三协议面 ＋ 404/403/429/503）｜⑤ 合并轮十/十一/十二/十四的全套登记 ＋ 合并轮十三的三处红代修 ★★ ⇒ ★★ **⇒ 我方的报告主线更全** ★★。
+
+---
+
+## ⑩ ★★ 通用式五条 ★★
+
+① ★★ **「逐笔审计的缺行」不是判据、★ 最终净状态才是** —— ★★ 本轮 14 个文件、200+ 行「缺」里、★ 逐条定性后**真吞只有 2 处**；★ 其余分别是「主动归档」「上游还没合」「按决策重命名」「我方自己重写」。
+② ★★ **「合并会吞内容」要按【段结构】查、★ 不只按【行】查** —— ★★ 本轮两处真吞都不是「整段消失」而是「**段头不见了**」⇒ ★ 行级 diff 看着像正常删除（★ 段体还在）⇒ ★★ 只有按段头/段体配对看才抓得到。
+③ ★★ **「行级判据」在【文档被大幅重写】的场景会给出上千行假阳性** ⇒ ★★ **最终判据分三层、★ 以文件级为准**、★ 行级只用来「定位可疑点」、★ 不用来「下结论」。
+④ ★★ **「闸门红了」的第一句结论必须是【它是不是我方引入的】** —— ★★ **到基线的【隔离 worktree】上原样复跑** ⇒ ★★ 一条命令就把「上游的红」与「我方引入的红」分开（★ ★ 而基线复跑必须是【隔离 worktree 上的 origin/main】、★ 不能是同机工作树、★ 否则读到的是被合并过的树）★★。
+⑤ ★★ **「闸门通过」这句话必须带【选包口径】** —— ★★ 本轮是「**选中的 10 个包全绿**」、★ **不是「全仓全绿」** ⇒ ★★ 选包按「基线树 vs 当前树」的差异算 ⇒ ★★ **同一个树在不同 BASE_REF 下选到的包不同、★ 读数口径也不同** ⇒ ★★ **报读数必须连选包一起报** ★★。
+
+★ 零生产写 / 零 schema 变更 / 零在役切换 / 零部署 / 零迁移字节变更 / 未推 origin/main

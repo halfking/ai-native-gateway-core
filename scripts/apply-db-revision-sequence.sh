@@ -2596,6 +2596,9 @@ files=(
   # ★ 955（2026-11-09 模型指纹验证增强轮）：passive_model_fingerprints ——
   #   被动式模型指纹基线表（真实流量聚合的 TTFT/ITT/吞吐/Token 签名）。
   "$ROOT_DIR/sql/migrations/startup/955_passive_model_fingerprints.sql"
+  # ★★ 2026-11-23 L29 轮（★ 上游 A1）：★ 956 的前置守卫由**安装器侧的基线补种**
+  #   满足（★ dbinit.Runner 的 modelsCanonicalSeedSQL ⇒ 零迁移字节变更）
+  #   ⇒ ★★ **本通道不登记任何播种迁移**（★ 同一阻断点不留两套并行解法）。
   # ★ 956（2026-11-10 上游恢复检测及时性轮）：把 minimax-m3.1-flash 标 featured。
   #   判据 = 实测有 24h 真实业务流量（110 次）的免费模型 —— 免费面 24h 有流量的
   #   canonical 只有 glm-5.3-flash（585 次，953 已标）与本项两个。
@@ -2793,6 +2796,25 @@ files=(
   #     stats_usage_daily（基线已有）⇒ ★ 提前无副作用。
   "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
   "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
+  # ★ 918/925/973/986（2026-11-23 团队功能底座轮，★ 原编号 055-058 ⇒ 曾用 982-985
+  # ⇒ 与上游 982_provider_call_attempts（aac6602ab，已 push）撞号 ⇒ 按 919 让号轮
+  # 先例「未 push 方避让」改占真空号）：
+  #   teams / user_teams / api_keys.team_id / team_budgets 四件套。
+  #   ★ ★ 为什么必须重编号（★ 原件**永远不会被应用**，★ 三条通道都不投）：
+  #     ① **本通道**（files=(...) 数组）只投点名的 ⇒ 原件没点名；
+  #     ② **存量升级通道**（deploy-lib 的 _deploy_pending_startup_migrations）
+  #        只投「版本号 ≥ 对账地板 412」或「登记进低版本清单」的
+  #        ⇒ 原 055-058 落在地板以下**且**不在清单里；
+  #     ③ **installer 通道**只投 StartupFiles 点名的 ⇒ 原件没点名。
+  #   ⇒ ⇒ ★ 三条通道一条都没登记 ⇒ 新装与存量都缺这三张表与这一列
+  #        ⇒ ★ 而现役代码无条件写 api_keys.team_id ⇒ 生产「发 API key」必失败
+  #        （★ 2026-11-23 生产实测：api_keys 无 team_id 列、teams/user_teams/
+  #          team_budgets 三表不存在、schema_migrations 水位 999）。
+  #   ★ ★ 避让重编号为 918/925/973/986（★ > 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免；
+  #     ★ 而投递判据是「版本号不在账本里」、★ 不是「大于水位」⇒ 新号会被正常投递）。
+  #   ★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS ＋ ADD COLUMN IF NOT EXISTS
+  #     ＋ 自登记 ON CONFLICT DO NOTHING）⇒ 重放安全、已在场也不报错。
+  #   ★ 次序：918 → 925/973/986（★ 后三条的外键指向 teams.id ⇒ teams 先建）。
   # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
   #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
   #   不存在的 migration_metadata 表改回 schema_migrations）。
@@ -3719,6 +3741,14 @@ ledger_artifact_probe "998_session_summaries_task_association.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
 ledger_artifact_probe "999_session_summary_layers.sql" \
   "to_regclass('public.session_summary_layers') IS NOT NULL"
+# ★ 918/925/973/986 的产物 = 三张表 + 一列 + 各自主键/唯一约束与索引（★ 只点本组
+#   引入的对象；★ teams 的两个索引与 user_teams/team_budgets 的索引都在场）。
+#   ★ 列探针用 information_schema（★ api_keys.team_id 是普通列 ⇒ 口径正确，
+#     994 的 pg_catalog 教训只针对物化视图）。
+  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='teams' AND indexname IN ('idx_teams_owner_id','idx_teams_tenant_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='teams_tenant_name_key' AND conrelid='public.teams'::regclass) = 1"
+  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='user_teams' AND indexname IN ('idx_user_teams_user_id','idx_user_teams_team_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='user_teams_user_team_key' AND conrelid='public.user_teams'::regclass) = 1"
+  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
+  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
 # ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
 #   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
 #   '981' 行已存在（两件事都成立才算记账修好了）。

@@ -893,6 +893,19 @@ dl_write_env() {
     # Local gateways run URSM authoritative mode and the runtime requires the
     # system monitor opt-in; surface this for both Docker and native modes.
     dl_emit_env_line LLM_GATEWAY_SYSTEM_MONITOR_ENABLED "${LLM_GATEWAY_SYSTEM_MONITOR_ENABLED:-true}"
+    # ★★ 2026-11-23（合并轮六 · 代上游登记）：★ 「请求/会话对账影子模式」开关
+    # ★ （cmd/gateway/main.go:2007 用 os.Getenv 读）★ 上游 aac6602ab 带进来时
+    # ★ **没进本白名单** ⇒ ★★ 容器形态下它【静默失效】（★ 不报错、不警告、只是
+    # ★ 配置不生效）⇒ ★ 默认值必须为空（★ 未设时行为不变、★ 显式设了才开影子）。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED "${LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED:-}"
+    # ★★ 2026-11-24（合并轮二十 · 代上游登记）：★ 对账的平台计费开关
+    # ★ （domains/streaming/request_log_pipeline.go:1875 用 os.Getenv 读）
+    # ★ ⇒ 与上面的影子开关同款后果：★ 没进本白名单 ⇒ ★★ 容器形态下【静默失效】
+    # ★ （★ 不报错、不警告、只是配置不生效）⇒ ★ 默认值必须为空（★ 未设时行为不变）。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED "${LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED:-}"
+    # ★★ 2026-11-24（合并轮二十 · 代上游登记）：★ 对账「日默认」开关
+    # ★ （admin/capabilities.go:61 用 os.Getenv 读）★ 同款处置。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED "${LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED:-}"
     dl_emit_env_line URSM_V2_MODE "${URSM_V2_MODE:-authoritative}"
     # CORS is fail-closed in the gateway (middleware.NewCORSMiddleware panics
     # on an empty list). Honor an explicit LLM_GATEWAY_CORS_ORIGINS (e.g.
@@ -934,6 +947,17 @@ dl_write_env() {
     # ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` 直接回退 false
     # ⇒ ⇒ 补这一行是让 env 那条路可达的**最小修法**（未设时写空行，行为不变）。
     dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED:-}"
+    # ★★ 2026-11-24（合并轮二十一 · 上游新增对账腿引入的两个 flag）：
+    #   ① LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED
+    #      （admin/capabilities.go:61 读它：★ h.db != nil 且该 env == "true" 时
+    #      ★ 走「日结对账默认开启」那条路）
+    #   ② LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED
+    #      （domains/streaming/request_log_pipeline.go:1875 读它）
+    # ★ 白名单是**白名单式**的 ⇒ 白名单之外的一切**静默失效**（不报错、不警告）
+    #   ⇒ ⇒ 容器形态下这两个开关**永远 off** ⇒ ⇒ 与上面 provider_cost 同款问题。
+    # ★ 修法＝同款一行（★ 默认值必须为空 ⇒ 未设时行为不变）。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED "${LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED "${LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED:-}"
     # 2026-10-21 R72f（属主决策项 #9 = ★「逐个补进白名单」）：把「代码用 env 读、
     # 但白名单漏掉」的那 23 个 feature flag 一次性补齐。
     #

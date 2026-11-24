@@ -51,7 +51,7 @@ const readSrc = (rel: string) => readFileSync(join(srcRoot, rel), 'utf8')
 const KNOWN_ORPHANS: Record<string, string> = {
   '/admin/analytics/:dimension/:id': '2026-11-21 审计轮登记：运营看板详情分析页（822c9cc78），仅由运营看板列表行点击深链进入（AnalyticsCrossTable 行点击 / board.operational.more），不是菜单入口，故不挂 appNav',
  '/operations/price-compare': '2026-11-19 合并轮：重定向到 /model-pricing（原价格对比分析页并入，收藏链接兼容），无 component；不占菜单项',
-  '/admin/session-analytics': '2026-11-23 审计轮：重定向到 /admin/session-analytics/users（原会话分析总览页按 owner 指令取消，内容已重组迁入该页，收藏链接兼容），无 component；不占菜单项——主入口是 appNav 里 requests-sessions 组的「会话分析中心」',
+  '/admin/session-analytics': '2026-11-23 审计轮：重定向到 /admin/session-analytics/users/overview（★ 原会话分析总览页按 owner 指令取消，内容已重组迁入【整合页】、收藏链接兼容；★ ★ 2026-11-23 L30 轮·补②④：★ L14 轮把整合页迁到 /users/overview 后，★ 本重定向随之改指 —— ★ 否则旧 URL 会落到【列表页】、★ 且打断 16-session-analytics-system.yaml 的 3 条断言），无 component；不占菜单项——主入口是 appNav 里 requests-sessions 组的「会话分析中心」',
   '/forbidden': '403 页面，仅由路由守卫在无权限时跳转进入，不应出现在菜单',
   '/routing': '纯 redirect 路由（→ /routing-v2?tab=resolve），无 component；供旧书签兼容，不占菜单项',
   '/maintain/:pathMatch(.*)*': 'ai-native-maintain SPA 的同源子路径兜底；由 appNav 的 external 入口整体进入，非单条菜单项',

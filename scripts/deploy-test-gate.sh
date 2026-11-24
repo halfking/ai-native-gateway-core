@@ -80,11 +80,34 @@ if [ -f "$REPO_ROOT/scripts/lib/go-toolchain.sh" ]; then
   . "$REPO_ROOT/scripts/lib/go-toolchain.sh"
 fi
 
+# ── 证据留存库（★ 2026-11-24：★ 被中断的那一轮也要留下读数）────────────
+# ★ 为什么独立成库（而不是内联在门脚本里）：★ 它的行为要被**实跑**测到 ⇒
+#   门禁 scripts/deploygate/deploy_gate_evidence_preservation_gate_test.go
+#   直接 source 本库、★ 在临时目录里造读数、★ 断言留存结果 ⇒ 钉住「留得下来」。
+# ★ 判据本身（★ 比哪些包、红绿怎么判）**一个字都没改** ⇒ ★ 它只是
+#   【把已经算出来的读数留下来】⇒ ★ 不动任何口径。
+if [ -f "$REPO_ROOT/scripts/lib/gate-evidence.sh" ]; then
+  . "$REPO_ROOT/scripts/lib/gate-evidence.sh"
+fi
+# ★ 证据根目录：★ 默认落在 TMPDIR 下、★ 可用 DD_GATE_EVIDENCE_DIR 覆盖。
+GATE_EVIDENCE_ROOT="${DD_GATE_EVIDENCE_DIR:-${TMPDIR:-/tmp}/llm-gw-gate-evidence}"
+
 # ★ 闸门用的 Go 基础镜像（docker 兜底路径用）。
 GO_IMAGE="${DD_TEST_GO_IMAGE:-golang:1.27.4-alpine}"
 # ★ 原生 go 的路径；留空自动探测（★ 按 go.mod 的版本要求挑，见 native_ok）。
 NATIVE_GO="${DD_TEST_GO_BIN:-}"
 # ★ go test 自身的测试超时（防单个测试挂死）；docker 侧用秒。
+#
+# ★★★ 2026-11-23 L30 轮：★ **两条路径必须同口径**（★ 原生路径早就传了 `-timeout`，
+# ★ ★ 而 docker 路径原先**只给了外层 timeout** ⇒ ★ ★ `go test` 用了默认 10 分钟
+# ★ ★ ⇒ ★ ★ `./admin/`（★ 525 个测试文件）实测在 600.356s 处被腰斩、★ **不是判据红**
+# ★ ★ ⇒ ★ ★ 详见 `run_docker()` 里的注记）。
+#
+# ★ ★ 两者的关系（★ 改任一个都要看这条）：★ **`DOCKER_TIMEOUT_SECS` 必须大于
+# ★ `TEST_TIMEOUT` 换算后的秒数**（★ 默认 1800s > 900s ⇒ 留 900s 余量）⇒ ★★ **因为
+# ★ ★ 外层是「兜底杀开关」**：★ ★ 它只该在 go test 自己的上限都到时还没结束才动手
+# ★ ★ ⇒ ★ ★ 留出余量是为了让 go test **打印完整的 panic 栈**（★ 否则又是
+# ★ ★ 「腰斩了却看不到为什么」⇒ ★ ★ 仓内已吃过一次这个亏）。
 TEST_TIMEOUT="${DD_TEST_TIMEOUT:-15m}"
 DOCKER_TIMEOUT_SECS="${DD_TEST_DOCKER_TIMEOUT_SECS:-1800}"
 CACHE_VOLUME="${DD_TEST_CACHE_VOLUME:-llm-gw-go-gocache}"
@@ -390,9 +413,25 @@ fi
 #   下次启动的 sweep_stale_gate_worktrees 精确识别并清扫（F-22）。
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/llm-gateway-test-gate.XXXXXX")"
 base_tree=""
+# gate_verdict = ★ 本轮是否**已得出结论**（★ 1 ＝ 已通过 ⇒ 证据随 workdir 一起清掉；
+# ★ 0/未设 ＝ 被中断或 die ⇒ **先把读数留存下来**）。
+gate_verdict=0
 cleanup() {
   if [[ -n "$base_tree" && -d "$base_tree" ]]; then
     git worktree remove --force "$base_tree" >/dev/null 2>&1 || true
+  fi
+  # ★★ 2026-11-24：★ **被中断的运行必须留下证据** ⇒ ★★ 未得出结论时，
+  #   ★★ 先把已产出的读数拷进【稳定的证据目录】、★ 再删 workdir。
+  #   ★★ 原先无条件删 ⇒ ★★ 被掐断那一轮的「基线红清单」随之消失 ⇒ ★★
+  #   ★★ ⇒ 差集归因**做不了** ⇒ ★★ ⇒ 只能手工去隔离 worktree 定向重跑
+  #   ★★ （★ 本会话为 6 条红做过一次、★ 8.001s）★★。
+  if [[ "${gate_verdict}" != "1" && -d "$workdir" ]] && \
+     declare -F gate_evidence_preserve >/dev/null 2>&1; then
+    _gate_evidence_dir="$(gate_evidence_preserve "$workdir" "$GATE_EVIDENCE_ROOT" "gate-interrupted" 2>/dev/null || true)"
+    if [[ -n "${_gate_evidence_dir:-}" ]]; then
+      log "★ 本次闸门**未得出结论**（★ 被中断或 die）⇒ ★ 已把已产出的读数留存到：${_gate_evidence_dir} ★"
+      log "★   ★ 该目录里的基线读数**可能不完整** ⇒ ★ 差集只能在【基线已完成的包】上做 ⇒ ★ 其余包须另做定向复跑 ★"
+    fi
   fi
   rm -rf "$workdir" >/dev/null 2>&1 || true
 }
@@ -476,7 +515,18 @@ run_native() {
 run_docker() {
   local tree="$1" outfile="$2" subdir="$3"; shift 3
   local modflag; modflag="$(modflag_for "$tree" "$subdir")"
-  log "跑法：docker（${GO_IMAGE}；CGO_ENABLED=1（与 Dockerfile 同款）；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；容器内超时 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
+  # ★★★ 2026-11-23 L30 轮：★ **给 `go test` 补上自己的 `-timeout`**。
+  # ★ 实测（★ 真跑、★ 本机 alpine 容器 ＋ 嵌套 docker）：★ `./admin/` 包
+  # （★ **525 个测试文件**、★ 仓内最大包）在 **600.356s** 处被腰斩 ⇒ ★ 栈顶是
+  # `testing.tRunner` 的 timeout panic、★ **不是任何断言红** ⇒ ★ **「腰斩」不是「判据红」**。
+  # ★ ★ 根因＝**这条路径只给了外层 `timeout`（★ 默认 1800s）、★ 没给 `go test` 自己的
+  # `-timeout`** ⇒ ⇒ ★ **`go test` 用了默认的 10 分钟上限** ⇒ ⇒ ★ ★ **而同一道闸门的
+  # 原生路径（★ `run_native`）是传了 `-timeout "$TEST_TIMEOUT"`（★ 默认 15m）的**
+  # ⇒ ⇒ ★★★ **⇒ 同一道闸门、两条路径的预算口径不一致 ⇒ ★ docker 路径必然腰斩 admin 包**。
+  # ★ 修法＝**补 `-timeout`，与原生路径同口径**（★ 不动 admin 包源码、★ 不抬高上限）。
+  # ★ ★ 外层 `timeout` 留作**兜底杀开关**（★ 比 go test 自己的上限多 5 分钟 ⇒
+  #   ★ ★ 留出让 go test 打印完整 panic 栈的余量 ⇒ ★ 否则又是「腰斩却看不到为什么」）。
+  log "跑法：docker（${GO_IMAGE}；CGO_ENABLED=1（与 Dockerfile 同款）；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；★ go test 自身超时 ${TEST_TIMEOUT}、★ 外层兜底 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
   docker run --rm \
     -v "$tree":/w -w "/w${subdir:+/$subdir}" \
     -v "$CACHE_VOLUME":/tmp/gocache \
@@ -487,7 +537,7 @@ run_docker() {
            if ! (apk update >/dev/null 2>&1 && apk --no-cache add gcc musl-dev >/dev/null 2>&1); then \
              echo '[test-gate] ★ 容器内 gcc/musl-dev 安装失败 ⇒ CGO 不可用 ⇒ SQLite 类测试会红（**环境问题，不是代码问题**）' >&2; \
            fi; \
-           timeout $DOCKER_TIMEOUT_SECS go test -count=1 $*" 2>&1 | tee "$outfile"
+           timeout $DOCKER_TIMEOUT_SECS go test -count=1 -timeout $TEST_TIMEOUT $*" 2>&1 | tee "$outfile"
 }
 
 # ── 判定原语 ──────────────────────────────────────────────────────────
@@ -644,6 +694,7 @@ current_reds="$(red_names "$out_current")"
 
 if [[ -z "$current_reds" ]]; then
   log "★ 闸门通过：${packages[*]} 全绿 ★"
+  gate_verdict=1
   exit 0
 fi
 
@@ -710,6 +761,7 @@ fi
 
 if [[ -z "$new_reds" ]]; then
   log "★ 闸门通过：没有**新红**（★ 现有红灯均为基线既有）★"
+  gate_verdict=1
   exit 0
 fi
 

@@ -59,7 +59,7 @@ url: ${BASE_URL}
 - tapOn: "查看统计说明"
 - assertVisible: "画像列与用量列的口径区别"
 - assertVisible: "Token 统计公式"
-- assertVisible: "总 Token 数 = 输入 Token + 输出 Token"
+- assertVisible: '总 Token 数 = 输入 Token \+ 输出 Token'
 - assertVisible: "成本核算公式"
 - assertVisible: "数据来源"
 

@@ -74,8 +74,12 @@ const routerSrc = readFileSync(join(webRoot, 'src', 'router.ts'), 'utf8')
  * 的 KNOWN_ORPHANS 约定：白名单里写「同上」等于没有约束。
  */
 const KNOWN_ORPHAN_COMPONENTS: Record<string, string> = {
-  UserProfileListView:
-    '2026-11-23 L14 轮登记：上游 95e44dc15（2026-11-23 整合 Dashboard 会话统计与 Top10 用户排行到用户分析页面）把 /admin/session-analytics/users 的 component 由 UserProfileListView 改指 SessionAnalyticsUsersView ⇒ 本组件成为「被 import 却无路由指向」的孤儿；上游 maestro 13-session-analytics-users.yaml 列表页段因此恒红（断言点在现役页渲染闭包内 0 命中）。★ 修法二选一（恢复列表页路由 / 重写 flow 段改断言聚合页）＝**产品口径待 owner 裁决**，本轮只登记不擅改别列车的 flow 口径。详见报告 §7.25',
+  // ★ 2026-11-23 L14 落地轮：★ 上一轮登记的 `UserProfileListView` **已不再是孤儿**
+  // ⇒ ★ 本轮按「修好即删豁免」的纪律把那条登记整条删除（★ 留着会让
+  // 「豁免表不得腐烂」那条门红：★ 它要求每条登记**当前仍是孤儿**）。
+  // ★ 处置依据：★ 用户画像**列表页**已挂回原 URL `/admin/session-analytics/users`
+  // （★ 上游 95e44dc15 把本 URL 改指整合页导致三层脱钩）⇒ ★ 本组件重新被路由指向。
+  // ★ 详见报告 §7.25 与 §7.32。
 }
 
 /** router.ts 里所有「懒加载组件常量」：const X = () => import('./path.vue') */
@@ -142,14 +146,15 @@ describe('orphanViewComponent —— 孤儿组件守卫', () => {
     }
   })
 
-  it('孤儿登记必须指向可核对的来源（本轮 L14 的具体事实）', () => {
-    // ★ 这条不是「内容门」而是「口径门」：它钉住本门**当前**唯一的豁免条目，
-    // ★ 防止有人把 UserProfileListView 从豁免表里删掉（删了就红 ⇒ 必须同时修路由）。
-    expect(Object.keys(KNOWN_ORPHAN_COMPONENTS), '本门当前唯一的已知孤儿是 UserProfileListView').toEqual([
-      'UserProfileListView',
-    ])
-    const entry = KNOWN_ORPHAN_COMPONENTS.UserProfileListView
-    expect(entry, '理由必须写明改指的那一笔提交').toContain('95e44dc15')
-    expect(entry, '理由必须写明恒红的后果').toContain('恒红')
+  it('豁免表必须与「已修复」同步（本轮 L14 落地后的事实）', () => {
+    // ★ 这条不是「内容门」而是「口径门」：★ 2026-11-23 L14 落地轮里
+    // ★ `UserProfileListView` 已挂回原 URL ⇒ ★ 它不再是孤儿 ⇒ ★ 豁免表被清空。
+    // ★ ⇒ 本门现在的口径是「**豁免表为空**」⇒ ★ 一旦有人新造孤儿（又忘了登记）
+    // ★ 上面的「没有未登记的孤儿组件」那条会红 ⇒ ★ 这里钉住的是「空表」这个事实。
+    expect(
+      Object.keys(KNOWN_ORPHAN_COMPONENTS),
+      '★ 本门当前应当**没有**已知孤儿：★ 用户画像列表页已挂回原 URL（2026-11-23 L14 落地轮）\n' +
+        '★ 若你确实新造了孤儿 ⇒ 请在上面的 KNOWN_ORPHAN_COMPONENTS 里登记并写明具体理由。',
+    ).toEqual([])
   })
 })

@@ -304,7 +304,6 @@ note "  ℹ public 表数：${tables:-<空>}"
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 跑第二次安装（★ 增量路径：★ 同一个库、★ 同一个容器）…"
 ledger_before=$(q "select count(*) from schema_migrations")
-<<<<<<< Updated upstream
 RUN2_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-run2.XXXXXX")"
 if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
         go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN2_LOG" 2>&1; then
@@ -471,7 +470,6 @@ else
     # ★★ 删掉目标文件的版本行 ⇒ ★★ 版本规则不再跳过它 ⇒ ★★ 只剩 F3 能跳
     q "DELETE FROM public.schema_migrations WHERE version = '${DEPLOY_VERSION}'" >/dev/null
     q "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${DEPLOY_SEQ}:${DEPLOY_FILE}', '${deploy_sha}') ON CONFLICT (sequence_name) DO NOTHING" >/dev/null
-<<<<<<< Updated upstream
     RUN3_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-run3.XXXXXX")"
     if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
             go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN3_LOG" 2>&1; then

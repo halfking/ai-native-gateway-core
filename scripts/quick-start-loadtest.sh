@@ -29,6 +29,14 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NUM_MOCKS=4
 GATEWAY_PORT=8080
 
+# ★★ 2026-11-23：★ **把本脚本启动的 PID 记下来** ⇒ ★ 清理按【PID】停、★
+# ★★ 不再按命令行模式停 ⇒ ★★ 见下方「清理」提示的说明（★ 那条宽模式会误伤本仓的
+# ★★ Go 编译进程：★ 编译进程的命令行含 `github.com/kaixuan/llm-gateway-go/...` ★★）。
+# ★★ 口径与仓内先例同款（★ `scripts/verify-fpslot-fix.sh` 的 SAFETY 注释：★
+# ★★ 「Mock + gateway are killed by recorded PID, ★ NEVER `pkill -f pattern`」 ★★）。
+PID_FILE="${QUICK_START_LOADTEST_PID_FILE:-/tmp/quick-start-loadtest.pids}"
+: > "$PID_FILE"
+
 echo "🚀 快速启动本地测试环境"
 echo ""
 
@@ -49,7 +57,8 @@ for i in $(seq 0 $((NUM_MOCKS - 1))); do
     MOCK_TOKEN=$token \
     MOCK_STATE_FILE="/tmp/mock-state-$port.json" \
     python3 server-v2.py > "/tmp/mock-$port.log" 2>&1 &
-    
+    printf 'mock\t%s\t%s\n' "$port" "$!" >> "$PID_FILE"
+
     echo "  ✓ 启动 $token (port $port, PID $!)"
 done
 
@@ -89,6 +98,7 @@ else
     fi
     
     ./gateway > /tmp/gateway-loadtest.log 2>&1 &
+    printf 'gateway\t%s\t%s\n' "$GATEWAY_PORT" "$!" >> "$PID_FILE"
     echo "  ✓ Gateway 启动 (PID $!, 日志: /tmp/gateway-loadtest.log)"
     
     echo "  等待 gateway 启动..."
@@ -118,4 +128,10 @@ echo "接下来可以:"
 echo "  - 查看 mock 状态: curl http://localhost:19080/admin/metrics | jq"
 echo "  - 修改 mock 状态: bash scripts/mock-state-orchestrator.sh set-all slow"
 echo "  - 重新测试: python3 scripts/loadtest-stress.py --clients 10 --rounds 20 --mode gateway --gateway http://localhost:8080 --model gpt-4o"
-echo "  - 清理: pkill -f 'server-v2.py'; pkill -f gateway"
+echo "  - 清理（★ 按【PID】停、★ 不要按名字匹配 ★）:"
+echo "      awk -F'\t' '{print \"kill \" \$3}' $PID_FILE | xargs -r kill 2>/dev/null || true"
+echo "      # ★ 为什么不给「按 gateway 这个单词匹配」的 pkill：★ 那种模式会命中**任何**"
+echo "      # ★★ 命令行里含该词的进程、★ 包括本仓的 Go 编译进程"
+echo "      # ★★ （★ 包路径 github.com/kaixuan/llm-gateway-go/… ★）★★"
+echo "      # ★★ ⇒ ★★ 同机上别人正在跑 go test / 编译时会被误杀 ★★"
+echo "      # ★ 口径与仓内先例同款：★ scripts/verify-fpslot-fix.sh 的 SAFETY 注释"

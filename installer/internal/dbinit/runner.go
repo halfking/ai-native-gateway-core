@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil"
 )
 
 // Runner DB 初始化执行器
@@ -1817,6 +1820,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// provider_models.raw_model_name 变体 —— 探针侧三门都只比裸名，
 			// 而免费供应商 raw 名多带命名空间前缀（z-ai/…、minimaxai/…）
 			// ⇒ 只标裸 canonical 名对 namespaced 免费对零效果。
+			// ★★ 2026-11-23 L29 轮（★ 上游 A1）：★ 956 的前置守卫（`models_canonical`
+			//   里已有 active 的 `minimax-m3.1-flash`）由**安装器侧的基线补种**满足
+			//   （★ dbinit.Runner 的 modelsCanonicalSeedSQL ⇒ ★ 零迁移字节变更）
+			//   ⇒ ★★ **故本处不再登记任何播种迁移**（★ 同一阻断点不留两套并行解法）。
 			"956_minimax_m31_flash_featured.sql",
 			// 957（2026-11-11 闭集门第三次复发轮）：self_check_runs.error_type 的
 			// CHECK 闭集补 `rate_limit_observed`（errorsx 新 kind 的镜像面）——
@@ -2016,6 +2023,34 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"997_tasks_dimension_table.sql",
 			"998_session_summaries_task_association.sql",
 			"999_session_summary_layers.sql",
+			// ★ 918/925/973/986（2026-11-23 团队功能底座轮，★ 原编号 055-058 ⇒ 曾用
+			// 982-985 ⇒ 与上游 982_provider_call_attempts（aac6602ab，已 push）撞号
+			// ⇒ 按 919 让号轮先例「未 push 方避让」改占真空号）：
+			//   teams / user_teams / api_keys.team_id / team_budgets 四件套。
+			//   ★ ★ 重编号的原因（★ 原件**永远不会被应用**，★ 三条通道都不投它）：
+			//     ① **存量升级通道**（deploy-lib 的 _deploy_pending_startup_migrations）
+			//        只投「版本号 ≥ 对账地板 412」或「登记进
+			//        scripts/migration-low-version-delivery.list」的 ⇒ ★ 原 055-058
+			//        落在地板以下**且**不在清单里 ⇒ 不投；
+			//     ② **211 seamless 通道**（scripts/apply-db-revision-sequence.sh）
+			//        只投 files=(...) 数组里点名的 ⇒ 原件没点名 ⇒ 不投；
+			//     ③ **installer 通道**只投本表点名的 ⇒ 原件没点名 ⇒ 不投。
+			//   ⇒ ⇒ ★ 三条通道**一条都没登记** ⇒ 新装与存量都拿不到这三张表与这一列
+			//        ⇒ ★ 而现役代码无条件写 api_keys.team_id ⇒ 生产「发 API key」必失败
+			//        （★ 2026-11-23 生产实测：api_keys 无 team_id 列、teams/user_teams/
+			//          team_budgets 三表不存在、schema_migrations 水位 999）。
+			//   ★ ★ 避让重编号为 918/925/973/986（★ > 缺口棘轮纪元 914 ⇒ 缺口按「待部署」豁免、
+			//     ★ 不计真缺口；★ 而投递判据是「版本号不在账本里」、★ 不是「大于水位」
+			//     ⇒ 新号仍会被正常投递）。
+			//   ★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS ＋ ADD COLUMN IF NOT EXISTS
+			//     ＋ 自登记 ON CONFLICT DO NOTHING）⇒ 重放安全。
+			//   ★ 次序：918 → 925/973/986（★ 925/973/986 的外键都指向 teams.id
+			//     ⇒ ★ teams 必须先建）。
+			//   ★ ★ **位置放在本表末尾**（★ 而不是按编号插到 981 与 990 之间）：
+			//     ★ 因为 installed_startup_migrations.tsv 的首列是**下标** ⇒ ★ 插在中间
+			//     会把 996/997/998/999 的下标整体后移 4 位 ⇒ ★ 而逐迁移投递测试
+			//     （migration_996/997_998_999_delivery_test.go）**硬编码了这些下标**
+			//     ⇒ ⇒ ★ 追加在末尾 ⇒ ★ 既有下标一个都不动 ⇒ ★ 既有门不被无关位移打红。
 			// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 ——
 			//   981 的文件**缺 schema_migrations 自登记行** ⇒ 211 的记账链在
 			//   980 与 990 之间**断一格**（实测：211 有 '980' 与 '990'、独缺 '981'，
@@ -2108,13 +2143,61 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 }
 
 // WaitForPG 等待 PG 就绪（最多 timeout 秒）
+//
+// ★★★ **契约（★ 2026-11-23 修、★ 之前是破的）**：★★★
+//
+// ★ 这条函数的注释**一直写着**「★ 最多 timeout 秒 ★」⇒ ★★ 而旧实现里
+// ★ **每一次 `docker exec` 都没有任何上限** ⇒ ★★ Docker 守护进程僵死时
+// ★ （★ `docker exec` 客户端永不返回 ★）**第一次调用就无限挂**
+// ★ ⇒ ★★ **注释里的契约今天本来就是破的** ⇒ ★★ 而且连
+// ★ 「PostgreSQL 启动超时 (Ns)」这句话**都打不出来**（★ 运维只看到「卡住」 ★）★★。
+//
+// ★★ **修法（★ 两条一起 ★）**：★★
+//
+//	★ ① **每次调用单独封顶**（★ `dockerutil.DockerCmdTimeoutFast` ★）
+//	★ ② **整段用 deadline 收口**（★ 而不是「循环 N 次」★）
+//
+// ★ ⇒ ★★ **总耗时回到「最多 timeout 秒」** ★★（★ 而不是无限期 ★）
+// ★ ⇒ ★★ **且能区分两种失败**：★★
+//
+//	★ **PG 还没起来**（★ docker 正常、★ `pg_isready` 快速返回非零 ★）
+//	★   ⇒ 保持原口径：**「PostgreSQL 启动超时 (Ns)」** ★
+//	★ **docker 本身无响应**（★ 调用被超时砍掉 ★）
+//	★   ⇒ 追加一句「★ docker exec 无响应、★ Docker 守护进程可能僵死 ★」
+//	★   ⇒ ★★ **让下一次撞上它的人一眼看出根因** ★★。
 func (r *Runner) WaitForPG(timeout int) error {
-	for i := 0; i < timeout; i++ {
-		cmd := exec.Command("docker", "exec", r.CitusContainer, "pg_isready", "-U", r.DBUser)
-		if err := cmd.Run(); err == nil {
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	unresponsive := false
+	for {
+		// ★ ★ 单次预算**同时受两个上限约束** ★ ★：
+		// ★ ① 快档上限（★ `DockerCmdTimeoutFast` ★）★ —— 防止一次调用吃掉整个预算；
+		// ★ ② **剩余 deadline**（★ ★ ⇒ ★ 总耗时真正回到「最多 timeout 秒」 ★ ★）★。
+		// ★ ★ 只加 ① 不加 ② ⇒ ★ 总耗时会是「timeout ＋ 一档」⇒ ★ 契约仍然被破坏 ★★。
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		budget := dockerutil.DockerCmdTimeoutFast
+		if remaining < budget {
+			budget = remaining
+		}
+		_, err := dockerutil.RunDocker(budget,
+			"exec", r.CitusContainer, "pg_isready", "-U", r.DBUser)
+		if err == nil {
 			return nil
 		}
+		// ★ 本次失败是「★ docker 无响应 ★」还是「★ PG 还没起来 ★」？
+		// ★ 二者的区别就是：**调用有没有被自己的超时砍掉**。
+		if errors.Is(err, context.DeadlineExceeded) {
+			unresponsive = true
+		}
+		if time.Until(deadline) <= 0 {
+			break
+		}
 		time.Sleep(time.Second)
+	}
+	if unresponsive {
+		return fmt.Errorf("PostgreSQL 启动超时 (%ds): ★ docker exec pg_isready 无响应（★ Docker 守护进程可能僵死）", timeout)
 	}
 	return fmt.Errorf("PostgreSQL 启动超时 (%ds)", timeout)
 }
@@ -2179,6 +2262,32 @@ ON CONFLICT (canonical_name) DO UPDATE
 //	  （★ 已被部署通道按同一内容指纹应用过的文件 ⇒ 不重放；★ 这与部署通道
 //	  ★ 自己的跳过判据同款 ⇒ ★ 两条通道从此对「什么算已应用」口径一致）。
 func (r *Runner) InitSchema(logger func(string)) error {
+	// ★★★ 2026-11-23（L30 轮·补②⑤）：★ **重号守卫（fail-closed）**。
+	//
+	//	★ 为什么这道守卫必须住在【安装器】里、而不只住在测试套件里：
+	//	★ 仓里已有 `sql/migrations/startup` 那道目录级重号门
+	//	★ （TestNumericUpMigrationVersionsAreUnique）⇒ ★ 它能抓住
+	//	★ 「同一个目录里两个文件同号」⇒ ★ 但它**只在那道门被跑到时**生效。
+	//	★ 而本安装器**可以被绕过测试套件直接跑**（★ 灾备重建 / 新节点首装 /
+	//	★ 运维手工执行安装器）⇒ ★★ **那时重号的后果是【静默的】**：
+	//
+	//	★★ 机制：★ 增量通道按【版本号】跳过（★ startupPending ⇒ 台账里有该
+	//	★★ 版本 ⇒ 跳过）⇒ ★★ 于是**同号的第二份文件被静默跳过** ⇒
+	//	★★ 「一个版本号两份 schema」＝ 其中一份【永久缺席】、★ 且**不报错**；
+	//	★★ 全新装路径下两份都会跑（F1 补记时第二份被 WHERE NOT EXISTS 吞掉）
+	//	★★ ⇒ 台账只记一行 ⇒ **台账与实际不符**。
+	//
+	//	★★ **实测过的真事故（★ 2026-11-23）**：★ origin/main 的
+	//	★★ `982_provider_call_attempts.sql`（★ 供应商逐次调用落库）
+	//	★★ 与并行车分支的 `982_teams_table.sql`（★ teams 族首件）
+	//	★★ 同号 ⇒ 合并后 StartupFiles 里两行同号（★ 实测 2049/2064 行）。
+	//
+	//	★ 处置：★ **在任何数据库动作之前**校验清单 ⇒ 重号即中止、★ 明确报错
+	//	★ （★ fail-closed ⇒ 宁可拒绝启动、★ 不可静默缺席）。
+	if err := validateStartupVersionsUnique(r.StartupFiles); err != nil {
+		return fmt.Errorf("startup 迁移清单版本号重号，拒绝启动（fail-closed，不做任何数据库动作）: %w", err)
+	}
+
 	applied, hasLedger, err := r.appliedVersions()
 	if err != nil {
 		return err
@@ -2464,6 +2573,30 @@ func (r *Runner) psqlQuery(query string) (string, error) {
 	return string(out), nil
 }
 
+// validateStartupVersionsUnique 校验 startup 清单里没有两个文件共用同一个数字版本号。
+//
+// ★ 判据口径（★ 与仓内 `sql/migrations/startup` 的目录级重号门同款）：
+//   - 版本号＝文件名第一个下划线前的数字前缀（★ 复用 migrationVersionOf ⇒
+//     `361b_...prelude` 这类「数字＋字母」前缀解析不出 ⇒ 不参与重号判定、
+//     ★ 与增量通道「无版本号 ⇒ 恒执行」的口径一致）；
+//   - `.down.sql` 不在 StartupFiles 里（★ 清单只投递 up 迁移）⇒ 不额外排除；
+//   - 同号即报错、★ **不设豁免表**（★ 新清单不该有重号；★ 真要豁免必须写清
+//     「量在哪」★ 而不能像历史目录级门那样把旧账留在表里）。
+func validateStartupVersionsUnique(files []string) error {
+	seen := make(map[int]string, len(files))
+	for _, name := range files {
+		v, ok := migrationVersionOf(name)
+		if !ok {
+			continue
+		}
+		if prev, dup := seen[v]; dup {
+			return fmt.Errorf("startup migration version %d is duplicated by %s and %s", v, prev, name)
+		}
+		seen[v] = name
+	}
+	return nil
+}
+
 // startupPending 报告增量模式下该 startup 文件是否需要执行：
 // 台账未登记该文件的 version 前缀 ⇒ pending。解析不出数字前缀的文件
 // （如 head cluster 的 session_turns_hot_bootstrap.sql）恒执行 —— 它们
@@ -2586,10 +2719,11 @@ func (r *Runner) execSQL(sql string) error {
 
 // VerifySchema 检查 schema 是否加载成功
 func (r *Runner) VerifySchema() (int, error) {
-	cmd := exec.Command("docker", "exec", r.CitusContainer, "psql",
+	// ★★ 2026-11-23：★ 带**硬超时**（★ 与 `WaitForPG` 同族 ★）。
+	out, err := dockerutil.RunDocker(dockerutil.DockerCmdTimeoutSlow,
+		"exec", r.CitusContainer, "psql",
 		"-U", r.DBUser, "-d", r.DBName,
 		"-t", "-c", "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
-	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}

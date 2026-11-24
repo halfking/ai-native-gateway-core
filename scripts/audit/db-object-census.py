@@ -291,6 +291,10 @@ RE_CREATE_INDEX = re.compile(
 RE_DROP_INDEX = re.compile(
     r"DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?([a-z0-9_.\"]+)", re.I
 )
+# ★★ 2026-11-24（合并轮二十一）：★ 迁移号可带【字母后缀】（★ 983b/983c）★★
+# ★ ★★ migration_no 列要保留后缀（★ `983b` ≠ `983`）⇒ ★ 所以它按【字符串】记 ★★
+RE_MIG_NO_WITH_SUFFIX = re.compile(r"^([0-9]+[a-z]*[0-9]*)$")
+RE_MIG_NO_WITH_SUFFIX_LEAD = re.compile(r"^([0-9]+)")
 RE_USING_INDEX = re.compile(r"ADD\s+CONSTRAINT[^;]*?USING\s+INDEX\s+([a-z0-9_.\"]+)", re.I | re.S)
 RE_LINE_COMMENT = re.compile(r"--[^\n]*")
 
@@ -465,9 +469,24 @@ def derive_expected():
     for fn in files:
         head = fn.split("_", 1)[0]
         if head.isdigit():
-            mig = int(head)
+            # ★ 纯数字头：★ 去前导零（★ "054" → "54"）★ ⇒ ★ 与 Go 侧
+            # ★ dbObjDeriveExpected 的 strconv.Itoa 同口径 ★
+            mig = str(int(head))
         else:
-            mig = -1
+            # ★★ 2026-11-24（合并轮二十一 · 检测器变准）：★ **字母后缀的迁移号**
+            # ★★ （★ `983b_add_raw_model_name.sql` / `983c_add_occurred_cursor_index.sql`
+            # ★★ ⇒ ★ 头是 `983b` / `983c` ⇒ ★ `head.isdigit()` 为假 ⇒ ★★ **旧版一律
+            # ★★ 记成 -1** ⇒ ★★ 而缺口分类器（scripts/ursmcheck/db_object_census_gate_test.go
+            # ★★ 的 dbObjGapKind）拿 -1 去比「缺口棘轮纪元 914」⇒ ★★ **-1 ≤ 914 ⇒ 一律
+            # ★★ 判成真缺口** ⇒ ★★ **「新增一条迁移」被当成「有人在别处挖了坑」** ★★
+            # ★ ⇒ ★★ 正确修法是【让生成器认得字母后缀】、★ **不是抬基线** ★★
+            # ★ （★ 仓内纪律：「调高基线的理由必须是『检测器变准』而不是『新增了未修的缺口』」★★
+            # ★ ⇒ ★ 与上游 12h 修订审计第三轮的「versionPrefix 折叠字母后缀回主号」同款 ★★
+            # ★ ★★ 但**主号要保留字母后缀**（★ `983b` ≠ `983`）★★ ⇒ ★★ 用字符串列 migration_no ★★
+            # ★ ★★ 字母后缀（★ 983b/983c/478p2 ……）⇒ ★ 保留**完整头** ★★
+            # ★★ （★ 与 Go 侧 dbObjDeriveExpected 的 dbObjMigMainNoRe 同口径 ★★）
+            m = RE_MIG_NO_WITH_SUFFIX.match(head)
+            mig = head if m else ("-1" if not head[:1].isdigit() else head)
             no_number += 1
         path = os.path.join(MIGRATIONS_DIR, fn)
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -542,8 +561,20 @@ def derive_expected():
 def cmd_expect(args):
     expected, stats, _col_retired, _drop_col_events = derive_expected()
     rows = []
-    for name, (mig, table, fn, keycols, _order) in sorted(expected.items(), key=lambda kv: (kv[1][0], kv[0])):
-        rows.append("%d\t%s\t%s\t%s\t%s\t" % (mig, name, table, fn, ",".join(keycols)))
+    # ★ 排序键要【数值优先、字母后缀次之】（★ mig 现在是字符串：★ "983b" 必须
+    # ★ 排在 "983" 之后、★ 且整体仍在 984 之前 ⇒ ★ 不能纯字符串排序）★★
+    def _mig_sort_key(mig):
+        m = RE_MIG_NO_WITH_SUFFIX.match(mig)
+        if m:
+            head = m.group(1)
+            digits = RE_MIG_NO_WITH_SUFFIX_LEAD.match(head)
+            return (int(digits.group(1)) if digits else -1, head)
+        if mig.isdigit():
+            return (int(mig), "")
+        return (-1, mig)
+
+    for name, (mig, table, fn, keycols, _order) in sorted(expected.items(), key=lambda kv: (_mig_sort_key(kv[1][0]), kv[0])):
+        rows.append("%s\t%s\t%s\t%s\t%s\t" % (mig, name, table, fn, ",".join(keycols)))
     text = "\n".join(rows) + ("\n" if rows else "")
     header = (
         "# db-object-expect.tsv —— ★ 从仓内 startup 迁移反解出的「期望索引集」\n"

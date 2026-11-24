@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -103,8 +102,10 @@ func (h *HealthChecker) checkContainers() bool {
 }
 
 func (h *HealthChecker) containerRunning(name string) bool {
-	cmd := exec.Command("docker", "ps", "--filter", fmt.Sprintf("name=%s", name), "--format", "{{.Names}}")
-	out, err := cmd.Output()
+	// ★★ 2026-11-23：★ 走 `RunDocker`（★ 带**硬超时**）⇒ ★ Docker 无响应时
+	// ★ **到点收口**（★ 而不是无限挂 ⇒ ★ 健康检查整体卡死 ★）。
+	out, err := RunDocker(DockerCmdTimeoutFast,
+		"ps", "--filter", fmt.Sprintf("name=%s", name), "--format", "{{.Names}}")
 	if err != nil {
 		return false
 	}
@@ -133,15 +134,18 @@ func (h *HealthChecker) checkHealthz() bool {
 
 // checkPG 检查 PG ready
 func (h *HealthChecker) checkPG() bool {
-	cmd := exec.Command("docker", "exec", h.CitusContainer, "pg_isready", "-U", h.DBUser)
-	return cmd.Run() == nil
+	// ★★ 2026-11-23：★ 带**硬超时**（★ 同 `containerRunning` ★）。
+	_, err := RunDocker(DockerCmdTimeoutFast,
+		"exec", h.CitusContainer, "pg_isready", "-U", h.DBUser)
+	return err == nil
 }
 
 // checkRedis 检查 Redis PONG
 func (h *HealthChecker) checkRedis() bool {
-	cmd := exec.Command("docker", "exec", "-e", "REDISCLI_AUTH="+h.RedisPassword,
+	// ★★ 2026-11-23：★ 带**硬超时**（★ 同上 ★）。
+	out, err := RunDocker(DockerCmdTimeoutFast,
+		"exec", "-e", "REDISCLI_AUTH="+h.RedisPassword,
 		h.RedisContainer, "redis-cli", "ping")
-	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
@@ -150,10 +154,12 @@ func (h *HealthChecker) checkRedis() bool {
 
 // checkSchema 检查 schema 已加载（public 表数 > 0）
 func (h *HealthChecker) checkSchema() bool {
-	cmd := exec.Command("docker", "exec", h.CitusContainer, "psql",
+	// ★★ 2026-11-23：★ 带**硬超时**（★ 同上 ★；★ 这条要在库里真跑一句
+	// ★ ⇒ ★ 用【慢档】上限 ★）。
+	out, err := RunDocker(DockerCmdTimeoutSlow,
+		"exec", h.CitusContainer, "psql",
 		"-U", h.DBUser, "-d", h.DBName,
 		"-t", "-c", "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
-	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
