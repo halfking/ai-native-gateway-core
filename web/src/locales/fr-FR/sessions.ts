@@ -115,6 +115,11 @@ export default {
     status: { all: 'Toutes', active: 'Actives', stopped: 'Arrêtées' },
   },
   stats: {
+    // ★ F1：La colonne Dépense est en **USD pur** (SUM(ss.total_cost_usd)) ; le champ
+    //   s’appelle total_cost ⇒ l’en-tête doit nommer l’unité.
+    costUsd: 'Dépense (USD)',
+    // ★ F1：La branche modèles est déployée **par session** ⇒ sa somme dépasse le KPI.
+    modelCostNote: 'Cette colonne est déployée par session : lorsqu’une session utilise plusieurs modèles, son coût est compté une fois dans chaque ligne de modèle ; la somme de la colonne dépasse donc le KPI du panneau et ne doit pas lui être ajoutée.',
     scopeNoticeTitle: 'Précision sur le périmètre :',
     scopeHintLabel: 'Périmètre',
     scopeNoticeBody: 'Cette page compte toutes les requêtes et les coûts des sessions dont la première requête a eu lieu au cours des {days} derniers jours.',

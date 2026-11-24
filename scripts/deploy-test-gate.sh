@@ -115,8 +115,24 @@ CACHE_VOLUME="${DD_TEST_CACHE_VOLUME:-llm-gw-go-gocache}"
 BASE_REF="${BASE_REF:-origin/main}"
 
 # ★ 回落清单：★ diff 为空（★ 例如从干净树部署）时跑这些核心包。
+#
+# ★★ 2026-11-25 补（★ 上一轮遗留「回落包清单不含 ./admin/dashboardapi/」★）：
+#   ★ 路径不对称：★ **diff 触及时**，`dd_gate_packages_from_files` 会按「改动的 .go
+#     所在目录（该目录含 _test.go 才选）」选中 `admin/dashboardapi/`；
+#     ★ 而**回落路径**（diff 为空 / 只改了非 Go 文件）只跑下面这份清单
+#     ⇒ ★ 那几个 admin 子包自带测试**从不被跑** ⇒ 同一批包在两条路径上待遇不同。
+#   ★ 依据：`go test ./admin/` **不含**子包（★ Go 的 `./admin` ≠ `./admin/...` ★）。
+#   ⇒ 补齐 4 个**自带 `_test.go`** 的 admin 子包：
+#     dashboardapi / dashboarddegrade / distlock / session_analytics
+#   ★ 实测（2026-11-25，HEAD 32be90f2a）：★ 四包**全绿**
+#     （0.955s / 1.353s / 2.132s / 0.641s ⇒ **合计 ≈ 5s**）⇒ 成本近零。
+#   ★ 另两个 admin 子包（logsearch / reorder_scope_revision）**没有测试** ⇒ 不登记。
 FALLBACK_PACKAGES=(
   ./admin/
+  ./admin/dashboardapi/
+  ./admin/dashboarddegrade/
+  ./admin/distlock/
+  ./admin/session_analytics/
   ./domains/sanitizerules/
   ./domains/hooks/outputcompliance/
   ./security/sanitize/

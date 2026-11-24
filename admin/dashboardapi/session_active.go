@@ -2,6 +2,19 @@
 // 活跃会话 API：查询当前活跃的会话列表
 //
 // 2026-07-13: 增加 session_summaries 表缺失时的优雅降级
+//
+// 2026-11-25 窗口对齐轮：本端点此前**硬编码**「最近 1 小时」，把前端选的
+// 自定义日期区间静默丢弃 ⇒ 现在也消费 start_date/end_date（parseSessionWindow）。
+//
+// ★ 不变量①：滚动路径（没给 start_date/end_date）**逐字**保留旧的
+//
+//	「最近 1 小时」语义，且**不追加任何参数** ⇒ 现役调用方的查询计划与
+//	结果零变化。
+//
+// ★ 参数编号链：窗口参数先占 $1/$2（calendar 模式），后面的
+//
+//	appendDashboardScope / buildOwnerWhere / LIMIT / OFFSET 必须接着 argIdx
+//	往后排，不能从 1 重来（否则占位符与实参错位）。
 package dashboardapi
 
 import (
@@ -65,12 +78,19 @@ func (h *SessionActiveHandler) HandleSessionActive(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	// 2026-11-25 窗口对齐轮：显式日历窗优先；解析失败回 400（参数错不是
+	// 服务端故障），与 errors.go / performance.go 同一写法。
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
-	totalActive, sessions, err := h.queryActiveSessions(ctx, params, true)
+	totalActive, sessions, err := h.queryActiveSessions(ctx, params, win, true)
 	if err != nil && isMissingSessionDim(err) {
-		totalActive, sessions, err = h.queryActiveSessions(ctx, params, false)
+		totalActive, sessions, err = h.queryActiveSessions(ctx, params, win, false)
 	}
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
@@ -104,16 +124,45 @@ func isMissingSessionDim(err error) bool {
 		dashboarddegrade.ExtractRelationName(err) == "session_dim"
 }
 
-func (h *SessionActiveHandler) queryActiveSessions(ctx context.Context, params QueryParams, withDim bool) (int, []ActiveSessionItem, error) {
+// activeWindowClause 返回「活跃会话」的窗口谓词片段，并把边界参数追加进 args。
+//
+// ★ rolling 模式（没给 start_date/end_date）：**逐字**返回
+//
+//	"ss.last_request_at >= NOW() - INTERVAL '1 hour'" 且**不追加任何参数**
+//	⇒ 现役结果零变化（不变量①）。
+//
+// ★ calendar 模式（给了 start_date/end_date）：参数化边界
+//
+//	"ss.last_request_at >= $N AND ss.last_request_at < $N+1"，
+//	实参是 win.startUTC / win.endUTC（end 独占 ⇒ 末日整天被包含）。
+//
+//	占位符编号用 *argIdx（不是从 1 重来）⇒ 调用方后面的
+//	appendDashboardScope / buildOwnerWhere / LIMIT / OFFSET 接着它往后排。
+func activeWindowClause(win sessionWindow, args *[]interface{}, argIdx *int) string {
+	if !win.calendar {
+		return "ss.last_request_at >= NOW() - INTERVAL '1 hour'"
+	}
+	clause := fmt.Sprintf("ss.last_request_at >= $%d AND ss.last_request_at < $%d", *argIdx, *argIdx+1)
+	*args = append(*args, win.startUTC, win.endUTC)
+	*argIdx += 2
+	return clause
+}
+
+func (h *SessionActiveHandler) queryActiveSessions(ctx context.Context, params QueryParams, win sessionWindow, withDim bool) (int, []ActiveSessionItem, error) {
 	fromClause := "FROM session_summaries ss"
 	if withDim {
 		fromClause = `FROM session_summaries ss
 		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key`
 	}
 
-	where := []string{"ss.last_request_at >= NOW() - INTERVAL '1 hour'"}
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+
+	// ★ 窗口片段**只追加一次**：本函数一次调用里 whereClause 只构造一遍
+	//   （withDim 的两条腿是两次独立调用，各自构造自己的 where/args）⇒
+	//   参数不会被追加两遍、占位符不会错位。
+	where = append(where, activeWindowClause(win, &args, &argIdx))
 
 	appendDashboardScope(&where, params, &args, &argIdx, "ss", false)
 	if withDim {

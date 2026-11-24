@@ -1,0 +1,105 @@
+# 211 蓝绿部署原始日志摘录（第 30 轮）
+# 来源：/tmp/deploy-l110/attempt-1.log（★ /tmp 会被系统清理 ⇒ 这里留副本 ★）
+# 命令：LLM_GATEWAY_ROOT=/tmp/gw-l110-deploy BASE_REF=af2bb497 bash scripts/deploy-211.sh
+# 部署源：隔离 worktree @ 34b4a9a6f（★ 干净树 ⇒ 身份不带 -dirty ★）
+# 说明：★ 中段（前端构建 / 镜像构建的逐行输出）已折叠，★ 只保留【闸门读数】与【切流/验收】两段关键读数 ★
+
+[test-gate] 要跑的包：./admin ./domains/errorplaybook ./domains/hooks/observability/telemetry ./installer/internal/dbinit ./scripts/deploygate
+[test-gate] ★ 嵌套模块分箱：installer ⇒ 各自模块根下跑（不从主模块根）★
+[test-gate] ★ 原生 go 候选核对（required=1.27.4 /opt/homebrew/bin/go=1.27.4 /usr/local/go/bin/go=1.24.5 /opt/homebrew/bin/go=1.27.4 ）⇒ 选中 /opt/homebrew/bin/go
+[test-gate] 跑法：原生 go（go1.27.4，复用本机构建缓存；超时 15m；主模块根 -mod=vendor）
+[test-gate] 首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…
+[test-gate] 跑法：原生 go（go1.27.4，复用本机构建缓存；超时 15m；installer -mod=mod）
+[test-gate] 首个包出结果前有 1~2 分钟编译静默，属 go test 正常形态（不是卡死）…
+[test-gate] ★ 闸门通过：./admin ./domains/errorplaybook ./domains/hooks/observability/telemetry ./scripts/deploygate 全绿 ★
+[211] 已取得 211 部署锁: /tmp/kx-llm-gateway-deploy-211.lock
+[211] 已取得目标机侧部署锁: /var/lib/llm-gateway-go/deploy.lock（@ 211）
+[211] 已取得共享构建锁: /var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T//kx-llm-gateway-build.lock
+[211] 构建前端（web）...
+[211] 前端产物就绪：/tmp/gw-l110-deploy/web/dist
+[211] 前端依赖（web-mobile）缺失或过期，按 lockfile 安装
+[211] 构建前端（web-mobile）...
+[211] 前端产物就绪：/tmp/gw-l110-deploy/web-mobile/dist
+[211] 同步仓库到 211:192.168.31.211 ...
+[211] 同步清单：32363 个条目（已剪掉本地构建/运行残留：logs/ run/ bin/ gateway/ llm-gateway/ gateway-v2/ quality-monitor/ .codegraph/ .audit-validation/）
+[211] 同步后 ._* 残留: 0
+[211] 目标树残留 .env*/ *.env: 1  ._*: 0
+[211] 在 211 上执行 deploy（builder=registry-211.itestu.cn/lang-base/kx-base-golang:1.27.4-alpine-amd64 runtime=registry-211.itestu.cn/lang-base/alpine:3.22-amd64）...
+[211] DD_BUILD_SHA=34b4a9a6 为显式提供（目标树无 .git：或来自 --via 部署机转发，或来自运维声明；两种来源的号都会写进 /version）
+[211] Docker: Docker version 29.9.0, build f415da8
+[211]   候选 casdoor-postgres-exporter: psql 探活失败（可能不是 PG 或需密码），继续找
+[211]   候选 wm-acc-control-20261110-postgres: 版本=170011 columnar=0 vector=0 → 不满足(需 PG17+columnar+vector)，继续找
+[211]   候选 wm-acc-chain-pg: 版本=170011 columnar=0 vector=0 → 不满足(需 PG17+columnar+vector)，继续找
+[211]   候选 wm-public-control-20261109-postgres: 版本=170011 columnar=0 vector=0 → 不满足(需 PG17+columnar+vector)，继续找
+[211]   候选 wm-federated-control-20261109-postgres: 版本=170011 columnar=0 vector=0 → 不满足(需 PG17+columnar+vector)，继续找
+[211]   候选 wm-auth-control-20261108-postgres: 版本=170011 columnar=0 vector=0 → 不满足(需 PG17+columnar+vector)，继续找
+[211]   候选 acc-pg17: 网关库=1 网关对象=4 → 分值 900
+[211] 选定 PG 实例: acc-pg17（网关库 llm_gateway 存在（网关对象 4））
+[211] 复用已有 pg17+columnar 实例: acc-pg17
+[211] 复用已有 Redis 实例: wm-acc-chain-redis
+[211] 数据库 llm_gateway 已存在（容器 acc-pg17，超级用户 acc_super），复用
+[211] 复用已分配的 Redis 库号 db5（库内为网关自身残留键，非他人占用）
+[211] 复用已分配的 URSM Redis 库号 db0（/opt/llm-gateway-go-211/env/gateway.env 持久化，避免重跑漂移）
+[211] URSM 专用 Redis 库号 db0（会话库 db5）
+[211] 基础镜像已在本地: registry-211.itestu.cn/lang-base/kx-base-golang:1.27.4-alpine-amd64
+[211] 基础镜像已在本地: registry-211.itestu.cn/lang-base/alpine:3.22-amd64
+[211] 构建网关镜像 llm-gateway-211 (builder=registry-211.itestu.cn/lang-base/kx-base-golang:1.27.4-alpine-amd64 runtime=registry-211.itestu.cn/lang-base/alpine:3.22-amd64) ...
+[211] 应用镜像已推送: registry-211.itestu.cn/app-images/llm-gateway-go:211-34b4a9a6（via 127.0.0.1:5000/app-images/llm-gateway-go:211-34b4a9a6）
+[211] 硬阻断清单未配置 → 用网关内置默认（只有 input 允许硬阻断，egress/output 不终止回合）
+[211] 探测物理隔离 LLM_GATEWAY_PROBE_LANE_PHYSICAL=1
+[211] 入口并发槽 LLM_GATEWAY_INGRESS_MAX_CONCURRENT=32（>1MiB 归档路径并发上限）
+[211] 可信代理网段 LLM_GATEWAY_TRUSTED_PROXY_CIDRS=172.21.0.0/16
+[211] ASM 事件投递已启用：http://ai-session-manager-asm-1:8782/internal/v1/events（共享密钥已配，值不打印）
+[211] ASM 总结委托已启用：http://ai-session-manager-asm-1:8782
+[211] 身份网共享密钥已配置 → 网关可签发兄弟服务单点登录票据（值不打印）
+[211] AutoLLM 分类兜底已启用：endpoint=https://llm.itestu.cn/v1 model=glm-5.3-flash timeout=15
+[211] maintain 已接线：MAINTAIN_SERVICE_URL=http://172.21.0.1:8082（/maintain-api/* 反代；legacy /api/* 尽力迁移，404/401/403 回落到 in-process）
+[211] PI 智能体开关：v2_pipeline=true collector=true analysis=true model=glm-5.3-flash timeout=300s endpoint=https://llm.kxpms.cn/v1 key=set
+[211] 重放 DB 修订序列（幂等）→ acc-pg17/llm_gateway
+[211] 候选函数依赖门：public.recent_cache_hit_rate 存在且 smoke 通过（argc=3）
+[211] 候选函数依赖门：public.recent_success_rate 存在且 smoke 通过（argc=3）
+[211] 蓝绿槽位：活跃=a(端口 8781) → 候选=b(端口 8783)
+[211] 时区: 已挂载宿主机 zoneinfo（容器内 Asia/Shanghai 可用）
+[211] admin SPA 种子: web/dist → /opt/kaixuan/data/llm-gateway/web/b/dist（槽 b）
+[211] 移动端 SPA 种子: web-mobile/dist → /opt/kaixuan/data/llm-gateway/web-mobile/b/dist（槽 b）
+[211] 版本元数据种子: version.json（2.6.2-34b4a9a6-20261125-211 build_seq=3267）
+[211] 候选槽已起：llm-gateway-211-b @ 8783（旧槽 a @ 8781 仍在服务）
+[211] 等待网关就绪 ...
+[211] readyz OK (database+redis connected, status=ready)
+[211] version: 2.6.2-34b4a9a6-20261125-211
+[211] admin SPA 可达 (Content-Type: text/html; charset=utf-8)
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-198-18-fix（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-20261026-openpocket-web（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-20261102-test（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-20261112-103853（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-cutover-20261104-082755（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-dd-upstream（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-freellm-20261102174607（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-memora-20261116-164733（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-msgw-20261118（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-rde-20261115（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-skills-20261103-144344（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211]   已是目标形态：/etc/nginx/conf.d/ns-gateway-211.conf.bak-ssolane-20261105（listen 192.168.31.211:443 ssl http2）的 X-Real-IP 已是 $remote_addr
+[211] nginx llm.itestu.cn TLS: X-Real-IP 已是 $remote_addr (无需改动，未 reload)
+[211] 网页面 OK（HTML + 入口 JS /assets/index-CkfCADng.js → text/javascript）
+[211] 切流：nginx upstream ns_llm_gateway_upstream 由 127.0.0.1:8781 切到 127.0.0.1:8783
+[211] nginx upstream ns_llm_gateway_upstream → 127.0.0.1:8783（已 reload）
+[211] goacos 注册表已指向 127.0.0.1:8783（llm-gateway）
+[211] 公网版本身份 OK（34b4a9a6，第 3 次探到）
+[211] 公网入口 OK（llm.itestu.cn → 192.168.31.211:443 → 200）
+[211] WARN: 登录冒烟未执行：未提供管理员口令（DD_ADMIN_PASSWORD / LLM_GATEWAY_ADMIN_PASSWORD）⇒ 本次发布**未验证**登录路径
+[211] 旧槽已停：llm-gateway-211-a（保留容器与镜像，可 docker start 回滚）
+[211] ==========================================================
+[211] 部署完成 @ 192.168.31.211（槽 b 接管）
+[211]   活跃槽  : b → 容器 llm-gateway-211-b @ 127.0.0.1:8783
+[211]   旧槽    : a → 容器 llm-gateway-211-a（已停，可 docker start 回滚）
+[211]   网关    : http://192.168.31.211:8783
+[211]   镜像    : llm-gateway-211  builder=registry-211.itestu.cn/lang-base/kx-base-golang:1.27.4-alpine-amd64
+[211]   域名    : https://llm.itestu.cn/  (nginx ns_llm_gateway_upstream → 127.0.0.1:8783)
+[211]   登录    : POST /api/auth/token  (不要用 /api/admin/login)
+[211]   PG      : acc-pg17  (复用)  库=llm_gateway
+[211]   Redis   : wm-acc-chain-redis (复用)  库号=db5 (从 15 倒排)
+[211]   密钥    : /opt/llm-gateway-go-211/env/gateway.env (chmod 600，勿提交)
+[211] ==========================================================

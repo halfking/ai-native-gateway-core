@@ -110,3 +110,58 @@ func TestCostKeysNotNestedUnderAlias(t *testing.T) {
 	assert.Equal(t, 0.75, out["external_cost"], "external_cost 序列化值漂移")
 	assert.Equal(t, 2.0, out["total_cost"])
 }
+
+// TestCostSplitColumnsAreSelectedAndScanned 钉测③：SQL 真的 SELECT 了
+// internal_cost / external_cost 两列，且 SELECT 列数 == rows.Scan 目标数。
+//
+// ★ 为什么这条不能省（它就是本文件原先的**假绿门**）：
+//
+//	4e6e14667 给 9 个结构体补了 internal_cost/external_cost 分离字段，但
+//	会话分析族的几条 SELECT 只出了混合值 total_cost（= internal_cost +
+//	external_cost，**跨单位相加**）⇒ 结构体里字段在、JSON 键在、**值恒为 0**。
+//	而本文件原先只断言"json tag 存在"与"结构体直接序列化的值"⇒ **没有
+//	一条断言 SQL 真的 Scan 了这两列** ⇒ 这个缺陷可以长期门绿：
+//	反射与序列化都看不出"这个字段永远是 0"。
+//
+//	⇒ 这里补**形状**断言（两层）：
+//	① 两个别名必须出现在 SELECT 列表里（不在 ⇒ 结构体字段恒 0）；
+//	② SELECT 列数必须 == 该函数 rows.Scan 的实参个数（漏扫 ⇒ 恒 0；
+//	   多扫 ⇒ 运行期类型错或静默串列）。
+//
+// ★ 为什么断言"列数"而不是"第几列"：行号是脆的（改一次列序就红，而列序
+//
+//	本身不是缺陷）；列数 + 别名是**语义**的 —— 只要漏扫一列，列数立刻不等；
+//	只要没 SELECT 那一列，别名立刻不在。两者都与行号无关。
+//
+// ★ 为什么三条 SQL 分开列：userRankingSQL 与 userRankingByProjectSQL 共用
+// 同一个 rows.Scan（GetUserRanking）⇒ 两条 SQL 的**列序必须一致**；分开
+// 断言才能在"其中一条改了列序"时报出来，而不是让另一条替它背锅。
+func TestCostSplitColumnsAreSelectedAndScanned(t *testing.T) {
+	cases := []struct {
+		name     string
+		sql      string
+		scanFunc string
+	}{
+		{"topUsersSQL", topUsersSQL, "func getTopUsers("},
+		{"userRankingSQL", userRankingSQL, "func GetUserRanking("},
+		{"userRankingByProjectSQL", userRankingByProjectSQL, "func GetUserRanking("},
+	}
+
+	src := readPackageSource(t, "queries.go")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := sqlSelectColumns(t, tc.sql)
+			for _, alias := range []string{"internal_cost", "external_cost"} {
+				require.True(t, hasSelectAlias(cols, alias),
+					"%s 的 SELECT 里缺别名 %q —— 结构体里的分离字段会恒为 0（实际列清单：%v）",
+					tc.name, alias, cols)
+			}
+			want := len(cols)
+			got := scanDestinationsOf(t, src, tc.scanFunc)
+			assert.Equal(t, want, got,
+				"%s 的 SELECT 列数(%d) 与 %s 的 rows.Scan 目标数(%d) 不一致 ⇒ 漏扫/多扫，"+
+					"分列成本会恒为 0 或读错列",
+				tc.name, want, tc.scanFunc, got)
+		})
+	}
+}

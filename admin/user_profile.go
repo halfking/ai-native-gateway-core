@@ -55,18 +55,33 @@ const userProfileBaseStatsSQL = `
 	`
 
 type UserProfileSummary struct {
-	OwnerUser         string    `json:"owner_user"`
-	SessionCount      int       `json:"session_count"`
-	TotalRequests     int64     `json:"total_requests"`
-	TotalCost         float64   `json:"total_cost_usd"`
-	AvgCostPerSession float64   `json:"avg_cost_per_session"`
-	AvgHealthScore    *int      `json:"avg_health_score,omitempty"`
-	TotalSuccess      int64     `json:"total_success"`
-	TotalErrors       int64     `json:"total_errors"`
-	FirstSeenAt       time.Time `json:"first_seen_at"`
-	LastSeenAt        time.Time `json:"last_seen_at"`
-	EndUserCount      int       `json:"end_user_count"`
-	ModelsUsed        []string  `json:"models_used"`
+	OwnerUser     string `json:"owner_user"`
+	SessionCount  int    `json:"session_count"`
+	TotalRequests int64  `json:"total_requests"`
+	// TotalCost 混合单位：内部美元成本 + 外部积分的**跨单位相加**
+	//（不是美元金额）。字段名 total_cost_usd 不能改（前端依赖）⇒ 口径只能
+	// 靠**披露**纠偏，同时另给 internal_cost_usd / external_credits 两个
+	// 分列数字（2026-11-24 修订轮：此前只 SELECT 了混合值，前端拿不到任何
+	// 分列数字）。
+	TotalCost float64 `json:"total_cost_usd"`
+	// InternalCostUSD 内部成本（美元），与 ExternalCredits **分列**。
+	InternalCostUSD float64 `json:"internal_cost_usd"`
+	// ExternalCredits 外部成本（积分），与 InternalCostUSD **分列**。
+	ExternalCredits int64 `json:"external_credits"`
+	// AvgCostPerSession 混合单位：每会话均价同样是跨单位相加
+	//（口径与 TotalCost 一致，字段名同样不能改）。
+	AvgCostPerSession float64 `json:"avg_cost_per_session"`
+	// AvgInternalCostUSDPerSession 每会话内部成本均价（美元）—— 分列对应。
+	AvgInternalCostUSDPerSession float64 `json:"avg_internal_cost_usd_per_session"`
+	// AvgExternalCreditsPerSession 每会话外部成本均价（积分）—— 分列对应。
+	AvgExternalCreditsPerSession float64   `json:"avg_external_credits_per_session"`
+	AvgHealthScore               *int      `json:"avg_health_score,omitempty"`
+	TotalSuccess                 int64     `json:"total_success"`
+	TotalErrors                  int64     `json:"total_errors"`
+	FirstSeenAt                  time.Time `json:"first_seen_at"`
+	LastSeenAt                   time.Time `json:"last_seen_at"`
+	EndUserCount                 int       `json:"end_user_count"`
+	ModelsUsed                   []string  `json:"models_used"`
 	// WindowUsage 员工在选定时间窗口内的用量聚合（2026-11-20 数字出处轮）。
 	// 出处 = request_logs_with_current_month（会话族 canonical 视图），与
 	// /users/{owner}/models 端点同源同表达式 ⇒ 列表页数字与详情页模型卡
@@ -372,10 +387,27 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 		SELECT a.owner,
 			COALESCE(SUM(a.session_count), 0)::bigint AS session_count,
 			COALESCE(SUM(a.request_count), 0)::bigint AS total_requests,
+			-- ★ 混合单位（美元 + 积分跨单位相加）：internal_cost 是美元、
+			-- external_cost 是积分，两列相加**不是**美元金额。字段名
+			-- total_cost_usd 不能改（前端依赖）⇒ 这里保留混合值并披露口径，
+			-- 分列数字另给 internal_cost_usd / external_credits。
 			COALESCE(SUM(a.internal_cost + a.external_cost), 0) AS total_cost_usd,
+			-- 分列：内部成本（美元）。
+			COALESCE(SUM(a.internal_cost), 0) AS internal_cost_usd,
+			-- 分列：外部成本（积分）。
+			COALESCE(SUM(a.external_cost), 0)::bigint AS external_credits,
+			-- 混合单位（美元 + 积分跨单位相加）的每会话均价。
 			CASE WHEN COALESCE(SUM(a.session_count), 0) > 0
 				THEN SUM(a.internal_cost + a.external_cost) / SUM(a.session_count)
 				ELSE 0 END AS avg_cost_per_session,
+			-- 分列均价：内部成本（美元）/ 会话。
+			COALESCE(CASE WHEN COALESCE(SUM(a.session_count), 0) > 0
+				THEN SUM(a.internal_cost) / SUM(a.session_count)
+				ELSE 0 END, 0) AS avg_internal_cost_usd_per_session,
+			-- 分列均价：外部成本（积分）/ 会话。
+			COALESCE(CASE WHEN COALESCE(SUM(a.session_count), 0) > 0
+				THEN SUM(a.external_cost) / SUM(a.session_count)
+				ELSE 0 END, 0) AS avg_external_credits_per_session,
 			COALESCE(SUM(a.end_user_count), 0)::bigint AS end_user_count,
 			MIN(a.date)::timestamptz AS first_seen_at,
 			MAX(a.last_active_at) AS last_seen_at
@@ -420,9 +452,15 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	for rows.Next() {
 		var u UserProfileSummary
 		var avgCost sql.NullFloat64
+		// ★ Scan 实参与上面 listSQL 的 SELECT 列**逐字对齐**（顺序也一致）：
+		// 少扫一个 ⇒ 该列恒 0（分列成本会永远显示 0）；多扫一个 ⇒ 运行期
+		// 类型错或静默串列。列数一致性由门钉住（sessionanalytics 包的
+		// user_profile_cost_split_gate_test.go）。
 		if err := rows.Scan(
 			&u.OwnerUser, &u.SessionCount, &u.TotalRequests, &u.TotalCost,
-			&avgCost, &u.EndUserCount, &u.FirstSeenAt, &u.LastSeenAt,
+			&u.InternalCostUSD, &u.ExternalCredits,
+			&avgCost, &u.AvgInternalCostUSDPerSession, &u.AvgExternalCreditsPerSession,
+			&u.EndUserCount, &u.FirstSeenAt, &u.LastSeenAt,
 		); err != nil {
 			warnRowSkip("userProfile.list", err)
 			continue

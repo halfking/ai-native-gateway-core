@@ -131,7 +131,10 @@ export default {
     credits: '{value} crédits',
   },
   costNote:
-    'La colonne Dépense additionne le coût interne (USD) et les crédits externes. Les deux unités diffèrent, donc cette colonne sert uniquement à une comparaison relative et non à un montant monétaire unique.',
+    'La colonne Dépense est présentée en deux unités : coût interne (USD) et crédits externes. Les deux unités diffèrent, donc cette colonne sert uniquement à une comparaison relative et non à un montant monétaire unique.',
+  // ★ N9：外部コストが 0 のとき「—」を出す理由（0 と測定されたわけではない）。
+  externalCostNotCarried:
+    'Cette vue ne porte pas encore les crédits externes séparément : l’écriture des crédits n’est pas en place, donc « — » signifie « non collecté », et non « mesuré à zéro ».',
   state: {
     loading: 'Chargement de l’analyse des sessions',
     loadingStats: 'Chargement des statistiques…',

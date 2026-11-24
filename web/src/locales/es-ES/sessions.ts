@@ -112,6 +112,11 @@ export default {
     status: { all: 'Todas', active: 'Activas', stopped: 'Detenidas' },
   },
   stats: {
+    // ★ F1：La columna de coste es **USD puro** (SUM(ss.total_cost_usd)); el campo se
+    //   llama total_cost ⇒ la cabecera debe declarar la unidad.
+    costUsd: 'Gasto (USD)',
+    // ★ F1：La pata de modelos se despliega **por sesión** ⇒ su suma supera el KPI.
+    modelCostNote: 'Esta columna se despliega por sesión: cuando una sesión usa varios modelos, su coste se cuenta una vez en cada fila de modelo, por lo que la suma de la columna supera el KPI del panel y no debe sumarse al KPI.',
     scopeNoticeTitle: 'Nota de alcance:',
     scopeHintLabel: 'Nota de alcance',
     scopeNoticeBody: 'Esta página cuenta todas las solicitudes y los costes de las sesiones cuya primera solicitud ocurrió en los últimos {days} días.',

@@ -435,6 +435,18 @@ func getTokenTrend(ctx context.Context, db *sql.DB, tenantID *string, startDate,
 //
 //	users 表**没有 owner 列**（真库实测：id/tenant_id/username/.../email/role），
 //	写成 u.owner 会得到 42703 column does not exist ⇒ 整条查询失败。
+//
+// ★ 2026-11-24 修订轮：SELECT 补 internal_cost / external_cost 两列。
+//
+//	根因：TopUser.InternalCost / ExternalCost 两个字段早就声明了（4e6e14667），
+//	但 SQL 只 SELECT 了混合值 total_cost（= internal_cost + external_cost，
+//	**跨单位相加**）⇒ 两个分离字段**恒为 0** ⇒ 界面上「内部成本/外部成本」
+//	两列永远是 0，而用户看不到"这一列为什么是 0"。
+//	物化视图里 internal_cost 是美元、external_cost 是积分，两列独立；
+//	total_cost 只作兼容与排序用（保留跨单位相加口径，不改）。
+//
+//	★ SELECT 加列 ⇒ rows.Scan 必须**同步加位**且顺序逐字对齐
+//	（错位 ⇒ 编译通过、运行期类型错或静默串列）。
 const topUsersSQL = `
 		SELECT
 			a.owner,
@@ -442,13 +454,21 @@ const topUsersSQL = `
 			COALESCE(u.email, '') as email,
 			SUM(a.session_count) as session_count,
 			SUM(a.total_tokens)::bigint as total_tokens,
-			SUM(a.internal_cost + a.external_cost) as total_cost
+			SUM(a.internal_cost + a.external_cost) as total_cost,
+			SUM(a.internal_cost) as internal_cost,
+			SUM(a.external_cost) as external_cost
 		FROM user_session_aggregates a
 		LEFT JOIN users u ON a.owner = u.username
 		WHERE a.date >= $1 AND a.date <= $2
 `
 
 // userRankingSQL 用户排行（默认口径：全部项目）。
+//
+// ★ 2026-11-24 修订轮：同 topUsersSQL —— SELECT 补 internal_cost /
+// external_cost 两列，让 UserRanking.InternalCost / ExternalCost 第一次拿到
+// 真值（此前结构体里声明了、SQL 里没 SELECT ⇒ 恒 0）。
+// 两条排行 SQL（默认口径 / 指定项目口径）的**列序必须一致** —— 它们共用
+// 一个 rows.Scan（GetUserRanking）。
 const userRankingSQL = `
 		SELECT
 			a.owner,
@@ -459,6 +479,8 @@ const userRankingSQL = `
 			SUM(a.task_count) as task_count,
 			SUM(a.total_tokens)::bigint as total_tokens,
 			SUM(a.internal_cost + a.external_cost) as total_cost,
+			SUM(a.internal_cost) as internal_cost,
+			SUM(a.external_cost) as external_cost,
 			MAX(a.last_active_at) as last_active_at
 		FROM user_session_aggregates a
 		LEFT JOIN users u ON a.owner = u.username
@@ -470,6 +492,9 @@ const userRankingSQL = `
 // ★ task 用 ” 表示「无具体任务」（迁移 981 的唯一索引要求列上无 NULL），
 //
 //	所以 COUNT(DISTINCT) 必须用 NULLIF 归一，否则「无任务」会被算成一个任务。
+//
+// ★ 2026-11-24 修订轮：同 userRankingSQL —— 补 internal_cost /
+// external_cost 两列，**列序与 userRankingSQL 逐字一致**（共用一个 Scan）。
 const userRankingByProjectSQL = `
 			SELECT
 				p.owner,
@@ -480,6 +505,8 @@ const userRankingByProjectSQL = `
 				COUNT(DISTINCT NULLIF(p.task, '')) as task_count,
 				SUM(p.total_tokens)::bigint as total_tokens,
 				SUM(p.internal_cost + p.external_cost) as total_cost,
+				SUM(p.internal_cost) as internal_cost,
+				SUM(p.external_cost) as external_cost,
 				MAX(p.last_active_at) as last_active_at
 			FROM project_task_aggregates p
 			LEFT JOIN users u ON p.owner = u.username
@@ -520,7 +547,10 @@ func getTopUsers(ctx context.Context, db *sql.DB, tenantID *string, startDate, e
 	var users []TopUser
 	for rows.Next() {
 		var u TopUser
-		if err := rows.Scan(&u.Owner, &u.DisplayName, &u.Email, &u.SessionCount, &u.TotalTokens, &u.TotalCost); err != nil {
+		// ★ Scan 实参与 topUsersSQL 的 SELECT 列逐字对齐（含 2026-11-24 补的
+		// internal_cost / external_cost 两列）—— 少扫 ⇒ 恒 0。
+		if err := rows.Scan(&u.Owner, &u.DisplayName, &u.Email, &u.SessionCount, &u.TotalTokens,
+			&u.TotalCost, &u.InternalCost, &u.ExternalCost); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -713,6 +743,9 @@ func GetUserRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate
 	for rows.Next() {
 		var u UserRanking
 		var lastActiveAt sql.NullTime
+		// ★ Scan 实参与 userRankingSQL / userRankingByProjectSQL 的 SELECT 列
+		// 逐字对齐（两条 SQL 共用这一个 Scan ⇒ 列序必须完全一致）：
+		// 含 2026-11-24 补的 internal_cost / external_cost 两列 —— 少扫 ⇒ 恒 0。
 		if err := rows.Scan(
 			&u.Owner,
 			&u.DisplayName,
@@ -722,6 +755,8 @@ func GetUserRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate
 			&u.TaskCount,
 			&u.TotalTokens,
 			&u.TotalCost,
+			&u.InternalCost,
+			&u.ExternalCost,
 			&lastActiveAt,
 		); err != nil {
 			return nil, err

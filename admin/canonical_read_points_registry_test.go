@@ -340,6 +340,50 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"success:base", "token_band:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "压缩带统计（token_band / success / ts）；本读点读 success:base,token_band:base,ts:base ⇒ 全部引用列都是底表直映列 ⇒ 底表两臂窄投影可等价供给"},
 		},
 	},
+	// ── 2026-11-25 12h 修订审计轮：统计 API 族切到请求级日志真源 ──
+	//
+	// ★ 背景（登记理由）：2026-11-18 会话统计审计 F2 认定 errors / performance /
+	//   module-stats 三张卡读 `session_module_executions_hot`，而该表唯一写方
+	//   `moduleexec.Executor` 在生产**从未装配** ⇒ 三张卡恒为 0（假绿）。
+	//   ⇒ 本轮把 errors / performance 改读 canonical 视图
+	//   （request_logs_with_current_month），与看板英雄区/趋势/饼图**同一把尺**
+	//   （看板真源切换见 ee6bc4e98）。
+	"admin/dashboardapi/errors.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsExpressionReplication,
+		Note:  "错误统计四张查询（摘要 / 分布 / 趋势 / Top）：读 canonical 视图的 request_status（视图内 CASE 表达式列）与 latency_ms / error_kind / failure_stage / ts",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"latency_ms:base", "request_status:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "错误摘要：总请求/总错误/失败平均延迟；本读点读 latency_ms:base,request_status:expr ⇒ request_status 是视图内的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
+			{Kind: "read", Columns: []string{"error_kind:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "错误分布：按 error_kind 分类（请求级真源无模块维度 ⇒ 分类维度改用 error_kind）；本读点读 error_kind:base ⇒ 底表直映列 ⇒ 窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"request_status:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "错误趋势：按日桶统计失败数/总数；本读点读 request_status:expr ⇒ 视图内 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
+			{Kind: "read", Columns: []string{"error_kind:base", "failure_stage:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "Top 错误：错误分类 / 次数 / 最近发生时间 / 失败阶段；本读点读 error_kind:base,failure_stage:base,ts:base ⇒ 全部引用列都是底表直映列 ⇒ 底表两臂窄投影可等价供给"},
+		},
+	},
+	"admin/dashboardapi/performance.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "性能四张查询（摘要 / 延迟分档 / 吞吐 / 慢查询）：读 canonical 视图的 latency_ms 与慢查询那条的 client_model（734 details 腿列）",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"latency_ms:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "性能摘要：平均/P50/P95/P99/最大延迟；本读点读 latency_ms:base ⇒ 底表直映列 ⇒ 窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"latency_ms:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "延迟分档（<100ms / <500ms / <1s / <5s / >5s）；本读点读 latency_ms:base ⇒ 底表直映列 ⇒ 窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"latency_ms:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "吞吐：按日桶的平均延迟；本读点读 latency_ms:base ⇒ 底表直映列 ⇒ 窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"client_model:detail", "error_kind:base", "gw_session_id:expr", "latency_ms:base", "outbound_model:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "慢查询清单：会话 / 客户端模型 / 上游模型 / 延迟 / 发生时间 / 错误分类；本读点读 client_model:detail,error_kind:base,gw_session_id:expr,latency_ms:base,outbound_model:base,ts:base ⇒ 引用了 734 details 腿的列（client_model:detail）且 gw_session_id 是视图内表达式列（expr）⇒ 窄投影须带 details LEFT JOIN 并复刻那份表达式"},
+		},
+	},
+	"admin/dashboardapi/module_stats.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "模块执行统计：★ 它的读面是 `session_module_executions_hot`（唯一写方 moduleexec.Executor 在生产从未装配 ⇒ 恒空）⇒ 端点已显式声明 data_available=false ＋ 不可用原因；canonical 视图名只出现在注释里 ⇒ 本文件无 canonical 读点",
+	},
+	"admin/dashboardapi/request_log_facts_source.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "请求级日志真源的**谓词构造器**（窗口 ＋ 租户 ＋ 终态集 ＋ 探测口径）；★ 它只产出 WHERE 片段与列引用（r.ts / r.tenant_id / r.request_status …），**不出现 FROM 子句** ⇒ 本文件没有读点；真正的读点登记在 errors.go / performance.go 两条",
+	},
 	"admin/credential_monitor.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
@@ -1090,7 +1134,7 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	},
 	// ★★★ 2026-11-24（合并轮十一 · ★★ 代上游登记 ★★）：★ 上游把统计侧的维度
 	// ★★ **★ 合并轮十五/十六去重（★ 2026-11-24）★★**：★ ★★ 本条曾与【上方同键登记】（★ `internal/metricsstore/processor.go`）**并存** ⇒ ★★ **Go map literal 同键重复 ⇒ `admin` 包 build failed（★ `duplicate key "internal/metricsstore/processor.go" in map literal`）★★ ⇒ ★★ **⇒ 本条删除、★ 保留上方那条**（★ ★ **两处的列集合逐项一致**（★ 7 列同序：★ `attachment_count:base` / `client_protocol:base` / `egress_protocol:base` / `gw_session_id:expr` / `gw_task_id:detail` / `request_id:base` / `ts:base`）★ ★★ **而 Note 互补** ⇒ ★★ **本条独有的「★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式」已并入上方那条**）★★｜★ ★★ **★ 根因（★ 一条通用式）★★**：★ **登记簿这类【按文件名索引的 map】、★ 两条车道**各自登记同一个文件**时、★ ★★ **合并后必然撞键** ⇒ ★★ **★ 而它【只红在编译期】（★ 不是断言红、★ 不是基线红）⇒ ★★ **★ 所以「两边都做了同一件代修」在合并时会变成【编译失败】、★ 而双方的闸门各自都是绿的 ★★ ⇒ ★★ **⇒ 合并后必须跑【编译】，★ 不能只看「各自的闸门绿不绿」** ★★
-// ★★ **★ 合并轮十五/十六去重（★ 2026-11-24）★★**：★ ★★ 本条曾与【上方同键登记】（★ `internal/metricsstore/processor.go`）**并存** ⇒ ★★ **Go map literal 同键重复 ⇒ `admin` 包 build failed（★ `duplicate key "internal/metricsstore/processor.go" in map literal`）★★ ⇒ ★★ **⇒ 本条删除、★ 保留上方那条**（★ ★ **两处的列集合逐项一致**（★ 7 列同序：★ `attachment_count:base` / `client_protocol:base` / `egress_protocol:base` / `gw_session_id:expr` / `gw_task_id:detail` / `request_id:base` / `ts:base`）★ ★★ **而 Note 互补** ⇒ ★★ **本条独有的「★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式」已并入上方那条**）★★｜★ ★★ **★ 根因（★ 一条通用式）★★**：★ **登记簿这类【按文件名索引的 map】、★ 两条车道**各自登记同一个文件**时、★ ★★ **合并后必然撞键** ⇒ ★★ **★ 而它【只红在编译期】（★ 不是断言红、★ 不是基线红）⇒ ★★ **★ 所以「两边都做了同一件代修」在合并时会变成【编译失败】、★ 而双方的闸门各自都是绿的 ★★ ⇒ ★★ **⇒ 合并后必须跑【编译】，★ 不能只看「各自的闸门绿不绿」** ★★
+	// ★★ **★ 合并轮十五/十六去重（★ 2026-11-24）★★**：★ ★★ 本条曾与【上方同键登记】（★ `internal/metricsstore/processor.go`）**并存** ⇒ ★★ **Go map literal 同键重复 ⇒ `admin` 包 build failed（★ `duplicate key "internal/metricsstore/processor.go" in map literal`）★★ ⇒ ★★ **⇒ 本条删除、★ 保留上方那条**（★ ★ **两处的列集合逐项一致**（★ 7 列同序：★ `attachment_count:base` / `client_protocol:base` / `egress_protocol:base` / `gw_session_id:expr` / `gw_task_id:detail` / `request_id:base` / `ts:base`）★ ★★ **而 Note 互补** ⇒ ★★ **本条独有的「★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式」已并入上方那条**）★★｜★ ★★ **★ 根因（★ 一条通用式）★★**：★ **登记簿这类【按文件名索引的 map】、★ 两条车道**各自登记同一个文件**时、★ ★★ **合并后必然撞键** ⇒ ★★ **★ 而它【只红在编译期】（★ 不是断言红、★ 不是基线红）⇒ ★★ **★ 所以「两边都做了同一件代修」在合并时会变成【编译失败】、★ 而双方的闸门各自都是绿的 ★★ ⇒ ★★ **⇒ 合并后必须跑【编译】，★ 不能只看「各自的闸门绿不绿」** ★★
 }
 
 // ─────────────────────── 扫描器 ───────────────────────

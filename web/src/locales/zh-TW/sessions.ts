@@ -111,6 +111,11 @@ export default {
     status: { all: '全部', active: '活躍', stopped: '已停止' },
   },
   stats: {
+    // ★ F1：花費欄的單位是**純美元**（來自 SUM(ss.total_cost_usd)），但欄位名叫
+    //   total_cost ⇒ 讀者會以為是總額 ⇒ 欄頭必須把單位寫明。
+    costUsd: '花費（美元）',
+    // ★ F1：模型腿按**會話**展開 ⇒ 合計大於 KPI、不可與 KPI 相加 ⇒ 必須披露。
+    modelCostNote: '本欄按會話展開：一個會話用了多個模型時，該會話的花費會在每個模型行各計一次，因此本欄合計大於面板 KPI，不能與 KPI 相加。',
     scopeNoticeTitle: '統計說明：',
     scopeHintLabel: '統計說明',
     scopeNoticeBody: '本頁面統計「首次請求在近{days}天內」的會話的全部請求與費用。',

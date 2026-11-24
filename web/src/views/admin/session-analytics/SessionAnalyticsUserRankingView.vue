@@ -117,7 +117,9 @@
             <td>{{ fmt(u.project_count) }}</td>
             <td>{{ fmt(u.task_count) }}</td>
             <td>{{ fmt(u.total_tokens) }}</td>
-            <td>{{ money(u.total_cost) }}</td>
+            <td>
+              <SaCostCell :internal-cost="u.internal_cost" :external-cost="u.external_cost" />
+            </td>
             <td>{{ formatTime(u.last_active_at) }}</td>
             <td>{{ u.latest_task || '—' }}</td>
             <td>
@@ -159,6 +161,9 @@ import { rangeFromSpanDays } from '../../../components/ui/kxDatePresets'
 import type { KxDateRange, KxDateRangePreset } from '../../../components/ui/kx-date-types'
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
+// ★ N9：成本列走 SaCostCell（内部成本美元 / 外部成本积分分列）——
+//   total_cost 是**跨单位合计**，渲染成一个带 $ 的数等于凭空造出美元金额。
+import SaCostCell from './components/SaCostCell.vue'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
 import { rangeFromQuery } from './saQueryParams'
 import {
@@ -227,13 +232,8 @@ function fmt(v: number | null | undefined): string {
   return Number(v).toLocaleString()
 }
 
-function money(v: number | null | undefined): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—'
-  return Number(v).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-}
+// ★ N9：money() 已删除 —— 成本列改走 SaCostCell（两个单位分列）。
+//   旧实现把 total_cost（美元 + 积分 的跨单位合计）当成一个美元金额渲染。
 
 /** RFC3339 → 本地可读时间；空串（后端无该行时间戳）显示占位符。 */
 function formatTime(value: string): string {

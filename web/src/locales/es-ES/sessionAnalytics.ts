@@ -131,7 +131,10 @@ export default {
     credits: '{value} créditos',
   },
   costNote:
-    'La columna de coste suma el coste interno (USD) y los créditos externos. Las dos unidades son distintas, por lo que esa columna solo sirve para comparaciones relativas y no como un único importe monetario.',
+    'La columna de coste se presenta en dos unidades: coste interno (USD) y créditos externos. Las dos unidades son distintas, por lo que esa columna solo sirve para comparaciones relativas y no como un único importe monetario.',
+  // ★ N9：外部コストが 0 のとき「—」を出す理由（0 と測定されたわけではない）。
+  externalCostNotCarried:
+    'Esta vista todavía no recopila los créditos externos por separado: el lado de escritura de créditos no está implementado, así que «—» significa «no recopilado», no «medido como cero».',
   state: {
     loading: 'Cargando el análisis de sesiones',
     loadingStats: 'Cargando estadísticas…',

@@ -54,7 +54,12 @@
         </button>
       </section>
 
-      <StatsRow :cols="{ mobile: 2, tablet: 2, desktop: 4 }">
+      <!-- ★ N9：成本组由**一张**指标卡拆成**两张**（内部成本美元 / 外部成本积分）——
+           summary.total_cost 是两个单位**跨单位相加**的结果，渲染成一个金额等于
+           凭空造出一个不存在的美元金额（framework §3.2：两种单位禁止相加）。
+           ★ 锚点 sa-metric-total-cost 仍留在「成本组」容器上：它的语义从
+             「一个合计金额」变成「成本这一组」（Maestro flow 断的就是它）。 -->
+      <StatsRow :cols="{ mobile: 2, tablet: 2, desktop: 5 }">
         <StatCard
           data-testid="sa-metric-session-count"
           :label="t('sessionAnalytics.metric.sessionCount')"
@@ -65,11 +70,16 @@
           :label="t('sessionAnalytics.metric.taskCount')"
           :value="fmt(detail.summary.task_count)"
         />
-        <StatCard
-          data-testid="sa-metric-total-cost"
-          :label="t('sessionAnalytics.metric.totalCost')"
-          :value="money(detail.summary.total_cost)"
-        />
+        <div class="sa-cost-group" data-testid="sa-metric-total-cost">
+          <StatCard
+            :label="t('sessionAnalytics.metric.internalCost')"
+            :value="internalCostText"
+          />
+          <StatCard
+            :label="t('sessionAnalytics.metric.externalCost')"
+            :value="externalCostText"
+          />
+        </div>
         <StatCard
           data-testid="sa-metric-rank"
           :label="t('sessionAnalytics.metric.rank')"
@@ -218,7 +228,9 @@
                 <td>{{ fmt(p.session_count) }}</td>
                 <td>{{ fmt(p.task_count) }}</td>
                 <td>{{ fmt(p.total_tokens) }}</td>
-                <td>{{ money(p.total_cost) }}</td>
+                <td>
+                  <SaCostCell :internal-cost="p.internal_cost" :external-cost="p.external_cost" />
+                </td>
                 <td>{{ formatTime(p.last_active_at) }}</td>
               </tr>
             </tbody>
@@ -257,7 +269,9 @@
                 <td>{{ fmt(task.session_count) }}</td>
                 <td>{{ fmt(task.request_count) }}</td>
                 <td>{{ fmt(task.total_tokens) }}</td>
-                <td>{{ money(task.total_cost) }}</td>
+                <td>
+                  <SaCostCell :internal-cost="task.internal_cost" :external-cost="task.external_cost" />
+                </td>
                 <td>{{ formatTime(task.last_active_at) }}</td>
               </tr>
             </tbody>
@@ -291,6 +305,10 @@
                 <td>{{ m.model }}</td>
                 <td>{{ fmt(m.request_count) }}</td>
                 <td>{{ fmt(m.total_tokens) }}</td>
+                <!-- ★ N9：模型用量这一格**有意保持原样**（不拆美元/积分两栏）——
+                     该端点（/user-ranking/:owner/models）的 internal/external 语义
+                     与会话分析族**相反**（后端已单独登记）⇒ 口径澄清前不贴
+                     「美元 / 积分」标签，否则就是把错的单位贴在错的数上。 -->
                 <td>{{ money(m.total_cost) }}</td>
                 <td>{{ percent(m.success_rate) }}</td>
                 <td>{{ percent(m.cache_hit_rate) }}</td>
@@ -329,6 +347,10 @@
                 <td>{{ k.key_id }}</td>
                 <td>{{ fmt(k.request_count) }}</td>
                 <td>{{ fmt(k.total_tokens) }}</td>
+                <!-- ★ N9：API Key 这一格**有意保持原样**（不拆美元/积分两栏）——
+                     该端点（/user-ranking/:owner/api-keys）的 internal/external 语义
+                     与会话分析族**相反**（后端已单独登记）⇒ 口径澄清前不贴
+                     「美元 / 积分」标签，否则就是把错的单位贴在错的数上。 -->
                 <td>{{ money(k.total_cost) }}</td>
                 <td>{{ fmt(k.project_count) }}</td>
                 <td>{{ k.top_project || '-' }}</td>
@@ -365,6 +387,9 @@ import type { KxDateRange, KxDateRangePreset } from '../../../components/ui/kx-d
 import SaTrendChart from './components/SaTrendChart.vue'
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
+// ★ N9：项目 / 任务两格走 SaCostCell（两个单位分列）；数值口径见 saCostSplit.ts。
+import SaCostCell from './components/SaCostCell.vue'
+import { creditsCostText, usdCostText } from './saCostSplit'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
 import {
   getProjectTasks,
@@ -522,6 +547,16 @@ function money(v: number | null | undefined): string {
     maximumFractionDigits: 2,
   })
 }
+
+/**
+ * ★ N9：指标卡里的两个成本值。
+ *   · 内部成本（美元）：真被测到的量，0 是合法测量值 ⇒ 照常渲染。
+ *   · 外部成本（积分）：积分写侧未落地时后端给的是 0 ⇒ 渲染「—」而不是
+ *     「0 积分」（把「没采到」讲成「测得是 0」）。
+ *   ⇒ 规则真源在同目录 saCostSplit.ts（与 SaCostCell 用同一套）。
+ */
+const internalCostText = computed(() => usdCostText(detail.value?.summary.internal_cost, t))
+const externalCostText = computed(() => creditsCostText(detail.value?.summary.external_cost, t))
 
 function percent(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(v)) return '—'
@@ -781,6 +816,16 @@ onMounted(() => {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* ★ N9：成本组容器 —— 两张成本卡并排，且在 StatsRow 栅格里占两列
+   （desktop 5 列 = 会话数 + 任务数 + 成本组×2 + 排名，正好一行）。 */
+.sa-cost-group {
+  grid-column: span 2;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--kx-space-3);
+  min-width: 0;
 }
 
 @media (max-width: 768px) {

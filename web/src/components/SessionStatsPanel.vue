@@ -34,6 +34,11 @@ import SessionTrendChart from './analytics/SessionTrendChart.vue'
 import HealthGradeChart from './analytics/HealthGradeChart.vue'
 import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
 import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
+// ★ N1：「旧口径」披露标记 —— 趋势/健康度/错误/性能那几块仍按旧宇宙算，
+//   而面板顶部徽标按总览响应的 probe_scope 亮了 ⇒ 一个面板里两把尺且无提示。
+//   ⇒ 判据只看**响应**（见同目录 statsLegacyCaliber.ts），与徽标同一真源。
+import StatsLegacyCaliberNote from './analytics/StatsLegacyCaliberNote.vue'
+import { isProbeScopeIncluded } from './analytics/statsLegacyCaliber'
 import PageHelpDrawer from './help/PageHelpDrawer.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
@@ -168,7 +173,9 @@ const turnsDegraded = computed(() => overview.value?.turns_alignment?.degraded =
 const aligned = computed(() => overview.value?.aligned ?? null)
 const alignedAvailable = computed(() => overview.value?.aligned_source === 'user_session_aggregates' && !!aligned.value)
 const probeDegraded = computed(() => overview.value?.probe_scope === 'degraded_included')
-const includeProbesActive = computed(() => overview.value?.probe_scope === 'included' || overview.value?.probe_scope === 'degraded_included')
+// ★ N1：徽标与「旧口径」标记**同一真源** —— 都只看总览响应的 probe_scope，
+//   不看本地 includeProbes 开关（否则会出现「徽标没亮、标记却亮了」）。
+const includeProbesActive = computed(() => isProbeScopeIncluded(overview.value?.probe_scope))
 // 对齐窗口 = 生效区间本身（看板页共享状态 / 外部受控 / 本地兜底同源）。
 // ★ 2026-11-23 日期范围对齐轮：此前是「按 days 反推的日历日窗」，与控件
 //   显示的区间在自定义区间下会不一致 ⇒ 现在直接用生效区间。
@@ -505,6 +512,11 @@ defineExpose({
         </div>
       </div>
 
+      <!-- ★ N1：图表组（趋势 / 健康度）之前挂「旧口径」标记 ——
+           这两块仍按旧会话宇宙算，与上方按 probe_scope 亮起的「含探测」徽标
+           不是同一把尺。判据取自响应（overview.probe_scope），不是本地开关。 -->
+      <StatsLegacyCaliberNote :probe-scope="overview?.probe_scope" />
+
       <div class="charts-row">
         <div class="charts-row__trend">
           <SessionTrendChart :data="trendChartData" :loading="loading" />
@@ -551,6 +563,9 @@ defineExpose({
         </div>
       </div>
 
+      <!-- ★ N1：信号组（延迟 / 错误）之前同样挂「旧口径」标记（判据同上）。 -->
+      <StatsLegacyCaliberNote :probe-scope="overview?.probe_scope" />
+
       <SessionStatsSignals :pipeline="pipelineLatency" :errors="errorSummary" />
 
       <SessionStatsRankings
@@ -558,6 +573,8 @@ defineExpose({
         :top-clients="overview.top_clients || []"
         :top-tasks="overview.top_tasks || []"
         :model-usage="overview.model_usage || []"
+        :model-usage-expanded="overview.model_usage_expanded"
+        :model-usage-expansion-reason="overview.model_usage_expansion_reason"
         :trend-window="trendWindow"
       />
     </div>

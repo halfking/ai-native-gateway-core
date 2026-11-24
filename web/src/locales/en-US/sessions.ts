@@ -119,6 +119,11 @@ export default {
     status: { all: 'All', active: 'Active', stopped: 'Stopped' },
   },
   stats: {
+    // ★ F1：cost column is **plain USD** (SUM(ss.total_cost_usd)); the field is
+    //   named total_cost ⇒ the header has to spell the unit out.
+    costUsd: 'Spend (USD)',
+    // ★ F1：the model leg is expanded per session ⇒ totals exceed the KPI.
+    modelCostNote: 'This column is expanded per session: when one session uses several models, that session’s spend is counted once in each model row, so this column totals more than the panel KPI and must not be added to the KPI.',
     scopeNoticeTitle: 'Scope note:',
     scopeHintLabel: 'Scope note',
     scopeNoticeBody: 'This page counts all requests and costs for sessions whose first request happened within the last {days} days.',

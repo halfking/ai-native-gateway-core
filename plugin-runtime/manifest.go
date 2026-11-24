@@ -1,6 +1,7 @@
 package pluginruntime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,6 +20,23 @@ func LoadManifest(path string) (*Manifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
+	// ★ 2026-11-25 12h 修订审计轮 P1-2：schema_version >= 3 的 manifest 走
+	// **严格解码**（未知字段直接报错），而不是像 v1/v2 那样静默丢弃。
+	//
+	//	★ 为什么要分版本：encoding/json 默认**忽略**结构体里没有的字段 ⇒
+	//	  一份声明了运行时不认识的字段的 manifest，会被「加载成功」而该字段
+	//	  **无声丢失**（插件以为自己配了的东西根本没生效）⇒ 这正是
+	//	  「缺席被当成数据」那一类假绿在**配置面**上的形态。
+	//	★ 为什么只对 v3 收紧：v1/v2 的历史 manifest 可能带运行时不关心的
+	//	  附加字段（仓内既有 manifest 就是这样），一次性收紧会让存量环境
+	//	  全部加载失败 ⇒ 收紧必须**随版本号递进**，这正是版本号存在的意义。
+	//	★ v3 因此有了「与 v2 不同的行为」：v3 承诺「我声明的每个字段都被
+	//	  运行时认识」，不认识的当场报错而不是静默吞掉。
+	if m.SchemaVersion >= strictManifestSchemaVersion {
+		if err := strictUnmarshalManifest(data, &m); err != nil {
+			return nil, fmt.Errorf("parse manifest (schema_version %d, strict): %w", m.SchemaVersion, err)
+		}
+	}
 	if err := m.validate(); err != nil {
 		return nil, err
 	}
@@ -30,8 +48,36 @@ func LoadManifest(path string) (*Manifest, error) {
 	return &m, nil
 }
 
+// strictManifestSchemaVersion 是「严格解码」的起始 schema_version。
+//
+// ★ 取 3 的理由：schema_version 3 是本仓首个**显式放开**的版本号
+//
+//	（validate() 接受 0/1/2/3），而它的扩展字段（API / Requires / Provides /
+//	Essential / Defaults / SettingsSchema / ClientAssets）在此之前就已存在
+//	⇒ v3 与 v2 在结构上同构 ⇒ 若不给 v3 一个**可观察的差异**，版本号就只是
+//	一个没有语义的标签（声明 v3 与声明 v2 完全同构）。
+const strictManifestSchemaVersion = 3
+
+// strictUnmarshalManifest 用 DisallowUnknownFields 解码 manifest。
+//
+// ★ 用 Decoder 而不是 json.Unmarshal：DisallowUnknownFields 只在 Decoder 上
+//
+//	可用（json.Unmarshal 没有这个开关）。
+//
+// ★ 报错信息里带**未知字段名**（encoding/json 的原话就是
+//
+//	`json: unknown field "xxx"`）⇒ 运维能直接看出是哪一项没被运行时认识。
+func strictUnmarshalManifest(data []byte, m *Manifest) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(m); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (m *Manifest) validate() error {
-	if m.SchemaVersion != 0 && m.SchemaVersion != 1 && m.SchemaVersion != 2 {
+	if m.SchemaVersion != 0 && m.SchemaVersion != 1 && m.SchemaVersion != 2 && m.SchemaVersion != 3 {
 		return fmt.Errorf("unsupported schema_version %d", m.SchemaVersion)
 	}
 	if m.PluginID == "" {
@@ -47,11 +93,11 @@ func (m *Manifest) validate() error {
 	if contract != SupportedAPIContract && contract != SupportedAPIContractV2 {
 		return fmt.Errorf("unsupported api_contract %q", contract)
 	}
-	if m.SchemaVersion == 2 && contract != SupportedAPIContractV2 {
-		return fmt.Errorf("schema_version 2 requires %s", SupportedAPIContractV2)
+	if m.SchemaVersion >= 2 && contract != SupportedAPIContractV2 {
+		return fmt.Errorf("schema_version %d requires %s", m.SchemaVersion, SupportedAPIContractV2)
 	}
 	if m.SchemaVersion < 2 && contract == SupportedAPIContractV2 {
-		return fmt.Errorf("api_contract %s requires schema_version 2", SupportedAPIContractV2)
+		return fmt.Errorf("api_contract %s requires schema_version >= 2", SupportedAPIContractV2)
 	}
 	if err := validateStringSet("permissions", m.Permissions, m.Capabilities); err != nil {
 		return err
@@ -101,8 +147,17 @@ func (m *Manifest) validate() error {
 	if err := validateServiceNames("provides", m.Provides); err != nil {
 		return err
 	}
-	if m.API != "" && !Compatible(m.API) && !strings.HasPrefix(strings.TrimSpace(m.API), "^") {
-		return fmt.Errorf("api %q must be a caret range like ^1", m.API)
+	if m.API != "" {
+		trimmed := strings.TrimSpace(m.API)
+		if !strings.HasPrefix(trimmed, "^") {
+			return fmt.Errorf("api %q must be a caret range like ^1", m.API)
+		}
+		// Validate format: check that it's parseable
+		apiVersion := strings.TrimPrefix(trimmed, "^")
+		if _, _, ok := parseAPIVersion(apiVersion); !ok {
+			return fmt.Errorf("api %q has invalid version format", m.API)
+		}
+		// Note: compatibility with HostAPI is checked at runtime, not during validation
 	}
 	if m.SettingsSchema != nil {
 		if m.SettingsSchema.Type != "" && m.SettingsSchema.Type != "object" {

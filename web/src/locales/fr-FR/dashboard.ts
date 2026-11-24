@@ -8,6 +8,11 @@ tabs: {
     sessionStats: 'Sessions et statistiques',
     selfcheck: 'Auto-vérification',
   },
+  // ★ N1：marqueur de calibra pour les blocs encore calculés sur l'ancien univers de sessions.
+  stats: {
+    legacyCaliberLabel: 'Ancienne méthode',
+    legacyCaliberTitle: 'Ces blocs (tendance / santé / erreurs / performance) sont encore calculés sur l’ancien univers de sessions : ce n’est pas la même mesure que le KPI du panneau, ils ne doivent donc pas être additionnés ni comparés directement au KPI.',
+  },
 v2: {
     quickApiKey: 'API Key',
     quickModels: 'Models',
