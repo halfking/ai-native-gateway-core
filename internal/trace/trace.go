@@ -86,6 +86,7 @@ const (
 	ModuleExecutor   Module = "executor"
 	ModuleUpstream   Module = "upstream"
 	ModuleSession    Module = "session"
+	ModuleHooks      Module = "hooks" // W3 external hooks (2026-11-25)
 )
 
 // TraceEvent 单个步骤事件。

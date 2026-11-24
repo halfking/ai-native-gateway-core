@@ -419,6 +419,47 @@ func (b EventBuilder) Append(ctx context.Context, rec Recorder, requestID string
 	}
 }
 
+// ExternalHookBlock (W3, 2026-11-25) constructs external_hook_block event.
+// Called when an external hook blocks a request via onRequest decision.
+func ExternalHookBlock(stage, reason string) EventBuilder {
+	return EventBuilder{
+		stage:  Stage("external_hook_block"),
+		module: ModuleHooks,
+		status: StatusFailed,
+		errMsg: reason,
+		details: map[string]any{
+			"stage":  stage,
+			"reason": reason,
+		},
+	}
+}
+
+// ExternalHookRewrite (W3, 2026-11-25) constructs external_hook_rewrite event.
+// Called when an external hook rewrites the request body via onRequest decision.
+func ExternalHookRewrite(stage string) EventBuilder {
+	return EventBuilder{
+		stage:  Stage("external_hook_rewrite"),
+		module: ModuleHooks,
+		status: StatusSuccess,
+		details: map[string]any{
+			"stage": stage,
+		},
+	}
+}
+
+// ExternalHookCapture (W3, 2026-11-25) constructs external_hook_capture event.
+// Called when an external hook captures response metadata via onResponse (fire-and-forget).
+func ExternalHookCapture(stage string) EventBuilder {
+	return EventBuilder{
+		stage:  Stage("external_hook_capture"),
+		module: ModuleHooks,
+		status: StatusSuccess,
+		details: map[string]any{
+			"stage": stage,
+		},
+	}
+}
+
 // ─── 辅助 ────────────────────────────────────────────────────────────────────
 
 // classifyUpstreamError 把上游错误归类为人可读提示。
