@@ -1,15 +1,22 @@
 import { execSync } from 'node:child_process';
 const BASE = '3a3403c1e';
 const cjk = new RegExp('[\\u4e00-\\u9fff\\u3400-\\u4dbf]');
-const nameCmd = 'git diff ' + BASE + '..HEAD --name-only -- web/src/';
+// ★ -z 化（2026-11-25 12h 修订审计轮）：★ `--name-only` 默认受 core.quotePath
+// ★ 转义 ⇒ 非 ASCII 路径被转成八进制＋外层双引号 ★ ⇒ ★ 而本脚本按
+// ★ `/^web\/src\/.+\.(vue|ts)$/` 挑候选文件 ⇒ ★ 转义形态下中文文件名末尾带引号
+// ★ ⇒ **被误滤掉** ⇒ ★ ⇒ 必须走 `-z` 拿原始 UTF-8 字节 ★
+// ★ ★ 顺带：-z 化后拿到的是**原始路径**（可能含空格/元字符）⇒ ★ 拼进命令行时
+// ★ ★ 必须做 shell 安全引用 ★ ★
+const q = s => "'" + s.replace(/'/g, "'\\''") + "'";
+const nameCmd = 'git diff ' + BASE + '..HEAD --name-only -z -- web/src/';
 const files = execSync(nameCmd, { encoding: 'utf8' })
- .split('\n')
+ .split('\0')
  .map(s => s.trim())
  .filter(f => /^web\/src\/.+\.(vue|ts)$/.test(f) && !f.includes('locales/'));
 console.log('candidates:', files.length);
 const report = [];
 for (const f of files) {
- const cmd = 'git diff ' + BASE + '..HEAD --unified=0 --no-color -- ' + f;
+ const cmd = 'git diff ' + BASE + '..HEAD --unified=0 --no-color -- ' + q(f);
  let out = '';
  try {
  out = execSync(cmd, { encoding: 'utf8', maxBuffer:50 *1024 *1024 });

@@ -68,7 +68,7 @@ done
 cd "$REPO_ROOT"
 
 # ── 枚举面自检（★ 读空 ⇒ 门会「一个都不检查」⇒ 必须报出来）────────────
-sh_count=$(git ls-files '*.sh' '*.bash' | wc -l | tr -d ' ')
+sh_count=$(git ls-files -z '*.sh' '*.bash' | tr '\0' '\n' | wc -l | tr -d ' ')
 if [ "$sh_count" -lt 10 ]; then
   echo "ABORT: 在 ${REPO_ROOT} 只枚举到 ${sh_count} 个 shell 脚本 —— 仓库根很可能算错了" >&2
   exit 2
