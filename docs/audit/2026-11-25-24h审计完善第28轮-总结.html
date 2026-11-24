@@ -53,14 +53,14 @@
   <div class="kpi">
     <div class="card"><b>0</b><span>Go 侧红灯：构建、全量 <code>ursmcheck</code>、变更包测试、installer、plugin-runtime 全绿</span></div>
     <div class="card"><b style="color:var(--red)">8</b><span>前端窗口内新增的红（web 6 ＋ web-mobile 2），同一引入提交</span></div>
-    <div class="card"><b style="color:var(--red)">2</b><span>request-logs 的 P1 回归（历史探测视图退化、截窗不可见）</span></div>
+    <div class="card"><b>2</b><span>条 P1 定位成立；实现被并行车道更根本的修复取代（已撤回）</span></div>
     <div class="card"><b style="color:var(--red)">2</b><span>AGENTS.md 交接面的整块/段头丢失事故（L87、L108）</span></div>
     <div class="card"><b>3</b><span>已删除的不活跃 worktree；1 个保全分支；0 个分支被删</span></div>
   </div>
   <div class="card">
     <ul>
       <li><b>后端没有回归，回归在前端和记录里。</b> Go 侧在合并后的上游基线上全绿；8 个前端红全是窗口内新增（基线树上这些文件全绿），根因是提交 <code>cdd155fff</code> 把「日对账」前端带进主线时没补六语种译文和三处登记表。</li>
-      <li><b>request-logs 的两个 P1 来自同一笔提交 <code>af2bb4970</code>：</b> 为「提前选超时」把 <code>lane=probe|probe_history</code> 并进了语义变量 <code>includeProbe</code>，而它同时决定「摘掉车道谓词」和「换成 union 源」；以及截窗事实只写进响应、前端无人读。</li>
+      <li><b>request-logs 的两个 P1 来自同一笔提交 <code>af2bb4970</code>，本轮定位成立，但实现已被上游更根本的修复取代：</b>把 <code>lane=probe|probe_history</code> 并进语义变量 <code>includeProbe</code>，历史探测视图会显示全量流量；含探测查询被自动截到 12 小时。本轮最初把截窗「显示出来」；并行车道指出<b>截窗本身不该存在</b>——日历型预设的 end 落在未来，截出的窗口必然 0 行——于是撤掉截窗并把超时根因（分区统计信息陈旧）修掉，211 实测 26s → 0.4s。本轮撤回自己的实现，以上游为准。</li>
       <li><b>交接面丢了两块而没有任何门会红：</b> L87 整块在人工解冲突的合并里被丢，L108 段头被顶部插入的新块覆盖。根因不是内容不存在（git 历史与报告侧都在），而是 AGENTS.md 的完整性没有判据。</li>
       <li><b>「预存红」要相对窗口而不是相对上一轮：</b> 另一车道登记的「既有预存红」里，有 6 个在 24h 窗口起点并不存在。</li>
       <li><b>未合并分支不是垃圾，也不能由清理动作代并：</b> <code>codex/reconciliation-upgrade</code> 的检查点是一整套未获生产授权的 V2 读面（19 个冲突路径、2 个新迁移），保留待 owner 决策。</li>
@@ -71,14 +71,14 @@
   <div class="card">
     <table>
       <tr><th>#</th><th>文件</th><th>关键行为</th><th>验证</th></tr>
-      <tr><td>1</td><td><code>admin/logs.go</code><br><code>admin/logs_probe_lane_test.go</code></td><td>拆出 <code>logsQueryScope</code>：<code>includeProbe</code> 只表示「显式要含探测」，<code>unionScope</code> 才跟随超时放宽与截窗；<code>lane=probe|probe_history</code> 恢复为「仅历史探测」；响应补 <code>window_clamp_hours</code>；全文 gofmt</td><td><span class="pill p-ok">7 测试绿</span> 变异自证 2/2</td></tr>
-      <tr><td>2</td><td><code>web/src/api/logs.ts</code><br><code>web/src/views/RequestLogsView.vue</code><br><code>web/src/locales/*/requests.ts</code>×8<br><code>RequestLogsView.windowClamp.contract.spec.ts</code>（新）</td><td>统计概览处新增「窗口已截到近 N 小时」徽标，认响应值、失败复位</td><td><span class="pill p-ok">契约 4/4</span> 变异 3/3</td></tr>
+      <tr><td>—</td><td>（已撤回）<code>admin/logs.go</code>、<code>RequestLogsView.vue</code>、8 个 <code>requests.ts</code> 等 13 个文件</td><td><code>36c278858</code> ⇒ <code>ddc6aed19</code> 撤回；以上游 <code>71af786f6</code>／<code>c0dad181d</code> 为准</td><td><span class="pill p-ok">与上游 diff 为空</span></td></tr>
       <tr><td>3</td><td><code>web/src/locales/{6 语种}/reports.ts</code></td><td>补齐「日对账」块与 <code>legacySnapshotView</code> 的译文</td><td>@@HTML_I18N@@</td></tr>
       <tr><td>4</td><td><code>mobileListUx.spec.ts</code><br><code>web-mobile/…/orphanLedger.spec.ts</code><br><code>web-mobile/…/dynamicKeys.spec.ts</code></td><td>三处登记表按事实更新（行号漂移、新 API 模块、两个动态前缀）</td><td><span class="pill p-ok">3 spec 绿</span></td></tr>
       <tr><td>5</td><td><code>AGENTS.md</code><br><code>AGENTS-archive-20261031.md</code></td><td>从 git 历史逐字恢复 L87、L79、L108；L71 去重；L23 段头接回正文；L107 就地订正</td><td><span class="pill p-ok">9 门绿</span></td></tr>
       <tr><td>6</td><td><code>scripts/ursmcheck/agents_md_round_label_gate_test.go</code>（新）</td><td>R5 主档内轮标记唯一；R6 轮块只许搬、不许丢</td><td>变异自证 2/2</td></tr>
       <tr><td>7</td><td><code>internal/rowsguard/rowsguard.go</code>（＋测试）<br><code>discovery/alias_sync.go</code></td><td>门的接收者识别扩到类型断言形态；4 个循环补终检</td><td><span class="pill p-ok">918 循环 0 违规</span></td></tr>
       <tr><td>8</td><td>文档软链、4 个 README、W3 集成指南</td><td>悬空软链重定向；域数 69⇒83；集成指南加现状声明</td><td><span class="pill p-ok">已核</span></td></tr>
+      <tr><td>9</td><td><code>verify-211-captcha-ttl.sh</code>、<code>pipefail_race_ledger.tsv</code>、<code>cjk_var_sites.tsv</code>、<code>structured-registry-census.json</code>、<code>dashboard_session_summaries_window_test.go</code>、示例清单 <code>manifest-v3-example.json</code></td><td>代上游收口主干 6 条红（纯上游树 <code>6c18bf92c</code> 同条件对照同红）：修一个真站点、裁决 6 个 pipefail 候选、登记 1 个夹具、示例键改对、时间窗门扩展</td><td><span class="pill p-ok">5 组门绿</span> 变异 2/2</td></tr>
     </table>
   </div>
 
@@ -140,9 +140,9 @@
   <div class="card">
     <table>
       <tr><th>级别</th><th>发现</th><th>出处</th><th>状态</th></tr>
-      <tr><td><span class="pill p-p1">P1</span></td><td><code>lane=probe|probe_history</code> 被并入 <code>includeProbe</code> ⇒ 历史探测视图显示全量流量</td><td><code>af2bb4970</code></td><td><span class="pill p-ok">已修＋测试</span></td></tr>
-      <tr><td><span class="pill p-p1">P1</span></td><td>含探测查询被静默截到 12 小时，前端不读 <code>window_clamped</code></td><td><code>af2bb4970</code></td><td><span class="pill p-ok">已修＋测试</span></td></tr>
-      <tr><td><span class="pill p-p1">P1</span></td><td>「日对账」前端六语种缺译（约 80 键）＋三处登记表未更新 ⇒ 8 个门禁红</td><td><code>cdd155fff</code></td><td>@@HTML_I18N_ROW@@</td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td><code>lane=probe|probe_history</code> 被并入 <code>includeProbe</code> ⇒ 历史探测视图显示全量流量</td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td>含探测查询被静默截到 12 小时，前端不读 <code>window_clamped</code></td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td>「日对账」前端六语种缺译（225 个键）＋三处登记表未更新 ⇒ 8 个门禁红</td><td><code>cdd155fff</code></td><td>@@HTML_I18N_ROW@@</td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>rowsguard 门看不见类型断言形态的循环（4 处缺终检；文件无生产调用方）</td><td><code>5e6b4812b</code></td><td><span class="pill p-ok">已修＋门扩展</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>AGENTS.md：L87 整块、L108 段头、L79 ⑪⑫ 丢失；L71 归档未摘净；无门</td><td><code>570087c16</code>、<code>34b4a9a6f</code></td><td><span class="pill p-ok">已恢复＋新门</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>L107 记录「不照搬退役/后继框架」与事实相反（<code>e7e03cdb8</code> 带进了整套框架）</td><td>L107</td><td><span class="pill p-ok">已就地订正</span></td></tr>
