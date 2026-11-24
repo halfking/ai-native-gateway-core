@@ -633,7 +633,8 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// The list query joins the hot metadata view with provider/model/title
 	// projections. A 5s budget caused valid historical windows to return 500
 	// while the underlying request-log count remained healthy under load.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// 2026-11-25: 增加超时到60秒以处理大窗口查询和多过滤器场景
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
