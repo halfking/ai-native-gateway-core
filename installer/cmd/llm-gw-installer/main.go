@@ -1961,6 +1961,18 @@ var addOccurredCursorIndex983cDown []byte
 //go:embed embeddata/startup/055_teams_table.sql
 var teamsTable055 []byte
 
+//go:embed embeddata/startup/055_teams_table.down.sql
+var teamsTable055Down []byte
+
+//go:embed embeddata/startup/056_user_teams.down.sql
+var userTeams056Down []byte
+
+//go:embed embeddata/startup/057_api_keys_team_id.down.sql
+var apiKeysTeamID057Down []byte
+
+//go:embed embeddata/startup/058_team_budgets.down.sql
+var teamBudgets058Down []byte
+
 //go:embed embeddata/startup/056_user_teams.sql
 var userTeams056 []byte
 
@@ -2714,10 +2726,14 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。
-	"startup/055_teams_table.sql":      teamsTable055,
-	"startup/056_user_teams.sql":       userTeams056,
-	"startup/057_api_keys_team_id.sql": apiKeysTeamID057,
-	"startup/058_team_budgets.sql":     teamBudgets058,
+	"startup/055_teams_table.sql":           teamsTable055,
+	"startup/055_teams_table.down.sql":      teamsTable055Down,
+	"startup/056_user_teams.sql":            userTeams056,
+	"startup/056_user_teams.down.sql":       userTeams056Down,
+	"startup/057_api_keys_team_id.sql":      apiKeysTeamID057,
+	"startup/057_api_keys_team_id.down.sql": apiKeysTeamID057Down,
+	"startup/058_team_budgets.sql":          teamBudgets058,
+	"startup/058_team_budgets.down.sql":     teamBudgets058Down,
 	// ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」。
 	"startup/984_session_universe_cost_aware_probe_scope.sql":      sessionUniverseCostAwareProbeScope984,
 	"startup/984_session_universe_cost_aware_probe_scope.down.sql": sessionUniverseCostAwareProbeScope984Down,
@@ -2739,16 +2755,16 @@ var embeddedSQLFiles = map[string][]byte{
 	//   ⇒ ★ **两者不再是同一件东西**、★ 编号撞车已由三避解掉 ★★
 	//   ｜★★ **上游本批新增的 985/986/987/988/925 五组映射全部保留**（★ 上游
 	//   ★ 自己新推的迁移、★ 我方一行未删）★★
-	"startup/987_provider_invoice_evidence.sql":                          providerInvoiceEvidence987,
-	"startup/987_provider_invoice_evidence.down.sql":                     providerInvoiceEvidence987Down,
-	"startup/985_request_reconciliation_links.sql":                       requestReconciliationLinks985,
-	"startup/985_request_reconciliation_links.down.sql":                  requestReconciliationLinks985Down,
-	"startup/986_provider_attempt_media_usage.sql":                       providerAttemptMediaUsage986,
-	"startup/986_provider_attempt_media_usage.down.sql":                  providerAttemptMediaUsage986Down,
-	"startup/988_provider_invoice_usage_buckets.sql":                     providerInvoiceUsageBuckets988,
-	"startup/988_provider_invoice_usage_buckets.down.sql":                providerInvoiceUsageBuckets988Down,
-	"startup/925_supplier_contract_rates.sql":                            supplierContractRates925,
-	"startup/925_supplier_contract_rates.down.sql":                       supplierContractRates925Down,
+	"startup/987_provider_invoice_evidence.sql":           providerInvoiceEvidence987,
+	"startup/987_provider_invoice_evidence.down.sql":      providerInvoiceEvidence987Down,
+	"startup/985_request_reconciliation_links.sql":        requestReconciliationLinks985,
+	"startup/985_request_reconciliation_links.down.sql":   requestReconciliationLinks985Down,
+	"startup/986_provider_attempt_media_usage.sql":        providerAttemptMediaUsage986,
+	"startup/986_provider_attempt_media_usage.down.sql":   providerAttemptMediaUsage986Down,
+	"startup/988_provider_invoice_usage_buckets.sql":      providerInvoiceUsageBuckets988,
+	"startup/988_provider_invoice_usage_buckets.down.sql": providerInvoiceUsageBuckets988Down,
+	"startup/925_supplier_contract_rates.sql":             supplierContractRates925,
+	"startup/925_supplier_contract_rates.down.sql":        supplierContractRates925Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
