@@ -65,7 +65,11 @@ var boardTerminalStatusRe = regexp.MustCompile(`request_status IN \('success', '
 var boardMinuteQueryFuncs = []struct{ file, decl string }{
 	{"dashboard_board_queries.go", "func (h *Handler) queryBoardSummary("},
 	{"dashboard_board_queries.go", "func (h *Handler) queryBoardPies("},
-	{"dashboard_board_queries.go", "func (h *Handler) queryBoardTrends("},
+	// ★ 2026-11-24 第二轮：趋势主路径由 queryBoardTrends（facts）改名为
+	// queryBoardTrendsLogs（请求级日志）；**能落到 minute 路径的分派器**是
+	// resolveBoardTrends，minute 读者本身是 queryBoardTrendsMinute ⇒ 两个都钉。
+	{"dashboard_board_queries.go", "func (h *Handler) resolveBoardTrends("},
+	{"dashboard_board_queries.go", "func (h *Handler) queryBoardTrendsMinute("},
 	{"dashboard_board_queries.go", "func (h *Handler) queryOverviewCountsMinute("},
 	{"dashboard_board_aux.go", "func (h *Handler) queryErrorDrillMinute("},
 }

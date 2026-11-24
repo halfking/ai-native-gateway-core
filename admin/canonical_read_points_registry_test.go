@@ -377,9 +377,11 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	"admin/dashboard_board_queries.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsExpressionReplication,
-		Note:  "看板读面：① 英雄区汇总与趋势读 usage_facts（非 canonical 视图）；② 饼图 7 维聚合读 request_logs_with_current_month（2026-11-24 真源统一轮：单次扫描 + LATERAL VALUES 展开 7 个维度，取代预聚合维表）",
+		Note:  "看板读面（2026-11-24 第二轮：整页切请求级日志）：① 英雄区汇总与趋势读 request_logs_with_current_month（与饼图**同一张视图、同一终态集、同一探测谓词** ⇒ 整页同源）；② 饼图 7 维聚合读同一张视图（单次扫描 + unnest(ARRAY) 展开 7 个维度，取代预聚合维表）",
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"cost_usd:base", "error_kind:base", "request_status:expr", "total_tokens:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "看板饼图 7 维聚合（agent_name/client_ip/identity_hash/model/tenant/provider/error_kind）；本读点读 cost_usd:base,error_kind:base,request_status:expr,total_tokens:expr ⇒ 引用了视图里的 CASE 表达式列（request_status / total_tokens）⇒ 窄投影须复刻那份表达式"},
+			{Kind: "read", Columns: []string{"completion_tokens:base", "cost_usd:base", "latency_ms:base", "prompt_tokens:base", "request_status:expr", "success:base", "total_tokens:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "看板英雄区汇总（2026-11-24 第二轮由 usage_facts 切到请求级日志 ⇒ 与趋势/饼图同宇宙）；本读点读 completion_tokens:base,cost_usd:base,latency_ms:base,prompt_tokens:base,request_status:expr,success:base,total_tokens:expr ⇒ 引用了视图里的 CASE 表达式列（request_status / total_tokens）⇒ 窄投影须复刻那份表达式"},
+			{Kind: "read", Columns: []string{"cost_usd:base", "total_tokens:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "看板趋势分桶（2026-11-24 第二轮由 usage_facts 切到请求级日志 ⇒ 与英雄区/饼图同宇宙）；本读点读 cost_usd:base,total_tokens:expr ⇒ 引用了视图里的 CASE 表达式列（total_tokens）⇒ 窄投影须复刻那份表达式"},
 		},
 	},
 	"admin/data_lifecycle.go": {
