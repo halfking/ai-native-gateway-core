@@ -195,7 +195,7 @@
 | `maestro/flows/14-stats-consistency-test.yaml` | 统计口径一致性 | 5 | 是 | openLink 步数 5。 |
 | `maestro/flows/15-board-probe-scope.yaml` | 看板探测口径筛选 | 2 | 是 | openLink 步数 2。 |
 | `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。★ **必须经 `maestro/run-session-analytics.sh` 跑**（它负责喂动态段 owner、钉 zh-CN 界面语言、起全新 Chrome）—— 前置条件见 §4.4。 |
-| `maestro/flows/18-stats-range-and-scope-hint.yaml` | **时间范围统一 + 统计说明提示符**（看板 / 会话统计 / 会话分析用户页 / 运营面板） | 4 | 是 | ★ 2026-11-24~25 统一轮新增：第一层证明「浏览器真的能打开这四页、点到日期控件、面板真的展开」（判据全用 `data-testid` ⇒ 与界面语言解耦）。第二层语义对拍在 `maestro/tools/assert-stats-range-picker.mjs`（26 条）与 `maestro/tools/assert-board-op-custom-range.mjs`（5 条：自定义区间 + 7 档位逐个对拍）。★ **必须经 `maestro/run-stats-range-picker.sh` 跑**（它负责起全新 Chrome、顺延端口、注入凭据与视口，并按 `result.mjs` 的 `mergeExitCodes` 合并三层退出码）。★ **2026-11-25 起默认走「CDP 预置会话」**：runner 在 211 本机现签 JWT ⇒ 注入浏览器 ⇒ **完全不走 UI 登录** ⇒ 因此**不受生产 captcha 闸门约束**（机制与计数清零条件见 §6.4，实现与两态实测表见 §6.5.1）。 |
+| `maestro/flows/18-stats-range-and-scope-hint.yaml` | **时间范围统一 + 统计说明提示符**（看板 / 会话统计 / 会话分析用户页 / 运营面板） | 4 | 是 | ★ 2026-11-24~25 统一轮新增：第一层证明「浏览器真的能打开这四页、点到日期控件、面板真的展开」（判据全用 `data-testid` ⇒ 与界面语言解耦）。第二层语义对拍在 `maestro/tools/assert-stats-range-picker.mjs`（26 条）与 `maestro/tools/assert-board-op-custom-range.mjs`（5 条：自定义区间 + 7 档位逐个对拍）与 `maestro/tools/assert-board-op-list-deeplink.mjs`（4 条：**列表页** `/admin/board-operational/:dimension` 的 `?start=&end=` **深链**——深链到达后端 / 显示=数据 / 深链优先于 days / 默认 7 天；★ 2026-11-25 第 30 轮新增，★ 列表页并入共享日期组件后这条能力**只有它有** ⇒ 必须有独立证据）。★ **必须经 `maestro/run-stats-range-picker.sh` 跑**（它负责起全新 Chrome、顺延端口、注入凭据与视口，并按 `result.mjs` 的 `mergeExitCodes` 合并三层退出码）。★ **2026-11-25 起默认走「CDP 预置会话」**：runner 在 211 本机现签 JWT ⇒ 注入浏览器 ⇒ **完全不走 UI 登录** ⇒ 因此**不受生产 captcha 闸门约束**（机制与计数清零条件见 §6.4，实现与两态实测表见 §6.5.1）。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
 合计：**运行时路由 136 条**（§1.1 口径）。
@@ -1286,6 +1286,7 @@ maestro/
     ├── assert-stage-tree.mjs  ← 请求阶段树的页面内结构/口径对拍（2026-11-17 新增）
     ├── assert-stats-range-picker.mjs  ← ★ 时间范围四页的结构/语义对拍（26 条，2026-11-25 统一轮）
     ├── assert-board-op-custom-range.mjs ← ★ 运营面板**自定义区间 + 7 档位逐个**对拍（5 条，2026-11-25）
+    ├── assert-board-op-list-deeplink.mjs ← ★ 运营看板**列表页深链**对拍（4 条：start/end 深链到达后端 / 显示=数据 / 深链优先于 days / 默认 7 天，2026-11-25 第 30 轮）
     ├── probe-selectors.mjs    ← 选择器语义实测探针（2026-11-17 新增）
     ├── seed-session.mjs       ← 无口令路径：CDP 预置登录态（★ `--reuse-tab`：接管**已有**的页而不新建 ⇒ 用来给「Maestro 自起的那个 Chrome」注入）
     └── slow-pages.mjs         ← 从运行产物里筛「>2 秒」的页面

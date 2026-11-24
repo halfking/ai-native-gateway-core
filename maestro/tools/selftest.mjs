@@ -169,6 +169,31 @@ t('★ 防回归：seed-session.mjs 必须显式退出（close 握手不返回 �
   }
 })
 
+// ── 防回归：列表页**深链**这条能力必须一直有生产证据 ───────────────────────
+// ★ 为什么钉它：列表页并入共享日期组件后，**深链（?start=&end=）直接决定初始区间**
+//   是它独有的能力（别的页没有）⇒ 一旦 runner 不再调那个探针，这条能力就会
+//   **静默地没有证据**（页面照常工作 ⇒ 没有任何告警 ⇒ 只是慢慢腐化）。
+//   ⇒ 语义钉测证明不了「runner 还调它」⇒ 必须静态钉。
+t('★ 防回归：runner 必须调深链探针（列表页 ?start=&end= 这条能力否则永远没证据）', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'run-stats-range-picker.sh'), 'utf8')
+  if (!src.includes('assert-board-op-list-deeplink.mjs')) {
+    throw new Error('runner 没调 assert-board-op-list-deeplink.mjs ⇒ 深链能力在生产上没有证据')
+  }
+  if (!/mergeExitCodes\(\[[^\]]*DEEPLINK_RC[^\]]*\]\)/.test(src)) {
+    throw new Error('runner 的 mergeExitCodes 没并入 DEEPLINK_RC ⇒ 深链层的红会被吃掉')
+  }
+})
+
+t('★ 防回归：深链探针的判定口径必须走 result.mjs（不许自己写判定）', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'tools', 'assert-board-op-list-deeplink.mjs'), 'utf8')
+  if (!src.includes("from './result.mjs'")) {
+    throw new Error('深链探针没从 result.mjs 取 summarize ⇒ 判定口径又多了一份')
+  }
+  if (!/summarize\(checks, \{ skipped \}\)/.test(src)) {
+    throw new Error('深链探针没用 summarize(checks, { skipped }) ⇒ 退出码口径漂移')
+  }
+})
+
 let bad = 0
 for (const c of cases) {
   console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : '  —— ' + c.err}`)

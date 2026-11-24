@@ -415,9 +415,26 @@ node "${ROOT}/maestro/tools/assert-board-op-custom-range.mjs" \
   2>&1 | tee "${OUT}/assert-board-op-custom-range.txt"
 CUSTOM_RC=${PIPESTATUS[0]}
 
+# ── 5c. 第二层·补充：列表页**深链**对拍（独立工具）────────────────────────
+# ★ 为什么独立成这一步（第 30 轮）：
+#   列表页（/admin/board-operational/:dimension）并入共享日期组件后，多了一条
+#   **别的页都没有**的能力：URL 深链（?start=&end=）直接决定初始区间 ⇒
+#   ⇒ 这条能力在生产上**没有独立证据**（不是缺信心，是缺覆盖）⇒ 这里补上。
+# ★ 判据全是**网络层 / DOM 层**证据：深链真的到达后端（请求带 start/end）、
+#   显示的区间 == 请求窗口、深链优先于 days、无参时默认 7 天。
+echo "== 第二层·补充：列表页深链（assert-board-op-list-deeplink.mjs）"
+ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+node "${ROOT}/maestro/tools/assert-board-op-list-deeplink.mjs" \
+  --cdp "http://127.0.0.1:${PROBE_CDP_PORT}" \
+  --url "${BASE_URL}" \
+  --user "${ADMIN_USER}" \
+  2>&1 | tee "${OUT}/assert-board-op-list-deeplink.txt"
+DEEPLINK_RC=${PIPESTATUS[0]}
+
 printf 'flow rc=%s FAILED=%s\n' "${FLOW_RC}" "${FLOW_FAILED}" >>"${SUMMARY}"
 printf 'probe rc=%s\n' "${PROBE_RC}" >>"${SUMMARY}"
 printf 'custom-range rc=%s\n' "${CUSTOM_RC}" >>"${SUMMARY}"
+printf 'list-deeplink rc=%s\n' "${DEEPLINK_RC}" >>"${SUMMARY}"
 echo "---- 汇总 ----"
 cat "${SUMMARY}"
 echo "产物目录：${OUT}"
@@ -434,7 +451,7 @@ echo "产物目录：${OUT}"
 MERGED_RC="$(node -e "
 import('node:url').then(async (u) => {
   const m = await import(u.pathToFileURL('${ROOT}/maestro/tools/result.mjs').href)
-  process.stdout.write(String(m.mergeExitCodes([${FLOW_RC}, ${PROBE_RC}, ${CUSTOM_RC}])))
+  process.stdout.write(String(m.mergeExitCodes([${FLOW_RC}, ${PROBE_RC}, ${CUSTOM_RC}, ${DEEPLINK_RC}])))
 })
 " 2>/dev/null)"
 if [ -z "${MERGED_RC}" ]; then
@@ -444,15 +461,15 @@ fi
 printf 'merged rc=%s\n' "${MERGED_RC}" >>"${SUMMARY}"
 case "${MERGED_RC}" in
   1)
-    echo "VERDICT: FAIL（flow rc=${FLOW_RC} FAILED=${FLOW_FAILED} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC}）"
+    echo "VERDICT: FAIL（flow rc=${FLOW_RC} FAILED=${FLOW_FAILED} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC} / list-deeplink rc=${DEEPLINK_RC}）"
     exit 1
     ;;
   2)
-    echo "VERDICT: 量具失效（flow rc=${FLOW_RC} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC}：断言未评估，**这不是产品缺陷**）"
+    echo "VERDICT: 量具失效（flow rc=${FLOW_RC} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC} / list-deeplink rc=${DEEPLINK_RC}：断言未评估，**这不是产品缺陷**）"
     exit 2
     ;;
   *)
-    echo "VERDICT: PASS（两层全绿：flow rc=${FLOW_RC} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC}）"
+    echo "VERDICT: PASS（两层全绿：flow rc=${FLOW_RC} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC} / list-deeplink rc=${DEEPLINK_RC}）"
     exit 0
     ;;
 esac
