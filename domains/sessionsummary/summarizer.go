@@ -517,6 +517,18 @@ func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey 
 func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*SessionSummary, error) {
 	jsonStr := extractJSON(response)
 
+	// 验证提取的内容是否看起来像 JSON
+	trimmed := strings.TrimSpace(jsonStr)
+	if !strings.HasPrefix(trimmed, "{") {
+		// 记录原始响应的前 500 个字符以便调试
+		preview := response
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		return nil, fmt.Errorf("failed to parse JSON: response does not look like JSON (starts with %q), preview: %s",
+			safePrefix(trimmed, 20), preview)
+	}
+
 	var result struct {
 		Title      string   `json:"title"`
 		Summary    string   `json:"summary"`
@@ -528,7 +540,13 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 	}
 
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+		// 记录原始响应的前 500 个字符以便调试
+		preview := response
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		return nil, fmt.Errorf("failed to parse JSON: %w, extracted: %q, preview: %s",
+			err, safePrefix(jsonStr, 100), preview)
 	}
 
 	if result.Title == "" {
@@ -997,4 +1015,14 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
+}
+
+// safePrefix returns the first n runes of s, or the entire string if shorter.
+// Used for safe error message previews.
+func safePrefix(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "..."
 }
