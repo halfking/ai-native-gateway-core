@@ -8,6 +8,12 @@ tabs: {
     sessionStats: '會話與統計',
     selfcheck: '系統自檢',
   },
+  // ★ N1：「舊口徑」披露標記 —— 面板頂部徽標按總覽回應的 probe_scope 亮了，
+  //   而趨勢/健康度/錯誤/效能那幾塊仍按舊會話宇宙算 ⇒ 必須標出「這是哪把尺」。
+  stats: {
+    legacyCaliberLabel: '舊口徑',
+    legacyCaliberTitle: '這幾塊（趨勢 / 健康度 / 錯誤 / 效能）仍按舊會話宇宙統計，與面板 KPI 不是同一把尺，不能直接與 KPI 相加或對比。',
+  },
   v2: {
     quickApiKey: 'API Key', quickModels: '模型', quickApiKeyTitle: '檢視 API Key 排行',
     quickModelsTitle: '查看模型統計', refreshData: '重新整理資料', retry: '重試',

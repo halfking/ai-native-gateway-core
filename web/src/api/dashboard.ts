@@ -161,6 +161,15 @@ export interface SessionOverviewData {
     avg_latency_ms: number
     success_rate: number
   }>
+  /**
+   * ★ F1：模型腿是否按**会话**展开（一个会话用了多个模型 ⇒ 该会话的整段成本
+   *   在每个模型行各计一次 ⇒ 本列合计大于 KPI、不可与 KPI 相加）。
+   *   后端据此披露，前端**按响应值**决定要不要挂重复计数披露。
+   *   缺省（字段未上线）时前端按「已展开」处理 —— 当前实现就是展开的。
+   */
+  model_usage_expanded?: boolean
+  /** ★ F1：后端给出的展开原因（可读文案），有则一并显示。 */
+  model_usage_expansion_reason?: string
 
   // Top 排行
   top_clients: Array<{

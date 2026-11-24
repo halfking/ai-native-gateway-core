@@ -42,22 +42,22 @@ func (m *mockHookHost) Timeout() time.Duration {
 // TestSetExternalHooks verifies the SetExternalHooks method works correctly
 func TestSetExternalHooks(t *testing.T) {
 	handler := &ChatHandler{}
-	
+
 	// Verify nil by default
 	if handler.externalHooks != nil {
 		t.Error("Expected externalHooks to be nil by default")
 	}
-	
+
 	// Create and set integrator
 	mockHost := &mockHookHost{}
 	integrator := externalhost.NewPipelineIntegrator(mockHost)
 	handler.SetExternalHooks(integrator)
-	
+
 	// Verify it was set
 	if handler.externalHooks == nil {
 		t.Error("Expected externalHooks to be set after calling SetExternalHooks")
 	}
-	
+
 	// Verify can be set to nil
 	handler.SetExternalHooks(nil)
 	if handler.externalHooks != nil {
@@ -146,12 +146,12 @@ func TestDetermineOrigin(t *testing.T) {
 			want:       contract.OriginRemote,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			req.RemoteAddr = tt.remoteAddr
-			
+
 			got := determineOrigin(req, tt.keyInfo)
 			if got != tt.want {
 				t.Errorf("determineOrigin() = %v, want %v", got, tt.want)
@@ -182,7 +182,7 @@ func TestIsLocalNetwork(t *testing.T) {
 		{"public IP", "203.0.113.1:8080", false},
 		{"public IP no port", "8.8.8.8", false},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isLocalNetwork(tt.remoteAddr)

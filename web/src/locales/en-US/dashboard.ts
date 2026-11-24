@@ -13,6 +13,11 @@ export default {
     sessionStats: 'Sessions & Statistics',
     selfcheck: 'Self-check',
   },
+  // ★ N1：legacy-caliber disclosure badge for the blocks still on the old session universe.
+  stats: {
+    legacyCaliberLabel: 'Old caliber',
+    legacyCaliberTitle: 'These blocks (trend / health / errors / performance) are still computed on the old session universe — not the same measure as the panel KPI, so they cannot be added to or compared with the KPI directly.',
+  },
   v2: {
     quickApiKey: 'API Key',
     quickModels: 'Models',

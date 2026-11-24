@@ -112,6 +112,11 @@ export default {
     status: { all: 'Alle', active: 'Aktiv', stopped: 'Gestoppt' },
   },
   stats: {
+    // ★ F1：Die Kostenspalte ist **reines USD** (SUM(ss.total_cost_usd)); das Feld
+    //   heißt aber total_cost ⇒ die Spaltenüberschrift muss die Einheit nennen.
+    costUsd: 'Kosten (USD)',
+    // ★ F1：Das Modell-Bein wird **pro Sitzung** aufgefaltet ⇒ Summe übersteigt das KPI.
+    modelCostNote: 'Diese Spalte wird pro Sitzung aufgefaltet: nutzt eine Sitzung mehrere Modelle, wird deren Kosten in jeder Modellzeile einmal gezählt — die Spaltensumme übersteigt daher das KPI im Panel und darf nicht zum KPI addiert werden.',
     scopeNoticeTitle: 'Hinweis zur Abgrenzung:',
     scopeHintLabel: 'Abgrenzung',
     scopeNoticeBody: 'Diese Seite zählt alle Anfragen und Kosten von Sitzungen, deren erste Anfrage in den letzten {days} Tagen lag.',

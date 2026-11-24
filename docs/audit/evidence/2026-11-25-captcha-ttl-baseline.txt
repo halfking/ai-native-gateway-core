@@ -1,0 +1,25 @@
+# captcha 存活窗口验收探针 · 基线态实跑原始输出
+# 命令：bash scripts/audit/verify-211-captcha-ttl.sh --phase baseline --bucket 10.99.99.202
+# 时间：2026-11-25 07:08:52 +0800（★ 现役 = 34b4a9a6 / build_seq 3267 / 尚未加存活窗口 ★）
+# 隔离说明：★ 全部请求带 X-Forwarded-For: 10.99.99.202 ⇒ 失败计数只落隔离桶 ⇒ 真实用户桶不受影响 ★
+
+=== captcha 存活窗口验收探针 ===
+目标      : https://llm.itestu.cn
+相位      : baseline
+隔离桶    : 10.99.99.202   （★ 全部请求带 XFF ⇒ 真实用户桶不受影响 ★）
+用户名    : admin
+
+① 桶的初始状态（只读 GET /api/auth/captcha）⇒ HTTP 200 required=False
+② 连错 3 次（★ 隔离桶内 ★）
+   第 1 次错误口令 ⇒ HTTP 401
+   第 2 次错误口令 ⇒ HTTP 401
+   第 3 次错误口令 ⇒ HTTP 401
+③ 用**正确口令**再试（★ 这一步是判据 ★）
+   正确口令 ⇒ HTTP 400  {"error":{"code":"captcha_required","detail":"captcha required after repeated failed logins"}}
+
+VERDICT: PASS（★ 期望成立：死锁确实在 —— 连正确口令都回 400 captcha_required ★）
+★ ⇒ 候选实现（分支 wip/captcha-ttl-20261125）**尚未生效**（★ 与「未部署」一致 ★）
+
+# 隔离复核（★ 真实桶不带 XFF ⇒ 应为 required=False ★）
+real-bucket(no XFF) => required= False
+isolated-bucket(202) => required= True

@@ -100,7 +100,8 @@ func Start(ctx context.Context, options Options) (*Controller, error) {
 	}
 	c.sup = root.NewSupervisor(root.SupervisorConfig{SocketDir: runtimeDir, SigningPubkey: options.SigningPubkey, PluginEnv: c.events.environment})
 	adapter := &runtimeAdapter{c: c}
-	c.reconciler = reconciler.NewReconciler(&reconciler.Config{Interval: options.Interval}, adapter, adapter)
+	reconcilerCfg := reconcilerConfig(options)
+	c.reconciler = reconciler.NewReconciler(&reconcilerCfg, adapter, adapter)
 	c.reloader, err = config.NewConfigReloader(&cfg, config.NewValidator())
 	if err == nil {
 		err = c.reloader.OnReload(c.applyConfig)

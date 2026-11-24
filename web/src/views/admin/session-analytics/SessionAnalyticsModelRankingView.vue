@@ -104,7 +104,9 @@
             <td>{{ fmt(m.total_tokens) }}</td>
             <td>{{ t('sessionAnalytics.unit.percent', { value: fmt(m.cache_rate) }) }}</td>
             <td>{{ t('sessionAnalytics.unit.milliseconds', { value: fmt(m.avg_duration_ms) }) }}</td>
-            <td>{{ money(m.total_cost) }}</td>
+            <td>
+              <SaCostCell :internal-cost="m.internal_cost" :external-cost="m.external_cost" />
+            </td>
             <td>{{ fmt(m.user_count) }}</td>
             <td>{{ formatTime(m.last_used_at) }}</td>
           </tr>
@@ -130,6 +132,9 @@ import { rangeFromSpanDays } from '../../../components/ui/kxDatePresets'
 import type { KxDateRange, KxDateRangePreset } from '../../../components/ui/kx-date-types'
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
+// ★ N9：成本列走 SaCostCell（内部成本美元 / 外部成本积分分列）——
+//   total_cost 是**跨单位合计**，渲染成一个带 $ 的数等于凭空造出美元金额。
+import SaCostCell from './components/SaCostCell.vue'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
 import { rangeFromQuery } from './saQueryParams'
 import {
@@ -180,13 +185,8 @@ function fmt(v: number | null | undefined): string {
   return Number(v).toLocaleString()
 }
 
-function money(v: number | null | undefined): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—'
-  return Number(v).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-}
+// ★ N9：money() 已删除 —— 成本列改走 SaCostCell（两个单位分列）。
+//   旧实现把 total_cost（美元 + 积分 的跨单位合计）当成一个美元金额渲染。
 
 function formatTime(value: string): string {
   if (!value) return '—'

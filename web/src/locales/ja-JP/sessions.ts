@@ -111,6 +111,11 @@ export default {
     status: { all: 'すべて', active: 'アクティブ', stopped: '停止' },
   },
   stats: {
+    // ★ F1：コスト列は**純粋な USD**（SUM(ss.total_cost_usd)）だが、フィールド名が
+    //   total_cost ⇒ 読者が総額と読む ⇒ ヘッダに単位を書く。
+    costUsd: '費用（USD）',
+    // ★ F1：モデルの脚は**セッション**単位で展開 ⇒ 合計が KPI を超える ⇒ 開示必須。
+    modelCostNote: 'この列はセッション単位で展開されています：1セッションで複数モデルを使うと、そのセッションの費用が各モデル行で1回ずつ数えられます。このためこの列の合計はパネルの KPI より大きく、KPI に加算できません。',
     scopeNoticeTitle: '集計範囲について：',
     scopeHintLabel: '集計範囲',
     scopeNoticeBody: 'このページは、最初のリクエストが直近{days}日間にあったセッションについて、すべてのリクエストと費用を集計します。',

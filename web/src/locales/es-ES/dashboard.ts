@@ -8,6 +8,11 @@ tabs: {
     sessionStats: 'Sesiones y estadísticas',
     selfcheck: 'Autoverificación',
   },
+  // ★ N1：etiqueta de caliber para los bloques que aún se calculan sobre el universo de sesiones antiguo.
+  stats: {
+    legacyCaliberLabel: 'Cálculo anterior',
+    legacyCaliberTitle: 'Estos bloques (tendencia / salud / errores / rendimiento) se siguen calculando sobre el universo de sesiones antiguo: no son la misma medida que el KPI del panel, así que no se deben sumar ni comparar directamente con el KPI.',
+  },
 v2: {
     quickApiKey: 'API Key',
     quickModels: 'Models',

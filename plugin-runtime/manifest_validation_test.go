@@ -91,7 +91,7 @@ func TestManifestValidate_SchemaVersionContractMismatch(t *testing.T) {
 		{
 			name:    "v1-with-v2-contract",
 			mutate:  func(m *Manifest) { m.SchemaVersion = 1; m.GatewayCompatibility.APIContract = SupportedAPIContractV2 },
-			wantSub: "requires schema_version 2",
+			wantSub: "requires schema_version >= 2",
 		},
 		{
 			name:    "unknown-contract",
@@ -99,9 +99,14 @@ func TestManifestValidate_SchemaVersionContractMismatch(t *testing.T) {
 			wantSub: "unsupported api_contract",
 		},
 		{
-			name:    "schema-version-3",
-			mutate:  func(m *Manifest) { m.SchemaVersion = 3 },
+			name:    "schema-version-4",
+			mutate:  func(m *Manifest) { m.SchemaVersion = 4 },
 			wantSub: "unsupported schema_version",
+		},
+		{
+			name:    "v3-with-v1-contract",
+			mutate:  func(m *Manifest) { m.SchemaVersion = 3; m.GatewayCompatibility.APIContract = SupportedAPIContract },
+			wantSub: "schema_version 3 requires",
 		},
 	}
 	for _, tc := range cases {

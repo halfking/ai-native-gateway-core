@@ -19,6 +19,9 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import DataTable from '../../../../components/ui/DataTable.vue'
+// ★ N9：四张 Top5 表的成本格一律走 SaCostCell（内部成本美元 / 外部成本积分分列）——
+//   total_cost 是**跨单位合计**，渲染成一个带 $ 的数等于凭空造出美元金额。
+import SaCostCell from './SaCostCell.vue'
 import {
   getModelRanking,
   getProviderRanking,
@@ -68,10 +71,9 @@ function fmt(value: number | null | undefined): string {
   return value.toLocaleString()
 }
 
-function money(value: number | null | undefined): string {
-  if (value == null) return '$0.00'
-  return `$${value.toFixed(2)}`
-}
+// ★ N9：money() 已删除 —— 四张表的成本格改走 SaCostCell（两个单位分列）。
+//   旧实现把 total_cost（美元 + 积分 的跨单位合计）渲染成 $12.34，
+//   等于凭空造出一个不存在的美元金额。
 
 function pct(value: number | null | undefined): string {
   if (value == null) return '—'
@@ -165,7 +167,9 @@ function openTask(task: string) {
                 </td>
                 <td>{{ row.provider || '—' }}</td>
                 <td class="num">{{ fmt(row.request_count) }}</td>
-                <td class="num">{{ money(row.total_cost) }}</td>
+                <td class="num">
+                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                </td>
               </tr>
             </tbody>
           </table>
@@ -220,7 +224,9 @@ function openTask(task: string) {
                 </td>
                 <td class="num">{{ fmt(row.model_count) }}</td>
                 <td class="num">{{ fmt(row.request_count) }}</td>
-                <td class="num">{{ money(row.total_cost) }}</td>
+                <td class="num">
+                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                </td>
               </tr>
             </tbody>
           </table>
@@ -270,7 +276,9 @@ function openTask(task: string) {
                 </td>
                 <td class="num">{{ fmt(row.session_count) }}</td>
                 <td class="num">{{ fmt(row.total_tokens) }}</td>
-                <td class="num">{{ money(row.total_cost) }}</td>
+                <td class="num">
+                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                </td>
               </tr>
             </tbody>
           </table>
@@ -325,7 +333,9 @@ function openTask(task: string) {
                 </td>
                 <td class="num">{{ fmt(row.session_count) }}</td>
                 <td class="num">{{ fmt(row.owner_count) }}</td>
-                <td class="num">{{ money(row.total_cost) }}</td>
+                <td class="num">
+                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                </td>
               </tr>
             </tbody>
           </table>

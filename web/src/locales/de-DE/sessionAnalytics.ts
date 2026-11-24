@@ -131,7 +131,10 @@ export default {
     credits: '{value} Credits',
   },
   costNote:
-    'Die Spalte „Kosten“ summiert die internen Kosten (USD) und die externen Credits. Die beiden Einheiten unterscheiden sich, daher eignet sich die Spalte nur für relative Vergleiche und nicht als ein einzelner Geldbetrag.',
+    'Die Spalte „Kosten“ wird in zwei Einheiten ausgewiesen: interne Kosten (USD) und externe Credits. Die beiden Einheiten unterscheiden sich, daher eignet sich die Spalte nur für relative Vergleiche und nicht als ein einzelner Geldbetrag.',
+  // ★ N9：外部コストが 0 のとき「—」を出す理由（0 と測定されたわけではない）。
+  externalCostNotCarried:
+    'Diese Ansicht führt externe Credits noch nicht separat mit: Die Credit-Schreibseite ist nicht umgesetzt, „—“ bedeutet daher „nicht erfasst“ und nicht „als 0 gemessen“.',
   state: {
     loading: 'Sitzungsanalyse wird geladen',
     loadingStats: 'Statistik wird geladen…',

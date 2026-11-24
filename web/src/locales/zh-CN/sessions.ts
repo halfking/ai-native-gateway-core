@@ -115,6 +115,11 @@ export default {
     status: { all: '全部', active: '活跃', stopped: '已停止' },
   },
   stats: {
+    // ★ F1：成本列的单位是**纯美元**（来自 SUM(ss.total_cost_usd)），但字段名叫
+    //   total_cost ⇒ 读者会以为是总额 ⇒ 列头必须把单位写明。
+    costUsd: '花费（美元）',
+    // ★ F1：模型腿按**会话**展开 ⇒ 合计大于 KPI、不可与 KPI 相加 ⇒ 必须披露。
+    modelCostNote: '本列按会话展开：一个会话用了多个模型时，该会话的花费会在每个模型行各计一次，因此本列合计大于面板 KPI，不能与 KPI 相加。',
     scopeNoticeTitle: '统计说明：',
     scopeHintLabel: '统计说明',
     scopeNoticeBody: '本页面统计"首次请求在近{days}天内"的会话的全部请求和费用。',
