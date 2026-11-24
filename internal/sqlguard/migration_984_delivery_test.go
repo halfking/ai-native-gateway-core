@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -28,14 +29,14 @@ import (
 const (
 	pi984UpFile   = "984_session_universe_cost_aware_probe_scope.sql"
 	pi984DownFile = "984_session_universe_cost_aware_probe_scope.down.sql"
-	pi984TSVIndex = "394"
 )
 
 // pi984CostEscape 是「真实计费豁免」在会话级视图里的**逐字**形态。
 //
 // ★ 这不是「随便挑个片段」：它是本次修复的**全部语义**——
-//   「有真实计费 ⇒ 计入；零成本会话 ⇒ 沿用旧排除」。
-//   少了它 ⇒ 984 变成空转迁移（视图重建了但口径没变 ⇒ 费用差照旧）。
+//
+//	「有真实计费 ⇒ 计入；零成本会话 ⇒ 沿用旧排除」。
+//	少了它 ⇒ 984 变成空转迁移（视图重建了但口径没变 ⇒ 费用差照旧）。
 const pi984CostEscape = "COALESCE(ss.total_cost_usd, 0) > 0"
 
 // pi984OldExclusion 是零成本会话的旧排除项（必须**同时**在）。
@@ -168,13 +169,27 @@ func TestMigration984CostAwareProbeScopeDelivered(t *testing.T) {
 		t.Fatalf("dbinit runner.go StartupFiles 缺 984 ⇒ 全新安装的库拿不到新口径")
 	}
 
-	// ⑨ TSV 台账镜像（由 StartupFiles 派生；序号随清单位置变化 ⇒ 断言序号本身）。
+	// ⑨ TSV 台账镜像（由 StartupFiles 派生）。
+	// ★ 2026-11-24 12h 审计轮：原断言钉死序号本身（`394\t984_…`）⇒ 序号随清单位次
+	//   变化就会误红（方向安全但脆）。改为「按文件名查找该行 + 行内序号列自洽」：
+	//   只要 984 行在场、第二列是文件名、第一列是纯数字序号即通过，不再绑定具体数值。
 	tsvRaw, err := os.ReadFile(filepath.Join("..", "..", "sql", "schema", "installed_startup_migrations.tsv"))
 	if err != nil {
 		t.Fatalf("读 installed_startup_migrations.tsv 失败: %v", err)
 	}
-	if !strings.Contains(string(tsvRaw), pi984TSVIndex+"\t"+pi984UpFile) {
-		t.Fatalf("tsv 缺 984 登记行（期望 %s\\t%s）", pi984TSVIndex, pi984UpFile)
+	found984Row := false
+	for _, line := range strings.Split(string(tsvRaw), "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) >= 2 && fields[1] == pi984UpFile {
+			if !regexp.MustCompile(`^[0-9]+$`).MatchString(fields[0]) {
+				t.Fatalf("tsv 的 984 行序号列非纯数字: %q", line)
+			}
+			found984Row = true
+			break
+		}
+	}
+	if !found984Row {
+		t.Fatalf("tsv 缺 984 登记行（第二列应为 %s）", pi984UpFile)
 	}
 
 	// ⑩ docker 部署通道：files=() 条目 + 产物探针。
