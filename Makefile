@@ -1174,10 +1174,14 @@ clean: ## 清理 bin/、coverage.* 与根目录构建产物
 #   ⇒ 变异 harness 若中途失败，make 会中止（前置失败 ⇒ 配方不执行）
 #   ⇒ 绝不会带着「被变异过的 internal/ir」去跑后续 `go test $(GUARD_PACKAGES)`。
 .PHONY: guards-ir-conversion
-guards-ir-conversion: ## IR 协议转换层守卫（5 个变异 harness 33 臂 + 覆盖率门禁 75%）—— CI 载体入口
+guards-ir-conversion: ## IR 协议转换层守卫（9 个变异 harness ＋ 覆盖率门禁 75%）—— CI 载体入口
 	@bash scripts/audit/ir-client-error-fix-mutation.sh
 	@bash scripts/audit/ir-gemini-only-loss-mutation.sh
 	@bash scripts/audit/ir-coerce-numeric-mutation.sh
+	@bash scripts/audit/ir-round2-clientfix-mutation.sh
+	@bash scripts/audit/ir-round2-extrestore-mutation.sh
+	@bash scripts/audit/ir-round2-pattern-mutation.sh
+	@bash scripts/audit/ir-round2-responses-migration-mutation.sh
 	@python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
 	@python3 scripts/audit/mutation-verify-2026-11-11.py --group attachments
 	$(GO) test ./internal/ir/... -count=1 -timeout=600s \

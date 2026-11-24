@@ -57,6 +57,36 @@
 394_request_stats_minute.sql
 407_request_context_attrs.sql
 #
+# ★ 2026-11-25 补登：teams 族四件套（055-058）★ ★★
+#
+# ★ 为什么它们按定义就该在本表里（本表的派生规则）：
+#   本表 = 「台账快照里 <412 的」∪「安装器链 StartupFiles 里 <412 的」
+#   ⇒ ★ 055-058 于 a5ef63879（修「迁移未投递」）进入安装器链 StartupFiles ★
+#   ⇒ ★ 它们的版本号 55/56/57/58 **全部 < 412** ⇒ ★ **自动落入派生面** ★
+#   ⇒ ★ 而本表没跟着登记 ⇒ ★ `tests/migration_delivery_boundary_convergence_test.sh`
+#     的判据②a（派生面 == 清单 ∪ 豁免，★ 不多不少 ★）自 2026-11-12 起一直红 ★
+#   ⇒ ★ **是疏漏、不是刻意取舍**（★ 时间线：清单最后一次改动是 11-10 的 da7f024f9 ★
+#     ★ 而 055-058 进安装器链是 11-12 之后的事 ★）★★
+#
+# ★ 为什么**必须投**（★ 不是「投不投都行」的偏好题 ★）：
+#   · 211 生产实测（★ 见 internal/sqlguard/migration_055_058_team_foundation_delivery_test.go ★）：
+#     api_keys **无** team_id 列、teams / user_teams / team_budgets **三表不存在** ★
+#     ⇒ 而现役二进制含 `INSERT INTO api_keys (…, key_alias, team_id)` ★
+#     ⇒ ⇒ **生产上「创建 API key」必然失败** ★
+#   · DDL 形态 = 纯幂等加法（★ CREATE TABLE / ADD COLUMN / CREATE INDEX
+#     **IF NOT EXISTS** ＋ ENABLE ROW LEVEL SECURITY ★）⇒ ⇒ **重放幂等** ★
+#     ⇒ 且部署通道对「already exists」有专门的幂等出口 ⇒ 已有该对象的环境不中止 ★
+#   · 本表只影响**存量升级通道**（★ deploy-lib/db-changelog.sh 的
+#     `_deploy_pending_startup_migrations` ⇒ 「版本号 ≥ 对账地板 412」∪ 本表 ★）；
+#     211 的 files=() 与安装器链**已分别登记**（★ 十二面投递门已钉 ★）★
+#     ⇒ ★ 本表补的是**存量通道**这一面 ⇒ ★ 三条通道的对象集合才真正收敛 ★
+#   · docs/db-changelog.md 已登记四行（含文件实测 sha256）⇒ 台账面不缺 ★
+#
+055_teams_table.sql
+056_user_teams.sql
+057_api_keys_team_id.sql
+058_team_budgets.sql
+#
 # ★ ★★ **刻意不在本表里的**（★ 也要说清、★ 否则读者会以为漏了 ★）：
 #
 #   ① `032_session_tenant_binding.sql`

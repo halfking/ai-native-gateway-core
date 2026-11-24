@@ -54,6 +54,15 @@ IR_HARNESSES=(
   "ir-client-error-fix-mutation.sh"
   "ir-gemini-only-loss-mutation.sh"
   "ir-coerce-numeric-mutation.sh"
+  # ★ 2026-11-25 补登记：判据⑥（磁盘上每个 ir-*-mutation.sh 都必须在清单里）
+  #   自 2026-11-12 这四个 harness 落地起就一直在报缺 ⇒ ⇒ 门红了约两周。
+  #   它们不是「写了没人用」：每个都证明一批守卫有牙（实测臂数见 Makefile 注释），
+  #   且此前**从未**被任何配方调用 ⇒ 属于「不在门里」的空转覆盖。
+  #   ⇒ 本次按判据④（清单里的每个 harness 都被配方逐个调用）一并接进配方。
+  "ir-round2-clientfix-mutation.sh"
+  "ir-round2-extrestore-mutation.sh"
+  "ir-round2-pattern-mutation.sh"
+  "ir-round2-responses-migration-mutation.sh"
   "mutation-verify-2026-11-11.py --group toolcall-canonical"
   "mutation-verify-2026-11-11.py --group attachments"
 )

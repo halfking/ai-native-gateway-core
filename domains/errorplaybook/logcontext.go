@@ -93,5 +93,13 @@ func (l *SQLLogContext) Gather(ctx context.Context, errorType string) (string, e
 		idx++
 		fmt.Fprintf(&b, "- 样本%d: %s\n", idx, truncateRunes(msg.String, 400))
 	}
+	// ★ rows 终检：迭代中断（连接断开 / 服务端错误）时 sampleRows.Next() 会提前
+	//   返回 false ⇒ 不看 sampleRows.Err() 就会把**半截样本**当成完整样本交出去
+	//   （silent truncation ⇒ 分析材料看起来是全的）。
+	//   ★ 与上面的「样本查询失败不致命」同口径（样本是补充材料、分布已完整）：
+	//   ★ **但必须不静默** ⇒ 把「样本不完整」明确写进材料，让读材料的人知道。
+	if err := sampleRows.Err(); err != nil {
+		fmt.Fprintf(&b, "- （样本读取中断：样本内容不完整）\n")
+	}
 	return b.String(), nil
 }

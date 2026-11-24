@@ -408,6 +408,13 @@ func (h *Handler) queryCrossErrors(
 		}
 		items = append(items, item)
 	}
+	// ★ rows 终检：迭代中断（连接断开 / 服务端错误）时 rows.Next() 会提前返回
+	//   false ⇒ 不看 rows.Err() 就会把**半截结果**当成完整结果交出去
+	//   （silent truncation ⇒ 看板少了一格却看不出来）。
+	//   ★ 形态与本文件另两处循环（boardTrends / boardPie）逐字一致。
+	if err := rows.Err(); err != nil {
+		return nil, false
+	}
 
 	return items, true
 }

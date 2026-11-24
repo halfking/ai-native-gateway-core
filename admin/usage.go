@@ -1759,6 +1759,15 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 				response.TopAPIKeys = append(response.TopAPIKeys, entry)
 			}
 		}
+		// ★ rows 终检：迭代中断（连接断开 / 服务端错误）时 rows.Next() 会提前
+		//   返回 false ⇒ 不看 rows.Err() 就会把**半截排行**当成完整排行交出去
+		//   （silent truncation ⇒ 看板少了几行却看不出来）。
+		//   ★ 口径与本函数其它分支一致：查询失败即报降级（不是静默少几行）。
+		if err := rows.Err(); err != nil {
+			slog.Warn("usageTopRankings: top api keys rows iteration failed", "error", err)
+			response.Degraded = true
+			response.DegradedReason = "top api keys ranking unavailable"
+		}
 	} else {
 		slog.Warn("usageTopRankings: top api keys query failed", "error", err)
 		response.Degraded = true

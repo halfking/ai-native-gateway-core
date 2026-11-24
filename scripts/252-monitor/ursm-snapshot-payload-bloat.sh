@@ -81,7 +81,12 @@ BLOAT_PCT=${BLOAT_PCT:-25}
 # 那时报告的是**陈旧**数据，必须报「没有结论」而不是「健康」。
 STALE_SECONDS=${STALE_SECONDS:-3600}
 
-log() { printf '%s %s\n' "$(date -Is)" "$*" >&2; }
+# ★ 这里**不能**用 `date -Is`（GNU coreutils 写法）。BSD/macOS 的 date 不认
+#   （报 "date: invalid argument 's' for -I"），于是每一行时间戳都变成一行噪声，
+#   把真正要读的那行挤下去。形态与 pg17-pg-availability-check.sh /
+#   pg17-onconflict-constraint-check.sh 保持一致。
+now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
+log() { printf '%s %s\n' "$(now_iso)" "$*" >&2; }
 
 # ★★★ 2026-10-04 首次上机时改的。原来写的是
 #     sudo -u postgres psql ... --file "$CONF"
@@ -102,6 +107,23 @@ CONTAINER=${PG17_CONTAINER:-pg-252-pg17}
 PG_USER=${PG17_USER:-postgres}
 DBNAME=${PG17_DB:-llm_gateway}
 PSQL_CMD=${PSQL_CMD:-docker exec -i "$CONTAINER" psql -U "$PG_USER" -X -q -A -t -F'|' -v ON_ERROR_STOP=1 -d "$DBNAME" -c}
+
+# 量具预检：先确认 PSQL_CMD 的**第一个词**在 PATH 上。
+# 不做这一步时，`docker` 缺失会让 bash 打印一行 `docker: command not found`
+# —— 退出码仍是 3（对的），但那行 shell 级报错会被
+# monitor_script_exec_gate_test.go 的 shellFatal 正则判成「脚本崩了」。
+# 那个门是对的：一个 shell 级错误签名在 cron 里会被读成崩溃。
+# 正确做法是把它变成一句人话，而不是去放宽那道门。
+# PSQL_CMD 可被整条覆盖，所以只看首词，不做完整解析。
+check_toolchain() {
+  local first=${PSQL_CMD%% *}
+  if ! command -v "$first" >/dev/null 2>&1; then
+    log "ABORT: 量具不可用 —— 找不到 '$first'（PSQL_CMD 的第一个词）。本次不出结论。"
+    log "   在 252 上它由 docker 提供的 PG17 容器执行；本机没有 docker 就跑不了，属正常。"
+    exit 3
+  fi
+}
+check_toolchain
 
 psql_17() {
   local sql=$1
