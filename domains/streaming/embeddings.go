@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
@@ -402,7 +403,7 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 	if keyInfo.Status == "throttled" {
 		markModalityRateLimited(r, "key_throttled")
 		ratelimit.MarkGatewaySharedKeyRateLimit(w)
-		h.recordRateLimited(requestID, keyInfo, "<unknown>", "key_throttled")
+		h.recordRateLimited(requestID, keyInfo, modelattr.UnknownPlaceholder, "key_throttled")
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
@@ -411,7 +412,7 @@ func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request,
 		if outcome.Blocked {
 			markModalityRateLimited(r, "rate_limit_exceeded")
 			ratelimit.MarkGatewaySharedKeyRateLimit(w)
-			h.recordRateLimited(requestID, keyInfo, "<unknown>", "rate_limit_exceeded")
+			h.recordRateLimited(requestID, keyInfo, modelattr.UnknownPlaceholder, "rate_limit_exceeded")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return nil, false
 		}
