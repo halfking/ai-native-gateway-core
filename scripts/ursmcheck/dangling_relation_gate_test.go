@@ -101,6 +101,26 @@ var exemptedDanglingRefs = map[string]string{
 	// 假阳性。全仓 `.sql` 对 `redis` 的引用只有 `redis_hit` / `redis_key` 列与
 	// `idx_stage_events_redis_miss` 索引名（词边界外），不存在名为 `redis` 的表。
 	"redis": "非 PG 关系引用：admin/dashboard_board.go:187 与 admin/probe_dashboard.go:2054 中 `redis` 是 JSON 响应的数据源标签（source/reader 字段值），非 SQL 关系引用 ⇒ 提取器假阳性",
+
+	// ── 2026-11-24 合并轮二十代上游定性：`IS DISTINCT FROM` 的右操作数是【列】──
+	//
+	// ★ 现象（★ 上游 aac6602ab 带进来的对账腿）：★ 悬空引用多出 1 个名字 `model`（1 处）
+	//   ⇒ 定位到 domains/reconciliation/invoice_report.go 的 invoiceReportSQL 字面量
+	//     （const 起始行 104 ⇒ 工具报的位置是字面量起点，不是命中点）。
+	// ★ 真正命中点（★ 逐字）：invoice_report.go:242
+	//   `WHEN NULLIF(model,'') IS NOT NULL AND attempt_model IS DISTINCT FROM model THEN 'model_mismatch'`
+	//   ⇒ ⇒ `IS DISTINCT FROM` 是 **NULL 安全的比较运算符**（不是 `FROM <relation>` 句式）
+	//   ⇒ ⇒ 它右侧的 `model` 是**列**，不是关系名。
+	// ★ 列存在的机器证据（★ 不是推断）：
+	//   · sql/migrations/startup/982_provider_call_attempts.sql:19 ⇒ `model text,`
+	//     （public.provider_call_attempts.model）
+	//   · sql/migrations/startup/987_provider_invoice_evidence.sql:32 ⇒ `model text,`
+	//     （public.provider_invoice_lines.model）
+	// ★ 提取器为什么误判：★ 关系位置词表含 `FROM` ⇒ ⇒ `IS DISTINCT FROM model` 里的
+	//   `FROM` 被当成关系位置 ⇒ ⇒ 紧跟其后的标识符被当成表名。
+	//   （★ 与 `static`（CTE 拼接）、`redis`（数据源标签）同族：**词法位置 ⇒ 关系**。）
+	// ★ 结论：★ 仓内**不存在**名为 `model` 的关系是正确形态 ⇒ 不是缺口。
+	"model": "解析器假阳性：`IS DISTINCT FROM` 是 NULL 安全比较运算符、不是 `FROM <relation>` 句式 ⇒ 其右侧标识符是列名 ⇒ domains/reconciliation/invoice_report.go:242 的 `attempt_model IS DISTINCT FROM model` 里的 `model` 是列（机器证据：★ public.provider_call_attempts.model 见 sql/migrations/startup/982_provider_call_attempts.sql:19、★ public.provider_invoice_lines.model 见 sql/migrations/startup/987_provider_invoice_evidence.sql:32）⇒ 仓内无名为 model 的关系是正确形态 ⇒ 不是缺口",
 }
 
 // ★★ 三条判据共用【同一份】扫描结果（sync.Once）⇒

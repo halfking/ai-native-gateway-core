@@ -255,13 +255,26 @@ type docEvidence struct {
 //	main_pipeline.go 启动日志 :1290、D09 合成/写回窗口 829-840（合成点 :837）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 9144, to: 9163,
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
+		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
+		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
+		// ★（★ 覆盖链体起点 `middleware.NewBuilder()` 到 SecurityHeaders 那一行）★。
+		// ★ 漂移归属（★ 实测、★ 不是推断）：★ ★★ `cmd/gateway/main.go` 与
+		// ★ `cmd/gateway/main_pipeline.go` 在**基线 cd288ad0c 的隔离 worktree 上
+		// ★ 与我方树逐字相同**（diff 无输出）⇒ ⇒ ⇒ 这段漂移**完全是上游带进来的**
+		// ★ ⇒ ★ **上游未同步本对拍表** ⇒ ★ 我方只改对拍表、★ 不动上游代码。
+		// ★ 同款自查（★ 逐锚点实测、★ 不按位移量推算）：
+		// ★ Recovery 9206 / Logging 注释 9208 / maintain 注释 9161 /
+		// ★ main_pipeline 启动日志 1523 ⇒ 四条锚点在两棵树上**完全同位**。
+		file: "cmd/gateway/main.go", from: 9205, to: 9225,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 9147, to: 9154,
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9147,9154] ⇒ ★ 现状 9208-9215
+		// ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了）★。
+		file: "cmd/gateway/main.go", from: 9208, to: 9215,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -281,7 +294,10 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 `41d1eca87` 上就在（★ ★★ 基线
 		// ★ 隔离 worktree 上逐字复现、★ 同 4 个子例、★ RC=1）⇒ ★ 我方只改
 		// ★ 对拍表、★ 不动上游代码。
-		file: "cmd/gateway/main.go", from: 9109, to: 9116,
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9109,9116] ⇒ ★ 现状 **9161-9166**
+		// ★（★ 仍是那 6 行的 R49-A1 自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了）★。
+		// ★ 漂移归属同款：★ cmd/gateway/main.go 在基线上与我方树逐字相同 ⇒ 上游带进来的。
+		file: "cmd/gateway/main.go", from: 9161, to: 9166,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -327,7 +343,10 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "v2 开关的读取（默认关、启动时读一次）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 1515, to: 1515,
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [1515,1515] ⇒ ★ 现状 **1523**
+		// ★（★ 仍是那一条 slog.Info 调用、★ 语义对象未变）★。
+		// ★ 漂移归属同款：★ cmd/gateway/main_pipeline.go 在基线上与我方树逐字相同 ⇒ 上游带进来的。
+		file: "cmd/gateway/main_pipeline.go", from: 1523, to: 1523,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
 	},

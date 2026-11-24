@@ -69,7 +69,9 @@ ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）
 PATH	component	环境杂项（PATH），测试只用来拼可执行路径
 PROVIDER_CONTRACT_KEY	component	外部 provider 契约测试用 key
+RECONCILIATION_INSTALLED_TEST_DSN	dsn_exclusive	请求/会话对账【安装态 schema】集成腿（domains/reconciliation/report_integration_test.go 的 TestRequestReconciliationInstallerSchema）的专用 DSN：★ 守卫读 current_database() 并要求库名**同时**具备前缀 reconciliation_ 与后缀 _test（不合规即 t.Fatal「could not verify installed fixture isolation」）⇒ ★ 事实源统一下发的通用 DSN（产品库 llm_gateway）必被拒绝 ⇒ 必须指向本腿自有的空隔离库 ⇒ 与通用 DSN 同值＝把安装态校验打在一个非隔离库上 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-24 合并轮二十后代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游与共享台账均未登记 ⇒ 两道门判「没人答」）
 RECONCILIATION_TEST_DSN	dsn_exclusive	请求/会话对账集成腿的专用 DSN：★ 文件头明写「Run only against an owned, empty reconciliation_fixture_* database」且腿内往 legacy_drift / request_wal_with_current_month / request_context_attrs / session_dim / usage_facts / provider_call_attempts / credit_ledger_with_current_month **批量 INSERT** ⇒ ★ 必须指向「本腿自有的空隔离库」⇒ 与通用 DSN 同值＝把夹具写进共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-23 合并轮六代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游未登记 ⇒ 本门判「没人答」）
+RECONCILIATION_TRANSPORT_TEST_DSN	dsn_exclusive	流式对账【transport】集成腿（domains/streaming/executors/reconciliation_transport_integration_test.go 的 TestStreamingTransportRetryPreservesBothAttempts）的专用 DSN：★ 守卫读 current_database() 并要求库名前缀 reconciliation_transport_fixture_ 且 public 表数为 0（不合规即 t.Fatal「dedicated empty transport fixture required」）⇒ ★ 该腿在空库里建 canonical 迁移并起 HTTP 服务跑真实 outbox ⇒ 必须指向本腿自有的空隔离库 ⇒ 与通用 DSN 同值＝把 transport 夹具写进共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-24 合并轮二十后代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游与共享台账均未登记 ⇒ 两道门判「没人答」）
 REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
 REPORT_E2E_ALLOW_DESTRUCTIVE	dangerous	显式承认「本次 E2E 会破坏数据」；打开即取消保护

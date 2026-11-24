@@ -137,6 +137,27 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "maas/charge_idempotency_realdb_test.go",
 		guard: maasChargeIdempotencyGuardProblems,
 	},
+	// ★★ 2026-11-24（合并轮二十 · 代上游登记）：★ 请求/会话对账【安装态 schema】腿
+	// （domains/reconciliation/report_integration_test.go 的
+	//   TestRequestReconciliationInstallerSchema，★ 上游 aac6602ab 带进来）。
+	// ★ 守卫形态与 RECONCILIATION_TEST_DSN **都不同** ⇒ 各自用各自的尺：
+	//   ★ 读 current_database() 并要求库名**同时**具备前缀 `reconciliation_`
+	//     与后缀 `_test`
+	//   ★ ★ 它**不**要求 public 表数为 0（★ 它要读的是【已安装】的 schema，
+	//     不是空库）⇒ 复用 fixture 那把尺会判错形态。
+	"RECONCILIATION_INSTALLED_TEST_DSN": {
+		path:  "domains/reconciliation/report_integration_test.go",
+		guard: reconciliationInstalledFixtureGuardProblems,
+	},
+	// ★★ 2026-11-24（合并轮二十 · 代上游登记）：★ 流式对账【transport】腿
+	// （domains/streaming/executors/reconciliation_transport_integration_test.go 的
+	//   TestStreamingTransportRetryPreservesBothAttempts，★ 上游 aac6602ab 带进来）。
+	// ★ 守卫形态第三种：库名前缀 `reconciliation_transport_fixture_`
+	//   且 public 表数必须为 0（★ 它要在空库里建 canonical 迁移）⇒ 又一把尺。
+	"RECONCILIATION_TRANSPORT_TEST_DSN": {
+		path:  "domains/streaming/executors/reconciliation_transport_integration_test.go",
+		guard: reconciliationTransportFixtureGuardProblems,
+	},
 }
 
 // modelCredibilityPassiveGuardProblems 断言 modelcredibility 被动指纹基线真库腿的
@@ -247,6 +268,39 @@ func reconciliationFixtureGuardProblems(body string) []string {
 	require(strings.Contains(body, `HasPrefix(db, "reconciliation_fixture_")`), "destructive fixture-name-prefix guard")
 	require(strings.Contains(body, `publicTables != 0`), "empty-database guard")
 	require(strings.Contains(body, `t.Fatalf("fixture must run in its own empty reconciliation_fixture_* database`), "guard fails loudly instead of skipping")
+	return problems
+}
+
+// reconciliationInstalledFixtureGuardProblems 断言「安装态 schema」腿的自守卫仍然有牙
+// （★ 形态与 reconciliationFixtureGuardProblems **不同**：★ 它要求库名**同时**具备
+//   前缀 `reconciliation_` 与后缀 `_test`，★ 且**不**要求 public 表数为 0
+//   ——★ 因为它要读的是【已安装】的 schema，不是空库 ⇒ ⇒ 共用一把尺会判错形态）。
+func reconciliationInstalledFixtureGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasPrefix(db, "reconciliation_")`), "destructive fixture-name-prefix guard")
+	require(strings.Contains(body, `HasSuffix(db, "_test")`), "destructive _test-suffix guard")
+	require(strings.Contains(body, `t.Fatal("could not verify installed fixture isolation")`), "guard fails loudly instead of skipping")
+	return problems
+}
+
+// reconciliationTransportFixtureGuardProblems 断言 transport 腿的自守卫仍然有牙
+// （★ 形态：库名前缀 `reconciliation_transport_fixture_` 且 public 表数必须为 0
+//   ——★ 它要在空库里建 canonical 迁移 ⇒ 又与前两把尺都不同 ⇒ 各用各的尺）。
+func reconciliationTransportFixtureGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasPrefix(database, "reconciliation_transport_fixture_")`), "destructive fixture-name-prefix guard")
+	require(strings.Contains(body, `tables != 0`), "empty-database guard")
+	require(strings.Contains(body, `t.Fatal("dedicated empty transport fixture required")`), "guard fails loudly instead of skipping")
 	return problems
 }
 
