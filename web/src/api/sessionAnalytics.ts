@@ -84,7 +84,16 @@ export interface OverviewTopUser {
   email: string
   session_count: number
   total_tokens: number
+  /**
+   * ★ 跨单位合计（internal_cost 美元 + external_cost 积分）⇒ **不可当作美元金额**
+   *   渲染；保留它只是为了向后兼容与排序键兼容。
+   *   ⇒ 展示一律用 internal_cost / external_cost 分列两栏。
+   */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
 }
 
 export interface OverviewTopProject {
@@ -111,7 +120,12 @@ export interface UserRankingRow {
   project_count: number
   task_count: number
   total_tokens: number
+  /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
   /** RFC3339, or "" when the row has no activity timestamp. */
   last_active_at: string
   latest_task: string
@@ -132,7 +146,12 @@ export interface UserDetailInfo {
 export interface UserDetailSummary {
   session_count: number
   task_count: number
+  /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
   rank: number
   rank_change: number
 }
@@ -165,7 +184,12 @@ export interface UserProjectRow {
   session_count: number
   task_count: number
   total_tokens: number
+  /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
   last_active_at: string
 }
 
@@ -178,7 +202,12 @@ export interface ProjectTaskRow {
   session_count: number
   request_count: number
   total_tokens: number
+  /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
   last_active_at: string
 }
 
@@ -193,7 +222,12 @@ export interface AgentRankingRow {
   session_count: number
   task_count: number
   total_tokens: number
+  /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
   avg_duration_seconds: number
   last_used_at: string
 }
@@ -213,7 +247,12 @@ export interface ModelRankingRow {
   cache_hit_count: number
   cache_rate: number
   avg_duration_ms: number
+  /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
   total_cost: number
+  /** 内部成本（美元）。 */
+  internal_cost: number
+  /** 外部成本（积分）。 */
+  external_cost: number
   user_count: number
   last_used_at: string
 }

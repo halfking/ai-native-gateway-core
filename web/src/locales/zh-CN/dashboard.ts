@@ -10,6 +10,12 @@ export default {
     sessionStats: '会话与统计',
     selfcheck: '系统自检',
   },
+  // ★ N1：「旧口径」披露标记 —— 面板顶部徽标按总览响应的 probe_scope 亮了，
+  //   而趋势/健康度/错误/性能那几块仍按旧会话宇宙算 ⇒ 必须标出「这是哪把尺」。
+  stats: {
+    legacyCaliberLabel: '旧口径',
+    legacyCaliberTitle: '这几块（趋势 / 健康度 / 错误 / 性能）仍按旧会话宇宙统计，与面板 KPI 不是同一把尺，不能直接与 KPI 相加或对比。',
+  },
   v2: {
     quickApiKey: 'API Key',
     quickModels: '模型',

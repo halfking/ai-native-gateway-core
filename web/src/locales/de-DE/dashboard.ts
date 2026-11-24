@@ -8,6 +8,11 @@ tabs: {
     sessionStats: 'Sitzungen & Statistik',
     selfcheck: 'Selbstprüfung',
   },
+  // ★ N1：Kennzeichnung für Blöcke, die noch auf dem alten Sitzungsuniversum gerechnet werden.
+  stats: {
+    legacyCaliberLabel: 'Alte Berechnung',
+    legacyCaliberTitle: 'Diese Blöcke (Trend / Gesundheit / Fehler / Performance) werden noch auf dem alten Sitzungsuniversum gerechnet — nicht dasselbe Maß wie das KPI im Panel; sie dürfen deshalb nicht direkt zum KPI addiert oder damit verglichen werden.',
+  },
 v2: {
     quickApiKey: 'API Key',
     quickModels: 'Models',

@@ -103,6 +103,33 @@ func NewSessionSummaryDimWriter(pool *pgxpool.Pool) *SessionSummaryDimWriter {
 // （SQLSTATE 42P08），显式标量 + NULLIF/cast 让类型推断处处有锚点。
 // provider 查找用 $13::int8 = 0 表示「无 provider」（providers 无 0 号行，
 // 子查询自然回落 '{}' / NULL）。
+//
+// ★ 2026-11-24 修订轮：补写 total_credits_charged（会话积分列）。
+//
+//	根因：迁移 990 建了 session_summaries.total_credits_charged（BIGINT NOT
+//	NULL DEFAULT 0），同时定义了 plpgsql 的 update_session_summary()，但
+//	**没有为它建触发器** ⇒ 那条路径从未被调用；而本写入器是
+//	session_summaries 聚合列的唯一写方 ⇒ 积分列长期为 0 ⇒ 迁移 981 建的
+//	4 个会话分析物化视图里 external_cost = SUM(ss.total_credits_charged)
+//	**恒为 0**（外部成本在结构上不存在，界面上的「外部成本」永远是 0）。
+//
+//	口径：积分来自 entry.CreditsCharged（MaaS 扣费回执盖章处
+//	domains/streaming/handler.go 里 reqLog.CreditsCharged = &charged），
+//	**一请求一积分**⇒ 一行会话会来多次请求 ⇒ ON CONFLICT 必须**累加**
+//	（覆盖会丢掉此前请求的积分）。
+//
+// ★ 为什么新增参数只能**追加在最后**（$16）：
+//
+//	SQL 文本与调用点是两处独立维护的文本，改一处忘另一处**编译器不会报**
+//	（Go 侧只是多传/少传一个 interface{}）⇒ 错位要到运行期才炸
+//	（"bind message supplies N parameters, but prepared statement
+//	requires M"）⇒ 生产上表现为整条会话聚合**静默停写**。
+//	而重排既有 $N（哪怕 SQL 自身仍然"自洽"）会让所有参数的**含义漂移**，
+//	文本上完全看不出来 ⇒ 只能靠纪律：既有 $1..$15 一个字都不动，新参数追加
+//	为 $16（门：session_summary_dim_credits_test.go）。
+//
+//	列清单同理只追加不改序：INSERT 的列清单与 VALUES 是**按位置对应**的，
+//	中间插列要同步挪两处 ⇒ 追加到末尾是最小面、最可复核的改法。
 const sessionSummaryUpsertSQL = `
 INSERT INTO session_summaries (
     session_key, tenant_id, first_request_at, last_request_at,
@@ -111,7 +138,8 @@ INSERT INTO session_summaries (
     total_prompt_tokens, total_completion_tokens,
     avg_latency_ms, min_latency_ms, max_latency_ms,
     models_used, work_types, providers, client_models,
-    primary_model, gw_task_id, updated_at
+    primary_model, gw_task_id, updated_at,
+    total_credits_charged
 ) VALUES (
     $1, $2, $3, $3,
     1, CASE WHEN $4 THEN 1 ELSE 0 END, CASE WHEN $4 THEN 0 ELSE 1 END,
@@ -122,7 +150,8 @@ INSERT INTO session_summaries (
     CASE WHEN NULLIF($12, '') IS NOT NULL THEN ARRAY[$12]::text[] ELSE '{}'::text[] END,
     COALESCE((SELECT ARRAY[p.code]::text[] FROM providers p WHERE p.id = $13::int8 LIMIT 1), '{}'::text[]),
     CASE WHEN NULLIF($14, '') IS NOT NULL THEN ARRAY[$14]::text[] ELSE '{}'::text[] END,
-    NULLIF($11, ''), NULLIF($15, ''), NOW()
+    NULLIF($11, ''), NULLIF($15, ''), NOW(),
+    $16::bigint
 ) ON CONFLICT (session_key) DO UPDATE SET
     last_request_at = GREATEST(session_summaries.last_request_at, EXCLUDED.last_request_at),
     request_count = session_summaries.request_count + 1,
@@ -144,6 +173,7 @@ INSERT INTO session_summaries (
     client_models = array_unique_append(session_summaries.client_models, NULLIF($14, '')),
     primary_model = COALESCE(session_summaries.primary_model, NULLIF($11, '')),
     gw_task_id = COALESCE(session_summaries.gw_task_id, NULLIF($15, '')),
+    total_credits_charged = session_summaries.total_credits_charged + $16::bigint,
     updated_at = NOW()`
 
 // UpsertSessionDim 以终态 entry 维护 session_summaries 聚合（DimWriter 接口，
@@ -188,6 +218,10 @@ func (w *SessionSummaryDimWriter) UpsertSessionDim(ctx context.Context, entry *t
 		int64(intPtrOrZero(entry.ProviderID)),
 		strOrEmpty(entry.ClientModel),
 		strOrEmpty(entry.GwTaskID),
+		// ★ 积分（$16）：必须**追加在最后** —— 见 sessionSummaryUpsertSQL 的
+		// 「为什么新增参数只能追加在最后」。取值为 entry.CreditsCharged
+		// （MaaS 扣费回执盖章处写进 telemetry entry 的积分值）。
+		int64PtrOrZero(entry.CreditsCharged),
 	)
 	if err != nil {
 		return err
@@ -196,6 +230,22 @@ func (w *SessionSummaryDimWriter) UpsertSessionDim(ctx context.Context, entry *t
 }
 
 func intPtrOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// int64PtrOrZero 归一 nil 指针 → 0。
+//
+// ★ 为什么积分列要这么归一（而不是直接传 nil）：session_summaries 的
+//
+//	total_credits_charged 是 BIGINT NOT NULL（迁移 990），而 entry.CreditsCharged
+//	是**可选**指针 —— 没有 MaaS 计费的租户、未走到扣费路径的请求都是 nil
+//	⇒ 直接传 nil 会让整条 upsert 失败 ⇒ 连带 request_count / total_cost_usd
+//	等所有聚合列**一起停写**（表现：会话聚合静默停更，无错误日志）。
+//	⇒ nil ⇒ 0 是这里的正确语义（该请求就是没扣积分），不是糊弄。
+func int64PtrOrZero(p *int64) int64 {
 	if p == nil {
 		return 0
 	}

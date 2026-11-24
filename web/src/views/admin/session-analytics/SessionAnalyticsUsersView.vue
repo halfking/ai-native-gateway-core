@@ -155,7 +155,9 @@
               <td>{{ fmt(u.project_count) }}</td>
               <td>{{ fmt(u.task_count) }}</td>
               <td>{{ fmt(u.total_tokens) }}</td>
-              <td>{{ money(u.total_cost) }}</td>
+              <td>
+                <SaCostCell :internal-cost="u.internal_cost" :external-cost="u.external_cost" />
+              </td>
               <td>{{ formatTime(u.last_active_at) }}</td>
               <td>
                 <button class="sa-link" type="button" @click="openDetail(u.owner)">
@@ -194,6 +196,9 @@ import type { KxDateRange } from '../../../components/ui/kx-date-types'
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
 import SaTop5Rankings from './components/SaTop5Rankings.vue'
+// ★ N9：成本列走 SaCostCell（内部成本美元 / 外部成本积分分列）——
+//   total_cost 是**跨单位合计**，渲染成一个带 $ 的数等于凭空造出美元金额。
+import SaCostCell from './components/SaCostCell.vue'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
 import { rangeFromQuery, taskFilterFromQuery } from './saQueryParams'
 import { surfaceError } from '../../../i18n/errorSurface'
@@ -362,11 +367,9 @@ function fmt(value: number | null | undefined): string {
   return value.toLocaleString()
 }
 
-function money(value: number | null | undefined): string {
-  if (value == null) return '$0.00'
-  // 内部成本（美元）
-  return `$${value.toFixed(2)}`
-}
+// ★ N9：money() 已删除 —— 成本列改走 SaCostCell（两个单位分列）。
+//   旧实现把 total_cost（美元 + 积分 的跨单位合计）渲染成 $12.34，
+//   等于凭空造出一个不存在的美元金额，而同页脚注又明说两种单位不能相加。
 
 function formatTime(iso: string | null | undefined): string {
   if (!iso) return '—'

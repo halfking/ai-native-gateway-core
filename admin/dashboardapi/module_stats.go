@@ -3,6 +3,23 @@
 //
 // 2026-07-13: 增加 session_module_executions_hot 表缺失时的优雅降级，
 // 复用 admin/dashboarddegrade 中的 helper。
+//
+// 2026-11-25 真源统一轮：本端点**不换源**，而是**显式声明不可用**。
+//
+// ★ 为什么声明而不是换源：`session_module_executions_hot` 的唯一写方
+//
+//	`moduleexec.Executor` 在 cmd/gateway **从未装配**（全仓只有
+//	domains/moduleexec/executor.go:18 的注释里出现过 moduleexec.NewExecutor）
+//	⇒ 该表在生产恒空 ⇒ 卡片上的 0 说的不是「没有模块被执行」，而是
+//	「这个维度没有生产数据源」。
+//
+// ★ 请求级日志真源（request_logs_with_current_month）里**没有模块维度**
+//
+//	⇒ 换源只能把模块列抹成 unknown（失实字段）⇒ 不如显式声明不可用。
+//
+// ★ 窗口：本端点也消费 start_date/end_date（同族其它端点用 parseSessionWindow），
+//
+//	但**滚动路径逐字保留旧的 7 天字面量**（不变量①：现役调用方结果零变化）。
 package dashboardapi
 
 import (
@@ -13,6 +30,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade"
 )
+
+// moduleStatsUnavailableReason 是本端点声明「模块执行维度不可用」时给出的原因。
+//
+// ★ 为什么必须显式声明（缺席比假绿诚实）：session_module_executions_hot 的
+//
+//	唯一写方 moduleexec.Executor 在 cmd/gateway 从未装配 ⇒ 该表在生产恒空
+//	⇒ 表格里的 0 不是「没有模块被执行」，而是「这个维度没有生产数据源」。
+//
+// ★ 为什么不去请求级日志真源上凑：那个真源没有模块维度（模块执行是网关内部
+//
+//	的执行单元，不落在请求行上）⇒ 换源只能把模块列抹成 unknown（失实字段）。
+const moduleStatsUnavailableReason = "模块执行维度无生产数据源：session_module_executions_hot 的唯一写方 moduleexec.Executor 在 cmd/gateway 从未装配，该表在生产恒空；此处的 0 表示「无数据源」，不是「没有模块被执行」"
 
 // ModuleStatsHandler 模块执行统计 Handler
 type ModuleStatsHandler struct {
@@ -41,10 +70,15 @@ type ModuleStatsItem struct {
 
 // ModuleStatsResponse 模块统计响应
 type ModuleStatsResponse struct {
-	Modules     []ModuleStatsItem  `json:"modules"`
-	Summary     ModuleStatsSummary `json:"summary"`
-	PeriodStart time.Time          `json:"period_start"`
-	PeriodEnd   time.Time          `json:"period_end"`
+	// DataAvailable 声明该维度在生产**有没有数据源**。
+	// ★ 当前恒为 false（写方从未装配）⇒ 前端显示「未接入」而不是把 0 当数据。
+	DataAvailable bool `json:"data_available"`
+	// DataUnavailableReason 说明为什么不可用（data_available=false 时非空）。
+	DataUnavailableReason string             `json:"data_unavailable_reason"`
+	Modules               []ModuleStatsItem  `json:"modules"`
+	Summary               ModuleStatsSummary `json:"summary"`
+	PeriodStart           time.Time          `json:"period_start"`
+	PeriodEnd             time.Time          `json:"period_end"`
 }
 
 // ModuleStatsSummary 模块统计摘要
@@ -74,12 +108,29 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
+	// 2026-11-25 窗口对齐轮：本端点也消费 start_date/end_date（同族其它端点
+	// 用 parseSessionWindow）；解析失败回 400（参数错不是服务端故障）。
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
-	where := []string{"created_at >= NOW() - INTERVAL '7 days'"}
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	if win.calendar {
+		// 显式日历窗：参数化边界（end 独占 ⇒ 末日整天被包含）。
+		where = append(where, fmt.Sprintf("created_at >= $%d AND created_at < $%d", argIdx, argIdx+1))
+		args = append(args, win.startUTC, win.endUTC)
+		argIdx += 2
+	} else {
+		// ★ 不变量①：滚动路径**逐字**保留旧的 7 天字面量（不是 params.Days）
+		//   ⇒ 现役调用方的查询计划与结果零变化。
+		where = append(where, "created_at >= NOW() - INTERVAL '7 days'")
+	}
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 
 	query := fmt.Sprintf(`
@@ -107,10 +158,12 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 			apiStatus = "degraded"
 			now := time.Now()
 			writeSuccessJSON(w, ModuleStatsResponse{
-				Modules:     []ModuleStatsItem{},
-				Summary:     ModuleStatsSummary{},
-				PeriodStart: now.AddDate(0, 0, -7),
-				PeriodEnd:   now,
+				DataAvailable:         false,
+				DataUnavailableReason: moduleStatsUnavailableReason,
+				Modules:               []ModuleStatsItem{},
+				Summary:               ModuleStatsSummary{},
+				PeriodStart:           now.AddDate(0, 0, -7),
+				PeriodEnd:             now,
 			}, &Metadata{
 				GeneratedAt: now,
 				TookMs:      time.Since(startTime).Milliseconds(),
@@ -171,11 +224,20 @@ func (h *ModuleStatsHandler) HandleModuleStats(w http.ResponseWriter, r *http.Re
 	}
 
 	now := time.Now()
+	periodStart, periodEnd := now.AddDate(0, 0, -7), now
+	// calendar 模式下 period 边界反映真实窗口（前端跨面对拍直接可用）。
+	if win.calendar {
+		periodStart, periodEnd = win.startUTC, win.endUTC
+	}
 	resp := ModuleStatsResponse{
-		Modules:     modules,
-		Summary:     summary,
-		PeriodStart: now.AddDate(0, 0, -7),
-		PeriodEnd:   now,
+		// ★ 恒声明不可用：该维度的生产写方从未装配 ⇒ 0 不是数据。
+		//   （一旦写方装配，须先裁决口径再把这里置 true。）
+		DataAvailable:         false,
+		DataUnavailableReason: moduleStatsUnavailableReason,
+		Modules:               modules,
+		Summary:               summary,
+		PeriodStart:           periodStart,
+		PeriodEnd:             periodEnd,
 	}
 
 	metadata := &Metadata{

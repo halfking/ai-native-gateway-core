@@ -15,7 +15,7 @@ import { useRouter } from 'vue-router'
 //      要求 admin 角色 ⇒ 普通用户只会拿到两个空卡片；
 //   ③ 供应商维度必须由 SQL 按 provider 列聚合，前端 split('/') 会把模型名
 //      当 provider（见 api/sessionAnalytics.ts 的 ProviderRankingRow 注释）。
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   topClients: Array<{ client_id: string; session_count: number; total_cost: number; avg_health?: number | null }>
   topTasks: Array<{ task_id: string; session_count: number; total_cost: number; avg_health?: number | null }>
   modelUsage?: Array<{
@@ -28,7 +28,20 @@ const props = defineProps<{
   }>
   /** 趋势窗口（YYYY-MM-DD 日历日），模型行跳 usage-trends 时自动带上。 */
   trendWindow?: { start: string; end: string }
-}>()
+  /**
+   * ★ F1：后端在总览响应里披露「模型腿是否按会话展开」。
+   *   缺省 true —— 后端还没上报该字段时，当前实现**就是**按会话展开的
+   *   （一个会话用了 N 个模型 ⇒ 该会话的整段成本在 N 个模型行各计一次）
+   *   ⇒ 合计大于 KPI、不可与 KPI 相加 ⇒ 必须披露。
+   *   后端明确回报 false 时（改成不展开）才撤下披露。
+   */
+  modelUsageExpanded?: boolean
+  /** ★ F1：后端给出的展开原因（可读文案），有则一并显示。 */
+  modelUsageExpansionReason?: string
+}>(), {
+  modelUsageExpanded: true,
+  modelUsageExpansionReason: '',
+})
 
 const { t } = useI18n()
 const router = useRouter()
@@ -65,6 +78,19 @@ function openTask(id: string) {
   <div>
     <div v-if="modelUsage !== undefined" class="detail-card model-card">
       <div class="detail-card__header">{{ t('sessions.stats.topModels') }}</div>
+      <!-- ★ F1：模型腿按**会话**展开（一个会话用了多个模型 ⇒ 整段成本在每个
+           模型行各计一次）⇒ 本列合计**大于**面板 KPI、也不可与 KPI 相加。
+           数字本轮不改（口径归后端裁决），但必须**可见披露**，否则读者会
+           拿这一列去和 KPI 求和、对不上时只会怀疑数据不会怀疑口径。
+           ★ 判据取自**响应**（后端披露的展开标志/原因），不是前端猜的。 -->
+      <p
+        v-if="props.modelUsageExpanded"
+        class="model-cost-note"
+        data-testid="stats-model-cost-note"
+      >
+        {{ t('sessions.stats.modelCostNote') }}
+        <span v-if="props.modelUsageExpansionReason" class="model-cost-note__reason">{{ props.modelUsageExpansionReason }}</span>
+      </p>
       <div v-if="modelUsage.length" class="table-wrap">
         <table class="data-table">
           <thead>
@@ -72,7 +98,7 @@ function openTask(id: string) {
               <th>{{ t('sessions.stats.model') }}</th>
               <th>{{ t('sessions.stats.sessionCount') }}</th>
               <th>{{ t('sessions.stats.requestCount') }}</th>
-              <th>{{ t('sessions.stats.totalCost') }}</th>
+              <th>{{ t('sessions.stats.costUsd') }}</th>
               <th>{{ t('sessions.stats.successRate') }}</th>
               <th>{{ t('sessions.stats.avgLatency') }}</th>
             </tr>
@@ -110,7 +136,7 @@ function openTask(id: string) {
             <tr>
               <th>{{ t('sessions.stats.clientId') }}</th>
               <th>{{ t('sessions.stats.sessionCount') }}</th>
-              <th>{{ t('sessions.stats.totalCost') }}</th>
+              <th>{{ t('sessions.stats.costUsd') }}</th>
               <th>{{ t('sessions.stats.avgHealth') }}</th>
             </tr>
           </thead>
@@ -134,7 +160,7 @@ function openTask(id: string) {
             <tr>
               <th>{{ t('sessions.stats.taskId') }}</th>
               <th>{{ t('sessions.stats.sessionCount') }}</th>
-              <th>{{ t('sessions.stats.totalCost') }}</th>
+              <th>{{ t('sessions.stats.costUsd') }}</th>
               <th>{{ t('sessions.stats.avgHealth') }}</th>
             </tr>
           </thead>
@@ -187,6 +213,14 @@ function openTask(id: string) {
 .health-pill--warning { background: var(--warning-bg); }
 .health-pill--danger { background: var(--danger-bg); }
 .model-card { margin-bottom: 16px; }
+/* ★ F1：重复计数披露 —— 与表头同色系的小字，别抢数字的注意力，但不能没有。 */
+.model-cost-note {
+  margin: 0 0 10px;
+  color: var(--muted, var(--text-secondary));
+  font-size: 12px;
+  line-height: 1.6;
+}
+.model-cost-note__reason { color: var(--muted, var(--text-secondary)); }
 
 /* 2026-11-21 对齐轮：模型名 → usage-trends 深链 */
 .model-trend-link {

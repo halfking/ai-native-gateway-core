@@ -505,9 +505,13 @@ if (!owner) {
   const p = await loadPage(`/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}`)
   check('人员详情页：无错误横幅', !p.hasError)
   check('人员详情页：无陈旧横幅', !p.hasStale)
-  const needCards = ['会话数', '任务数', '总花费', '当前排名']
+  // ★ N9（2026-11-25）：成本卡由「一张『总花费』」拆成**两张**（内部成本美元 /
+  //   外部成本积分）—— summary.total_cost 是两个单位**跨单位相加**的结果，
+  //   渲染成一个金额等于凭空造出一个不存在的美元金额。
+  //   ⇒ 判据跟着口径走：断两张单位卡在屏（而不是断一张合计卡）。
+  const needCards = ['会话数', '任务数', '内部成本（美元）', '外部成本（积分）', '当前排名']
   const missing = needCards.filter(l => !(l in p.cards))
-  check('人员详情页：4 张数据卡齐全', missing.length === 0, missing.length ? '缺 ' + missing.join('/') : '4 张全在')
+  check('人员详情页：5 张数据卡齐全（成本拆成两张单位卡）', missing.length === 0, missing.length ? '缺 ' + missing.join('/') : '5 张全在')
   const needTitles = ['会话趋势', '任务趋势', '花费趋势', '排名变化']
   const missingT = needTitles.filter(t => !p.titles.includes(t))
   check('人员详情页：4 个趋势段齐全', missingT.length === 0, missingT.length ? '缺 ' + missingT.join('/') : '4 段全在')

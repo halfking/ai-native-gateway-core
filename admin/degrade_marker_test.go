@@ -69,6 +69,15 @@ var degradeHelpers = []string{
 	"IsSchemaBehindError(",
 	"IsMissingRelationError(",
 	`"42P01"`,
+	// ★ 2026-11-25 12h 修订审计轮：dashboardapi/errors.go 与 performance.go 的
+	// 42P01 判定被收编进 **dashboardapi 包内的薄封装** requestLogFactsMissingRelation()
+	// （它内部转调 dashboarddegrade.IsMissingRelationError）。
+	// ⇒ 本门按「文件文本里出现调用名」数站点 ⇒ 收编之后这两个文件**看起来**
+	//   变成 0 个 42P01 站点 ⇒ 门会报「已不再有 42P01 站点」。
+	// ⇒ ★ 但事实相反：42P01 站点**仍然在**（只是多了一层调用帧）⇒
+	//   「门红了」≠「事实如门所述」⇒ 这里补上这个 needle，让门**看得见 indirection**，
+	//   而不是去改生产代码把封装拆掉。
+	"requestLogFactsMissingRelation(",
 }
 
 // degradeMarkerOutOfScope 列出**已知未纳入** degraded 契约的文件及理由。

@@ -8,6 +8,11 @@ tabs: {
     sessionStats: 'セッションと統計',
     selfcheck: 'システム自己診断',
   },
+  // ★ N1：古いセッション範囲で計算され続けるブロック向けの口径開示バッジ。
+  stats: {
+    legacyCaliberLabel: '旧基準',
+    legacyCaliberTitle: 'これらのブロック（トレンド / ヘルス / エラー / パフォーマンス）はまだ古いセッション範囲で計算されており、パネルの KPI とは別の尺度です。KPI に直接加算したり比較したりはできません。',
+  },
   v2: {
     quickApiKey: 'API Key', quickModels: 'モデル', quickApiKeyTitle: 'API Key ランキング',
     quickModelsTitle: 'モデル統計', refreshData: 'データ更新', retry: '再試行',
