@@ -3805,14 +3805,25 @@ ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
   "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
+# ★★ 2026-11-24（第四轮 L15）：★ 本段四条判据**加严**为「表在 ＋ 台账行 ＋ 索引 ＋ 唯一约束」。
+#   ★ 为什么现在能加严（三条前置本轮全部以**只读证据**闭合）：
+#     ① **索引/约束真名已在生产只读核实**（211 / acc-pg17 / llm_gateway ⇒ pg_indexes +
+#        pg_constraint）⇒ 孤儿判据当年声称的 7 个索引名 ＋ 3 条唯一约束名**全部真实存在**
+#        ⇒ ★⇒ 「加严后判据在生产永不满足 ⇒ 部署失败」这个风险**被实证排除**；
+#     ② **写法合规**（★ 漂移门抽取规则：public.<name> 形态合规，★ 越界的只有 'public'
+#        这一个字面量）⇒ 本段全部改用 to_regclass ＋ 裸标识符，★ 逐字取自迁移文件；
+#     ③ **生产只读求值四条全为 t**（★ 零生产写）⇒ 加严后部署不会红。
+#   ★ 四条判据**全部写成单行 AND 串联** ⇒ **不可能再被写成孤儿行**（★ 孤儿＝续行丢了
+#     ledger_artifact_probe 前缀，★ 而单行没有续行）。
+#   ★ 判据强度属 owner 口径；★ 本段强度由 owner 于 2026-11-24 拍板采纳。
 ledger_artifact_probe "055_teams_table.sql" \
-  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
+  "to_regclass('public.teams') IS NOT NULL AND to_regclass('public.idx_teams_owner_id') IS NOT NULL AND to_regclass('public.idx_teams_tenant_id') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conname = 'teams_tenant_name_key' AND conrelid = to_regclass('public.teams')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
 ledger_artifact_probe "056_user_teams.sql" \
-  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
+  "to_regclass('public.user_teams') IS NOT NULL AND to_regclass('public.idx_user_teams_user_id') IS NOT NULL AND to_regclass('public.idx_user_teams_team_id') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conname = 'user_teams_user_team_key' AND conrelid = to_regclass('public.user_teams')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
 ledger_artifact_probe "057_api_keys_team_id.sql" \
-  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND to_regclass('public.idx_api_keys_team_id') IS NOT NULL AND to_regclass('public.idx_api_keys_tenant_team') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
 ledger_artifact_probe "058_team_budgets.sql" \
-  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
+  "to_regclass('public.team_budgets') IS NOT NULL AND to_regclass('public.idx_team_budgets_team_id') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conname = 'team_budgets_team_id_key' AND conrelid = to_regclass('public.team_budgets')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
