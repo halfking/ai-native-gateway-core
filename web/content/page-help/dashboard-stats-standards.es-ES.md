@@ -5,15 +5,16 @@ El «Panel», las «Estadísticas de sesión» y la «Conciliación de proveedor
 > Base de la medición: 2026-11-23 21:05 (Asia/Shanghai) en producción. Todas las cifras se tomaron en el **mismo instante** (dentro de una única consulta SQL), ventana = `NOW()-7 días`; la conciliación de proveedores se midió aparte sobre el intervalo cerrado de días naturales `2026-11-17 ~ 2026-11-23` y se contrastó día a día con la tabla de hechos.
 >
 > ★ Corrección (ronda de alineación de rangos de fechas, 2026-11-23): la pestaña «estadísticas de sesión» usa ahora **el mismo** rango de fechas que la pestaña «panel» (mismo control, mismo intervalo de días naturales) ⇒ las cifras de estadísticas de sesión de abajo son medidas **previas a la alineación** (ventana móvil) y hay que volver a medirlas en la nueva ventana; las cifras del panel y de la conciliación no cambian.
+> ★★ Corrección (ronda de unificación de la fuente de verdad, 2026-11-24): ★★ la fuente de verdad del panel pasó de la tabla de hechos a nivel de solicitud `usage_facts` **a los registros a nivel de solicitud `request_logs_with_current_month` en su conjunto** — las tarjetas de resumen, la tendencia de uso y los gráficos circulares leen ahora **la misma vista, el mismo conjunto de estados terminales y el mismo predicado de sonda** ⇒ un único universo para toda la página, y las ventanas largas (últimos 30 días) ya no parten la página en dos cifras (la tarjeta y los gráficos circulares diferían en un factor 2). ⇒ **los algoritmos y las descripciones de fuente de esta página se han corregido según el nuevo calibre**; las **cifras medidas del panel que siguen son todavía la medición del 2026-11-23 (calibre previo al cambio)** y hay que volver a medirlas con el nuevo calibre antes de sustituirlas (registrado como tarea pendiente). La conciliación de proveedores lee `report_snapshots` / `usage_facts` y por tanto **ya no coincide dígito a dígito con el panel garantizado** — véase la limitación 7 al final de esta página.
 
 ## Cómo se relacionan los tres módulos
 
 | | Panel | Estadísticas de sesión | Conciliación de proveedores |
 | --- | --- | --- | --- |
 | Entidad estadística | Una llamada a modelo cuenta como una fila (**nivel de solicitud**) | Una sesión cuenta como una fila con sus valores **acumulados** (**nivel de sesión**) | Una llamada a modelo cuenta como una fila (**nivel de solicitud**, agregada por proveedor) |
-| Fuente de verdad | Tabla de hechos a nivel de solicitud `usage_facts` | Tabla resumen de sesiones `session_summaries` + universo de sesiones | Tabla de instantáneas diarias `report_snapshots` |
+| Fuente de verdad | Registros a nivel de solicitud `request_logs_with_current_month` | Tabla resumen de sesiones `session_summaries` + universo de sesiones | Tabla de instantáneas diarias `report_snapshots` |
 | Ventana temporal | Días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta ahora | **Mismo intervalo que el panel** (días naturales en la zona horaria del sistema: medianoche de hoy-(N-1) hasta el final del último día; inicio/fin personalizables) | **Intervalo cerrado de días naturales** (día completo, incluido el último día entero) |
-| Tráfico de sondeo | Excluido según `traffic_class` (conmutable) | Excluido según las reglas del **universo de sesiones** | **No se excluye** (todo el tráfico, incluido «sin asignar») |
+| Tráfico de sondeo | Excluido según los marcadores de sondeo de los registros de solicitud (conmutable) | Excluido según las reglas del **universo de sesiones** | **No se excluye** (todo el tráfico, incluido «sin asignar») |
 | Madurez | En vivo | En vivo | **Instantánea T+1** (las fechas cuyo día aún no ha terminado van con retraso) |
 
 **Conclusión primero**: los números de los tres módulos **no deberían coincidir** — entidad distinta, ventana distinta, reglas de exclusión de sondeo distintas y madurez distinta. Para comparar hay que alinear primero esos cuatro puntos; no vale con restarlos.
@@ -44,7 +45,7 @@ El tráfico de sondeo (health check / autocomprobación) figura por separado en 
 | Claves activas | Número de claves actualmente habilitadas | **Según configuración, independiente de la ventana** |
 | Recuento de errores | Suma por categoría de la distribución de fallos; si no existe, se estima con «solicitudes totales × (1 − tasa de éxito)» | La estimación puede diferir en unas pocas filas |
 | Gráficos circulares (modelo / proveedor / inquilino / cliente…) | Solicitudes, tokens y coste agrupados por dimensión | Provienen del registro a nivel de solicitud, la misma fuente que las tarjetas (mismo alcance de sonda) |
-| Tendencia de uso | Solicitudes, tokens, coste y créditos por tramo de tiempo | **Misma fuente que las tarjetas**: la misma tabla de hechos a nivel de solicitud `usage_facts` y el mismo predicado de sonda ⇒ los tramos suman la tarjeta |
+| Tendencia de uso | Solicitudes, tokens, coste y créditos por tramo de tiempo | **Misma fuente que las tarjetas**: los mismos registros a nivel de solicitud `request_logs_with_current_month`, el mismo predicado de sonda y el mismo conjunto de estados terminales ⇒ los tramos suman la tarjeta |
 
 ### Cómo se calcula la ventana temporal
 
@@ -57,7 +58,7 @@ El tráfico de sondeo (health check / autocomprobación) figura por separado en 
 La tarjeta de créditos **no** muestra los créditos consumidos dentro de la ventana elegida: la columna de créditos de la tabla de hechos a nivel de solicitud está siempre a 0 (medido: las 298.037 filas valen 0), de modo que lo que aparece es el **delta en vivo posterior a la línea base en caché**. Por tanto:
 
 - Cambiar entre «Hoy / últimos 7 días / últimos 30 días» deja la tarjeta de créditos **exactamente igual** (medido: las tres muestran 86.925).
-- La tendencia de uso y la tarjeta de créditos de la misma página provienen ahora de la **misma fuente** (ambas leen la tabla de hechos a nivel de solicitud `usage_facts`) ⇒ los créditos de los tramos suman la tarjeta.
+- La tendencia de uso y la tarjeta de créditos de la misma página provienen ahora de la **misma fuente** (ambas leen los registros a nivel de solicitud `request_logs_with_current_month`) ⇒ los créditos de los tramos suman la tarjeta.
 
 Para un libro de créditos fiable use las páginas «Uso y coste» y «Conciliación»; la tarjeta de créditos del panel no sirve para comparar series temporales.
 
@@ -153,7 +154,7 @@ Las filas de proveedor de la página de conciliación (incluido «sin asignar»)
 3. **Alinee después la base de sondeo**: el panel permite conmutar a «incluir sondeo»; las estadísticas de sesión excluyen según las reglas del universo de sesiones; **la conciliación siempre incluye el sondeo**. Si el número de solicitudes difiere mucho y el coste es parecido ⇒ revise primero el sondeo.
 4. **Alinee después la madurez**: la conciliación es una instantánea T+1, **los datos del día en curso van necesariamente con retraso**; antes de comparar, confirme hasta qué día llega la instantánea.
 5. **Busque marcas de degradación**: cuando una tarjeta muestra «degradado / no fiable / no calculado», esos ceros no significan «sin tráfico».
-6. **La tendencia y las tarjetas del panel tienen ahora la misma fuente**: ambas leen la tabla de hechos a nivel de solicitud `usage_facts` con el mismo predicado de sonda ⇒ los tramos deberían sumar la tarjeta. Si no: comprueba primero la marca `degraded` de la carga útil (el alcance de sonda difiere al recurrir a las tablas preagregadas) y después que las ventanas temporales coincidan.
+6. **La tendencia y las tarjetas del panel tienen ahora la misma fuente**: ambas leen los registros a nivel de solicitud `request_logs_with_current_month` con el mismo predicado de sonda ⇒ los tramos deberían sumar la tarjeta. Si no: comprueba primero la marca `degraded` de la carga útil (el alcance de sonda difiere al recurrir a las tablas preagregadas) y después que las ventanas temporales coincidan.
 7. **«Hoy» puede fallar (corregido el 2026-11-23)**: el preajuste «Hoy» de las estadísticas de sesión agotaba de forma reproducible el tiempo de espera de 30 segundos porque faltaba el índice de la unión en la base de datos (índice añadido el 2026-11-23: la consulta pasó de 121,8 s a 0,19 s). Si la página vuelve a mostrar el error, el índice ha vuelto a desaparecer: pida al equipo de guardia que compruebe que `idx_session_dim_session_key` está en su sitio.
 
 ## Limitaciones conocidas (medido 2026-11-23)
@@ -164,3 +165,4 @@ Las filas de proveedor de la página de conciliación (incluido «sin asignar»)
 4. **Retraso del mismo día en la instantánea de conciliación**: la conciliación es de base T+1, **los datos de hoy están incompletos**; restarlos directamente de las cifras en vivo del panel produce siempre una diferencia.
 5. La tarjeta de créditos del panel no cambia con la ventana temporal (véase arriba).
 6. **Alcance de sonda en estado degradado**: cuando los gráficos circulares y la tendencia del panel recurren a las tablas preagregadas tras fallar la ruta principal, esas tablas son siempre «sin sondas» ⇒ en modo «con sondas» discrepan del resumen principal (la carga útil lleva entonces una marca `degraded`: no es una degradación silenciosa).
+7. **El panel y la conciliación de proveedores ya no están garantizados como iguales dígito a dígito (2026-11-24, ronda 2)**: la fuente del panel se ha movido a los registros a nivel de solicitud mientras la conciliación sigue leyendo `report_snapshots` / `usage_facts`. Ambos siguen siendo iguales mientras la tabla de hechos esté intacta; en cuanto la ventana retroceda **antes del 2026-11-10 13:38**, la conciliación **subestima**: la tabla de hechos perdió en ese instante ≈352.000 hechos de actividad reales (2026-10-12 ~ 2026-11-10; cadena de pruebas en el archivo principal de auditoría §C) mientras los registros de solicitud conservan ese tráfico. ⇒ **la diferencia entre conciliación y panel se explica por el distinto punto de partida histórico de las fuentes, no por un cálculo erróneo**; para cifras a nivel de período contable, use la página de conciliación (con su conocido desfase del día).

@@ -5,15 +5,16 @@ The "Board", "Session & Statistics" and "Provider Reconciliation" are three summ
 > Measured basis: 2026-11-23 21:05 (Asia/Shanghai) in production. All numbers were taken at the **same instant** (completed within a single SQL statement), window = `NOW()-7 days`; the provider reconciliation side was measured separately over the closed calendar-day range `2026-11-17 ~ 2026-11-23` and cross-checked against the fact table day by day.
 >
 > ★ Correction (2026-11-23 date-range alignment round): the Session & Statistics tab now uses **the same** date range as the Board tab (same control, same calendar-day range) ⇒ the Session & Statistics figures below were measured with the **pre-alignment** (rolling) window and have to be re-measured on the new window; the Board and reconciliation figures are unaffected.
+> ★★ Correction (2026-11-24 truth-source unification, round 2): ★★ the Board's source of truth moved from the request-level fact table `usage_facts` **to the request-level logs `request_logs_with_current_month` as a whole** — the hero cards, the usage trend chart and the pies now read **the same view, the same terminal-status set and the same probe predicate** ⇒ one universe for the whole page, and long windows (last 30 days) no longer split the page in two (the card and the pies used to differ by 2×). ⇒ **the algorithms and source descriptions on this page have been corrected to the new caliber**; the **measured board-side figures below are still the 2026-11-23 measurement (pre-switch caliber)** and have to be re-measured on the new caliber before they are replaced (tracked as a to-do). The provider reconciliation side reads `report_snapshots` / `usage_facts` and is therefore **no longer guaranteed to match the board digit for digit** — see limitation 7 at the end of this page.
 
 ## How the three modules relate
 
 | | Board | Session & Statistics | Provider Reconciliation |
 | --- | --- | --- | --- |
 | Statistical entity | One model call counts as one row (**request level**) | One session counts as one row, carrying that session's **cumulative values** (**session level**) | One model call counts as one row (**request level**, aggregated by provider) |
-| Source of truth | Request-level fact table `usage_facts` | Session summary table `session_summaries` + the session universe | Daily snapshot table `report_snapshots` |
+| Source of truth | Request-level logs `request_logs_with_current_month` | Session summary table `session_summaries` + the session universe | Daily snapshot table `report_snapshots` |
 | Time window | Calendar days in the system time zone: midnight of today-(N-1) → now | **Same range as the Board** (calendar days in the system time zone: midnight of today-(N-1) → end of the last day; custom start/end supported) | **Closed calendar-day range** (whole day, including the full last day) |
-| Probe traffic | Excluded by `traffic_class` (switchable) | Excluded by the **session universe** rules | **Not excluded** (all traffic, including unassigned) |
+| Probe traffic | Excluded by the probe markers carried by the request-level logs (switchable) | Excluded by the **session universe** rules | **Not excluded** (all traffic, including unassigned) |
 | Maturity | Real time | Real time | **T+1 snapshot** (a date whose day has not ended yet lags behind) |
 
 **Bottom line first**: the three modules' numbers **are not supposed to be equal** — different entities, different windows, different probe-exclusion rules, different maturity. Any cross-module comparison must align those four first; you cannot simply subtract one from the other.
@@ -44,7 +45,7 @@ Probe (health check / self-check) traffic is listed separately in the fact table
 | Active keys | Number of keys currently enabled | **Configuration-based; independent of the time range** |
 | Error count | Sum of each failure category in the error distribution; when that is unavailable, estimated as total requests × (1 − success rate) | The estimate can differ from the real value by a few rows |
 | Pie charts (model / provider / tenant / client…) | Requests / tokens / cost grouped by dimension | From the request-level log — the same source as the cards above (same probe scope) |
-| Usage trend chart | Requests / tokens / cost / credits bucketed over time | **Same source as the cards above**: the same request-level fact table `usage_facts` and the same probe predicate ⇒ the buckets add up to the card |
+| Usage trend chart | Requests / tokens / cost / credits bucketed over time | **Same source as the cards above**: the same request-level logs `request_logs_with_current_month`, the same probe predicate and the same terminal-status set ⇒ the buckets add up to the card |
 
 ### How the time window is computed
 
@@ -57,7 +58,7 @@ Probe (health check / self-check) traffic is listed separately in the fact table
 The credits card does **not** show credits consumed inside the selected window: the credits column of the request-level fact table is currently always 0 (measured: all 298,037 rows are 0), so what the card shows is the **live delta accumulated after the cached baseline**. Therefore:
 
 - Switching between "Today / Last 7 days / Last 30 days" leaves the credits card **exactly unchanged** (measured: all three show 86,925).
-- The usage trend chart and the credits card on the same page are now **from the same source** (both read the request-level fact table `usage_facts`) ⇒ the buckets' credits add up to the card.
+- The usage trend chart and the credits card on the same page are now **from the same source** (both read the request-level logs `request_logs_with_current_month`) ⇒ the buckets' credits add up to the card.
 
 For a trustworthy credit ledger, use the "Usage & Cost" and "Reconciliation" pages instead; do not use the board credits card for time series comparisons.
 
@@ -153,7 +154,7 @@ The provider rows of the reconciliation page (including "Unassigned") **sum to e
 3. **Then align the probe caliber**: the board can switch to "include probes"; session statistics excludes by the session universe rules; **the reconciliation always includes probes**. Request counts differing a lot while the costs are close ⇒ look at probes first.
 4. **Then align the maturity**: the reconciliation is a T+1 snapshot, so **the current day's data necessarily lags**; confirm which day the snapshot covers before comparing.
 5. **Look for degradation markers**: when a card shows "degraded / untrustworthy / not computed", those zeros do not mean "no traffic".
-6. **The board trend chart and the board cards are now the same source**: both read the request-level fact table `usage_facts` with the same probe predicate ⇒ the buckets should add up to the card. If they do not, first check the `degraded` flag in the payload (the probe scope differs when it falls back to the pre-aggregated tables), then check that the time windows match.
+6. **The board trend chart and the board cards are now the same source**: both read the request-level logs `request_logs_with_current_month` with the same probe predicate ⇒ the buckets should add up to the card. If they do not, first check the `degraded` flag in the payload (the probe scope differs when it falls back to the pre-aggregated tables), then check that the time windows match.
 7. **"Today" used to fail (fixed 2026-11-23)**: the "Today" preset of Session & Statistics reproducibly hit the 30-second timeout because the join index was missing on the database side (index added 2026-11-23: the query went from 121.8 s to 0.19 s). If the page shows that error again, the index has gone missing again — ask the on-call engineer to check that `idx_session_dim_session_key` is in place.
 
 ## Known limitations (measured 2026-11-23)
@@ -164,3 +165,4 @@ The provider rows of the reconciliation page (including "Unassigned") **sum to e
 4. **Same-day lag of the reconciliation snapshot**: the reconciliation is a T+1 caliber, so **the current (today's) data is incomplete**; subtracting it directly from the board's real-time numbers will always produce a difference.
 5. The board credits card does not change with the time range (see above).
 6. **Probe scope in the degraded state**: when the board's pies and trends fall back to the pre-aggregated tables after the primary path fails, those tables are always "probes excluded" ⇒ in probe-included mode they will disagree with the hero summary (the payload carries a `degraded` flag in that case — it is not a silent degradation).
+7. **The board and the provider reconciliation are no longer guaranteed to match digit for digit (2026-11-24, round 2)**: the board's source moved to the request-level logs while the reconciliation side reads `report_snapshots` / `usage_facts`. The two are still equal for periods where the fact table is intact; as soon as the window reaches back **before 2026-11-10 13:38**, the reconciliation side **undercounts** — the fact table lost ≈352,000 real business facts at that instant (2026-10-12 ~ 2026-11-10; evidence chain in the audit master file §C) while the request-level logs still hold that traffic. ⇒ **Explain a reconciliation shortfall against the board by "the two sources start their history at different points" — it is not a miscalculation**; for ledger-grade numbers use the reconciliation page (including its known same-day lag).

@@ -141,6 +141,11 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	// ★★ 联动 ⇒ ★★ 同一页面里不再出现「卡片 189,008 笔、趋势图停在 75,878 笔」的分裂。
 	// ★★ 唯一残留的不一致在**降级路径**（维表/分钟表恒为排除探测）⇒ 那时载荷会带
 	// ★★ degraded 标记（degraded_pies / degraded_trends），不是静默降级。
+	//
+	// ★★ 2026-11-24 第二轮订正（owner 拍板「整页切请求级日志」）：★★ ★ **英雄区与
+	// ★★ ★ 趋势也改成读请求级日志**（与饼图同一张视图、同一终态集、同一探测谓词）
+	// ★★ ★ ⇒ 三条读链一个宇宙 ⇒ 「近30天」页签不再出现 2.08 倍的页面内分裂
+	// ★★ ★ （成因：事实族在 2026-11-10 13:37 丢了 ≈35.2 万行，覆盖起点与日志不同）。
 	if includeProbes {
 		resp["probe_scope"] = "included"
 	} else {
@@ -241,11 +246,16 @@ func boardSource(fromMinute bool) string {
 }
 
 // boardSourceForSummary refines the payload-level source label with the
-// summary's actual origin. Since 2026-11-20 the summary normally comes from
-// usage_facts (the reconciliation truth source); the minute/logs labels only
-// apply when usage_facts was unavailable and the legacy chain answered.
+// summary's actual origin.
+//
+// ★ 2026-11-24 第二轮：英雄区主源已从 usage_facts 换成**请求级日志**
+//   （owner 拍板「整页切请求级日志」）⇒ 主源标签是 "request_logs"；
+//   "usage_facts" 分支保留给仍在返回该标签的旧降级载荷（读旧缓存时可能命中）。
 func boardSourceForSummary(summary map[string]any, filled bool) string {
 	if filled {
+		if s, _ := summary["summary_source"].(string); s == "request_logs" {
+			return "request_logs"
+		}
 		if s, _ := summary["summary_source"].(string); s == "usage_facts" {
 			return "usage_facts"
 		}
