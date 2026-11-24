@@ -87,3 +87,26 @@ embeddata/session_turns_hot_bootstrap.sql	installer	bootstrap:session_turns_hot_
 embeddata/983b_add_raw_model_name.sql	installer	-	★ embeddata 宇宙里的同一件（canonical/983b 的逐字节副本）。它在 embeddata 里 ⇒ 由安装器腿交付（StartupFiles + embeddata 副本）⇒ 这个宇宙里只算安装器腿。★ 改号依据同 canonical/983b 那行（★ 973 是逆序依赖 ⇒ 两条自动枚举通道会把补列件排在建表件之前 ⇒ ALTER 落空 ⇒ 改用 983b 使其排在 983 之后）。
 canonical/983c_add_occurred_cursor_index.sql	both	-	request_metrics 的复合游标索引件（★ 2026-11-24 12h 修订审计轮第二轮）。★ 补 internal/metricsstore/processor.go 的 watermarkSQL 所需索引：该查询按 (occurred_at DESC, request_id DESC) 取水位线、**每批跑一次**，而该索引**从来不存在**（迁移 983 的 11 个索引里没有它 ⇒ processor.go 注释里「配套索引见迁移 983」是**失实陈述**）⇒ 2026-11-24 生产只读 EXPLAIN 实测（211 / acc-pg17，request_metrics 340,904 行）：Parallel Seq Scan + top-N heapsort ⇒ Buffers: shared read=26,572 ⇒ Execution Time 117.227 ms⇒ 每批空转 117ms。★ 根因：request_metrics 主键是 (request_id, occurred_at)（生产实测 pkey 定义）⇒ 列序与查询的 (occurred_at, request_id) 相反 ⇒ 主键索引无法用于该排序。★ 983c 的形态依据：★ 9xx 段大于 983 的三位数号已全部占满 ⇒ 无三位数空号；★ 而字母后缀是本仓在这种号段下的合法形态（361b/478p2 等 15 条已交付件同款）⇒ ★ versionPrefix("983c_…") 折叠回 983 ⇒ 与 983_request_metrics.sql 同组、按文件名 ⇒ ★ '983_' < '983b_' < '983c_' ⇒ 排在建表件与补列件之后 ✓（两条自动枚举通道都成立）。★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后。
 embeddata/983c_add_occurred_cursor_index.sql	installer	-	★ embeddata 宇宙里的同一件（canonical/983c 的逐字节副本）。它在 embeddata 里 ⇒ 由安装器腿交付（StartupFiles + embeddata 副本）⇒ 这个宇宙里只算安装器腿。★ 改号依据同 canonical/983c 那行（★ 9xx 段 >983 无三位数空号 ⇒ 用字母后缀 ⇒ 排序排在 983 之后）。
+# ── 2026-11-24 补登记：上游 `5c106f8c8`（数据维护手册轮）带来的 `999a` ──────────
+#
+# ★ 这两行是**补上游的漏登记**，★ 不是新设计：★ 上游那笔已经把 `999a` 放进了
+# ★ **全部三条投递面**（★ 安装器 `StartupFiles` 第 2148 行 ／ ★ embed 清单
+# ★ `main.go` 第 1943+2751 行 ／ ★ 部署通道 `files=()` 第 2862 行 ＋ 产物探针
+# ★ 第 3818 行 ★★），★ 而**唯一**缺的是本册子的一行登记 ⇒ ★⇒
+# ★ 触发了 `TestCanonicalNonPlainMigrationsHaveDeclaredDeliveryLeg`
+# ★ （★ ①-a 双向穷举：★ 目录里有、册子里没有 ⇒ 判红 ★★）。
+#
+# ★★ 顺带记一条【★ 门的报错文案与事实不符 ★★】这件事（★ 值得留给下一个读门的人 ★★）：
+# ★ 那条门的报错文案说的是「★ 它既不在 embeddata/StartupFiles、★ 也不在通道 files=()
+# ★ ⇒ 新装库与升级库都拿不到 ★★」⇒ ★★ **但实测三条投递面它全在 ★★ ⇒ ⇒
+# ★ **⇒ 「门红了」不等于「事实如门所述」⇒ ★★ ⇒ **★ 处置前必须【独立核一遍事实】★★
+# ★ ★★ ⇒ 与本项目通用式「读证据档 ≠ 用证据档」同型 ★★★
+#
+# ★★ 编号口径（★ 顺带精确化我方那条「没有空号」的结论 ★★）：★ `999a` 用的
+# ★★ 【三位数 + 字母后缀】★ ★★ 是**本仓既有记法**（★ 仓内已交付件 16 条同型：
+# ★★ `318b` / `328a` / `361b` / `395b` / `395c` / `478p2` / `487b` / `487c` /
+# ★★ `680b` / `682b` / `683b` / `706b` / `707b` / `983b` / `983c` / `341b` ★★）
+# ★★ ⇒ ★★ **⇒ 「没有空号」的准确表述是「【没有纯数字三位数空号】、★ 但【号段＋字母后缀】
+# ★★ 仍可开」★★ ⇒ ★★ ⇒ ★★ **⇒ 而 `999a` 正是上游把【999 号段】的后缀位开出来的第一个 ★★★**
+canonical/999a_data_maintenance_playbook.sql	both	-	运维/数据维护手册条目六条种子迁移（★ 数据维护手册轮，★ 上游 `5c106f8c8` ★★）。★ 编号取字母后缀 `999a`（★ 上游自述依据「三位数惯例 983b/983c 先例」★★）⇒ ★★ **⇒ 它对【按文件名解析三位数前缀】的那两道门（★ 强制 embed 门 ＋ 投递路径契约门 ★★）完全隐形 ⇒ ★★ ⇒ 因此必须在本册子登记它的投递腿 ★★**。★ 投递面【三条都在】：★ 部署通道 `files=()`（★ `scripts/apply-db-revision-sequence.sh` 第 2862 行 ★★）＋ 安装器 `StartupFiles`（★ `installer/internal/dbinit/runner.go` 第 2148 行 ★★）＋ embeddata 副本（★ `installer/cmd/llm-gw-installer/embeddata/startup/` ★★）⇒ ⇒ 两条腿都走 ⇒ 记 `both` ★★。★ 内容是**纯种子**（★ 只 INSERT 六条手册条目、★ `ON CONFLICT (error_type, COALESCE(match_pattern,'')) DO NOTHING`、★ 且整体被 `BEGIN;` / `COMMIT;` 包裹 ★★）⇒ ★★ **⇒ 不建任何对象、★ 所以只有行数探针（★ `count(*) = 6` ★★）没有对象探针 ★★** ★★★
+embeddata/999a_data_maintenance_playbook.sql	installer	-	★ embeddata 宇宙里的同一件（★ 与 `canonical/999a_data_maintenance_playbook.sql` **逐字节相同**、★ md5 `c3ace94ff807dee57eb59fb25a8a41f7` ★★）。★ 它由安装器腿交付（★ `StartupFiles` ＋ embeddata 副本 ★★）⇒ ★★ **⇒ 通道的 `files=()` 条目指向 canonical 路径、★ 所以这个宇宙里只算安装器腿 ★★**。★ 改号依据同 canonical/999a 那行（★ 三位数空号已占满、★ 字母后缀是本仓既有合法形态 ★★）★★★
