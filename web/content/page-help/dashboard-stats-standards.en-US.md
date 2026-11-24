@@ -43,8 +43,8 @@ Probe (health check / self-check) traffic is listed separately in the fact table
 | Active models / providers | Distinct count of models / providers that actually carried traffic | Not the "total available on the platform" |
 | Active keys | Number of keys currently enabled | **Configuration-based; independent of the time range** |
 | Error count | Sum of each failure category in the error distribution; when that is unavailable, estimated as total requests × (1 − success rate) | The estimate can differ from the real value by a few rows |
-| Pie charts (model / provider / tenant / client…) | Requests / tokens / cost grouped by dimension | From the per-minute statistics table — not the same source as the cards above |
-| Usage trend chart | Requests / tokens / cost / credits bucketed over time | Also from the per-minute statistics table |
+| Pie charts (model / provider / tenant / client…) | Requests / tokens / cost grouped by dimension | From the request-level log — the same source as the cards above (same probe scope) |
+| Usage trend chart | Requests / tokens / cost / credits bucketed over time | **Same source as the cards above**: the same request-level fact table `usage_facts` and the same probe predicate ⇒ the buckets add up to the card |
 
 ### How the time window is computed
 
@@ -57,7 +57,7 @@ Probe (health check / self-check) traffic is listed separately in the fact table
 The credits card does **not** show credits consumed inside the selected window: the credits column of the request-level fact table is currently always 0 (measured: all 298,037 rows are 0), so what the card shows is the **live delta accumulated after the cached baseline**. Therefore:
 
 - Switching between "Today / Last 7 days / Last 30 days" leaves the credits card **exactly unchanged** (measured: all three show 86,925).
-- The usage trend chart on the same page carries a separate credits total (per-minute statistics table, 1,767,183 over 7 days) that is not the same number as the card.
+- The usage trend chart and the credits card on the same page are now **from the same source** (both read the request-level fact table `usage_facts`) ⇒ the buckets' credits add up to the card.
 
 For a trustworthy credit ledger, use the "Usage & Cost" and "Reconciliation" pages instead; do not use the board credits card for time series comparisons.
 
@@ -153,7 +153,7 @@ The provider rows of the reconciliation page (including "Unassigned") **sum to e
 3. **Then align the probe caliber**: the board can switch to "include probes"; session statistics excludes by the session universe rules; **the reconciliation always includes probes**. Request counts differing a lot while the costs are close ⇒ look at probes first.
 4. **Then align the maturity**: the reconciliation is a T+1 snapshot, so **the current day's data necessarily lags**; confirm which day the snapshot covers before comparing.
 5. **Look for degradation markers**: when a card shows "degraded / untrustworthy / not computed", those zeros do not mean "no traffic".
-6. **Board trend chart ≠ board cards**: the trend chart comes from the per-minute statistics table, not the same source as the cards above (request-level fact table) (measured about 13.8% apart over a 30-day window).
+6. **The board trend chart and the board cards are now the same source**: both read the request-level fact table `usage_facts` with the same probe predicate ⇒ the buckets should add up to the card. If they do not, first check the `degraded` flag in the payload (the probe scope differs when it falls back to the pre-aggregated tables), then check that the time windows match.
 7. **"Today" used to fail (fixed 2026-11-23)**: the "Today" preset of Session & Statistics reproducibly hit the 30-second timeout because the join index was missing on the database side (index added 2026-11-23: the query went from 121.8 s to 0.19 s). If the page shows that error again, the index has gone missing again — ask the on-call engineer to check that `idx_session_dim_session_key` is in place.
 
 ## Known limitations (measured 2026-11-23)
@@ -163,4 +163,4 @@ The provider rows of the reconciliation page (including "Unassigned") **sum to e
 3. **Calls without session affiliation (F)**: 381 direct API / scripted calls have no session; the board counts them, session statistics does not.
 4. **Same-day lag of the reconciliation snapshot**: the reconciliation is a T+1 caliber, so **the current (today's) data is incomplete**; subtracting it directly from the board's real-time numbers will always produce a difference.
 5. The board credits card does not change with the time range (see above).
-6. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).
+6. **Probe scope in the degraded state**: when the board's pies and trends fall back to the pre-aggregated tables after the primary path fails, those tables are always "probes excluded" ⇒ in probe-included mode they will disagree with the hero summary (the payload carries a `degraded` flag in that case — it is not a silent degradation).
