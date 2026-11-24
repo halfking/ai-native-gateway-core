@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -472,8 +474,8 @@ func (h *Handler) queryOverviewCountsMinute(ctx context.Context, tenantID string
 // 2026-10-03：以前只有 (pies, error)。42P01 走日志回退后，回退里每个维度
 // 的失败都被吞成空数组，于是这条路径**永远不返回 error** —— 降级事实
 // 在函数边界上就丢了，handler 无从知道该不该给页面打标记。
-func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, boardPieDegradation, error) {
-	pies, err := h.queryBoardPies(ctx, tenantID, tr)
+func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, boardPieDegradation, error) {
+	pies, degraded, err := h.queryBoardPies(ctx, tenantID, tr, includeProbes)
 	if err != nil {
 		if IsMissingRelationError(err) {
 			return h.fallbackBoardPies(ctx, tenantID, tr)
@@ -494,7 +496,7 @@ func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boar
 			return fb, fbDegraded, nil
 		}
 	}
-	return pies, boardPieDegradation{}, nil
+	return pies, degraded, nil
 }
 
 func piesEmpty(pies map[string]any) bool {
@@ -510,7 +512,175 @@ func piesEmpty(pies map[string]any) bool {
 	return true
 }
 
-func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
+// boardPieDimTypes 列出看板饼图的 7 个维度。
+//
+// ★ dimType 用**维表（request_stats_dim_minute）里的原名**，respKey 是响应里的键名。
+// ★★ 两者不可互换：降级路径（queryDimPie）按 dimType 去维表取，主路径
+// ★★ （queryBoardPiesFacts）按同一套 dim_type 聚合请求级日志 ⇒ ★★ 两边产出同一套图例 key。
+var boardPieDimTypes = []struct {
+	dimType string
+	respKey string
+}{
+	{"agent_name", "clients"},
+	{"client_ip", "client_ips"},
+	{"identity_hash", "identity_hashes"},
+	{"model", "models"},
+	{"error_kind", "errors"},
+	{"tenant", "tenants"},
+	{"provider", "providers"},
+}
+
+// boardPieDimKeyExprs 是 7 个维度的 dim_key 表达式，**逐字照抄**
+// bg/stats_minute_rollup.go 的 rollupDimQueries。
+//
+// ★★ 为什么必须照抄（而不是各写各的）：★ dim_key 的取值形态是**维表与看板之间的契约**
+// ★★ —— 模型名回落 client_model、provider 取 id 的文本、error_kind 取 slug、
+// ★★ 空值折成 '__unknown__'、tenant 空值折成 'default'。
+// ★★ 两边不一致 ⇒ 同一个页面在「主路径 → 降级路径」切换时图例全变 ⇒ 用户看到的是
+// ★★ 「同一张图换了套名字」，而不是「数据变了」。
+// ★★ ⇒ 由 TestBoardPieDimKeyExpressionsMatchRollup 钉住两侧不漂移。
+var boardPieDimKeyExprs = map[string]string{
+	"agent_name":    `COALESCE(NULLIF(r.agent_name,''), '__unknown__')`,
+	"client_ip":     `COALESCE(NULLIF(HOST(r.client_ip),''), '__unknown__')`,
+	"identity_hash": `COALESCE(NULLIF(r.identity_hash,''), '__unknown__')`,
+	"model":         `COALESCE(NULLIF(r.outbound_model,''), NULLIF(r.client_model,''), '__unknown__')`,
+	"tenant":        `COALESCE(NULLIF(r.tenant_id,''), 'default')`,
+	"provider":      `COALESCE(r.provider_id, 0)::text`,
+	"error_kind":    `COALESCE(NULLIF(r.error_kind,''), '__unknown__')`,
+}
+
+// boardPieDimValuesSQL 生成 LATERAL VALUES 的维度展开子句（顺序 = boardPieDimTypes）。
+//
+// ★★ 为什么用「一次扫描 + LATERAL VALUES 展开」而不是「7 次独立查询」：
+// ★★ bg/stats_minute_rollup.go 的 rollupDims 就是**7 次独立 INSERT = 7 次全表扫描**
+// ★★ ⇒ 这正是 admin/dashboard_board_fallback.go 里注释所说的「7 次顺序饼图查询 ≈ 9.8s、
+// ★★ 打爆 handler 的 10s 超时」的同款代价。
+// ★★ 改成**单次扫描 + 行展开**后，生产实测（2026-11-24，211 只读）：
+// ★★   7 天窗口 454ms、30 天窗口 1.74s ⇒ ★★ 比旧降级路径快 21 倍。
+func boardPieDimValuesSQL() string {
+	var b strings.Builder
+	b.WriteString("(")
+	for i, d := range boardPieDimTypes {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString("\n                ('")
+		b.WriteString(d.dimType)
+		b.WriteString("', ")
+		b.WriteString(boardPieDimKeyExprs[d.dimType])
+		b.WriteString(")")
+	}
+	b.WriteString("\n            )")
+	return b.String()
+}
+
+// queryBoardPiesFacts 从**请求级日志**算 7 个维度的饼图（单次扫描）。
+//
+// ★★ 这是 2026-11-24 真源统一轮的**主路径**：★ 过去 pies 读预聚合维表
+// ★★ （request_stats_dim_minute），而那张表在写入时已剔除探测流量
+// ★★ ⇒ ★★ 结构上无法响应 include_probes 开关 ⇒ ★★ 看板切「含探测」时
+// ★★ 卡片与饼图口径分裂。本函数读请求级日志（探测标记仍在行上）⇒ ★★ 可按开关过滤。
+//
+// ★★ 为什么饼图不用 usage_facts（而英雄区用它）：★ usage_facts 的 39 列里
+// ★★ **没有 agent_name / client_ip / identity_hash**，也没有 outbound_model/client_model
+// ★★ ⇒ ★★ 那 7 个维度的唯一请求级来源就是请求日志表。
+// ★★ ⇒ ★★ 「真源统一」在看板里的落点是：**英雄区 + 趋势读 usage_facts（同一张表、
+// ★★ 同一探测谓词 ⇒ 逐项相等），饼图读请求日志（唯一有那 7 个维度的请求级源）**。
+//
+// ★★ 口径与维表逐条对齐（与 bg/stats_minute_rollup.go 的 rollupDims 同款）：
+// ★★  ① request_status IN ('success','failure','rate_limited')（只算终态）
+// ★★  ② error_kind 维度**只统计失败行**（否则成功行的空 error_kind 会变成
+// ★★     '__unknown__' 大项 ⇒ 错误分布图会被成功量淹没）
+// ★★  ③ dim_key 表达式逐字照抄（见 boardPieDimKeyExprs）
+// ★★  ④ 探测排除谓词与 boardLogsWhereProbeScope 同源
+//
+// ★★ 生产实测对拍（211 只读，7 天窗口，排除探测）：★ 各维度请求数与维表差异
+// ★★ 0.003% ~ 0.064%（2~4 笔的时间边界差）⇒ ★★ 切源不改变数字口径。
+func (h *Handler) queryBoardPiesFacts(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string][]boardPieItem, error) {
+	where, args := boardLogsWhereProbeScope(tr, "r", tenantID, includeProbes)
+	where += " AND r.request_status IN ('success','failure','rate_limited')"
+
+	creditsExpr := maas.RequestLogCreditsSQL("r", true)
+
+	rows, err := h.db.Query(ctx, `
+		WITH dimmed AS (
+			SELECT d.dim_type, d.dim_key, r.total_tokens, `+creditsExpr+` AS credits, r.cost_usd
+			FROM request_logs_with_current_month r
+			CROSS JOIN LATERAL (VALUES
+`+boardPieDimValuesSQL()+`
+			) AS d(dim_type, dim_key)
+			WHERE `+where+`
+			  AND (d.dim_type <> 'error_kind' OR r.request_status = 'failure')
+		), agg AS (
+			SELECT dim_type, dim_key,
+				COUNT(*) AS requests,
+				COALESCE(SUM(total_tokens), 0) AS tokens,
+				COALESCE(SUM(credits), 0) AS credits,
+				COALESCE(SUM(cost_usd), 0) AS cost_usd
+			FROM dimmed
+			GROUP BY dim_type, dim_key
+		), ranked AS (
+			SELECT agg.*, ROW_NUMBER() OVER (PARTITION BY dim_type ORDER BY requests DESC, dim_key) AS rn
+			FROM agg
+		)
+		SELECT dim_type, dim_key, requests, tokens, credits, cost_usd
+		FROM ranked WHERE rn <= 25
+		ORDER BY dim_type, requests DESC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string][]boardPieItem, len(boardPieDimTypes))
+	for rows.Next() {
+		var dimType string
+		var item boardPieItem
+		if err := rows.Scan(&dimType, &item.Key, &item.Requests, &item.Tokens, &item.Credits, &item.CostUSD); err != nil {
+			warnRowSkip("board pie (facts)", err)
+			continue
+		}
+		out[dimType] = append(out[dimType], item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// queryBoardPies 算 7 个维度的饼图。
+//
+// ★★ 第二个返回值是**降级账本**：★ 请求级主路径失败而落回预聚合维表时，
+// ★★ 维表恒为排除探测口径 ⇒ ★★ 与英雄区的探测口径可能不一致 ⇒ ★★ 必须打降级标记，
+// ★★ 否则「口径不同」会被静默吞掉（这正是本轮要消除的那类缺陷的镜像）。
+func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, boardPieDegradation, error) {
+	// ★ 主路径：请求级日志（单次扫描，探测口径可随 include_probes 切换）。
+	if facts, err := h.queryBoardPiesFacts(ctx, tenantID, tr, includeProbes); err == nil {
+		out := make(map[string]any, len(boardPieDimTypes))
+		for _, d := range boardPieDimTypes {
+			items := facts[d.dimType]
+			if d.dimType == "provider" {
+				items = h.resolveProviderPieLabels(ctx, items)
+			}
+			// Wave 3 B7 (2026-09-22) + R57 source fix: intranet keeps its raw
+			// IP, public IPs collapse to 国家·省·市 through the local segment
+			// table, and everything else degrades to the raw IP.
+			if d.dimType == "client_ip" {
+				items = classifyClientIPPie(items)
+			}
+			if items == nil {
+				items = []boardPieItem{}
+			}
+			out[d.respKey] = items
+		}
+		return out, boardPieDegradation{}, nil
+	} else {
+		slog.Warn("board pies (request-level facts) failed, falling back to the minute dim table",
+			"tenant_id", tenantID, "start", tr.Start, "end", tr.End, "error", err)
+	}
+
+	// ★ 降级路径：预聚合维表（queryDimPie）。★ 该表恒为排除探测口径 ⇒ 降级后
+	// 饼图与英雄区的探测口径可能不一致 ⇒ 打降级标记（见函数头说明）。
 	// 2026-09-03 (audit closure): the "clients" pie now aggregates by
 	// agent_name (the canonical client-type identifier persisted on
 	// _request_logs_hot.agent_name) instead of client_profile (the legacy
@@ -527,10 +697,11 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardT
 		"providers":       "provider",
 	}
 	out := make(map[string]any, len(types))
+	degraded := boardPieDegradation{}
 	for key, dimType := range types {
 		items, err := h.queryDimPie(ctx, tenantID, tr, dimType)
 		if err != nil {
-			return nil, err
+			return nil, boardPieDegradation{}, err
 		}
 		if dimType == "provider" {
 			items = h.resolveProviderPieLabels(ctx, items)
@@ -542,8 +713,10 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardT
 			items = classifyClientIPPie(items)
 		}
 		out[key] = items
+		degraded.Keys = append(degraded.Keys, key)
 	}
-	return out, nil
+	sort.Strings(degraded.Keys)
+	return out, degraded, nil
 }
 
 func (h *Handler) queryDimPie(ctx context.Context, tenantID string, tr boardTimeRange, dimType string) ([]boardPieItem, error) {
@@ -586,13 +759,28 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, tr boardTime
 	return items, nil
 }
 
-func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
-	points, err := h.queryBoardTrends(ctx, tenantID, tr, providerID)
+// resolveBoardTrends 解析趋势。
+//
+// ★★ 2026-11-24 真源统一轮：★ 主路径从「预聚合分钟表」改为「请求级事实表
+// ★★ usage_facts」（与英雄区同表同探测谓词）⇒ ★★ include_probes 开关现在
+// ★★ **同时联动英雄区与趋势图**（过去趋势恒为排除探测 ⇒ 卡片与趋势口径分裂）。
+//
+// ★★ 降级顺序：facts → minute（预聚合，恒排除探测）→ logs（明细，恒排除探测）。
+// ★★ 后两条降级路径的探测口径与英雄区可能不同 ⇒ 打日志说明；整个看板在
+// ★★ usage_facts 缺失时本来就走 legacy 链（英雄区也会降级）⇒ 属既有降级语义。
+func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
+	points, err := h.queryBoardTrends(ctx, tenantID, tr, providerID, includeProbes)
 	if err != nil {
-		if IsMissingRelationError(err) {
-			return h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
+		if !IsMissingRelationError(err) {
+			return nil, err
 		}
-		return nil, err
+		// usage_facts 未迁移 ⇒ 先试分钟表，再落日志。
+		if minute, mErr := h.queryBoardTrendsMinute(ctx, tenantID, tr, providerID); mErr == nil && len(minute) > 0 {
+			slog.Warn("board trends fell back to the minute rollup (probe scope may differ from the hero summary)",
+				"tenant_id", tenantID, "start", tr.Start, "end", tr.End, "include_probes", includeProbes)
+			return minute, nil
+		}
+		return h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
 	}
 	if trendPointsCoverRange(tr, points) {
 		return points, nil
@@ -607,6 +795,9 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 	if len(points) > 0 {
 		return points, nil
 	}
+	if minute, mErr := h.queryBoardTrendsMinute(ctx, tenantID, tr, providerID); mErr == nil && len(minute) > 0 {
+		return minute, nil
+	}
 	fallback, fbErr := h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
 	if fbErr != nil {
 		if len(points) > 0 {
@@ -617,7 +808,73 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 	return fallback, nil
 }
 
-func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
+// queryBoardTrends 从**请求级事实表**（usage_facts）算趋势分桶。
+//
+// ★★ 这是 2026-11-24 真源统一轮的**主路径**：★ 过去趋势读预聚合表
+// ★★ （request_stats_minute），而那张表在写入时已剔除探测流量 ⇒ ★★ 结构上无法响应
+// ★★ include_probes ⇒ ★★ 看板切「含探测」时卡片变、趋势图不动。
+// ★★ 现在趋势与英雄区汇总（queryBoardSummaryFacts）**读同一张表、用同一个探测谓词**
+// ★★ （traffic_class = 'business'）⇒ ★★ 趋势各桶之和与卡片逐项相等。
+//
+// ★★ 探测谓词刻意用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
+// ★★ 与 queryBoardSummaryFacts 同源（usage_facts 的 class 在写入时由 origin_stage
+// ★★ 派生），保证「英雄区排除探测 ⇒ 趋势也排除探测」是同一把尺。
+func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
+	where := "occurred_at >= $1 AND occurred_at < $2"
+	args := []any{tr.Start, tr.End}
+	argN := 3
+	if tenantID != "" {
+		where += fmt.Sprintf(" AND tenant_id = $%d", argN)
+		args = append(args, tenantID)
+		argN++
+	}
+	if !includeProbes {
+		where += " AND traffic_class = 'business'"
+	}
+	if providerID > 0 {
+		where += fmt.Sprintf(" AND provider_id = $%d", argN)
+		args = append(args, providerID)
+	}
+	bucketExpr := sqlTrendBucket("occurred_at", tr.trendBucketMinutes())
+
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s,
+			COUNT(*),
+			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(credits_charged), 0),
+			COALESCE(SUM(cost_amount), 0)
+		FROM usage_facts
+		WHERE %s
+		GROUP BY 1
+		ORDER BY 1 ASC
+	`, bucketExpr, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []boardTrendPoint
+	for rows.Next() {
+		var p boardTrendPoint
+		var bucket time.Time
+		if err := rows.Scan(&bucket, &p.Requests, &p.Tokens, &p.Credits, &p.CostUSD); err != nil {
+			warnRowSkip("board trends (facts)", err)
+			continue
+		}
+		p.Bucket = bucket.UTC().Format(time.RFC3339)
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return points, nil
+}
+
+// queryBoardTrendsMinute 是趋势的**降级路径**：读预聚合分钟表。
+//
+// ★★ 该表在写入时已剔除探测流量 ⇒ ★★ 恒为排除探测口径 ⇒ ★★ 降级后趋势与英雄区
+// ★★ 可能不同口径 ⇒ 由 applyBoardDegradation 打降级标记。
+func (h *Handler) queryBoardTrendsMinute(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64) ([]boardTrendPoint, error) {
 	where, args := boardMinuteWhere(tr, tenantID, 0)
 	if providerID > 0 {
 		where += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)

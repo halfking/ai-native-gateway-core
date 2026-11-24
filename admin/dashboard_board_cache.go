@@ -32,7 +32,9 @@ func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, da
 		}
 		summary = fb
 	}
-	pies, piesDegraded, err := h.resolveBoardPies(ctx, tenantFilter, tr)
+	// ★ 缓存重建只服务默认口径（业务），所以 pies/trends 的探测口径固定为 false。
+	// ★ （与上面 summary 的 includeProbes=false 同一个口径 ⇒ 缓存载荷内部自洽。）
+	pies, piesDegraded, err := h.resolveBoardPies(ctx, tenantFilter, tr, false)
 	if err != nil {
 		pies = emptyBoardPies()
 		piesDegraded = boardPieDegradation{
@@ -40,7 +42,7 @@ func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, da
 			MissingView: boardMissingViewName(err),
 		}
 	}
-	trends, err := h.resolveBoardTrends(ctx, tenantFilter, tr, providerID)
+	trends, err := h.resolveBoardTrends(ctx, tenantFilter, tr, providerID, false)
 	if err != nil {
 		trends = []boardTrendPoint{}
 	}

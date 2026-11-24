@@ -375,11 +375,12 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		},
 	},
 	"admin/dashboard_board_queries.go": {
-		Form:         formCommentOrStringOnly,
-		Class:        classNoRead,
-		Exempt:       true,
-		ExemptReason: exemptNoReadPoint,
-		Note:         "看板查询只在注释里讨论 canonical 视图的耗时；本文件的实际读面走 request_stats 汇总表",
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsExpressionReplication,
+		Note:  "看板读面：① 英雄区汇总与趋势读 usage_facts（非 canonical 视图）；② 饼图 7 维聚合读 request_logs_with_current_month（2026-11-24 真源统一轮：单次扫描 + LATERAL VALUES 展开 7 个维度，取代预聚合维表）",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"cost_usd:base", "error_kind:base", "request_status:expr", "total_tokens:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "看板饼图 7 维聚合（agent_name/client_ip/identity_hash/model/tenant/provider/error_kind）；本读点读 cost_usd:base,error_kind:base,request_status:expr,total_tokens:expr ⇒ 引用了视图里的 CASE 表达式列（request_status / total_tokens）⇒ 窄投影须复刻那份表达式"},
+		},
 	},
 	"admin/data_lifecycle.go": {
 		Form:  formDirectLiteralSQL,
