@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-11-24 会话摘要 thinking 截断批判审计轮 · 总结</title>
+<style>
+  :root { --ink:#1f2933; --muted:#6b7787; --line:#e4e9ee; --blue:#2b6cb0; --red:#c53030; --green:#2f855a; --amber:#b7791f; --bg:#f7f9fb; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; color:var(--ink); background:var(--bg); line-height:1.65; padding:32px 16px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+  h2 { font-size: 19px; margin: 34px 0 14px; padding-left: 10px; border-left: 4px solid var(--blue); }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin-bottom:16px; }
+  table { width:100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f4f8; font-weight: 600; white-space: nowrap; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; background:#eef2f6; padding:1px 5px; border-radius:4px; }
+  .pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .p-ok { background:#e6f4ea; color:var(--green); } .p-fail { background:#fdeaea; color:var(--red); }
+  .p-hold { background:#fff6e0; color:var(--amber); } .p-p1 { background:#fdeaea; color:var(--red); }
+  .p-p2 { background:#fff6e0; color:var(--amber); } .p-p3 { background:#eef2f6; color:var(--muted); }
+  /* bar chart */
+  .bars { margin-top: 8px; }
+  .bar-row { display:flex; align-items:center; margin: 9px 0; gap:10px; }
+  .bar-label { width: 300px; font-size: 13px; color: var(--ink); flex-shrink:0; }
+  .bar-track { flex:1; background:#edf1f5; border-radius: 5px; height: 22px; position: relative; }
+  .bar-fill { height:100%; border-radius:5px; }
+  .bar-num { width: 120px; font-size: 13px; font-weight: 600; flex-shrink:0; text-align:right; }
+  .fill-red { background:#e07070; } .fill-blue { background:#6b9bd1; } .fill-green { background:#63a880; }
+  /* donut */
+  .flex2 { display:flex; gap: 26px; flex-wrap: wrap; align-items: center; }
+  .legend { font-size: 13.5px; }
+  .legend div { margin: 4px 0; }
+  .dot { display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:7px; vertical-align: 1px; }
+  .note { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+  .kv { font-size: 13.5px; }
+  .kv b { color: var(--ink); }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; font-size: 13.5px; }
+  .footer { color: var(--muted); font-size: 12px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>会话摘要 thinking 截断 · 批判审计轮总结</h1>
+  <div class="sub">2026-11-24 ｜ goal「211 网关日志错误分析」接力 ｜ 主档 <code>docs/12小时内修订审计-2026-11-24-0704.md</code> §E ｜ 提交 <code>755129877</code>（代码）＋ <code>4d44f819a</code>（部署事实）</div>
+
+  <h2>① 结论 / 根因</h2>
+  <div class="card kv">
+    <p><b>结论：</b>211 生产 <code>session_summary_worker</code> 的高频解析失败由两个根因叠加造成，<b>本轮全部修复并已上线 211</b>；修复后 12 分钟活体窗口两类解析失败均归零。</p>
+    <ul style="margin-top:10px">
+      <li><b>根因 A（主导，74%）——截断：</b>摘要调用 <code>max_tokens=600</code>，上游 thinking 模型的 <code>&lt;think&gt;</code> 推理段把预算整段吃光，JSON 尚未输出即被截断（极端形态：整个响应只剩一个 <code>{</code>）。生产实测 <b>111 次/6h</b>。</li>
+      <li><b>根因 B（26%）——think 前缀：</b>响应以 <code>&lt;think&gt;…&lt;/think&gt;</code> 开头，旧 <code>extractJSON</code> 不识别 ⇒ <code>response does not look like JSON</code>。<b>39 次/6h</b>（上一轮 <code>c91f763fb</code> 已修，本轮部署生效）。</li>
+      <li><b>根因 C（连带）——重试放大：</b>标题同步对无成功请求行的会话报 <code>no rows</code> ⇒ 已落库摘要的整个操作被判失败 ⇒ worker 对同一 event 无限重试，每轮重跑一次 LLM。</li>
+    </ul>
+    <p class="note">批判审计订正：上一轮修复只覆盖根因 B（39 次），未触及当时占比 74% 的根因 A——「只看日志前缀形态、没量化形态分布」是首修漏掉主导形态的方法论原因。</p>
+  </div>
+
+  <h2>② 修复前错误形态分布（211，近 6h，版本 0fc5d5dc）</h2>
+  <div class="card flex2">
+    <svg width="220" height="220" viewBox="0 0 220 220">
+      <!-- donut: 111/(111+39)=74% truncation -->
+      <g transform="rotate(-90 110 110)">
+        <circle cx="110" cy="110" r="80" fill="none" stroke="#edf1f5" stroke-width="34"/>
+        <circle cx="110" cy="110" r="80" fill="none" stroke="#e07070" stroke-width="34"
+                stroke-dasharray="372.2 130.7" stroke-dashoffset="0"/>
+        <circle cx="110" cy="110" r="80" fill="none" stroke="#6b9bd1" stroke-width="34"
+                stroke-dasharray="130.7 502.9" stroke-dashoffset="-372.2"/>
+      </g>
+      <text x="110" y="104" text-anchor="middle" font-size="30" font-weight="700" fill="#1f2933">150</text>
+      <text x="110" y="128" text-anchor="middle" font-size="12" fill="#6b7787">解析失败 / 6h</text>
+    </svg>
+    <div class="legend">
+      <div><span class="dot" style="background:#e07070"></span><b>111（74%）</b> JSON 截断 — <code>unexpected end of JSON input</code>（根因 A，本轮修）</div>
+      <div><span class="dot" style="background:#6b9bd1"></span><b>39（26%）</b> think 前缀 — <code>does not look like JSON</code>（根因 B，上轮修＋本轮部署生效）</div>
+      <div class="note">另有独立缺陷：标题同步 <code>no rows</code> 判死（根因 C）反复出现于日志；量级未单独计数，本轮一并修。</div>
+    </div>
+  </div>
+
+  <h2>③ 修复前后对照（解析类失败）</h2>
+  <div class="card bars">
+    <div class="bar-row"><div class="bar-label">修复前（旧版本，折算 25 次/h）</div><div class="bar-track"><div class="bar-fill fill-red" style="width:100%"></div></div><div class="bar-num">150 次/6h</div></div>
+    <div class="bar-row"><div class="bar-label">修复后（75512987，12 分钟活体窗）</div><div class="bar-track"><div class="bar-fill fill-green" style="width:2%"></div></div><div class="bar-num">0 次</div></div>
+    <div class="bar-row"><div class="bar-label">└ 截断（根因 A）</div><div class="bar-track"><div class="bar-fill fill-green" style="width:2%"></div></div><div class="bar-num">trunc = 0</div></div>
+    <div class="bar-row"><div class="bar-label">└ think 前缀（根因 B）</div><div class="bar-track"><div class="bar-fill fill-green" style="width:2%"></div></div><div class="bar-num">think = 0</div></div>
+    <div class="bar-row"><div class="bar-label">└ 标题同步判死（根因 C）</div><div class="bar-track"><div class="bar-fill fill-green" style="width:2%"></div></div><div class="bar-num">titlefail = 0</div></div>
+    <div class="bar-row"><div class="bar-label">摘要成功产出</div><div class="bar-track"><div class="bar-fill fill-blue" style="width:33%"></div></div><div class="bar-num">generated = 4</div></div>
+    <div class="note">窗内仅存 2 次失败均为上游传输层问题（<code>llm.kxpms.cn</code> 超时 / HTTP 503）——瞬态可用性，非解析缺陷，重试即过。</div>
+  </div>
+
+  <h2>④ 五项缺陷定案与修法（全部已修）</h2>
+  <div class="card">
+    <table>
+      <tr><th>#</th><th>级别</th><th>缺陷</th><th>修法</th><th>状态</th></tr>
+      <tr><td><b>F-A</b></td><td><span class="pill p-p1">P1</span></td><td><code>max_tokens=600</code> 被 thinking 吃光 ⇒ JSON 截断（111 次/6h 主导形态）</td><td>常量 <code>maxSummaryCompletionTokens=1500</code>，全量/滚动共用；守护测试钉 ≥1024</td><td><span class="pill p-ok">已修＋已上线</span></td></tr>
+      <tr><td><b>F-B</b></td><td><span class="pill p-p1">P1</span></td><td>标题同步失败把已落库摘要判死 ⇒ 无限重试（每轮重跑 LLM）</td><td><code>ErrNoRows</code> ⇒ 跳过；其余 ⇒ <code>slog.Warn</code> 降级，摘要照常返回</td><td><span class="pill p-ok">已修＋已上线</span></td></tr>
+      <tr><td><b>F-C</b></td><td><span class="pill p-p2">P2</span></td><td><code>GenerateTitle</code> 无 thinking 剥离且 30 token：垃圾标题落库 / 静默降级</td><td>提额 200 ＋ <code>stripThinkingTags</code> ＋ 空结果走首句降级</td><td><span class="pill p-ok">已修＋已上线</span></td></tr>
+      <tr><td><b>F-D</b></td><td><span class="pill p-p3">P3</span></td><td>仅识别 <code>&lt;think&gt;</code>，<code>&lt;thinking&gt;</code> 变体漏</td><td><code>stripThinkingTags</code> 改标签对循环（两对）</td><td><span class="pill p-ok">已修＋已上线</span></td></tr>
+      <tr><td><b>F-E</b></td><td><span class="pill p-p2">P2</span></td><td>LLM 回声对话内容 / 省略号截断字段（<code>{"action":...}</code> 伪 JSON）</td><td>两条 prompt 加硬性要求：直接输出 JSON／禁复述／禁省略号</td><td><span class="pill p-ok">已修＋已上线</span></td></tr>
+    </table>
+    <p class="note">明确不做：截断 JSON 的「补闭合」修复——补出来是 <code>{}</code> ⇒ 落「暂无总结」垃圾行，比重试更糟；提额才是根修。</p>
+  </div>
+
+  <h2>⑤ 改动文件与关键行为</h2>
+  <div class="card">
+    <table>
+      <tr><th>文件</th><th>关键行为变化</th></tr>
+      <tr><td><code>domains/sessionsummary/summarizer.go</code></td><td>① <code>maxSummaryCompletionTokens=1500</code>（原 600 字面量 ×2 处）；② <code>GenerateSummary</code>/<code>GenerateRollingSummary</code> 标题同步失败降级 warn；③ <code>syncCanonicalSessionTitle</code> 对 <code>pgx.ErrNoRows</code> 返回 nil；④ <code>GenerateTitle</code> 剥 thinking＋提额 200＋空结果降级；⑤ <code>stripThinkingTags</code> 支持 <code>&lt;thinking&gt;</code>；⑥ 两条 prompt 加硬性要求行</td></tr>
+      <tr><td><code>domains/sessionsummary/thinking_tags_test.go</code></td><td>新增守护测试：<code>&lt;thinking&gt;</code> 变体（2 例）、标题剥离与首句降级、<code>maxSummaryCompletionTokens ≥ 1024</code> 钉、prompt 禁回声/禁省略号</td></tr>
+      <tr><td><code>AGENTS.md</code> / <code>docs/12小时内修订审计-2026-11-24-0704.md</code></td><td>置顶块＋§E（证据/修法/部署事实/L23 订正/遗留）</td></tr>
+      <tr><td><code>docs/audit/2026-11-24-会话摘要thinking截断批判审计-总结.html</code></td><td>本文件（图表总结交付物）</td></tr>
+    </table>
+    <p class="note">零迁移号消耗 / 零 schema 变更 / 零已投递迁移字节变更 / 零共享 PG 写。</p>
+  </div>
+
+  <h2>⑥ 测试命令与结果</h2>
+  <div class="card">
+    <table>
+      <tr><th>命令</th><th>结果</th></tr>
+      <tr><td><code>go build ./...</code></td><td><span class="pill p-ok">✅ 通过</span></td></tr>
+      <tr><td><code>go test ./domains/sessionsummary/ -count=1</code></td><td><span class="pill p-ok">✅ 全绿</span>（含新增 4 组守护测试）</td></tr>
+      <tr><td><code>go test ./admin/ ./internal/summarystore/ ./internal/titlestore/ -count=1</code></td><td><span class="pill p-ok">✅ 全绿</span>（admin 103s）</td></tr>
+      <tr><td><code>go test ./scripts/ursmcheck/ -run TestAgentsMdSizeRatchet</code></td><td><span class="pill p-ok">✅</span>（AGENTS.md 341,500 &lt; 512KiB）</td></tr>
+      <tr><td><code>scripts/deploy-211.sh</code>（内置测试闸门）</td><td><span class="pill p-ok">✅ 闸门绿过</span></td></tr>
+      <tr><td><code>scripts/deploy-245.sh</code></td><td><span class="pill p-fail">❌ [6.5/9] 迁移 checksum 门拦下</span>（L23 既有冻结；未切换现役未受影响）</td></tr>
+    </table>
+  </div>
+
+  <h2>⑦ 部署状态</h2>
+  <div class="card bars">
+    <div class="bar-row"><div class="bar-label"><b>211</b>（生产）蓝绿</div><div class="bar-track"><div class="bar-fill fill-green" style="width:100%"></div></div><div class="bar-num"><span class="pill p-ok">✅ 已上线</span></div></div>
+    <div class="kv" style="margin:6px 0 14px 310px; font-size:13px; color:var(--muted)">
+      <code>2.6.1-75512987-20261124-211</code> / build_seq 3259 / 槽 b@8783 接管 / nginx 8781→8783 / 公网身份 OK / 旧槽 a 已停可回滚；活体：generated=4、failed=2（均传输层）、trunc=0、think=0、titlefail=0
+    </div>
+    <div class="bar-row"><div class="bar-label"><b>245</b>（预发布）</div><div class="bar-track"><div class="bar-fill fill-red" style="width:100%"></div></div><div class="bar-num"><span class="pill p-fail">❌ L23 拦下</span></div></div>
+    <div class="kv" style="margin:6px 0 14px 310px; font-size:13px; color:var(--muted)">
+      <code>994: recorded=796e3d84… vs local=1cb26a1e…</code>；未切换符号链接、现役未受影响；release <code>3161-75512987</code> 已上传未激活
+    </div>
+    <div class="bar-row"><div class="bar-label"><b>154</b>（生产）</div><div class="bar-track"><div class="bar-fill fill-blue" style="width:45%"></div></div><div class="bar-num"><span class="pill p-hold">未发起</span></div></div>
+    <div class="kv" style="margin:6px 0 0 310px; font-size:13px; color:var(--muted)">
+      与 245 共用 252 台账 ⇒ 必然同样被拦，不做无效尝试
+    </div>
+  </div>
+
+  <h2>⑧ 遗留问题与风险</h2>
+  <div class="card">
+    <table>
+      <tr><th>#</th><th>级别</th><th>内容</th><th>归属</th></tr>
+      <tr><td><b>L23 解冻</b></td><td><span class="pill p-p1">P1-blocker</span></td><td>252 共享 PG 台账 vs 磁盘 canonical 不匹配 <b>2 条</b>：<code>994</code>（已知）＋ <b><code>358_session_ownership</code>（本轮新发现，recorded <code>576bb9fa</code> vs disk <code>0bff4ce4</code>）</b>；619/830 已退役门自动跳过。修 L23 必须两条一起处理，只修 994 会在下一道门再撞 358。方案 A＝252 重跑 994＋核对 358 后修台账（窗口内 154/245 会话分析端点 42P01 数分钟）</td><td><span class="pill p-hold">owner 授权</span></td></tr>
+      <tr><td><b>R1</b></td><td><span class="pill p-p3">P3</span></td><td><code>response_format=json_object</code> 已发送但上游 thinking 模型仍回非 JSON ⇒ 请求侧无根治手段（thinking 关闭参数跨供应商不通用）⇒ 解析侧兜底是当前最优</td><td>接受 / 待上游能力</td></tr>
+      <tr><td><b>R2</b></td><td><span class="pill p-p3">P3</span></td><td><code>extractJSONFrom</code> first-<code>{</code>/last-<code>}</code> 启发式在「未闭合 think 且残余内容含大括号」时仍可能提取伪 span（生产未观测到该形态）</td><td>观察</td></tr>
+      <tr><td><b>R3</b></td><td><span class="pill p-p3">P3</span></td><td>标题首句降级截 50 rune——既有行为，与摘要质量无关</td><td>接受</td></tr>
+      <tr><td><b>传输类失败</b></td><td><span class="pill p-p2">P2</span></td><td>上游 <code>llm.kxpms.cn</code> 偶发超时 / 503 ⇒ 摘要 worker 仍会重试（12 分钟窗 2 次）。属上游可用性，非本轮缺陷</td><td>观察 / 上游</td></tr>
+      <tr><td><b>登录冒烟</b></td><td><span class="pill p-p3">P3</span></td><td>211 env 无管理员口令（仅 API key）⇒ 部署脚本登录冒烟未执行（脚本 WARN 如实登记）；readyz/公网身份/SPA 可达已验</td><td>待补</td></tr>
+      <tr><td><b>245 残留</b></td><td><span class="pill p-p3">P3</span></td><td>245 上未激活 release <code>3161-75512987</code> 待清理（解冻部署时可顺带）</td><td>下一轮</td></tr>
+    </table>
+  </div>
+
+  <div class="footer">
+    证据源：211 docker logs（2026-11-24 14:59–15:21，新容器全部读数）｜ 245 部署日志（seamless [6.5/9] 拒绝输出）｜ 共享 PG 台账只读对账（495 行全量）｜ 本会话测试输出。<br>
+    主档：docs/12小时内修订审计-2026-11-24-0704.md §E ｜ 交接：handoff-r_85jl3_.md ｜ 生成于 2026-11-24。
+  </div>
+</div>
+</body>
+</html>
