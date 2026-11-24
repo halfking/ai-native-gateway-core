@@ -191,3 +191,14 @@ AGENTS.md 行   归档档 行   字节      首行（截断）
 ★ 合并后全量闸门：★ MAIN_EXIT=0（admin 112.029s ｜ metricsstore 0.049s ｜ sqlguard 23.243s ｜ deploygate 3.097s
                     ｜ ursmcheck 382.321s ｜ startup 30.431s ｜ schema 36.328s）
                     ｜ INSTALLER_EXIT=0 ｜ SHELL_EXIT=0 ｜ FRESH_EXIT=0（四段全过）⇒ 零红
+
+── ⑩·补 推送执行与回读（★ 2026-11-24 20:1x）──────────────────────────────
+
+★ git push origin HEAD:main ⇒ ★ 27e719539..f780ae26d  HEAD -> main ｜ EXIT=0
+★ git push github HEAD:main ⇒ ★ 同上 ｜ EXIT=0
+★ 回读：★ git ls-remote origin refs/heads/main ⇒ f780ae26d0f94122db571f30925dd67737d37a52
+★        ★ git ls-remote github refs/heads/main ⇒ f780ae26d0f94122db571f30925dd67737d37a52
+★ 复 fetch 后：★ origin/main 落后 0 / 领先 0 ｜ github/main 落后 0 / 领先 0   ⇒ ★★ 两远端完全同步 ★★
+★ 工作树干净。
+★ ★★ 注意：★ 推送后 AGENTS.md 的 ⑨ 里「本轮未推、远端仍是 df38c8c8a」那句已成历史 ⇒ ★ 本段与 ⑩ 段以本次回读为准 ★★
+★ ★★ 生产提示：★ 推上去不等于已部署 ⇒ ★ **下一次正常部署** 才会把 teams 族迁移落进 211；★ 本轮零部署、★ 零生产写 ★★
