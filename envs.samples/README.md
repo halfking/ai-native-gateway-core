@@ -81,7 +81,13 @@ openssl rand -hex 16 / openssl rand -hex 32
 ```bash
 # 稳妥启发式：任意"函数名(全大写字符串)"调用（覆盖 os.Getenv/
 # envOrDefault/getEnvBool/parseDurationEnv/applyPositiveIntEnv 等全部辅助读取）
-git grep -hoE '\b[a-zA-Z][a-zA-Z0-9]*\("[A-Z][A-Z0-9_]+"' -- '*.go' ':(exclude)vendor/**' ':(exclude)*_test.go' \
+# ★★ 2026-11-24：这里原本带一个 `\b`，★ 已删除 —— ★★ 因为 **git grep 的 ERE 引擎不支持 `\b`**
+#   （★ 实测：`git grep -E '\bfoo'` 匹配不到，★ 而**系统** `grep -E '\bfoo'` 与 `git grep -P '\bfoo'`
+#   都匹配得到）⇒ ★ **这条命令在 git 下只能捞到 4 个变量**（★ 实测），★ 而去掉 `\b` 是 859 个 ⇒ ★★
+#   照原文抄的人会以为"几乎没什么可登记的" ⇒ ★★ **那是一条会让人漏掉整类缺口的坏口径** ★★
+#   ★ 附带说明：★ 用**系统** `grep -rhoE '\b…'`（★ 不经 git）时 `\b` 是好用的 ⇒ ★
+#   ★★ **问题出在 git grep 的正则引擎，★ 不是 ERE 本身** ⇒ ★★ 去掉 `\b` 是**两边都稳**的写法 ★★
+git grep -hoE '[a-zA-Z][a-zA-Z0-9]*\("[A-Z][A-Z0-9_]+"' -- '*.go' ':(exclude)vendor/**' ':(exclude)*_test.go' \
   | sed -E 's/.*\("//;s/"//' | sort -u
 # 注意剔除 Redis 命令字符串等噪音（GET/POST/INCR/EXPIRE...）
 
@@ -92,6 +98,15 @@ git grep -h 'EnvName:' -- 'settings/*_specs.go'
 # compose 插值 / 脚本
 grep -hoE '\$\{[A-Z0-9_]+' docker-compose*.yml | tr -d '${' | sort -u
 ```
+
+3. **★ 增量门（★ 2026-11-24 第四轮加，★ 新增变量会被它拦下）★**：
+
+> ★ 门：`scripts/ursmcheck/env_sample_registry_incremental_gate_test.go`
+> ★ 存量豁免基线：`scripts/ursmcheck/env_sample_registry_baseline.tsv`（★ 88 条）
+> ★ **规则**：★ 代码里读到、★ 又**没**在本目录登记、★ 也**不在**存量基线里的
+> `LLM_GATEWAY_*` ⇒ **门红并点名** ⇒ ★★ **新增环境变量必须在这里加一行 `NAME=`** ★★。
+> ★ 存量 88 个（★ 2026-11-24 的历史欠账）豁免，★ 但基线**只许减不许增**。
+> ★ 口径与上面第 2 条一致（★ 登记＝本目录 `^NAME=` 赋值行）。
 
 核心读取点：`config/config.go`（主配置）、`config/storage.go`、`config/runtime_role.go`、
 `cmd/gateway/main*.go`、`internal/logging/`、`scripts/deploy-local-lib.sh`、`installer/`。

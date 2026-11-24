@@ -3778,11 +3778,20 @@ ledger_artifact_probe "983_request_metrics.sql" \
 ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('idx_user_session_agg_pk','idx_user_session_agg_date','idx_user_session_agg_tenant','idx_user_session_agg_owner','idx_project_task_agg_pk','idx_project_task_agg_owner','idx_project_task_agg_project','idx_project_task_agg_tenant','idx_agent_usage_agg_pk','idx_agent_usage_agg_agent','idx_agent_usage_agg_tenant','idx_model_usage_agg_pk','idx_model_usage_agg_model','idx_model_usage_agg_provider','idx_model_usage_agg_tenant')) = 15 AND (SELECT count(*) FROM pg_matviews WHERE schemaname='public' AND matviewname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates') AND definition LIKE '%cost_usd%') = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984') = 1"
 # ★★ 984 与 985 **共用台账号 984**（★ 985 的自登记写的是 '984' ⇒ 错位一格，★ 主档 §4-L1）
-#   ⇒ ⇒ 「984」这一行的归属取决于执行顺序 ⇒ ★★ **这两条 probe 只能保持 version 判据**
-#   ⇒ 若两边都加 description 条件 ⇒ **必然有一边红** ⇒ ⇒ 彻底修需要**改 985 的字节**（触 L23 ⇒ owner 决策）。
-# ★★ 而 986/987/988/925 各自的台账号**归属唯一** ⇒ 它们的 probe 已改成「version + description」双条件。
+#   ⇒ ⇒ 「984」这一行的归属取决于执行顺序。
+# ★ ★★ 【2026-11-24 第四轮 L11 收口】★★ 985 这条**已零字节精确化** ⇒ ★★ **不用改任何迁移字节** ★★：
+#   ★ ★★ 上一轮登记的「984/985 抢同一行 ⇒ 两条 probe 只能保持 version 判据」**只对 984 成立** ★★
+#   ★ ★★ 对 985 **不成立** ⇒ ★★ 因为 985 写的正是**它抢到的那一行** ⇒ ★★
+#   ★ ★★ ⇒ 985 的判据可以写成「version = '984' AND description LIKE 'client and internal…%'」
+#   ★ ★★ ⇒ ★★ 生产只读实测（211 / acc-pg17，2026-11-24）：★★ 该判据 = **t**（绿）★★
+#   ★ ★★ 而 984 那条**在 L1 台本订正前不能**精确化：★ 它的描述**从未在账上出现**（★ 被 985 覆盖）⇒ ★★
+#   ★ ★★ 生产只读实测：★ 984 的精确判据 = **f**（红）★★ ⇒ ★★ **归位只等 L1 的台本订正**（★ 改字节不重放 984 件 ⇒ '984' 行不会自己归位；★ 订正后 984 判据可加 description 精确化、★ 985 判据须同步改回查 '985' ⇒ 主档 §C.17 ⑬a2）★★
+#   ★ ★★ 本地隔离 PG 17 复现（★ 按生产顺序插入两行）：★ 984_精确 = f、985_精确 = t
+#   ★ ★★ ⇒ ★★ **与生产逐字一致 ⇒ ★★ 是机制必然、★ 不是生产巧合** ★★。
+#   ★ ★★ 995/985 的纪律先例（★ 同款）：★ 旧判据是**假阳性** ⇒ 本件即使没跑过探针也绿
+#   ★ ★★ ⇒ 现在的判据断言的是**本件真正写下的那行** ⇒ ★★ 探针恢复鉴别力（跑没跑过一眼可辨）★★。
 ledger_artifact_probe "985_request_reconciliation_links.sql" \
-  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985') = 1"
+  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984' AND description LIKE 'client and internal request reconciliation links%') = 1"
 ledger_artifact_probe "986_provider_attempt_media_usage.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_call_attempts' AND column_name IN ('audio_input_duration_us','audio_billed_duration_us','audio_output_duration_us','generated_images','video_output_duration_us','media_usage_source')) = 6 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985' AND description LIKE 'measured supplier attempt media usage%') = 1"
 ledger_artifact_probe "987_provider_invoice_evidence.sql" \
@@ -3819,14 +3828,25 @@ ledger_artifact_probe "999a_data_maintenance_playbook.sql" \
   "(SELECT count(*) FROM public.error_playbook_entries WHERE created_by='seed:999a' AND error_type LIKE 'data_maintenance:%') = 6"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
+# ★★ 2026-11-24（第四轮 L15）：★ 本段四条判据**加严**为「表在 ＋ 台账行 ＋ 索引 ＋ 唯一约束」。
+#   ★ 为什么现在能加严（三条前置本轮全部以**只读证据**闭合）：
+#     ① **索引/约束真名已在生产只读核实**（211 / acc-pg17 / llm_gateway ⇒ pg_indexes +
+#        pg_constraint）⇒ 孤儿判据当年声称的 7 个索引名 ＋ 3 条唯一约束名**全部真实存在**
+#        ⇒ ★⇒ 「加严后判据在生产永不满足 ⇒ 部署失败」这个风险**被实证排除**；
+#     ② **写法合规**（★ 漂移门抽取规则：public.<name> 形态合规，★ 越界的只有 'public'
+#        这一个字面量）⇒ 本段全部改用 to_regclass ＋ 裸标识符，★ 逐字取自迁移文件；
+#     ③ **生产只读求值四条全为 t**（★ 零生产写）⇒ 加严后部署不会红。
+#   ★ 四条判据**全部写成单行 AND 串联** ⇒ **不可能再被写成孤儿行**（★ 孤儿＝续行丢了
+#     ledger_artifact_probe 前缀，★ 而单行没有续行）。
+#   ★ 判据强度属 owner 口径；★ 本段强度由 owner 于 2026-11-24 拍板采纳。
 ledger_artifact_probe "055_teams_table.sql" \
-  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
+  "to_regclass('public.teams') IS NOT NULL AND to_regclass('public.idx_teams_owner_id') IS NOT NULL AND to_regclass('public.idx_teams_tenant_id') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conname = 'teams_tenant_name_key' AND conrelid = to_regclass('public.teams')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
 ledger_artifact_probe "056_user_teams.sql" \
-  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
+  "to_regclass('public.user_teams') IS NOT NULL AND to_regclass('public.idx_user_teams_user_id') IS NOT NULL AND to_regclass('public.idx_user_teams_team_id') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conname = 'user_teams_user_team_key' AND conrelid = to_regclass('public.user_teams')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
 ledger_artifact_probe "057_api_keys_team_id.sql" \
-  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND to_regclass('public.idx_api_keys_team_id') IS NOT NULL AND to_regclass('public.idx_api_keys_tenant_team') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
 ledger_artifact_probe "058_team_budgets.sql" \
-  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
+  "to_regclass('public.team_budgets') IS NOT NULL AND to_regclass('public.idx_team_budgets_team_id') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conname = 'team_budgets_team_id_key' AND conrelid = to_regclass('public.team_budgets')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

@@ -1,0 +1,117 @@
+# env_sample_registry_baseline.tsv —— LLM_GATEWAY_* 环境变量「存量未登记」豁免基线
+#
+# ★ 为什么有这张表（2026-11-24 第四轮 L14 登记项）：
+#   审计口径下，全仓代码读到 530 个 LLM_GATEWAY_* 变量，
+#   其中 88 个**没有**在 envs.samples/*.env.sample 里以 `^NAME=` 赋值行登记。
+#   ⇒ 这 88 个是**存量**缺口（★ 属历史遗留，★ 不是本轮引入）。
+#
+# ★ 这张表的用途：**增量门**。
+#   门 scripts/ursmcheck/env_sample_registry_incremental_gate_test.go 判红条件：
+#     R1「新增未登记」：代码里读到、但既不在登记集、也不在本表 ⇒ 红灯并点名；
+#     R2「基线棘轮」：本表条数只许减不许增（基线上限 88）⇒ 红灯；
+#     R3「基线冗余」：本表某行已进登记集 ⇒ 红灯（提示删掉该行收紧基线）；
+#     R4「基线卫生」：本表必须有序、无重复。
+#   ⇒ ★ 效果：**存量 88 个豁免，新增变量必须登记**。
+#
+# ★ 口径（★ 与 envs.samples/README.md §9 对齐，★ 且已修正那条命令的坏写法）：
+#   ★★ 修正说明：★ README 那条命令带 `\b`，★ 而 **git grep 的 ERE 引擎不支持 `\b`**
+#   （★ 实测：`git grep -E '\bfoo'` 匹配不到；★ 系统 `grep -E` 与 `git grep -P` 都匹配得到）
+#   ⇒ ★★ **在 git 下那条命令只出 4 个变量**（★ 而去掉 `\b` 是 530 个）⇒ ★★ 去掉 `\b` 是**两边都稳**的写法。
+#   扫描：git ls-files 取文件集 → 仅 *.go（排除 vendor/ 与 *_test.go）
+#         → 匹配形如  标识符("LLM_GATEWAY_..."  的实参
+#   登记：envs.samples/*.env.sample 里形如 ^LLM_GATEWAY_X= 的赋值行
+#
+# ★ 诚实边界（★ 残余限制，★ 写明以免被当成 airtight）：
+#   R2 是**条数**棘轮 ⇒ ★ 若有人同时「删一条 + 加一条」，条数不变 ⇒ 仍可绕过。
+#   ⇒ 残余风险靠 **diff 可见** + R3「必须仍是未登记」来兜；
+#   ⇒ 真正的 airtight 做法是**冻结集合快照**，★ 留待 owner 决定是否加。
+#
+# ★ 列：name<TAB>首个引用文件
+LLM_GATEWAY_ANOMALY_DETECTOR_ENABLED	cmd/gateway/main.go
+LLM_GATEWAY_ASM_BASE_URL	cmd/gateway/main.go
+LLM_GATEWAY_ASM_PLUGIN_ID	cmd/gateway/main.go
+LLM_GATEWAY_ASM_TIMEOUT	domains/streaming/summarize_asm.go
+LLM_GATEWAY_AUDIO_TRANSFORM_LLM_BASE	domains/streaming/audio_transform.go
+LLM_GATEWAY_AUDIO_TRANSFORM_MAX_TOKENS	domains/streaming/audio_transform.go
+LLM_GATEWAY_CANDIDATES_CIRCUIT_PARK_SECONDS	provider/candidates_circuit.go
+LLM_GATEWAY_CNY_TO_USD_FX	settings/cny_fx.go
+LLM_GATEWAY_COOKIE_DOMAIN	admin/auth_cookie_helpers.go
+LLM_GATEWAY_CRED_ROLLUP_INTERVAL	bg/credential_rollup_refresher.go
+LLM_GATEWAY_CRED_ROLLUP_TIMEOUT	bg/credential_rollup_refresher.go
+LLM_GATEWAY_DB_STATEMENT_CACHE	db/db.go
+LLM_GATEWAY_DEFAULT_CREDENTIAL	config/config.go
+LLM_GATEWAY_DEFAULT_PROVIDER	config/config.go
+LLM_GATEWAY_ERROR_PLAYBOOK_MODEL	cmd/gateway/error_playbook_init.go
+LLM_GATEWAY_FD_PRIVATE_ALLOWLIST	domains/freediscovery/provider_scanner.go
+LLM_GATEWAY_HISTORY_GUARD_MEMO	cmd/gateway/history_guard_memo_init.go
+LLM_GATEWAY_HISTORY_MEMO_SHARED_TTL	cmd/gateway/history_guard_memo_init.go
+LLM_GATEWAY_INGRESS_MAX_CONCURRENT	cmd/gateway/main.go
+LLM_GATEWAY_KEY_CONCURRENCY_RETENTION	bg/key_concurrency_stats.go
+LLM_GATEWAY_KEY_CONCURRENCY_STATS_INTERVAL	bg/key_concurrency_stats.go
+LLM_GATEWAY_LAN_ADVERTISE	config/config.go
+LLM_GATEWAY_LEAK_WINDOW	cmd/gateway/main.go
+LLM_GATEWAY_LOG_REDACT_HMAC_KEY	internal/logging/standard.go
+LLM_GATEWAY_MARKET_SCORING_AT	bg/market_scoring.go
+LLM_GATEWAY_MEMORA_ACTOR_ID	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_MEMORA_ADD_PATH	cmd/gateway/memory_adapter.go
+LLM_GATEWAY_MEMORA_JWT_AUDIENCE	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_MEMORA_JWT_ISSUER	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_MEMORA_JWT_SECRET	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_MEMORA_PROJECT_ID	cmd/gateway/main.go
+LLM_GATEWAY_MEMORA_SEARCH_PATH	cmd/gateway/memory_adapter.go
+LLM_GATEWAY_MEMORA_SECURITY_USER_ID	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_MEMORA_TENANT_ID	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_METRICS_BATCH_SIZE	internal/metricsstore/processor.go
+LLM_GATEWAY_METRICS_INTERVAL	internal/metricsstore/processor.go
+LLM_GATEWAY_METRICS_MAX_ROUNDS	internal/metricsstore/processor.go
+LLM_GATEWAY_NATIVE_PASSTHROUGH	internal/nativepair/nativepair.go
+LLM_GATEWAY_OMNIFREE_SEED	internal/omnifree/seed.go
+LLM_GATEWAY_PARTITION_MANAGER_ENABLED	cmd/gateway/partition_manager_switch.go
+LLM_GATEWAY_PASSIVE_BASELINE	cmd/gateway/main.go
+LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG	cmd/gateway/main.go
+LLM_GATEWAY_POSTGRES_URL	config/storage.go
+LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED	admin/capabilities.go
+LLM_GATEWAY_REDIS_URL	config/storage.go
+LLM_GATEWAY_REDUCE_WORKERS	domains/streaming/history_guard.go
+LLM_GATEWAY_REQPROBE_LEARN	internal/reqprobe/coordinator.go
+LLM_GATEWAY_REQPROBE_LEARNED_TTL	internal/paramrefusal/refusal.go
+LLM_GATEWAY_REQPROBE_LEARNED_TTL_BACKOFF_MAX	internal/reqprobe/types.go
+LLM_GATEWAY_ROUTING_CAPACITY_SHARE	domains/streaming/executors/router_scoring.go
+LLM_GATEWAY_ROUTING_RECOVERY_RAMP_SECONDS	domains/streaming/executors/router_scoring.go
+LLM_GATEWAY_ROUTING_W_CACHE	domains/streaming/executors/router_scoring.go
+LLM_GATEWAY_ROUTING_W_OUTLIER	domains/streaming/executors/router_scoring.go
+LLM_GATEWAY_ROUTING_W_RATE_PRESSURE	domains/streaming/executors/router_scoring.go
+LLM_GATEWAY_ROUTING_W_RECOVERY	domains/streaming/executors/router_scoring.go
+LLM_GATEWAY_SECURITY_EVENT_SINK	cmd/gateway/security_event_sink.go
+LLM_GATEWAY_SECURITY_PATTERN_INTERVAL	cmd/gateway/security_pattern_sync.go
+LLM_GATEWAY_SECURITY_PATTERN_MAX_AGE	cmd/gateway/security_pattern_sync.go
+LLM_GATEWAY_SECURITY_PATTERN_QUERY	cmd/gateway/security_pattern_sync.go
+LLM_GATEWAY_SECURITY_PATTERN_SYNC	cmd/gateway/security_pattern_sync.go
+LLM_GATEWAY_SECURITY_PATTERN_TOP_K	cmd/gateway/security_pattern_sync.go
+LLM_GATEWAY_SERVICE	internal/logging/service_meta.go
+LLM_GATEWAY_SESSION_CACHE_MAX_BODY_BYTES	domains/hooks/compression/session_cache_shared.go
+LLM_GATEWAY_SESSION_CACHE_MAX_STATE_BYTES	domains/hooks/compression/session_cache_shared.go
+LLM_GATEWAY_SESSION_DIGEST	cmd/gateway/session_digest_init.go
+LLM_GATEWAY_SESSION_RAW_DIR	cmd/gateway/main.go
+LLM_GATEWAY_SQLITE_PATH	config/storage.go
+LLM_GATEWAY_STATS_RESWEEP_LAG	bg/stats_minute_rollup.go
+LLM_GATEWAY_STATS_RESWEEP_SPAN	bg/stats_minute_rollup.go
+LLM_GATEWAY_STORAGE_TYPE	cmd/gateway/attachment_storage_init.go
+LLM_GATEWAY_SUMMARIZE_LLM_BASE	domains/streaming/summarize.go
+LLM_GATEWAY_TRANSPORT_IR	cmd/gateway/main.go
+LLM_GATEWAY_UPDATE_ARTIFACT_URL_TEMPLATE	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_BACKUP_DIR	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_BIN_PATH	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_CHECK_INTERVAL	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_DATA_DIR	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_DISABLED	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_DOWNLOAD_DIR	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_GO_BIN	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_SERVICE_NAME	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_SOURCE_DIR	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_SOURCE_TOKEN	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPDATE_SOURCE_URL	cmd/gateway/autoupdate_init.go
+LLM_GATEWAY_UPSTREAM	config/config.go
+LLM_GATEWAY_USERSCRIPT_CAPTURE_SECRET	cmd/gateway/main.go
+LLM_GATEWAY_V2_REQUEST_PATH	cmd/gateway/main_pipeline.go
+LLM_GATEWAY_V2_USER_CONTENT	cmd/gateway/user_content_extract.go
