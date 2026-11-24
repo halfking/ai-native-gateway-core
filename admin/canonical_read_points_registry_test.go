@@ -1073,14 +1073,6 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month AS r", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；本读点读 request_logs_with_current_month AS r ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 		},
 	},
-	"internal/bucket/credit/provider.go": {
-		Form:  formHelperConcat,
-		Class: classSwitchArm,
-		Note:  "信用桶 backfill：requestLogsSource(_ int) 在 2026-11-11（48h 审计）之后**恒**返回 canonical 视图（原 v1 双臂 `_request_logs`/`_request_logs_partitions` 在 890 后是已删表，42P01 地雷）⇒ 源由 helper 决定 ⇒ 归切换层裁决；Phase 1 脚手架、无生产消费方",
-		Points: []canonicalReadPoint{
-			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "requestLogsSource(_ int) 恒返回 canonical 视图（2026-11-11 从 v1 双臂收敛，与 maas 同名切换层同款）⇒ 源由切换层决定 ⇒ 调用点改不动；别名在拼接侧（rl）"},
-		},
-	},
 	// ★★★ 2026-11-24（合并轮十一 · ★★ 代上游登记 ★★）：★ 上游把统计侧的维度
 // ★★ **★ 合并轮十五/十六去重（★ 2026-11-24）★★**：★ ★★ 本条曾与【上方同键登记】（★ `internal/metricsstore/processor.go`）**并存** ⇒ ★★ **Go map literal 同键重复 ⇒ `admin` 包 build failed（★ `duplicate key "internal/metricsstore/processor.go" in map literal`）★★ ⇒ ★★ **⇒ 本条删除、★ 保留上方那条**（★ ★ **两处的列集合逐项一致**（★ 7 列同序：★ `attachment_count:base` / `client_protocol:base` / `egress_protocol:base` / `gw_session_id:expr` / `gw_task_id:detail` / `request_id:base` / `ts:base`）★ ★★ **而 Note 互补** ⇒ ★★ **本条独有的「★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式」已并入上方那条**）★★｜★ ★★ **★ 根因（★ 一条通用式）★★**：★ **登记簿这类【按文件名索引的 map】、★ 两条车道**各自登记同一个文件**时、★ ★★ **合并后必然撞键** ⇒ ★★ **★ 而它【只红在编译期】（★ 不是断言红、★ 不是基线红）⇒ ★★ **★ 所以「两边都做了同一件代修」在合并时会变成【编译失败】、★ 而双方的闸门各自都是绿的 ★★ ⇒ ★★ **⇒ 合并后必须跑【编译】，★ 不能只看「各自的闸门绿不绿」** ★★
 }
