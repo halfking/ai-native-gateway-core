@@ -99,10 +99,8 @@ scripts/audit/verify-v1-retirement-red-gates.sh	124	expect_red	var-write	judgmen
 scripts/checks/install-entrypoints-test.sh	32	contains	var-write	judgment	unknown	needs-human-read	grep-q	consumed	contains() { if printf '%s' "$2" | grep -qF -- "$3"; then ok "$1"; else bad "$1 (输出里没有 '$3')"; fi; }
 scripts/checks/install-entrypoints-test.sh	33	absent	var-write	judgment	unknown	needs-human-read	grep-q	consumed	absent()   { if printf '%s' "$2" | grep -qF -- "$3"; then bad "$1 (输出里不该有 '$3')"; else ok "$1"; fi; }
 scripts/configure-journald.sh	316	do_verify	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then
-scripts/deploy-local-lib.sh	1239	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
-scripts/deploy-local-lib.sh	1242	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
-scripts/deploy-local-lib.sh	1236	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
-scripts/deploy-local-lib.sh	1239	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
+scripts/deploy-local-lib.sh	1247	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
+scripts/deploy-local-lib.sh	1250	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
 scripts/deploy-seamless-docker.sh	3325	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
 scripts/deploy-seamless-docker.sh	3326	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
 scripts/deploy-seamless-goacos_test.sh	335	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s\n' "$forwarded" | grep -qx "$v" \
