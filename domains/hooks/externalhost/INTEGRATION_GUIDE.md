@@ -2,6 +2,20 @@
 
 **Status**: Infrastructure Complete ✅ | Production Integration: Ready for Review
 
+> **现状声明（2026-11-25 第 28 轮 24h 审计订正 —— 先读这一段，再照下文操作）**
+>
+> 1. **本管线目前是休眠的。** `ChatHandler.SetExternalHooks` 在生产代码里**没有任何调用方**（只有定义、测试与 demo）；仓内也不存在任何配置项、环境变量或部署产物能启用它。是否上线属 owner 决策（见 `docs/12小时内修订审计-2026-11-25-0400.md` 待决项 ⑤）。上面那行「Production Integration: Ready for Review」应读作「尚不可接」。
+> 2. **接线之前必须先修的缺陷**（一旦接线，它们就在请求主路径上生效）：
+>    - **来源判定在反向代理之后失效**：来源取自 TCP 对端地址（`handler.go` 的 `isLocalNetwork(r.RemoteAddr)`，RFC1918 一律视为本地）⇒ 网关在 nginx 之后时，所有租户的请求都被判为 `local` ⇒ 「远端来源不捕获正文」的默认保护形同虚设，提示词全部送往钩子主机。
+>    - **凭据头未脱敏**：转发前只跳过 `Authorization` / `Cookie` / `X-Api-Key`（`pipeline_integration.go`），而 `x-goog-api-key` 是本网关认可的凭据头之一 ⇒ 会被原样转发；上游响应头也整体转抄。
+>    - **请求路径上的同步依赖没有观测与熔断**：钩子挂起时每个请求都等满超时（默认 1 秒、上限 10 秒）；失败只累加内部计数，不记日志、无指标、无断路器、无并发上限。
+>    - **流式响应下响应钩子拿到的是空正文**；客户端断连、上游出错、治理拦截时响应钩子不会触发。
+>    - **请求钩子排在副作用之后**（会话分配、限流、GoalRun 落库之后），且被钩子改写后的请求体不经 JSON / 大小校验就下发。
+>    - 响应捕获按请求无界起 goroutine、无 panic 恢复；钩子返回的 `reason` 不截断地进入 403 响应、日志、追踪与库。
+> 3. **下文与代码不符之处**（照抄会编译不过，或指向不存在的东西）：`config.ExternalHooks.Enabled` 与对应的 YAML 片段不存在；`externalhost.NewLoader()` 现在的签名是 `NewLoader(cfg LoaderConfig)`；manifest 的协议值须为 `"http-unix-socket"` 而不是 `"http+unix"`；「改配置后 reload 即生效」「停掉钩子进程零影响」均未实现（`SetExternalHooks` 要求在开始服务之前调用）；`examples/cmd/server.go`、`/hooks/audit` 路由、`internal/gwtrace/events.go` 路径都不存在。
+>
+> 逐条证据（文件:行）见 `docs/operations/2026-11-23-211配置优化执行报告.md` §9.30 ㉓-44。
+
 ## Overview
 
 The W3 external hooks infrastructure is complete and tested:

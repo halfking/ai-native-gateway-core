@@ -104,7 +104,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Ruta | Rol |
 |------|-----|
 | `cmd/gateway/` | Raíz de composición — entrada de producción de binario único (plano de datos + control) |
-| `domains/` | 69 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
+| `domains/` | 83 dominios DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, seguridad… |
 | `admin/` + `web/` | API REST de administración + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
 | `web-mobile/` | Frontend móvil (Vue 3 + TypeScript): segunda UI de producción; el despliegue se niega a arrancar sin su build `dist/` |
 | `bg/` | Workers en segundo plano — sondeo, limpieza del ciclo de vida, agregación de estadísticas, mantenimiento de particiones |
