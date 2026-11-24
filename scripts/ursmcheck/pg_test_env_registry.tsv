@@ -66,6 +66,7 @@ ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）
 PATH	component	环境杂项（PATH），测试只用来拼可执行路径
 PROVIDER_CONTRACT_KEY	component	外部 provider 契约测试用 key
+RECONCILIATION_ATTEMPT_BOUNDS_TEST_DSN	dsn_exclusive	供应商逐次证据写入值域门的专用 DSN（2026-11-24 12h 审计第四轮 L5 新增）：该腿会**写** public.provider_call_attempts（INSERT/DELETE），且守卫要求库名为 reconciliation_*_test ⇒ 必须指向隔离的一次性 fixture 库 ⇒ 与通用 DSN（llm_gateway 产品库）同值即在产品库落数据 ⇒ 不能与通用 DSN 同值，故不进事实源
 REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
 REPORT_E2E_ALLOW_DESTRUCTIVE	dangerous	显式承认「本次 E2E 会破坏数据」；打开即取消保护

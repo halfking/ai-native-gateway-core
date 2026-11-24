@@ -148,6 +148,11 @@ func (o *AttemptOutbox) MarkNotSent(ctx context.Context, id string) error {
 }
 
 func (o *AttemptOutbox) MarkSent(ctx context.Context, id string, at time.Time) error {
+	// ★ 2026-11-24（L5）：事件里带零值时间 ⇒ 重放时投影成 0001-01-01
+	//   （真 PG 实测）⇒ 收敛在**入队**这一层，重放路径就只会看到真实时间。
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
 	return o.append(ctx, attemptEvent{Kind: "send", ID: id, At: at})
 }
 

@@ -17,6 +17,19 @@
 //   - onRequest 失败 → 本请求不再触发 onResponse（W3.2）。
 //   - remote 来源默认不捕获正文（W3.4 隐私原则）。
 //   - onResponse 捕获为 fire-and-forget，不阻塞 EOF（W3.3）。
+//
+// ★ 2026-11-24（L6/L7 审计轮）**实现状态说明**（原来这段只写契约、不写实现，
+// 导致下游把「契约期望」当「已实现」）：
+//
+//   - ★ 本包在生产代码里**零接线**（`domains/hooks/externalhost` 在包外零引用）
+//     ⇒ 以下「当前实现」描述的是**代码形态**，不是生产上正在发生的行为。
+//   - ★ **W3.3 的「8MiB 有界副本」当前**未**在送出侧兑现**：
+//     invoke 把调用方给的 Request/Response payload **原样** EncodeInvocation
+//     送出（没有走 contract.BoundedCopy）⇒ 送出侧正文**无 8MiB 上限**。
+//   - ★ 读入侧的 `io.LimitReader(httpResp.Body, 4*contract.MaxBodyBytes)`
+//     （32MiB）限的是**钩子的回复体**，不是「捕获副本」——两者不是一回事。
+//   - ⇒ 契约侧（BoundedCopy / Payload.Truncated / OriginalBytes）已备好，
+//     但**没有生产调用方**；是否接线属 owner 决策（见主档 §4-L7）。
 package externalhost
 
 import (
@@ -140,8 +153,15 @@ func (h *Host) OnRequest(ctx context.Context, hookCtx *contract.Context, req *co
 
 // OnResponse 在上游响应返回后调用外部钩子（W3.1/W3.3）。
 //
-// fire-and-forget 语义由调用方决定：本方法自身是同步的，但宿主不持有响应正文，
-// 捕获副本有界（8MiB），因此不会阻塞 EOF 路径。
+// fire-and-forget 语义由调用方决定：本方法自身是同步的，但宿主不持有响应正文。
+//
+// ★ 2026-11-24（L7）：原注释写「捕获副本有界（8MiB），因此不会阻塞 EOF 路径」，
+// ★★ 这是一句**失实断言**——当时的实现把调用方的 payload **原样**送出，
+//   **没有**走 contract.BoundedCopy ⇒ 送出侧正文并没有 8MiB 上限。
+//   ⇒ 这里改为陈述**实际语义**，并把「契约期望」与「当前实现」分开标注，
+//   免得下游继续把契约当现状。
+//   ★ 另：读入侧的 32MiB 上限（4*MaxBodyBytes）限的是**钩子的回复体**，
+//   与「捕获副本」不是同一个东西。
 func (h *Host) OnResponse(ctx context.Context, hookCtx *contract.Context, resp *contract.ResponsePayload) *Outcome {
 	if hookCtx == nil || resp == nil {
 		return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureProtocol,

@@ -2006,7 +2006,7 @@ func main() {
 			},
 			auditSink,
 		)
-		if os.Getenv("LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED") == "true" && dbConn != nil && dbConn.Pool() != nil {
+		if reconciliationShadowSetup(os.Getenv("LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED"), dbConn != nil && dbConn.Pool() != nil) {
 			backupDir := os.Getenv("LLM_GATEWAY_BACKUP_DIR")
 			if backupDir == "" {
 				backupDir = "./data/backups"
@@ -10216,4 +10216,47 @@ func publishSecurityEvent(sink *securityevent.Sink, patternCache *securitypatter
 		patternCache.Annotate(&event)
 	}
 	sink.Publish(event)
+}
+
+// reconciliationShadowSetup 是 main 的接线面：判定通过则返回 true；
+// 未启用则**打一条可观测日志**并返回 false。
+//
+// ★ 2026-11-24（L6，12h 修订审计轮）：影子台账此前关闭时**不留任何痕迹**
+// ⇒ 运营侧看到 public.provider_call_attempts 是空表时，无法区分
+// 「开关没开」与「真的没有调用」。
+// ★ 生产实测（211 / acc-pg17，2026-11-24 只读）：表在、**零行**、容器 env 里
+// 没有这个开关 ⇒ 生产上就是「没开」。
+// ⇒ 所以判定必须**返回原因**，并把「为什么没开」变成一条可观测日志 ★
+// ★ 空表 = 未采集，而不是「采集到零条」★。
+func reconciliationShadowSetup(env string, poolReady bool) bool {
+	enabled, reason := reconciliationShadowDecision(env, poolReady)
+	if !enabled {
+		slog.Info("supplier attempt shadow ledger disabled; per-attempt provider evidence is NOT collected",
+			"reason", reason,
+			"env", "LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED")
+	}
+	return enabled
+}
+
+// reconciliationShadowDecision 给出「对账影子台账」的启用判定与**未启用原因**。
+//
+// ★ 2026-11-24（L6，12h 修订审计轮）：这个开关此前只是一个裸的条件表达式
+// os.Getenv(...) == "true" && dbConn != nil && dbConn.Pool() != nil，
+// **关闭时不留任何痕迹** ⇒ 运营侧看到 public.provider_call_attempts 是空表时，
+// 无法区分「开关没开」与「真的没有调用」。
+//
+// ★ 所以判定必须**返回原因**，让调用方能在关闭时打出可观测日志。
+// ★ 判定口径不变（字面量 "true" 才算开），只是把「为什么没开」显式化。
+//
+// ★ 取值语义：enabled=true 时 reason 为空串；enabled=false 时 reason
+// 是稳定的机器可读标签（供日志聚合与测试断言）。
+func reconciliationShadowDecision(env string, poolReady bool) (enabled bool, reason string) {
+	switch {
+	case env != "true":
+		return false, "switch_not_enabled"
+	case !poolReady:
+		return false, "database_pool_unavailable"
+	default:
+		return true, ""
+	}
 }
