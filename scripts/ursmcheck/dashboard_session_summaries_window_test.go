@@ -98,6 +98,10 @@ var (
 	// 时间窗判据：某时间列 >= NOW() - INTERVAL '...'。
 	dashboardWindowRe = regexp.MustCompile(
 		`(?i)(first_request_at|last_request_at|created_at)\s*>=\s*NOW\(\)\s*-\s*INTERVAL`)
+	// 参数化下界窗口（2026-11-25 窗口对齐轮的第三种形态）：`col >= $N`（上界由
+	// 同一语句里的 `col < $M` 另给，实参是日历窗的起止时刻）⇒ 同样是「有窗口」。
+	dashboardParamWindowRe = regexp.MustCompile(
+		`(?i)(first_request_at|last_request_at|created_at)\s*>=\s*\$\s*(?:%d|\d+)`)
 	// ★ 窗口**子句**的精确形态（用来取窗口天数）：只认「列 >= NOW() - INTERVAL 'X'」
 	//   这一种。★ 不能用「字面量里含 day」来判天量级 —— 那会误伤
 	//   `DATE(first_request_at) + INTERVAL '1 day'` 这类**算术表达式**
@@ -177,6 +181,140 @@ func dashboardFuncUsesWindowHelper(fn *ast.FuncDecl) bool {
 	return found
 }
 
+// dashboardExprSQL 收集一个表达式里的字符串字面量（已剥 SQL 注释）。
+// ⚠ 不钻进闭包：闭包体里的字面量属于闭包，不属于外层函数。
+func dashboardExprSQL(expr ast.Expr) string {
+	var b strings.Builder
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return true
+		}
+		b.WriteString(stripSQLComments(v))
+		b.WriteByte('\n')
+		return true
+	})
+	return b.String()
+}
+
+// dashboardExprCarriesWindow 判断一个返回值表达式是否「带回窗口」：
+//   - 表达式本身含窗口谓词；或
+//   - 它是局部变量，且该变量在本函数内的**每一次**赋值的右值都带回窗口谓词
+//     （`+=` 不计：那是在已有子句上续写，窗口由同变量的首次赋值负责）。
+func dashboardExprCarriesWindow(expr ast.Expr, assigned map[string][]string) bool {
+	if sql := dashboardExprSQL(expr); dashboardExprSQLIsWindowed(sql) {
+		return true
+	}
+	id, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	asgs := assigned[id.Name]
+	if len(asgs) == 0 {
+		return false
+	}
+	for _, sql := range asgs {
+		if !dashboardExprSQLIsWindowed(sql) {
+			return false
+		}
+	}
+	return true
+}
+
+func dashboardExprSQLIsWindowed(sql string) bool {
+	return dashboardWindowRe.MatchString(sql) || dashboardParamWindowRe.MatchString(sql)
+}
+
+// dashboardFuncIsWindowProvider 判断一个函数是不是「窗口提供者」：它的**每一条**
+// return 都必须带回一个时间窗谓词（字面量形态 `col >= NOW() - INTERVAL …`，
+// 或参数化下界形态 `col >= $N`）。
+//
+// ★ 为什么要它（2026-11-25 窗口对齐轮）：该轮把 queryActiveSessions 的窗口从
+// 函数内字面量挪进了同包助手 `activeWindowClause`（rolling 分支是字面量窗口、
+// calendar 分支是参数化窗口）⇒ 运行时 SQL **仍然带窗**，而本门此前只认
+// 「函数内字面量」与 `win.clause / win.prevClause` 两种调用形态 ⇒ 对正确代码假红。
+//
+// ★ 判据落在**内容**上、不落在名字上：助手每条 return 的字符串都必须含窗口谓词
+// ⇒ 单纯把窗口删掉、换成空串或 `1 = 1` 的助手**不被认作**窗口提供者。
+// ⚠ 不算闭包里的 return / 赋值（它们属于闭包，不属于本函数）。
+// ⚠ 诚实边界：本判据只证明「调用了窗口提供者」，不证明返回值被拼进了 WHERE
+// （与 win.clause 形态同款边界）；经函数调用辗转得到的返回值不认（保守）。
+func dashboardFuncIsWindowProvider(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Body == nil {
+		return false
+	}
+	// 同函数内（不含闭包）对各局部变量的赋值：变量名 ⇒ 每次赋值右值的 SQL。
+	assigned := map[string][]string{}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || as.Tok == token.ADD_ASSIGN {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok || id.Name == "_" || i >= len(as.Rhs) {
+				continue
+			}
+			assigned[id.Name] = append(assigned[id.Name], dashboardExprSQL(as.Rhs[i]))
+		}
+		return true
+	})
+	returns := 0
+	allOK := true
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		returns++
+		if len(ret.Results) == 0 {
+			allOK = false
+			return true
+		}
+		for _, res := range ret.Results {
+			if !dashboardExprCarriesWindow(res, assigned) {
+				allOK = false
+			}
+		}
+		return true
+	})
+	return returns > 0 && allOK
+}
+
+// dashboardFuncUsesWindowProvider 判断函数是否调用了**同包**的窗口提供者
+// （裸标识符调用，即不带包名/接收者的函数调用）。
+func dashboardFuncUsesWindowProvider(fn *ast.FuncDecl, pkgFuncs map[string]*ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		id, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if dashboardFuncIsWindowProvider(pkgFuncs[id.Name]) {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
 // dashboardSessionSummariesAggregators 扫出全部「对 session_summaries 做聚合」
 // 的函数。
 func dashboardSessionSummariesAggregators(t *testing.T, root string) []dashboardSessionSummariesReader {
@@ -187,6 +325,23 @@ func dashboardSessionSummariesAggregators(t *testing.T, root string) []dashboard
 		t.Fatalf("读目录 %s 失败: %v", dir, err)
 	}
 	var out []dashboardSessionSummariesReader
+	// ★ 第一遍：收齐本包的**普通函数**（不带接收者）⇒ 供「窗口提供者」判据按名回查。
+	pkgFuncs := map[string]*ast.FuncDecl{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("解析 %s 失败: %v", name, err)
+		}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Body != nil {
+				pkgFuncs[fn.Name.Name] = fn
+			}
+		}
+	}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -212,10 +367,11 @@ func dashboardSessionSummariesAggregators(t *testing.T, root string) []dashboard
 				continue
 			}
 			out = append(out, dashboardSessionSummariesReader{
-				file:             name,
-				funcName:         fn.Name.Name,
-				usesParams:       dashboardFuncUsesParamsDays(fn),
-				usesWindowHelper: dashboardFuncUsesWindowHelper(fn),
+				file:       name,
+				funcName:   fn.Name.Name,
+				usesParams: dashboardFuncUsesParamsDays(fn),
+				usesWindowHelper: dashboardFuncUsesWindowHelper(fn) ||
+					dashboardFuncUsesWindowProvider(fn, pkgFuncs),
 			})
 		}
 	}
@@ -371,6 +527,86 @@ func TestDashboardWindowFollowsParamsDays(t *testing.T) {
 				}
 				return true
 			})
+		}
+	}
+}
+
+// TestDashboardWindowProviderDetectorBites —— 量具自证（2026-11-25 第 28 轮）：
+// 「窗口提供者」判据必须认下**每条 return 都带窗**的同包助手、拒绝其余形态。
+// 判据落在内容上 ⇒ 下面任何一个样本被误判都说明门没牙或会误伤。
+func TestDashboardWindowProviderDetectorBites(t *testing.T) {
+	src := `package p
+
+import "fmt"
+
+func windowed(calendar bool, argIdx int) string {
+	if !calendar {
+		return "ss.last_request_at >= NOW() - INTERVAL '1 hour'"
+	}
+	return fmt.Sprintf("ss.last_request_at >= $%d AND ss.last_request_at < $%d", argIdx, argIdx+1)
+}
+
+func halfWindowed(calendar bool) string {
+	if !calendar {
+		return "" // 日历分支没有窗口 ⇒ 不是窗口提供者
+	}
+	return "ss.last_request_at >= NOW() - INTERVAL '1 hour'"
+}
+
+func noWindow() string {
+	return "TRUE"
+}
+
+func windowOnlyInClosure() func() string {
+	return func() string { return "ss.last_request_at >= NOW() - INTERVAL '1 day'" }
+}
+
+func viaVar(calendar bool) string {
+	if !calendar {
+		return "ss.last_request_at >= NOW() - INTERVAL '1 hour'"
+	}
+	c := fmt.Sprintf("ss.last_request_at >= $%d AND ss.last_request_at < $%d", 1, 2)
+	return c // 先赋给局部变量再返回（真实助手 activeWindowClause 的形态）
+}
+
+func viaVarHalf(calendar bool) string {
+	if !calendar {
+		return "ss.last_request_at >= NOW() - INTERVAL '1 hour'"
+	}
+	c := "TRUE" // 有一支赋值不带窗 ⇒ 不是窗口提供者
+	return c
+}
+
+func readerFull(calendar bool) string   { return windowed(calendar, 1) }
+func readerHalf(calendar bool) string   { return halfWindowed(calendar) }
+func readerNone() string                { return noWindow() }
+func readerClosure() string             { return windowOnlyInClosure()() }
+`
+	f, err := parser.ParseFile(token.NewFileSet(), "probe.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("解析探针失败: %v", err)
+	}
+	funcs := map[string]*ast.FuncDecl{}
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			funcs[fn.Name.Name] = fn
+		}
+	}
+	// 助手侧：是不是「每条 return 都带窗」的窗口提供者。
+	for name, want := range map[string]bool{
+		"windowed": true, "halfWindowed": false, "noWindow": false, "windowOnlyInClosure": false,
+		"viaVar": true, "viaVarHalf": false,
+	} {
+		if got := dashboardFuncIsWindowProvider(funcs[name]); got != want {
+			t.Errorf("窗口提供者判定 %s = %v，期望 %v", name, got, want)
+		}
+	}
+	// 读端侧：是否调用了窗口提供者。
+	for name, want := range map[string]bool{
+		"readerFull": true, "readerHalf": false, "readerNone": false, "readerClosure": false,
+	} {
+		if got := dashboardFuncUsesWindowProvider(funcs[name], funcs); got != want {
+			t.Errorf("读端 %s 是否调用窗口提供者 = %v，期望 %v", name, got, want)
 		}
 	}
 }

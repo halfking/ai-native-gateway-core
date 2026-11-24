@@ -457,6 +457,13 @@
       "reason": "★ 测试夹具（★ plugin-runtime 的 hello-plugin 测试输入，★ 是一份样例插件清单，★ 不是任何门读的登记册 ⇒ 掏空它没有读者会瞎）"
     },
     {
+      "path": "plugin-runtime/testdata/manifest-v3-example.json",
+      "kind": "excluded",
+      "reader": "web/src/lib/shell/hyper/gates.spec.ts",
+      "reason": "★ 测试夹具（★ schema_version 3 的示例插件清单，供 plugin-runtime 的 TestManifestV3ExampleFixtureIsLoadable 使用；★ 与 hello-plugin/plugin-manifest.json 同族 ⇒ 不是 go 门读的登记册）",
+      "note": "★ 诚实边界（2026-11-25 第 28 轮登记）：web 的 gates.spec.ts 把 plugin-runtime/testdata/*.json 的 label_key 当作跨语言契约门的输入之一 ⇒ 它有一个 **vitest** 读者、不是 go 读者 ⇒ 行为化掏空验证进不了 go census 的循环（与 web/scripts/design-*-runtime-baseline.json 同款先例）⇒ behaviorally_verified 如实为 false。"
+    },
+    {
       "path": "web/scripts/design-nested-card-runtime-baseline.json",
       "kind": "excluded",
       "reader": "web/scripts/design-nested-card-runtime-check.mjs",

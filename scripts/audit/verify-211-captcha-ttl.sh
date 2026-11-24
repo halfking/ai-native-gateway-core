@@ -55,7 +55,7 @@ done
 
 case "$PHASE" in
   baseline|after-ttl) ;;
-  *) echo "★ --phase 只能是 baseline 或 after-ttl（收到：$PHASE）" >&2; exit 2 ;;
+  *) echo "★ --phase 只能是 baseline 或 after-ttl（收到：${PHASE}）" >&2; exit 2 ;;
 esac
 
 # ── 口令（只从环境读；缺省从仓根 .env.local 取 LLM_GATEWAY_ADMIN_PASSWORD）────
