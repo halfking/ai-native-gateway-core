@@ -193,8 +193,25 @@ node "${ROOT}/maestro/tools/assert-stats-range-picker.mjs" \
   2>&1 | tee "${OUT}/assert-stats-range-picker.txt"
 PROBE_RC=${PIPESTATUS[0]}
 
+# ── 5b. 第二层·补充：自定义区间的网络层证据（独立工具）────────────────────
+# ★ 为什么独立成一步（而不是塞进主探针）：
+#   这段要**驱动日历组件的内部状态**（Element Plus 的 ElDatePicker：填值 →
+#   补发 change → 点应用），步骤多、失败模式多 ⇒ 独立成工具 ⇒
+#   它的量具缺陷**不会把主探针的其它 26 条一起拖红**，也不会污染主探针的绿。
+# ★ 验的是主探针**没覆盖**的那条路径：主探针验预设档位（days=7），
+#   这里验**自定义区间 → start/end 透传**（本轮改动最大的那条路径）。
+echo "== 第二层·补充：自定义区间（assert-board-op-custom-range.mjs）"
+ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+node "${ROOT}/maestro/tools/assert-board-op-custom-range.mjs" \
+  --cdp "http://127.0.0.1:${PROBE_CDP_PORT}" \
+  --url "${BASE_URL}" \
+  --user "${ADMIN_USER}" \
+  2>&1 | tee "${OUT}/assert-board-op-custom-range.txt"
+CUSTOM_RC=${PIPESTATUS[0]}
+
 printf 'flow rc=%s FAILED=%s\n' "${FLOW_RC}" "${FLOW_FAILED}" >>"${SUMMARY}"
 printf 'probe rc=%s\n' "${PROBE_RC}" >>"${SUMMARY}"
+printf 'custom-range rc=%s\n' "${CUSTOM_RC}" >>"${SUMMARY}"
 echo "---- 汇总 ----"
 cat "${SUMMARY}"
 echo "产物目录：${OUT}"
@@ -210,6 +227,14 @@ if [ "${PROBE_RC}" -eq 1 ]; then
 fi
 if [ "${PROBE_RC}" -eq 2 ]; then
   echo "VERDICT: 量具失效（探针 rc=2：断言未评估，**这不是产品缺陷**）"
+  exit 2
+fi
+if [ "${CUSTOM_RC}" -eq 1 ]; then
+  echo "VERDICT: FAIL（第二层·补充·自定义区间红：rc=${CUSTOM_RC}）"
+  exit 1
+fi
+if [ "${CUSTOM_RC}" -eq 2 ]; then
+  echo "VERDICT: 量具失效（自定义区间探针 rc=2：断言未评估，**这不是产品缺陷**）"
   exit 2
 fi
 echo "VERDICT: PASS（两层全绿）"
