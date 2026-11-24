@@ -47,6 +47,7 @@ func (h *AudioSpeechHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r = r.WithContext(withModalityAttemptKey(r.Context(), keyInfo))
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {

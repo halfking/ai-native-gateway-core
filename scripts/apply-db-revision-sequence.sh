@@ -2815,10 +2815,6 @@ files=(
   #   ★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS ＋ ADD COLUMN IF NOT EXISTS
   #     ＋ 自登记 ON CONFLICT DO NOTHING）⇒ 重放安全、已在场也不报错。
   #   ★ 次序：918 → 925/973/986（★ 后三条的外键指向 teams.id ⇒ teams 先建）。
-  "$ROOT_DIR/sql/migrations/startup/918_teams_table.sql"
-  "$ROOT_DIR/sql/migrations/startup/925_user_teams.sql"
-  "$ROOT_DIR/sql/migrations/startup/973_api_keys_team_id.sql"
-  "$ROOT_DIR/sql/migrations/startup/986_team_budgets.sql"
   # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
   #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
   #   不存在的 migration_metadata 表改回 schema_migrations）。
@@ -2873,6 +2869,46 @@ files=(
   #   ★ 依赖 994 的四个物化视图（它重建它们）⇒ 必须排在 994 之后（已满足）。
   #   ★ 幂等：四个视图 DROP+CREATE + 索引 IF NOT EXISTS + 自登记 ON CONFLICT。
   "$ROOT_DIR/sql/migrations/startup/984_session_universe_cost_aware_probe_scope.sql"
+  # ★ 985-989（2026-11-23 至 11-24 请求对账）：请求关联、媒体用量、账单存证、
+  #   用量汇总、供应商合同费率。
+  "$ROOT_DIR/sql/migrations/startup/985_request_reconciliation_links.sql"
+  "$ROOT_DIR/sql/migrations/startup/986_provider_attempt_media_usage.sql"
+  "$ROOT_DIR/sql/migrations/startup/987_provider_invoice_evidence.sql"
+  "$ROOT_DIR/sql/migrations/startup/988_provider_invoice_usage_buckets.sql"
+  # ★★ 供应商合同费率件 —— **原名 989_supplier_contract_rates.sql**，2026-11-24 还号到
+  #   **925**（真空号）：它与 989_migration_ledger_session_analytics_981_repair.sql
+  #   **同占 989** ⇒ 唯一性门红 + 安装器以文件名前缀为版本键 ⇒ 增量安装会跳过本件
+  #   ⇒ public.supplier_contract_rates 建不出来（审计档 L2）。
+  #   ★ **零字节变更**（sha256 仍 b32e8fb9… ⇒ 与 211 部署通道账本记的指纹逐字一致
+  #     ⇒ 不触发 L23 内容指纹分叉）；★ 文件自身自登记仍是 '988'（未改字节）
+  #     ⇒ 211 台账那行 '988' 依然属本件 ⇒ 台账语义不变、零生产写。
+  "$ROOT_DIR/sql/migrations/startup/925_supplier_contract_rates.sql"
+  # ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+  #   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
+  #     撞号 ⇒ 换号（四位数 1000 对全部守卫隐形，被当场拦下；973 则是**逆序依赖**
+  #     ⇒ 两条自动枚举通道只按号排序时本迁移会排在建表件之前 ⇒ ALTER 落空）。
+  #   ★ 最终取 **983b**（主号+字母后缀，仓内既有合法记法 15 条）：
+  #     versionPrefix 解析成 983 ⇒ 与 983_request_metrics.sql 同号 ⇒ 排序按文件名
+  #     ⇒ '983_' < '983b_' ⇒ 排在 983 建表件之后 ✓（依赖已满足）。
+  #   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
+  "$ROOT_DIR/sql/migrations/startup/983b_add_raw_model_name.sql"
+  # ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+  #   ★ processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，
+  #     **每批跑一次** ⇒ 而该索引**从来不存在**（迁移 983 的 11 个索引里没有它）
+  #     ⇒ 2026-11-24 生产只读 EXPLAIN 实测：全表并行扫描 + top-N 排序
+  #     ⇒ 340,904 行时 26,572 buffers / **117ms 每批**。
+  #   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
+  "$ROOT_DIR/sql/migrations/startup/983c_add_occurred_cursor_index.sql"
+  # ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
+  #   ★ 原先**只建了 canonical + embeddata 双副本**、两条通道都没投递
+  #     ⇒ 团队族四表**从来没被建过** ⇒ maas/team_budget_gate 读不到表。
+  #   ★ 四条自带幂等守卫与 ON CONFLICT 自登记 ⇒ 补投递不产生重复应用风险。
+  #   ★ 相对顺序不可打乱：057 给 api_keys 加 team_id 并外键引用 teams(id)
+  #     ⇒ 必须排在 055 之后（已满足）。
+  "$ROOT_DIR/sql/migrations/startup/055_teams_table.sql"
+  "$ROOT_DIR/sql/migrations/startup/056_user_teams.sql"
+  "$ROOT_DIR/sql/migrations/startup/973_api_keys_team_id.sql"
+  "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
 )
 
 
@@ -3709,13 +3745,9 @@ ledger_artifact_probe "999_session_summary_layers.sql" \
 #   引入的对象；★ teams 的两个索引与 user_teams/team_budgets 的索引都在场）。
 #   ★ 列探针用 information_schema（★ api_keys.team_id 是普通列 ⇒ 口径正确，
 #     994 的 pg_catalog 教训只针对物化视图）。
-ledger_artifact_probe "918_teams_table.sql" \
   "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='teams' AND indexname IN ('idx_teams_owner_id','idx_teams_tenant_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='teams_tenant_name_key' AND conrelid='public.teams'::regclass) = 1"
-ledger_artifact_probe "925_user_teams.sql" \
   "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='user_teams' AND indexname IN ('idx_user_teams_user_id','idx_user_teams_team_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='user_teams_user_team_key' AND conrelid='public.user_teams'::regclass) = 1"
-ledger_artifact_probe "973_api_keys_team_id.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
-ledger_artifact_probe "986_team_budgets.sql" \
   "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
 # ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
 #   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
@@ -3732,6 +3764,51 @@ ledger_artifact_probe "983_request_metrics.sql" \
 #     的 definition 断言它（★ information_schema 不覆盖物化视图 ⇒ 994 教训）。
 ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('idx_user_session_agg_pk','idx_user_session_agg_date','idx_user_session_agg_tenant','idx_user_session_agg_owner','idx_project_task_agg_pk','idx_project_task_agg_owner','idx_project_task_agg_project','idx_project_task_agg_tenant','idx_agent_usage_agg_pk','idx_agent_usage_agg_agent','idx_agent_usage_agg_tenant','idx_model_usage_agg_pk','idx_model_usage_agg_model','idx_model_usage_agg_provider','idx_model_usage_agg_tenant')) = 15 AND (SELECT count(*) FROM pg_matviews WHERE schemaname='public' AND matviewname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates') AND definition LIKE '%cost_usd%') = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984') = 1"
+# ★★ 984 与 985 **共用台账号 984**（★ 985 的自登记写的是 '984' ⇒ 错位一格，★ 主档 §4-L1）
+#   ⇒ ⇒ 「984」这一行的归属取决于执行顺序 ⇒ ★★ **这两条 probe 只能保持 version 判据**
+#   ⇒ 若两边都加 description 条件 ⇒ **必然有一边红** ⇒ ⇒ 彻底修需要**改 985 的字节**（触 L23 ⇒ owner 决策）。
+# ★★ 而 986/987/988/925 各自的台账号**归属唯一** ⇒ 它们的 probe 已改成「version + description」双条件。
+ledger_artifact_probe "985_request_reconciliation_links.sql" \
+  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985') = 1"
+ledger_artifact_probe "986_provider_attempt_media_usage.sql" \
+  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_call_attempts' AND column_name IN ('audio_input_duration_us','audio_billed_duration_us','audio_output_duration_us','generated_images','video_output_duration_us','media_usage_source')) = 6 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985' AND description LIKE 'measured supplier attempt media usage%') = 1"
+ledger_artifact_probe "987_provider_invoice_evidence.sql" \
+  "to_regclass('public.provider_invoices') IS NOT NULL AND to_regclass('public.provider_invoice_lines') IS NOT NULL AND to_regclass('public.idx_provider_invoices_provider_month') IS NOT NULL AND to_regclass('public.idx_provider_invoice_lines_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_provider_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_account_time') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '986' AND description LIKE 'normalized supplier invoice evidence%') = 1"
+ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
+  "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '987' AND description LIKE 'structured supplier invoice usage buckets%') = 1"
+# ★★ 供应商合同费率件（2026-11-24 还号到 925，原名 989_…）：★ 探针的台账行判据
+#   从 '989' **改成 '988'** —— ★ 因为**本件自己的自登记就是 '988'**
+#   （文件尾部 INSERT INTO public.schema_migrations VALUES ('988', …)，
+#     ★ 改号不改字节 ⇒ 自登记值不动 ⇒ 211 台账里 '988' 那行一直属本件）。
+#   ★ 旧判据 '989' 是**假阳性**：那行是**另一个** 989 件
+#     （989_migration_ledger_session_analytics_981_repair.sql）写的
+#     ⇒ 本件即使没跑过，探针也会绿 ⇒ 探针失去鉴别力。
+#   ★ 现在断言的是**本件真正写下的那行** ⇒ 探针恢复鉴别力（跑没跑过一眼可辨）。
+ledger_artifact_probe "925_supplier_contract_rates.sql" \
+  "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988' AND description LIKE 'effective supplier contract rate evidence%') = 1"
+# ★ 983b 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
+#   ★ 这条 probe 是本轮新增迁移的**唯一**到位证据：
+#     该列原先没有任何通道投递 ⇒ 生产上不存在 ⇒ writer.go 写它必然 42703。
+#   ★ 注：生产上该列已由别的路径在场（211 只读实测：45 列、末列即 raw_model_name），
+#     但本迁移未 applied、未记账 ⇒ probe 的台账行判据（version='983b'）仍未满足
+#     ⇒ 这正是本迁移要补的缺口（幂等重跑无害）。
+ledger_artifact_probe "983b_add_raw_model_name.sql" \
+  "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983b') = 1"
+# ★ 983c 的产物 = 复合游标索引 + 台账行。
+#   ★ 用 pg_indexes 判索引在场（★ 分区表：索引建在父表上 ⇒ 各分区上会有同名分区索引
+#   ★ ⇒ 用 to_regclass 判父表索引更直接）。
+ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
+  "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
+# ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
+#   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
+ledger_artifact_probe "055_teams_table.sql" \
+  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
+ledger_artifact_probe "056_user_teams.sql" \
+  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
+ledger_artifact_probe "973_api_keys_team_id.sql" \
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
+ledger_artifact_probe "058_team_budgets.sql" \
+  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

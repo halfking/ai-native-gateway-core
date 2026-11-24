@@ -36,9 +36,15 @@ import { req, type RequestOptions } from './client'
  *   若用 super_admin，tenant_admin 取能力位会拿到 403 ⇒ 前端就会把
  *   403 误当成「全部能力关」。
  */
+export interface DailyReconciliationCalendar {
+  day: string
+  timezone: string
+}
+
 export interface FeatureCapabilities {
   /** 「费用对账」已装配（端点已注册）。 */
   cost_reconciliation: boolean
+  daily_reconciliation_default?: DailyReconciliationCalendar
 }
 
 /**

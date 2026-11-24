@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -1508,7 +1510,7 @@ func (c *RequestLogContext) buildRateLimitedDecisionEntry(errCode string) *telem
 	entry := &telemetry.DecisionLogEntry{
 		RequestID:         "",
 		TenantID:          "default",
-		Model:             "<unknown>",
+		Model:             modelattr.UnknownPlaceholder,
 		Success:           false,
 		ErrorClass:        strPtr(errCode),
 		FailureStage:      strPtr("gateway"),
@@ -1521,7 +1523,7 @@ func (c *RequestLogContext) buildRateLimitedDecisionEntry(errCode string) *telem
 	entry.LatencyMs = c.LatencyMs()
 	clientModel := c.ClientModel
 	if clientModel == "" {
-		clientModel = "<unknown>"
+		clientModel = modelattr.UnknownPlaceholder
 	}
 	entry.Model = clientModel
 	entry.ClientModel = strPtr(clientModel)
@@ -1835,19 +1837,46 @@ func (c *RequestLogContext) SetOriginStage(stage string) {
 // are revalidated by ResolveOriginForSystemKey; ordinary request headers,
 // proxy addresses, and the global-auth sentinel do not grant this status.
 func trustedPlatformOrigin(ctx context.Context, keyInfo *authentication.KeyInfo) (string, string, bool) {
-	if keyInfo == nil || keyInfo.OwnerUser == nil || strings.TrimSpace(*keyInfo.OwnerUser) == "" || *keyInfo.OwnerUser == "global-auth-passed" {
+	if keyInfo == nil || !keyInfo.IsSystem || keyInfo.OwnerUser == nil || strings.TrimSpace(*keyInfo.OwnerUser) == "" || *keyInfo.OwnerUser == "global-auth-passed" {
 		return "", "", false
 	}
-	return trustedPlatformOriginForOwner(ctx, *keyInfo.OwnerUser)
+	stage, actor, ok := middleware.ResolveOriginForSystemKey(ctx, strings.TrimSpace(*keyInfo.OwnerUser))
+	return stage, actor, ok && stage != "" && stage != "business"
 }
 
-func trustedPlatformOriginForOwner(ctx context.Context, ownerUser string) (string, string, bool) {
-	ownerUser = strings.TrimSpace(ownerUser)
-	if ownerUser == "" || ownerUser == "global-auth-passed" {
-		return "", "", false
+func platformOriginForKey(ctx context.Context, keyInfo *authentication.KeyInfo) string {
+	stage, _, ok := trustedPlatformOrigin(ctx, keyInfo)
+	if !ok {
+		return ""
 	}
-	stage, actor, ok := middleware.ResolveOriginForSystemKey(ctx, ownerUser)
-	return stage, actor, ok && stage != "" && stage != "business"
+	return reconciliationPlatformClass(stage)
+}
+
+func reconciliationPlatformClass(stage string) string {
+	switch stage {
+	case "system_health":
+		return "health"
+	case "self_check":
+		return "self_check"
+	case "manual":
+		return "admin_test"
+	case "node_probe", "probe_direct", "probe_v2", "model_probe", "passive_probe":
+		return "probe"
+	default:
+		return ""
+	}
+}
+
+func reconciliationBusinessKey(keyInfo *authentication.KeyInfo) bool {
+	return keyInfo != nil && keyInfo.ID > 0 && keyInfo.TenantID != "" && !keyInfo.IsSystem
+}
+
+func platformBillingExemptionEnabled() bool {
+	return os.Getenv("LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED") == "true"
+}
+
+func tenantBillingExempt(ctx context.Context, keyInfo *authentication.KeyInfo) bool {
+	return platformBillingExemptionEnabled() && platformOriginForKey(ctx, keyInfo) != ""
 }
 
 // applyOriginMetadata 把 origin 元数据落到 telemetry 条目上（2026-09-25）。
@@ -1875,7 +1904,7 @@ func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authenticati
 	if ctx != nil {
 		entry.ApplyOriginFromContext(ctx)
 	}
-	if keyInfo == nil || keyInfo.OwnerUser == nil || *keyInfo.OwnerUser == "" {
+	if keyInfo == nil || !keyInfo.IsSystem || keyInfo.OwnerUser == nil || *keyInfo.OwnerUser == "" {
 		return
 	}
 	stage, actor, ok := middleware.ResolveOriginForSystemKey(ctx, *keyInfo.OwnerUser)

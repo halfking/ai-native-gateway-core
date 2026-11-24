@@ -1129,6 +1129,7 @@ func main() {
 	var pendingStore *pending.Store
 	var redisClientForCache *session.RedisClient
 	var routingExec *executors.Executor
+	var supplierAttemptRecorder reconciliation.AttemptStore
 	var routingRouter *executors.Router
 	var contextLimitUpdateQueue *executors.ContextLimitUpdateQueue
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
@@ -2006,9 +2007,26 @@ func main() {
 			auditSink,
 		)
 		if os.Getenv("LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED") == "true" && dbConn != nil && dbConn.Pool() != nil {
-			attemptRecorder := reconciliation.NewAttemptRecorder(dbConn.Pool())
-			routingExec.SetAttemptRecorder(attemptRecorder)
-			bg.SetAttemptRecorder(attemptRecorder)
+			backupDir := os.Getenv("LLM_GATEWAY_BACKUP_DIR")
+			if backupDir == "" {
+				backupDir = "./data/backups"
+			}
+			outboxCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			outbox, err := reconciliation.OpenAttemptOutbox(outboxCtx, backupDir, dbConn.Pool())
+			cancel()
+			if err != nil {
+				slog.Error("supplier attempt shadow outbox unavailable; evidence will be written directly", "error", err)
+				supplierAttemptRecorder = reconciliation.NewAttemptRecorder(dbConn.Pool())
+			} else {
+				supplierAttemptRecorder = outbox
+				defer func() {
+					if err := outbox.Close(); err != nil {
+						slog.Warn("supplier attempt shadow outbox close failed", "error", err)
+					}
+				}()
+			}
+			routingExec.SetAttemptRecorder(supplierAttemptRecorder)
+			bg.SetAttemptRecorder(supplierAttemptRecorder)
 			slog.Info("supplier attempt shadow ledger enabled")
 		}
 		routingExec.EnforceContextBudget = true
@@ -2799,6 +2817,9 @@ func main() {
 		// are both ready by this point.
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
 		embeddingsHandler.SetAuth(keyVerifier, slidingRL)
+		if supplierAttemptRecorder != nil {
+			embeddingsHandler.SetAttemptRecorder(supplierAttemptRecorder)
+		}
 		// 2026-09-14 audit #8: failed embedding candidates feed the shared
 		// candidate_failure_logs / supplier_errors ledger, same as chat —
 		// keeps credential quality views complete across all data planes.
@@ -2807,6 +2828,9 @@ func main() {
 		// 2026-10-03 音频端点轮：转写/合成/MCP 三个面共享 AudioService。
 		audioService = streaming.NewAudioService(providerClient, upClient)
 		audioService.SetAuth(keyVerifier, slidingRL)
+		if supplierAttemptRecorder != nil {
+			audioService.SetAttemptRecorder(supplierAttemptRecorder)
+		}
 		// R40（R39 §七.3 移交收口）：音频候选失败与 chat/embeddings 同进
 		// 共享台账——音频面此前在 credential quality 视图上不可见。
 		audioService.SetFailureLogger(candidateFailureLedger)
@@ -2840,8 +2864,14 @@ func main() {
 		// 2026-10-08 Phase C：图/视频统一出口骨架（media 路由域）。
 		imagesGenerationsHandler = streaming.NewImagesGenerationsHandler(providerClient, upClient)
 		imagesGenerationsHandler.SetAuth(keyVerifier, slidingRL)
+		if supplierAttemptRecorder != nil {
+			imagesGenerationsHandler.SetAttemptRecorder(supplierAttemptRecorder)
+		}
 		videosGenerationsHandler = streaming.NewVideosGenerationsHandler(providerClient, upClient)
 		videosGenerationsHandler.SetAuth(keyVerifier, slidingRL)
+		if supplierAttemptRecorder != nil {
+			videosGenerationsHandler.SetAttemptRecorder(supplierAttemptRecorder)
+		}
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else if cfg.SecretKey != "" {
 		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
@@ -3360,12 +3390,8 @@ func main() {
 		}
 		slog.Info("maas credits billing enabled")
 
-		// 2026-07-13: backfill hourly credit consumption buckets so the
-		// admin dashboard "总积分消耗" KPI is ready immediately on startup.
-		// Idempotent: ON CONFLICT DO UPDATE SET credits = EXCLUDED
-		// converges to _request_logs.credits_charged source-of-truth values.
-		// Errors are logged but not fatal — dashboard degrades to zero hint
-		// when the bucket table is empty.
+		// Fill missing hourly consumption buckets from already posted request
+		// debits so the admin dashboard can use retained billing evidence.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
@@ -4431,11 +4457,29 @@ func main() {
 	// 部署验证计划: /tmp/request_metrics_deployment_plan.md
 	if dbConn != nil && dbConn.Enabled() {
 		metricsProcessor := metricsstore.NewProcessor(dbConn.Stdlib())
-		go metricsProcessor.Run(context.Background(), 5*time.Minute, 100)
+		// ★ 用**可取消**的 ctx（与仓内其它后台 worker 同款写法）：
+		//   context.Background() ⇒ 这个 goroutine 在进程内**永远不可停**
+		//   ⇒ 优雅停机后它仍在跑，而此时连接池已关
+		//   ⇒ 每 5 分钟刷一批「连接已关闭」错误，且批次里的维度永远补不回来。
+		metricsProcessorCtx, metricsProcessorCancel := context.WithCancel(context.Background())
+		// ★ 2026-11-24 吞吐优化轮：参数**可配**（环境变量），不再硬编码。
+		//
+		//   旧形态（硬编码 5m/100）：「每 5 分钟 100 条」是**占位常量**，不是容量测算。
+		//   生产实测写入速率约 1,100 条/小时（近 1 小时均值 18.1 条/分钟，
+		//   峰值 63 条/分钟），而「5 分钟 100 条」的上限只有 **1,200 条/小时**
+		//   ⇒ 余量仅 7% ⇒ 实测 61/61 个批次全部处理满 100 条
+		//   ⇒ 处理器**长期贴着天花板跑** ⇒ 流量一涨就变成数据滞后。
+		//
+		//   新形态：间隔/批量/追平轮数三项可配，且每轮**自适应追平**
+		//   （持续处理直到本批不满）⇒ 积压时自动加速，空闲时自动降频。
+		metricsCfg := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
+		go metricsProcessor.Run(metricsProcessorCtx, metricsCfg)
+		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
-			"interval", "5m",
-			"batch_size", 100)
+			"interval", metricsCfg.Interval.String(),
+			"batch_size", metricsCfg.BatchSize,
+			"max_rounds_per_tick", metricsCfg.MaxRoundsPerTick)
 	}
 
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
@@ -7742,37 +7786,43 @@ func main() {
 	// writes into message_start.usage.input_tokens.
 	mux.Handle("/v1/messages/count_tokens", keyConcurrentGate.Wrap(streaming.NewCountTokensHandler(chatHandler)))
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
+	observeModality := func(handler http.Handler) http.Handler {
+		if supplierAttemptRecorder == nil || requestLogger == nil {
+			return handler
+		}
+		return streaming.ObserveModalityIngress(handler, requestLogger, telemetryClient.EmitContextAttrs)
+	}
 	if embeddingsHandler != nil {
-		mux.Handle("/v1/embeddings", keyConcurrentGate.Wrap(embeddingsHandler))
+		mux.Handle("/v1/embeddings", observeModality(keyConcurrentGate.Wrap(embeddingsHandler)))
 	}
 	// 2026-10-03 音频端点轮：OpenAI 兼容转写/合成 + MCP 面板。handler 仅在
 	// 数据面鉴权可用（keyVerifier.Enabled）时构造，与 embeddings 同款门槛。
 	if audioTranscriptionsHandler != nil {
-		mux.Handle("/v1/audio/transcriptions", keyConcurrentGate.Wrap(audioTranscriptionsHandler))
+		mux.Handle("/v1/audio/transcriptions", observeModality(keyConcurrentGate.Wrap(audioTranscriptionsHandler)))
 	}
 	if audioSpeechHandler != nil {
-		mux.Handle("/v1/audio/speech", keyConcurrentGate.Wrap(audioSpeechHandler))
+		mux.Handle("/v1/audio/speech", observeModality(keyConcurrentGate.Wrap(audioSpeechHandler)))
 	}
 	if audioMCPHandler != nil {
-		mux.Handle("/v1/mcp", audioMCPHandler)
+		mux.Handle("/v1/mcp", observeModality(audioMCPHandler))
 	}
 	// 2026-10-06 ASR 多模型轮：转写后处理二件套（LLM 步骤经环回 chat 面）。
 	if audioTransformHandler != nil {
-		mux.Handle("/v1/audio/refine", audioTransformHandler)
-		mux.Handle("/v1/audio/analyze", audioTransformHandler)
+		mux.Handle("/v1/audio/refine", observeModality(audioTransformHandler))
+		mux.Handle("/v1/audio/analyze", observeModality(audioTransformHandler))
 	}
 	// 2026-10-26 多模态标准接口轮：文本加工三件套（LLM 编排经环回 chat 面）。
 	if summarizeHandler != nil {
-		mux.Handle("/v1/summarize", summarizeHandler)
-		mux.Handle("/v1/summarize/title", summarizeHandler)
-		mux.Handle("/v1/classify", summarizeHandler)
+		mux.Handle("/v1/summarize", observeModality(summarizeHandler))
+		mux.Handle("/v1/summarize/title", observeModality(summarizeHandler))
+		mux.Handle("/v1/classify", observeModality(summarizeHandler))
 	}
 	// 2026-10-08 Phase C：OpenAI 兼容图/视频生成出口。
 	if imagesGenerationsHandler != nil {
-		mux.Handle("/v1/images/generations", keyConcurrentGate.Wrap(imagesGenerationsHandler))
+		mux.Handle("/v1/images/generations", observeModality(keyConcurrentGate.Wrap(imagesGenerationsHandler)))
 	}
 	if videosGenerationsHandler != nil {
-		mux.Handle("/v1/videos/generations", keyConcurrentGate.Wrap(videosGenerationsHandler))
+		mux.Handle("/v1/videos/generations", observeModality(keyConcurrentGate.Wrap(videosGenerationsHandler)))
 	}
 	mux.Handle("/v1/models", modelsHandler)
 
@@ -9148,6 +9198,10 @@ func main() {
 	publicSurface = streaming.NewLargeIngress(chatHandler, rawStore, streaming.LargeIngressConfig{MaxConcurrent: ingressMaxConcurrent}).Wrap(publicSurface)
 	slog.Info("bounded session ingress enabled", "max_input_bytes", largebody.LimitBytes, "archive_root", rawDirectory, "max_concurrent", ingressMaxConcurrent)
 
+	var reconciliationLinks *reconciliation.RequestLinks
+	if supplierAttemptRecorder != nil && dbConn != nil {
+		reconciliationLinks = reconciliation.NewRequestLinks(dbConn.Pool())
+	}
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
@@ -9164,6 +9218,7 @@ func main() {
 		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
 		Add(middleware.NewPrometheusMiddleware()).
 		Add(middleware.NewTracingMiddleware()).
+		Add(streaming.NewGatewayAdmissionObserver(requestLogger, supplierAttemptRecorder != nil, reconciliationLinks)).
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
 		Add(middleware.NewOriginMiddlewareWithTrustedProxies(
 			middleware.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs))).
@@ -10118,6 +10173,7 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySi
 				if err := json.NewEncoder(w).Encode(errResp); err != nil {
 					slog.Error("failed to encode anomaly error", "error", err)
 				}
+				streaming.RecordGatewayAdmissionRejection(r, httpStatus, "anomaly_blocked", keyInfo)
 				return
 			}
 

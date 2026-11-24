@@ -7,11 +7,17 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 )
 
 type requestIDContextKey struct{} //nolint:unused
+type requestReceivedContextKey struct{}
+type orchestrationLinkContextKey struct{}
+
+// OrchestrationLinkHeader carries a one-time reconciliation capability.
+const OrchestrationLinkHeader = "X-Gw-Reconciliation-Link"
 
 type RequestIDMiddleware struct {
 	BaseMiddleware
@@ -21,6 +27,26 @@ func NewRequestIDMiddleware() *RequestIDMiddleware {
 	return &RequestIDMiddleware{
 		BaseMiddleware: BaseMiddleware{name: "request_id"},
 	}
+}
+
+// ServerRequestID returns the ID assigned by RequestIDMiddleware.
+func ServerRequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDContextKey{}).(string)
+	return id
+}
+
+// ServerRequestReceivedAt returns the gateway receipt time, with a fallback for direct handlers.
+func ServerRequestReceivedAt(ctx context.Context) time.Time {
+	if received, ok := ctx.Value(requestReceivedContextKey{}).(time.Time); ok {
+		return received
+	}
+	return time.Now().UTC()
+}
+
+// OrchestrationLink returns the untrusted capability stripped at ingress.
+func OrchestrationLink(ctx context.Context) string {
+	token, _ := ctx.Value(orchestrationLinkContextKey{}).(string)
+	return token
 }
 
 // Wrap assigns a server-generated UUID to every inbound HTTP request and
@@ -44,6 +70,7 @@ func NewRequestIDMiddleware() *RequestIDMiddleware {
 // bug report for request_id 3875431e-9ba6-4e90-8b43-0d234f90d85d.
 func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAt := time.Now().UTC()
 		// Always generate a new server-side id. Never reuse the
 		// client's value — that would let one client retry poison
 		// another retry's audit row.
@@ -59,7 +86,13 @@ func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
 		// Standard X-Request-Id round-trip (server value).
 		r.Header.Set("X-Request-Id", id)
 		w.Header().Set("X-Request-Id", id)
-		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id))
+		ctx := context.WithValue(r.Context(), requestIDContextKey{}, id)
+		ctx = context.WithValue(ctx, requestReceivedContextKey{}, receivedAt)
+		if token := r.Header.Get(OrchestrationLinkHeader); token != "" {
+			ctx = context.WithValue(ctx, orchestrationLinkContextKey{}, token)
+		}
+		r.Header.Del(OrchestrationLinkHeader)
+		r = r.WithContext(ctx)
 
 		// R37 (R35-R1, 2026-09-17): the gateway correlation headers are
 		// client-forgeable — a forged X-Gw-Is-Auto removes the turn from the

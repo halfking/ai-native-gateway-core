@@ -214,6 +214,63 @@ func TestExecParamsCarryRequestModality(t *testing.T) {
 	}
 }
 
+func execParamsPlatformOriginAudit(file *ast.File) (int, []string) {
+	count := 0
+	var violations []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok || !isExecParamsType(lit.Type) {
+			return true
+		}
+		count++
+		found := false
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != "PlatformOrigin" {
+				continue
+			}
+			call, ok := kv.Value.(*ast.CallExpr)
+			if ok {
+				if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "platformOriginForKey" {
+					found = true
+				}
+			}
+		}
+		if !found {
+			violations = append(violations, file.Name.Name+": ExecParams must carry PlatformOrigin from platformOriginForKey (verified api_keys.is_system + trusted owner)")
+		}
+		return true
+	})
+	return count, violations
+}
+
+func TestExecParamsCarryVerifiedPlatformOrigin(t *testing.T) {
+	fset := token.NewFileSet()
+	total := 0
+	for _, name := range productionGoFiles(t) {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读取 %s 失败：%v", name, err)
+		}
+		parsed, err := parser.ParseFile(fset, name, src, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("解析 %s 失败：%v", name, err)
+		}
+		count, violations := execParamsPlatformOriginAudit(parsed)
+		total += count
+		for _, violation := range violations {
+			t.Error(violation)
+		}
+	}
+	if total < 5 {
+		t.Fatalf("只审计到 %d 处 ExecParams 构造点，预期至少 5 处", total)
+	}
+}
+
 // TestExecParamsModalityAudit_HasTeeth 是阴性对照：证明审计器会真的报出来。
 // 没有它，「审计器什么都没找到」与「审计器找到了但没报」都表现为全绿。
 func TestExecParamsModalityAudit_HasTeeth(t *testing.T) {

@@ -25,9 +25,22 @@ describe('StatisticsHelpSheet', () => {
       props: { modelValue: true, contentId: 'session-detail', contextKey: 'statisticsHelp.pages.sessionAudit' },
       global: { stubs: { AppSheet: { template: '<section><slot /></section>', props: ['modelValue', 'title'] } } },
     })
-    expect(wrapper.text()).toContain('按租户与规范会话标识审阅单个会话')
+    expect(wrapper.text()).toContain('展开会话可查看逐轮记录')
     expect(wrapper.text()).toContain('客户端请求数')
     expect(wrapper.text()).toContain('未知或缺失值显示为缺失')
+    wrapper.unmount()
+    setLocale(originalLocale)
+  })
+
+  it('shows the monthly reconciliation context without the daily snapshot guide', () => {
+    setLocale('zh-CN')
+    const wrapper = mount(StatisticsHelpSheet, {
+      props: { modelValue: true, contextKey: 'statisticsHelp.pages.reconciliation' },
+      global: { stubs: { AppSheet: { template: '<section><slot /></section>' } } },
+    })
+    expect(wrapper.text()).toContain('网关月汇总与导入账单')
+    expect(wrapper.text()).toContain('客户端请求数')
+    expect(wrapper.text()).not.toContain('每日聚合任务')
     wrapper.unmount()
     setLocale(originalLocale)
   })

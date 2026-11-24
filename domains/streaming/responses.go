@@ -24,6 +24,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
@@ -168,6 +170,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			TenantID:    "default",
 			SessionID:   provisionalSessionID,
 			Provisional: true,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("request_logger: responses early CreateInitial failed", "request_id", requestID, "error", err)
 		}
@@ -184,7 +187,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 			}
 			if attemptClientModel == "" {
-				attemptClientModel = "<unknown>"
+				attemptClientModel = modelattr.UnknownPlaceholder
 			}
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
@@ -206,6 +209,14 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if r.Method != http.MethodPost {
 		attemptErrCode = "method_not_allowed"
 		attemptErrMsg = "method not allowed"
+		// ★ 2026-11-24（模型归属审计）：本出口此前**完全没碰 body** ⇒
+		// client_model 恒为 "" ⇒ 该行在模型榜上不可归因。chat 面与
+		// messages 面在同一位置都有 captureAttemptBody，只有 responses 面
+		// 漏了 ⇒ 三个协议面行为不一致。补上，与另两面同款。
+		captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+		if attemptClientModel == "" {
+			attemptClientModel = modelattr.UnknownPlaceholder
+		}
 		writeResponsesError(w, http.StatusMethodNotAllowed, "Method not allowed", "invalid_request", "method_not_allowed")
 		return
 	}
@@ -256,6 +267,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		// agent_name on every row. Same wiring order as the chat path
 		// (SetKey after auth → Body → EnsureCaptured after body read).
 		logCtx.SetKey(ki)
+		h.chatHandler.enrichAuthenticatedRequestWAL(r.Context(), requestID, ki.TenantID, provisionalSessionID)
 		bindRequestJourney(r, ki.TenantID, attemptClientModel)
 		// SP-02: state machine — auth succeeded.
 		rt.Emit(state.EventAuthed)
@@ -266,7 +278,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		//	⇒ hard 模式可被整面绕过。
 		//	⇒ 与 chat 面共用同一个闸（domains/streaming/handler.go
 		//	enforceTenantMonthlyBudget）。
-		if !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
+		if !tenantBillingExempt(r.Context(), keyInfo) && !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 			attemptErrCode = errCode
 			attemptErrMsg = errMsg
 		}, func(w http.ResponseWriter, status int, reqID, errType, errMsg, errCode string) {
@@ -328,7 +340,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
 		}
 		if logCtx.ClientModel == "" {
-			logCtx.SetClientModel("<unknown>")
+			logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 		}
 	}
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
@@ -352,6 +364,15 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
 		attemptErrMsg = "request body exceeds 100 MB limit"
+		// ★ 2026-11-24（模型归属审计）：body 已在手上（超限，但前 maxBodySize
+		// 字节可读）⇒ 摘出 model，避免这一行在模型榜上不可归因。
+		// 与 chat 面（handler.go body_too_large 出口）同款。
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = modelattr.UnknownPlaceholder
+		}
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "request body exceeds 100 MB limit", "invalid_request", "body_too_large")
 		return
 	}
@@ -366,6 +387,14 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
 		attemptErrCode = "prompt_too_large"
 		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
+		// ★ 2026-11-24（模型归属审计）：body 已在手上 ⇒ 摘出 model。
+		// 与 chat 面（handler.go prompt_too_large 出口）同款。
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes)
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = modelattr.UnknownPlaceholder
+		}
 		writeResponsesError(w, http.StatusRequestEntityTooLarge,
 			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()),
 			"invalid_request", "prompt_too_large")
@@ -376,13 +405,22 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
 		attemptErrCode = "json_parse_error"
 		attemptErrMsg = "invalid JSON in request body"
+		// ★ 2026-11-24（模型归属审计）：body 已在手上 ⇒ 即便 JSON 非法，
+		// 也尽力摘出 model（extractModelFromBody 对截断/非法 JSON 有
+		// loose 兜底）。与 chat 面（handler.go json_parse_error 出口）同款。
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes)
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = modelattr.UnknownPlaceholder
+		}
 		writeResponsesError(w, http.StatusBadRequest, "Invalid JSON in request body", "invalid_request", "json_parse_error")
 		return
 	}
 	if reqBody.Model == "" {
 		attemptErrCode = "missing_model"
 		attemptErrMsg = "model is required"
-		attemptClientModel = "<unknown>"
+		attemptClientModel = modelattr.UnknownPlaceholder
 		writeResponsesError(w, http.StatusBadRequest, "model is required", "invalid_request", "missing_model")
 		return
 	}
@@ -583,6 +621,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			SessionID:   sessionID,
 			ClientModel: clientModel,
 			Provisional: false,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("request_logger: responses session merge failed", "request_id", requestID, "error", err)
 		}
@@ -807,8 +846,10 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W: streamWriter,
-			R: r,
+			PlatformOrigin:     platformOriginForKey(r.Context(), keyInfo),
+			AttemptBusinessKey: reconciliationBusinessKey(keyInfo),
+			W:                  streamWriter,
+			R:                  r,
 			// 2026-11-12（批 5）：BodyBytes 直接送 responses 原文（IR 主路径），
 			// executor 按客户端协议分派 ir.ParseResponses。
 			BodyBytes:                  responsesBodyBytes,

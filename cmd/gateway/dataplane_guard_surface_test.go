@@ -240,13 +240,16 @@ func scanMuxRoutes(t *testing.T, fset *token.FileSet, file *ast.File) []muxRoute
 		}
 		var idents []string
 		collectIdents(call.Args[1], &idents)
-		// 透传中间件解包：keyConcurrentGate.Wrap(inner) 的分类锚 = inner
-		//（并发闸不产生/不消费 LLM 内容；delegat 仍保留全量标识符）。
+		// Unwrap the concurrency and request-WAL layers to classify the content handler.
 		handlerExpr := call.Args[1]
 		for {
 			ce, ok := handlerExpr.(*ast.CallExpr)
 			if !ok || len(ce.Args) == 0 {
 				break
+			}
+			if fn, ok := ce.Fun.(*ast.Ident); ok && fn.Name == "observeModality" && len(ce.Args) == 1 {
+				handlerExpr = ce.Args[0]
+				continue
 			}
 			wrapSel, ok := ce.Fun.(*ast.SelectorExpr)
 			if !ok || wrapSel.Sel.Name != "Wrap" {

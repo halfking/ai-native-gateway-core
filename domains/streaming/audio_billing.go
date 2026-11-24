@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
@@ -55,9 +56,16 @@ func (s *AudioService) SetMaas(svc audioMaasCharger) {
 // caller); it rides into credit_ledger.owner_user so audio consume rows are
 // visible under /api/maas/my/*. Empty = owner unknown (legacy shape).
 // Charge / log failures never fail the client response.
-func (s *AudioService) chargeTranscription(ctx context.Context, tenantID, ownerUser, requestID, model string, durationSec *float64) {
+func (s *AudioService) chargeTranscription(ctx context.Context, keyInfo *authentication.KeyInfo, requestID, model string, durationSec *float64) {
 	if s == nil {
 		return
+	}
+	tenantID, ownerUser := "", ""
+	if keyInfo != nil {
+		tenantID = keyInfo.TenantID
+		if keyInfo.OwnerUser != nil {
+			ownerUser = *keyInfo.OwnerUser
+		}
 	}
 	seconds := 0.0
 	if durationSec != nil && *durationSec > 0 {
@@ -71,8 +79,9 @@ func (s *AudioService) chargeTranscription(ctx context.Context, tenantID, ownerU
 	usage := maas.TokenUsage{AudioSeconds: seconds}
 	var amount int64
 	var err error
-	_, _, platformOrigin := trustedPlatformOriginForOwner(ctx, ownerUser)
-	if s.maas != nil && s.maas.Enabled() && tenantID != "" && tenantID != "default" && !platformOrigin {
+	_, _, platformOrigin := trustedPlatformOrigin(ctx, keyInfo)
+	billingExempt := platformBillingExemptionEnabled() && platformOrigin
+	if s.maas != nil && s.maas.Enabled() && tenantID != "" && tenantID != "default" && !billingExempt {
 		// F-4（2026-11-04 审计）：走带 owner 的变体，音频 consume 流水
 		// 不再落 owner_user=''。multiplier 显式传 1.0——音频车道此前即按
 		// 隐式 1.0 计费（chargeTokens → chargeTokensWithMultiplier(1.0)），

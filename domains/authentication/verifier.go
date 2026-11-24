@@ -81,21 +81,24 @@ var tierDefaults = map[string][2]int{
 }
 
 type KeyInfo struct {
-	ID                   int      `json:"id"`
-	TenantID             string   `json:"tenant_id"`
-	ApplicationID        int      `json:"application_id"`
-	ApplicationCode      string   `json:"application_code"`
-	KeyPrefix            string   `json:"key_prefix"`
-	DefaultClientProfile *string  `json:"default_client_profile"`
-	OwnerUser            *string  `json:"owner_user"`
-	RateLimitRPM         *int     `json:"rate_limit_rpm"`
-	RateLimitConcurrent  *int     `json:"rate_limit_concurrent"`
-	RateLimitTPM         *int     `json:"rate_limit_tpm"`
-	KeyTier              string   `json:"key_tier"`
-	BudgetUSD            *float64 `json:"budget_usd"`
-	Status               string   `json:"status"`
-	IsInternal           bool     `json:"is_internal"`
-	KeyAlias             *string  `json:"key_alias"`
+	ID                   int     `json:"id"`
+	TenantID             string  `json:"tenant_id"`
+	ApplicationID        int     `json:"application_id"`
+	ApplicationCode      string  `json:"application_code"`
+	KeyPrefix            string  `json:"key_prefix"`
+	DefaultClientProfile *string `json:"default_client_profile"`
+	OwnerUser            *string `json:"owner_user"`
+	RateLimitRPM         *int    `json:"rate_limit_rpm"`
+	RateLimitConcurrent  *int    `json:"rate_limit_concurrent"`
+	RateLimitTPM         *int    `json:"rate_limit_tpm"`
+	KeyTier              string  `json:"key_tier"`
+	// IsSystem is read from api_keys.is_system and is not inferred from the
+	// owner label or key tier. It gates trusted platform-only behavior.
+	IsSystem   bool     `json:"is_system"`
+	BudgetUSD  *float64 `json:"budget_usd"`
+	Status     string   `json:"status"`
+	IsInternal bool     `json:"is_internal"`
+	KeyAlias   *string  `json:"key_alias"`
 
 	// 2026-07-15: 客户/组织归属。来源 applications.customer_id（迁移 407 新增），
 	// 用于 request_context_attrs.customer_id 的派生。无映射时为 nil。
@@ -519,7 +522,8 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			COALESCE(ak.status, 'active') AS status,
 			ak.key_alias,
 			app.customer_id,
-			ak.expires_at
+			ak.expires_at,
+			COALESCE(ak.is_system, FALSE)
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -543,6 +547,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.KeyAlias,
 		&info.CustomerID,
 		&info.ExpiresAt,
+		&info.IsSystem,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -621,7 +626,8 @@ func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error)
 			ak.budget_usd::float8,
 			COALESCE(ak.status, 'active') AS status,
 			ak.key_alias,
-			app.customer_id
+			app.customer_id,
+			COALESCE(ak.is_system, FALSE)
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.id = $1
@@ -644,6 +650,7 @@ func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error)
 		&info.Status,
 		&info.KeyAlias,
 		&info.CustomerID,
+		&info.IsSystem,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {

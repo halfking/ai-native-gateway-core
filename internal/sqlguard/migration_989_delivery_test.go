@@ -28,7 +28,7 @@ import (
 const (
 	mig989UpFile   = "989_migration_ledger_session_analytics_981_repair.sql"
 	mig989DownFile = "989_migration_ledger_session_analytics_981_repair.down.sql"
-	mig989TSVIndex = "395"
+	mig989TSVIndex = "391"
 )
 
 // mig989Guards 是 989 的守卫判据要点的**全部**集合（回填行的 WHERE 侧）。

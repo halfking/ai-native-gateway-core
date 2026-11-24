@@ -34,9 +34,12 @@ const (
 )
 
 const (
-	StatusPending = "pending"
-	StatusSuccess = "success"
-	StatusFailure = "failure"
+	StatusPending     = "pending"
+	StatusSuccess     = "success"
+	StatusFailure     = "failure"
+	StatusRateLimited = "rate_limited"
+	StatusCancelled   = "cancelled"
+	StatusUnknown     = "unknown"
 )
 
 type requestLoggerDB interface {
@@ -127,6 +130,15 @@ type InitialRequest struct {
 	SessionID   string
 	ClientModel string
 	Provisional bool
+	ReceivedAt  time.Time
+	Rejection   *AdmissionRejection `json:",omitempty"`
+}
+
+// AdmissionRejection records a terminal result at a gateway admission gate.
+type AdmissionRejection struct {
+	Status      string
+	Reason      string
+	CompletedAt time.Time
 }
 
 type LogUpdate struct {
@@ -144,6 +156,7 @@ type LogUpdate struct {
 	UpstreamResponseAt   time.Time
 	UpstreamProviderID   *int64
 	UpstreamCredentialID *int64
+	RequireInitial       bool
 }
 
 type UpdateBuilder struct {
@@ -218,26 +231,36 @@ func (rl *RequestLogger) anomalyRecorderSnapshot() DataAnomalyRecorder {
 }
 
 func (rl *RequestLogger) upsertInitial(ctx context.Context, req *InitialRequest) error {
+	status, stage := StatusPending, StageReceived
+	var reason *string
+	var completedAt *time.Time
+	if rejection := req.Rejection; rejection != nil {
+		status, stage = rejection.Status, StageResponseFail
+		reason, completedAt = &rejection.Reason, &rejection.CompletedAt
+	}
 	_, err := rl.db.Exec(ctx, `
-		INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at, error, completed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $8, $9, $10)
 		ON CONFLICT (request_id) DO UPDATE SET
 			tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, 'default'), request_wal_hot.tenant_id),
+			created_at = LEAST(request_wal_hot.created_at, EXCLUDED.created_at),
 			gw_session_id = CASE
 				WHEN $7 THEN request_wal_hot.gw_session_id
 				WHEN NULLIF($3, '') IS NULL THEN request_wal_hot.gw_session_id
 				ELSE $3
 			END,
 			status = CASE
-				WHEN request_wal_hot.status IN ('success', 'failure') THEN request_wal_hot.status
+				WHEN request_wal_hot.status <> 'pending' THEN request_wal_hot.status
 				ELSE COALESCE(NULLIF(EXCLUDED.status, ''), request_wal_hot.status)
 			END,
 			stage = CASE
-				WHEN request_wal_hot.status IN ('success', 'failure') THEN request_wal_hot.stage
+				WHEN request_wal_hot.status <> 'pending' THEN request_wal_hot.stage
 				ELSE COALESCE(EXCLUDED.stage, request_wal_hot.stage)
 			END,
+			error = CASE WHEN request_wal_hot.status = 'pending' THEN COALESCE(EXCLUDED.error, request_wal_hot.error) ELSE request_wal_hot.error END,
+			completed_at = CASE WHEN request_wal_hot.status = 'pending' THEN COALESCE(EXCLUDED.completed_at, request_wal_hot.completed_at) ELSE request_wal_hot.completed_at END,
 			client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
-	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel, req.Provisional)
+	`, req.RequestID, req.TenantID, req.SessionID, status, stage, req.ClientModel, req.Provisional, req.ReceivedAt, reason, completedAt)
 	return err
 }
 
@@ -281,8 +304,14 @@ func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradatio
 	if strings.HasSuffix(record.RecordKey, ":initial") {
 		var req InitialRequest
 		if err = json.Unmarshal(record.Payload, &req); err == nil {
+			// Backups written before ReceivedAt used the file record time.
+			if req.ReceivedAt.IsZero() {
+				req.ReceivedAt = record.Timestamp
+			}
 			if rl.db == nil {
 				err = fmt.Errorf("request logger database not configured")
+			} else if req.ReceivedAt.IsZero() {
+				err = fmt.Errorf("request WAL backup has no receipt timestamp")
 			} else {
 				err = rl.upsertInitial(ctx, &req)
 			}
@@ -327,6 +356,11 @@ func (rl *RequestLogger) Enabled() bool {
 func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest) error {
 	if !rl.Enabled() {
 		return nil
+	}
+	if req.ReceivedAt.IsZero() {
+		initial := *req
+		initial.ReceivedAt = time.Now().UTC()
+		req = &initial
 	}
 	rl.lifecycleMu.RLock()
 	defer rl.lifecycleMu.RUnlock()
@@ -400,7 +434,8 @@ func (rl *RequestLogger) Update(update *LogUpdate) {
 		}
 		return
 	}
-	if update.Status == StatusSuccess || update.Status == StatusFailure {
+	switch update.Status {
+	case StatusSuccess, StatusFailure, StatusRateLimited, StatusCancelled, StatusUnknown:
 		if err := rl.UpdateSync(context.Background(), update); err != nil {
 			slog.Warn("request_logger: terminal update failed", "request_id", update.RequestID, "status", update.Status, "error", err)
 		}
@@ -664,7 +699,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 
 	// Terminal-state guard (2026-06-22 audit P0-2):
 	//
-	// Once a WAL row reaches a terminal status ('success' or 'failure'),
+	// Once a WAL row reaches a terminal status,
 	// a later update must NOT regress it. This was a real bug: the handler
 	// writes StageCompleted/StatusSuccess via async Update(), then the
 	// deferred client-disconnect safety net fires UpdateSync() with
@@ -688,7 +723,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	// longer editable (columnar storage / archived partitions do not
 	// support UPDATE). Late updates after migration are silently
 	// dropped, which is the intended behavior.
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE request_wal_hot SET
 			status = COALESCE(NULLIF($2, ''), status),
 			stage = COALESCE($3, stage),
@@ -722,6 +757,15 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 
 	if err != nil {
 		return err
+	}
+	if update.RequireInitial && tag.RowsAffected() == 0 {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM request_wal_hot WHERE request_id = $1)`, update.RequestID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("request WAL initial record not available for %s", update.RequestID)
+		}
 	}
 
 	if len(update.OutboundBody) > 0 {

@@ -3,7 +3,6 @@ package credit
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -175,7 +174,7 @@ func (p *CreditBucketProvider) queryConsumedCredits(ctx context.Context, tenantI
 		 WHERE tenant_id = $1
 		   AND bucket_start >= now() - ($2::int * INTERVAL '1 day')
 	`, tenantID, days).Scan(&credits)
-	
+
 	if err != nil {
 		return 0, fmt.Errorf("query consumed credits: %w", err)
 	}
@@ -196,64 +195,10 @@ func (p *CreditBucketProvider) backfillCreditBuckets(ctx context.Context, query 
 		lookbackDays = 90
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// R189: 水位短路优化
-	// 检查桶表是否已覆盖 lookback 窗口
-	var oldest, newest *time.Time
-	wmErr := p.pool.QueryRow(ctx, `
-		SELECT MIN(bucket_start), MAX(bucket_start)
-		  FROM maas_credit_consumption_buckets
-	`).Scan(&oldest, &newest)
-	
-	if wmErr == nil && bucketsCoverLookback(time.Now(), oldest, newest, lookbackDays) {
-		slog.Info("credit: backfill skipped — bucket table already covers lookback window",
-			"lookback_days", lookbackDays, "oldest_bucket", oldest, "newest_bucket", newest)
-		return &core.BucketResult{
-			RowsAffected: 0,
-			Metadata: map[string]interface{}{
-				"skipped":       true,
-				"reason":        "already_covered",
-				"oldest_bucket": oldest,
-				"newest_bucket": newest,
-			},
-		}, nil
-	}
-
-	// 执行回填
-	logsTable, alias := requestLogsSource(lookbackDays)
-	res, err := p.pool.Exec(ctx, `
-		INSERT INTO maas_credit_consumption_buckets
-			(tenant_id, bucket_start, credits, request_count, updated_at)
-		SELECT
-			`+alias+`.tenant_id,
-			date_trunc('hour', `+alias+`.ts) AS bucket_start,
-			COALESCE(SUM(`+requestLogCreditsSQL(alias, false)+`), 0)::bigint AS credits,
-			COUNT(*)::int AS request_count,
-			now() AS updated_at
-		FROM `+logsTable+`
-		WHERE `+alias+`.ts >= now() - ($1::int * INTERVAL '1 day')
-		  AND `+alias+`.tenant_id NOT IN ('', 'default')
-		  AND (`+alias+`.credits_charged IS NOT NULL
-		    OR COALESCE(`+alias+`.prompt_tokens, 0)
-		     + COALESCE(`+alias+`.completion_tokens, 0)
-		     + COALESCE(`+alias+`.cache_read_tokens, 0)
-		     + COALESCE(`+alias+`.cache_write_tokens, 0) > 0)
-		GROUP BY `+alias+`.tenant_id, date_trunc('hour', `+alias+`.ts)
-		ON CONFLICT (tenant_id, bucket_start) DO UPDATE
-			SET credits       = EXCLUDED.credits,
-			    request_count = EXCLUDED.request_count,
-			    updated_at    = EXCLUDED.updated_at
-	`, lookbackDays)
-
+	rows, err := BackfillPostedConsumption(ctx, p.pool, lookbackDays)
 	if err != nil {
-		slog.Warn("credit: backfill failed", "lookback_days", lookbackDays, "error", err)
-		return nil, fmt.Errorf("backfill credit buckets: %w", err)
+		return nil, err
 	}
-
-	rows := res.RowsAffected()
-	slog.Info("credit: backfill completed", "lookback_days", lookbackDays, "rows_affected", rows)
 
 	return &core.BucketResult{
 		RowsAffected: rows,
@@ -307,44 +252,4 @@ func (p *CreditBucketProvider) queryWindowCredits(ctx context.Context, query cor
 			"credits":     credits,
 		},
 	}, nil
-}
-
-// Helper functions
-
-// bucketsCoverLookback 检查桶表水位是否已覆盖 lookback 窗口
-func bucketsCoverLookback(now time.Time, oldest, newest *time.Time, lookbackDays int) bool {
-	if oldest == nil || newest == nil {
-		return false
-	}
-	windowStart := now.Add(-time.Duration(lookbackDays) * 24 * time.Hour)
-	headOK := !oldest.After(windowStart.Add(24 * time.Hour))
-	tailOK := !newest.Before(now.Add(-2 * time.Hour))
-	return headOK && tailOK
-}
-
-// requestLogsSource 返回请求日志读源和别名。
-//
-// 2026-11-11（48h 审计）：旧的两个分支（`_request_logs` 短窗 /
-// `_request_logs_partitions` 长窗）读的都是 **v1 族基表**——迁移 890 把 v1
-// 族整体退役后，两张表在所有环境上都不存在（211 实测 to_regclass 双双为空）
-// ⇒ backfill 一旦执行必 42P01，且与 maas 包同名切换层当年的缺陷同形
-//（maas 已在 890 轮把两分支合并为恒走 canonical 视图）。本层是 Phase 1
-// 脚手架、尚无生产消费方 ⇒ 现在收敛，接线前不再留地雷。
-//
-// canonical 视图 request_logs_with_current_month 是会话族两臂体（由
-// ensureRequestLogsCurrentMonthView 在启动时安装），列面覆盖
-// tenant_id / ts / credits_charged / prompt / completion / cache_read /
-// cache_write，backfill 用到的列全在。
-func requestLogsSource(_ int) (table, alias string) {
-	return "request_logs_with_current_month", "rl"
-}
-
-// requestLogCreditsSQL 返回计算信用的 SQL 表达式
-func requestLogCreditsSQL(alias string, _ bool) string {
-	return fmt.Sprintf(`COALESCE(%s.credits_charged, 
-		(COALESCE(%s.prompt_tokens, 0) 
-		 + COALESCE(%s.completion_tokens, 0)
-		 + COALESCE(%s.cache_read_tokens, 0)
-		 + COALESCE(%s.cache_write_tokens, 0)))`,
-		alias, alias, alias, alias, alias)
 }

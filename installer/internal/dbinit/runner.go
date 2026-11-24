@@ -2051,10 +2051,6 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     会把 996/997/998/999 的下标整体后移 4 位 ⇒ ★ 而逐迁移投递测试
 			//     （migration_996/997_998_999_delivery_test.go）**硬编码了这些下标**
 			//     ⇒ ⇒ ★ 追加在末尾 ⇒ ★ 既有下标一个都不动 ⇒ ★ 既有门不被无关位移打红。
-			"918_teams_table.sql",
-			"925_user_teams.sql",
-			"973_api_keys_team_id.sql",
-			"986_team_budgets.sql",
 			// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 ——
 			//   981 的文件**缺 schema_migrations 自登记行** ⇒ 211 的记账链在
 			//   980 与 990 之间**断一格**（实测：211 有 '980' 与 '990'、独缺 '981'，
@@ -2082,6 +2078,66 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 依赖 994 的四个物化视图（它重建它们）⇒ 必须排在 994 之后。
 			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
 			"984_session_universe_cost_aware_probe_scope.sql",
+			// ★ 985-989（2026-11-23 至 11-24 请求与会话对账）：逐次供应商调用记录、
+			//   请求关联、媒体用量、账单存证、用量汇总、供应商合同费率。
+			"985_request_reconciliation_links.sql",
+			"986_provider_attempt_media_usage.sql",
+			"987_provider_invoice_evidence.sql",
+			"988_provider_invoice_usage_buckets.sql",
+			// ★★ 供应商合同费率件 —— **原名 989_supplier_contract_rates.sql**
+			//   ⇒ ★ 2026-11-24 还号轮（12h 修订审计轮第三轮）：它与
+			//     989_migration_ledger_session_analytics_981_repair.sql **同占 989**
+			//     ⇒ ① 迁移号唯一性门红（Go 门 + 壳层门「≥500 号段禁止任何撞号」）
+			//     ⇒ ② **本安装器以文件名前缀为版本键**（migrationVersionOf：
+			//        取 "_" 前的数字）⇒ 台账里有 '989' 就跳过 ⇒ **增量安装会跳过
+			//        本件** ⇒ public.supplier_contract_rates 建不出来（审计档 L2）。
+			//   ★ 还号到 **925**（真空号：磁盘无 / git 历史无 / 211 台账无）：
+			//     ① **零字节变更** —— sha256 仍是 b32e8fb9…，与 211 部署通道账本
+			//        gateway_db_revision_sequences 记的 content_sha256 逐字一致
+			//        ⇒ 不触发 L23 内容指纹分叉（改字节才有分叉风险）；
+			//     ② **保留两道唯一性门的有效性** —— 若改用字母后缀 989b，
+			//        Go 门（`^[0-9]+_`）与壳层门（家族后缀豁免）会**同时对字母
+			//        后缀失明** ⇒ 把「响亮的撞号」变成「静默的撞号」；
+			//     ③ 文件自身的自登记仍是 '988'（**未改字节**）⇒ 211 台账里那行
+			//        '988' 依然属本件 ⇒ 台账语义不变、**零生产写**。
+			//   ★ 清单位置不动（仍排在 988 之后）：tsv 首列是序号，中间插行会把
+			//     后面所有序号整体 +1（仓内纪律：tsv 只追加）。
+			"925_supplier_contract_rates.sql",
+			// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+			//   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
+			//     撞号（迁移号唯一性门红），且**任何通道都没登记它**
+			//     ⇒ raw_model_name 列在生产上不存在 ⇒ writer.go 写这一列必然 42703
+			//     ⇒ 整条 request_metrics 管线静默丢数。
+			//   ★ 改号过程：994 → 1000（四位数对按文件名解析的门隐形，被当场拦下）
+			//     → 973（★ **逆序依赖**：973 < 983，而两条自动枚举通道
+			//     （offline_apply.go 数字序 / init-local-db.sh 字典序）只按号排序、
+			//     不读 Dependencies 头 ⇒ 本迁移会排在建表件之前 ⇒ ALTER 落空）
+			//     → **983b**（★ 主号+字母后缀，仓内既有合法记法 15 条）：
+			//     versionPrefix 解析成 983 ⇒ 与 983_request_metrics.sql 同号 ⇒
+			//     排序按文件名 ⇒ '983_' < '983b_' ⇒ **排在 983 建表件之后** ✓。
+			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
+			"983b_add_raw_model_name.sql",
+			// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
+			//   ★ 原先只建了 canonical + embeddata 双副本、**没登记进任何通道**
+			//     ⇒ 团队族四表**从来没被任何通道建过**
+			//     ⇒ maas/team_budget_gate 读不到 teams/user_teams/team_budgets。
+			//   ★ 四条自带幂等守卫（CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS）
+			//     与 ON CONFLICT 自登记 ⇒ 补接线不产生重复应用风险。
+			//   ★ 相对顺序不可打乱：057 给 api_keys 加 team_id 并外键引用 teams(id)
+			//     ⇒ 必须排在 055 之后。
+			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
+			"055_teams_table.sql",
+			"056_user_teams.sql",
+			"973_api_keys_team_id.sql",
+			"058_team_budgets.sql",
+			// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+			//   ★ processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，
+			//     **每批跑一次** ⇒ 而该索引**从来不存在**（迁移 983 的 11 个索引里没有它）
+			//     ⇒ 2026-11-24 生产只读 EXPLAIN 实测：全表并行扫描 + top-N 排序
+			//     ⇒ 340,904 行时 26,572 buffers / **117ms 每批**。
+			//   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
+			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
+			"983c_add_occurred_cursor_index.sql",
 		},
 	}
 }

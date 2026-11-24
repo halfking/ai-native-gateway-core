@@ -598,7 +598,7 @@ func TestBuildFailureEntry_AppliesOriginForDBSystemKeyWorker(t *testing.T) {
 	}
 
 	owner := "credential-selfcheck-worker"
-	ki := &authentication.KeyInfo{OwnerUser: &owner}
+	ki := &authentication.KeyInfo{OwnerUser: &owner, IsSystem: true}
 
 	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
 	c := ch.NewRequestLogContext(degraded, "origin-regression-1", time.Now())
@@ -640,7 +640,9 @@ func TestBuildFailureEntry_BusinessKeyStaysBusiness(t *testing.T) {
 		degraded = &deg
 	})).ServeHTTP(httptest.NewRecorder(), r)
 
-	owner := "some-saas-customer"
+	// Tenant admins may edit owner_user, so even an allowlisted label cannot
+	// classify an ordinary key without the verifier's is_system provenance.
+	owner := "credential-selfcheck-worker"
 	ki := &authentication.KeyInfo{OwnerUser: &owner}
 
 	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)

@@ -76,7 +76,7 @@ func (w *NodeProbeWorker) confirmSiblingEndpoints(
 	ctx context.Context,
 	primary nodeProbeRoundResult,
 	plain, protocol string,
-	providerID int,
+	credID, providerID int,
 	primaryBaseURL, bodyModel string,
 	shape probeShape,
 ) nodeProbeRoundResult {
@@ -93,11 +93,12 @@ func (w *NodeProbeWorker) confirmSiblingEndpoints(
 		return primary
 	}
 	primaryNorm := strings.TrimRight(strings.TrimSpace(primaryBaseURL), "/")
+	ctx = withPlatformProbeProvider(ctx, providerID)
 	for _, u := range urls {
 		if u == primaryNorm {
 			continue
 		}
-		sib := w.probeDirectBaseURL(ctx, plain, protocol, u, bodyModel, shape)
+		sib := w.probeDirectBaseURL(ctx, plain, protocol, u, credID, bodyModel, shape)
 		if sib.ok || sib.observationOnly {
 			slog.Info("node_probe_worker: sibling endpoint ok",
 				"provider_id", providerID, "base_url", u, "model", bodyModel)
@@ -120,7 +121,9 @@ func (w *NodeProbeWorker) confirmSiblingEndpoints(
 // (no resolve / decrypt). Used for sibling pep endpoints.
 func (w *NodeProbeWorker) probeDirectBaseURL(
 	ctx context.Context,
-	plain, protocol, baseURL, bodyModel string,
+	plain, protocol, baseURL string,
+	credID int,
+	bodyModel string,
 	shape probeShape,
 ) (r nodeProbeRoundResult) {
 	r = nodeProbeRoundResult{errCode: "none"}
@@ -143,7 +146,7 @@ func (w *NodeProbeWorker) probeDirectBaseURL(
 	req.Header.Set("X-LLM-Origin-Stage", "node_probe")
 	req.Header.Set("X-LLM-Origin-Actor", "node-probe-worker-sibling")
 	start := time.Now()
-	resp, err := w.probeClient.Do(req)
+	resp, err := platformProbeDo(ctx, w.probeClient, req, credID, bodyModel, "node_probe_sibling_endpoint")
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		code, timedOut := classifyProbeNetworkError(err)

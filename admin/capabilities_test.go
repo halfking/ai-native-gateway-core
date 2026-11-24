@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ★ 2026-10-21（R72f）：能力位端点的判据。
@@ -23,6 +26,65 @@ import (
 //      看到**错误的**入口集。
 
 const capabilitiesTestSecret = "capabilities-test-secret"
+
+func TestDailyReconciliationDefaultCapability(t *testing.T) {
+	const flag = "LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED"
+	handler := capabilitiesTestHandler(false)
+	t.Setenv(flag, "true")
+	if handler.featureCapabilities().DailyReconciliationDefault != nil {
+		t.Fatal("daily read preference requires a database connection")
+	}
+	handler.db = fillRevocationCache(t, nil)
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	t.Cleanup(func() { settings.SystemTimezoneLocationForTest("") })
+	mux := http.NewServeMux()
+	handler.RegisterCapabilityRoutes(mux)
+	token, _, err := SignToken(7, "tenant-a", "sa", "super_admin", capabilitiesTestSecret, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	read := func() FeatureCapabilities {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req.Clone(req.Context()))
+		var caps FeatureCapabilities
+		err := json.Unmarshal(rec.Body.Bytes(), &caps)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || err != nil {
+			t.Fatalf("capabilities status=%d err=%v", rec.Code, err)
+		}
+		return caps
+	}
+	if got := read().DailyReconciliationDefault; got == nil || got.Day == "" || got.Timezone != "Asia/Shanghai" {
+		t.Fatalf("daily read preference missing or invalid: %+v", got)
+	}
+	t.Setenv(flag, "false")
+	if got := read().DailyReconciliationDefault; got != nil {
+		t.Fatalf("rollback still advertises optional daily read preference: %+v", got)
+	}
+}
+
+func TestPreviousReconciliationDayUsesLocalCalendar(t *testing.T) {
+	for _, test := range []struct{ now, zone, day string }{
+		{"2026-11-22T17:00:00Z", "Asia/Shanghai", "2026-11-22"},
+		{"2026-11-22T01:00:00Z", "America/Los_Angeles", "2026-11-20"},
+		{"2011-12-30T10:01:00Z", "Pacific/Apia", "2011-12-29"},
+	} {
+		zone, err := time.LoadLocation(test.zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now, err := time.Parse(time.RFC3339, test.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := previousReconciliationDay(now, zone)
+		if got == nil || got.Day != test.day || got.Timezone != test.zone {
+			t.Errorf("%s at %s = %+v, want %s", test.zone, test.now, got, test.day)
+		}
+	}
+}
 
 // capabilitiesTestHandler 造一个只带「对账 handler 装没装」的 Handler。
 func capabilitiesTestHandler(reconciliation bool) *Handler {

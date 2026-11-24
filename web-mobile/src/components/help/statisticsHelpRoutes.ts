@@ -1,5 +1,5 @@
 export interface StatisticsHelpRoute {
-  contentId: string
+  contentId?: string
   contextKey: string
 }
 
@@ -8,11 +8,11 @@ const routes: Array<{ match: (path: string) => boolean; value: StatisticsHelpRou
   { match: p => p === '/usage-enhanced', value: { contentId: 'usage-enhanced', contextKey: 'usageEnhanced' } },
   { match: p => p === '/usage-trend-series', value: { contentId: 'usage-trends', contextKey: 'usageTrendSeries' } },
   { match: p => p === '/report-rollup', value: { contentId: 'reconciliation', contextKey: 'reportRollup' } },
-  { match: p => p === '/reconciliation', value: { contentId: 'reconciliation', contextKey: 'reconciliation' } },
-  { match: p => p === '/cache-state', value: { contentId: 'usage-enhanced', contextKey: 'cacheState' } },
+  { match: p => p === '/reconciliation', value: { contextKey: 'reconciliation' } },
+  { match: p => p === '/cache-state', value: { contextKey: 'cacheState' } },
   { match: p => p === '/logs', value: { contentId: 'request-logs', contextKey: 'logs' } },
   { match: p => p === '/session-audit', value: { contentId: 'session-detail', contextKey: 'sessionAudit' } },
-  { match: p => p === '/sessions-online', value: { contentId: 'session-analytics-overview', contextKey: 'sessionsOnline' } },
+  { match: p => p === '/sessions-online', value: { contextKey: 'sessionsOnline' } },
   { match: p => p === '/session-analytics', value: { contentId: 'session-analytics-overview', contextKey: 'sessionAnalytics' } },
   { match: p => p === '/request-detail' || p.startsWith('/request-detail/'), value: { contentId: 'request-detail', contextKey: 'requestDetail' } },
 ]

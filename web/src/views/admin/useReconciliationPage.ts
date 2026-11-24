@@ -1,5 +1,5 @@
 // useReconciliationPage.ts — query, filters, and derived rows for the reconciliation page.
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import { surfaceError } from '../../i18n/errorSurface'
 import { useRaceGuard } from '../../composables/useRaceGuard'
 import { useI18n } from 'vue-i18n'
@@ -39,7 +39,9 @@ function cleanFilters(input: ReportFilter): ReportFilter {
   return next
 }
 
-export function useReconciliationPage() {
+export const snapshotQueryKeys = ['view', 'provider_id', 'model', 'tenant_id', 'person'] as const
+
+export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   const { t } = useI18n()
   const route = useRoute()
   const router = useRouter()
@@ -115,6 +117,7 @@ export function useReconciliationPage() {
   ])
 
   async function refresh() {
+    if (!active.value) return
     const gen = reportRace.begin()
     loading.value = true
     errorText.value = ''
@@ -138,6 +141,7 @@ export function useReconciliationPage() {
   }
 
   async function refreshDimensions() {
+    if (!active.value) return
     // 与主查询共用 reload() 并发触发，代际号须独立计数（共号会互相作废）；
     // 快速切 range/view 时旧 dims 响应后到不得覆盖。
     const gen = dimsRace.begin()
@@ -240,8 +244,7 @@ export function useReconciliationPage() {
   }
 
   function sameQuery(query: Record<string, string>): boolean {
-    const keys = ['view', 'provider_id', 'model', 'tenant_id', 'person'] as const
-    return keys.every((key) => String(route.query[key] ?? '') === (query[key] ?? ''))
+    return snapshotQueryKeys.every((key) => String(route.query[key] ?? '') === (query[key] ?? ''))
   }
 
   function syncQuery() {
@@ -293,11 +296,20 @@ export function useReconciliationPage() {
     syncQuery()
   }, { deep: true, flush: 'sync' })
   watch(
-    () => [route.query.view, route.query.provider_id, route.query.model, route.query.tenant_id, route.query.person] as const,
+    () => snapshotQueryKeys.map(key => route.query[key]),
     () => applyRouteQuery(),
   )
 
   onMounted(reload)
+  watch(active, (visible) => {
+    if (visible) reload()
+    else {
+      reportRace.begin()
+      dimsRace.begin()
+      loading.value = false
+      dimsLoading.value = false
+    }
+  })
 
   return {
     t, loading, dimsLoading, exporting, rerunning, errorText, metric, reasonFilter, daysOpen,

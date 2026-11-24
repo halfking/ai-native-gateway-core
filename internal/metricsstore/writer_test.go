@@ -3,8 +3,10 @@ package metricsstore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,50 +63,188 @@ func TestRequestMetric_Struct(t *testing.T) {
 // ★ 缺陷回归：批量写入原先在循环里调 w.UpsertRequestMetric（走 w.db.ExecContext）
 // ⇒ 完全绕过事务 ⇒ 批内失败时前面成功的行已提交，库里留下半批数据。
 // 这里用 sqlmock 断言：整批走 Begin → Exec → Commit，且**没有**额外的顶层 Exec。
+//
+// ★ 2026-11-24 吞吐优化轮：批内从「N 次单行 upsert」改为「**1 条多行 INSERT**」
+// ⇒ 这条用例现在同时钉住**次数性质**：2 行 ⇒ **恰好 1 次** Exec
+// （不是 2 次）⇒ 多出来的调用无处可去 ⇒ 实现退回逐行写法时门直接红。
 func TestBatchUpsertRequestMetrics_RunsInsideOneTransaction(t *testing.T) {
 	db, mock, closeDB := newMockDB(t)
 	defer closeDB()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(upsertRequestMetricSQL).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(upsertRequestMetricSQL).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-
-	w := NewWriter(db)
 	metrics := []*RequestMetric{
 		sampleMetric("batch-1", "2026-11-20"),
 		sampleMetric("batch-2", "2026-11-20"),
 	}
 
+	expectedSQL, expectedArgs, err := buildBatchUpsert(metrics)
+	if err != nil {
+		t.Fatalf("buildBatchUpsert: %v", err)
+	}
+
+	mock.ExpectBegin()
+	// ★ 只 expect **一次** Exec：两行合成一条多行 INSERT。
+	//   若实现退回「每行一次 upsert」，第二次 Exec 就是「意外调用」⇒ 用例转红。
+	mock.ExpectExec(expectedSQL).
+		WithArgs(toDriverValues(expectedArgs)...).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	w := NewWriter(db)
 	if err := w.BatchUpsertRequestMetrics(context.Background(), metrics); err != nil {
 		t.Fatalf("BatchUpsertRequestMetrics: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("期望整批在一个事务里完成: %v", err)
+		t.Fatalf("期望整批在一个事务里、且只发一次 INSERT: %v", err)
 	}
 }
 
-// ★ 缺陷回归：批内第二条失败 ⇒ 第一条必须一起回滚。
+// ★ 2026-11-24 吞吐优化轮：多行 INSERT 的**参数编号**必须逐行平移，
+// 且**类型转换必须原样保留**（$42::jsonb / $4::date）。
+//
+// ★ 为什么单独钉：丢一个 ::jsonb ⇒ attributes 写入报「column is of type jsonb
+//
+//	but expression is of type text」⇒ 整批回滚 ⇒ 统计表直接停更。
+func TestBuildBatchUpsert_ShiftsPlaceholdersAndKeepsCasts(t *testing.T) {
+	metrics := []*RequestMetric{
+		sampleMetric("row-a", "2026-11-20"),
+		sampleMetric("row-b", "2026-11-20"),
+		sampleMetric("row-c", "2026-11-20"),
+	}
+
+	query, args, err := buildBatchUpsert(metrics)
+	if err != nil {
+		t.Fatalf("buildBatchUpsert: %v", err)
+	}
+
+	// 3 行 × 43 参数 = 129 个参数
+	if len(args) != 129 {
+		t.Fatalf("参数个数 = %d，期望 129（3 行 × 43）", len(args))
+	}
+
+	// 第 1 行用 $1..$43；第 2 行用 $44..$86；第 3 行用 $87..$129。
+	if !strings.Contains(query, "$1") {
+		t.Error("第 1 行应使用 $1 起始的占位符")
+	}
+	if !strings.Contains(query, "$44") {
+		t.Error("第 2 行应从 $44 起（43 参数/行 ⇒ 平移 43）")
+	}
+	if !strings.Contains(query, "$87") {
+		t.Error("第 3 行应从 $87 起（平移 86）")
+	}
+
+	// ★ 类型转换必须随占位符一起平移。
+	if !strings.Contains(query, "$42::jsonb") {
+		t.Error("第 1 行的 attributes 必须仍是 $42::jsonb")
+	}
+	if !strings.Contains(query, "$85::jsonb") {
+		t.Error("第 2 行的 attributes 应平移为 $85::jsonb（42+43）")
+	}
+	if !strings.Contains(query, "$128::jsonb") {
+		t.Error("第 3 行的 attributes 应平移为 $128::jsonb（42+86）")
+	}
+	if !strings.Contains(query, "$4::date") {
+		t.Error("occurred_date 的 ::date 转换必须保留")
+	}
+	if !strings.Contains(query, "$47::date") {
+		t.Error("第 2 行的 occurred_date 应平移为 $47::date")
+	}
+
+	// ★ 占位符总数必须等于参数个数（多一个 ⇒ 编号错位 ⇒ 值进错列）。
+	if got := countPlaceholders(query); got != len(args) {
+		t.Errorf("SQL 里占位符个数 = %d，参数个数 = %d ⇒ 两者必须相等（错位会把值写进错误的列且不报错）", got, len(args))
+	}
+}
+
+// countPlaceholders 统计 SQL 里 $N 形式的占位符个数。
+func countPlaceholders(query string) int {
+	count := 0
+	for i := 0; i < len(query); i++ {
+		if query[i] != '$' {
+			continue
+		}
+		j := i + 1
+		for j < len(query) && query[j] >= '0' && query[j] <= '9' {
+			j++
+		}
+		if j > i+1 {
+			count++
+			i = j - 1
+		}
+	}
+	return count
+}
+
+// ★ 2026-11-24 吞吐优化轮：超大批次必须**分块**，
+// 因为 PostgreSQL 单条语句的绑定参数上限是 65535（43 参数/行 ⇒ 1524 行是硬顶）。
+//
+// ★ 为什么钉：不分块 ⇒ 大批次直接报「extended protocol limited to 65535 parameters」
+// ⇒ 整批回滚 ⇒ 统计表停更（而这恰恰发生在流量高峰、最需要它的时候）。
+func TestBuildBatchUpsert_ChunksLargeBatches(t *testing.T) {
+	// 造 maxBatchInsertRows+1 行 ⇒ 应分成 2 块。
+	metrics := make([]*RequestMetric, maxBatchInsertRows+1)
+	for i := range metrics {
+		metrics[i] = sampleMetric("chunk-"+strconv.Itoa(i), "2026-11-20")
+	}
+
+	db, mock, closeDB := newMockDB(t)
+	defer closeDB()
+
+	chunk1, args1, err := buildBatchUpsert(metrics[:maxBatchInsertRows])
+	if err != nil {
+		t.Fatalf("buildBatchUpsert(chunk1): %v", err)
+	}
+	chunk2, args2, err := buildBatchUpsert(metrics[maxBatchInsertRows:])
+	if err != nil {
+		t.Fatalf("buildBatchUpsert(chunk2): %v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(chunk1).WithArgs(toDriverValues(args1)...).WillReturnResult(sqlmock.NewResult(0, maxBatchInsertRows))
+	mock.ExpectExec(chunk2).WithArgs(toDriverValues(args2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewWriter(db)
+	if err := w.BatchUpsertRequestMetrics(context.Background(), metrics); err != nil {
+		t.Fatalf("BatchUpsertRequestMetrics: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("期望超大批次被分块写入: %v", err)
+	}
+
+	// 单块参数数不得超过 PG 的 65535 硬顶。
+	if len(args1) > 65535 {
+		t.Errorf("单块参数数 = %d，超过 PostgreSQL 的 65535 上限", len(args1))
+	}
+}
+
+// ★ 缺陷回归：批内失败 ⇒ 整批回滚。
+//
+// ★ 2026-11-24 吞吐优化轮：改成多行 INSERT 后，失败点从「第 2 条」变成
+//
+//	「这条 INSERT 语句本身」⇒ 仍必须整批回滚（不留半批数据）。
 func TestBatchUpsertRequestMetrics_RollsBackWholeBatch(t *testing.T) {
 	db, mock, closeDB := newMockDB(t)
 	defer closeDB()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(upsertRequestMetricSQL).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(upsertRequestMetricSQL).
-		WillReturnError(errors.New("probe: rejected batch-bad-1"))
-	mock.ExpectRollback()
-
-	w := NewWriter(db)
 	metrics := []*RequestMetric{
 		sampleMetric("batch-ok-1", "2026-11-20"),
 		sampleMetric("batch-bad-1", "2026-11-20"),
 	}
 
-	err := w.BatchUpsertRequestMetrics(context.Background(), metrics)
+	expectedSQL, expectedArgs, err := buildBatchUpsert(metrics)
+	if err != nil {
+		t.Fatalf("buildBatchUpsert: %v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(expectedSQL).
+		WithArgs(toDriverValues(expectedArgs)...).
+		WillReturnError(errors.New("probe: rejected batch-bad-1"))
+	mock.ExpectRollback()
+
+	w := NewWriter(db)
+
+	err = w.BatchUpsertRequestMetrics(context.Background(), metrics)
 	if err == nil {
 		t.Fatal("批内失败应返回错误")
 	}
@@ -346,4 +486,13 @@ func sampleMetric(requestID string, day string) *RequestMetric {
 		TrafficClass:  "business",
 		Source:        "test",
 	}
+}
+
+// toDriverValues 把 []interface{} 转成 sqlmock 需要的 []driver.Value。
+func toDriverValues(args []interface{}) []driver.Value {
+	out := make([]driver.Value, len(args))
+	for i, a := range args {
+		out[i] = a
+	}
+	return out
 }

@@ -25,7 +25,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
@@ -139,6 +141,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			TenantID:    "default",
 			SessionID:   provisionalSessionID,
 			Provisional: true,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("request_logger: messages early CreateInitial failed", "request_id", requestID, "error", err)
 		}
@@ -160,7 +163,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 			}
 			if attemptClientModel == "" {
-				attemptClientModel = "<unknown>"
+				attemptClientModel = modelattr.UnknownPlaceholder
 			}
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
@@ -190,7 +193,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// inner function returns.
 		captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 		if attemptClientModel == "" {
-			attemptClientModel = "<unknown>"
+			attemptClientModel = modelattr.UnknownPlaceholder
 		}
 		writeAnthropicError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
 		return
@@ -237,6 +240,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			// block on request_context_attrs was persisted empty for this
 			// path. Same wiring order as the chat path.
 			logCtx.SetKey(ki)
+			h.chatHandler.enrichAuthenticatedRequestWAL(r.Context(), requestID, ki.TenantID, provisionalSessionID)
 			bindRequestJourney(r, ki.TenantID, attemptClientModel)
 			// SP-02: state machine — auth succeeded.
 			rt.Emit(state.EventAuthed)
@@ -248,7 +252,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			//	预算闸（闸只落在 chat 面）⇒ hard 模式可被整面绕过。
 			//	⇒ 与 chat 面共用同一个闸（domains/streaming/handler.go
 			//	enforceTenantMonthlyBudget）。
-			if !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
+			if !tenantBillingExempt(r.Context(), keyInfo) && !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 				attemptErrCode = errCode
 				attemptErrMsg = errMsg
 			}, func(w http.ResponseWriter, status int, reqID, errType, errMsg, errCode string) {
@@ -307,7 +311,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
 		}
 		if logCtx.ClientModel == "" {
-			logCtx.SetClientModel("<unknown>")
+			logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 		}
 	}
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
@@ -333,7 +337,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
 		}
 		if attemptClientModel == "" {
-			attemptClientModel = "<unknown>"
+			attemptClientModel = modelattr.UnknownPlaceholder
 		}
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body exceeds 100 MB limit")
 		return
@@ -348,6 +352,14 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
 		attemptErrCode = "prompt_too_large"
 		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
+		// ★ 2026-11-24（模型归属审计）：body 已在手上 ⇒ 摘出 model，
+		// 避免这一行在模型榜上不可归因。与 chat 面同款。
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes)
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = modelattr.UnknownPlaceholder
+		}
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request",
 			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()))
 		return
@@ -362,7 +374,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			attemptClientModel = extractModelFromBody(bodyBytes)
 		}
 		if attemptClientModel == "" {
-			attemptClientModel = "<unknown>"
+			attemptClientModel = modelattr.UnknownPlaceholder
 		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON in request body")
 		return
@@ -370,7 +382,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	if reqBody.Model == "" {
 		attemptErrCode = "missing_model"
 		attemptErrMsg = "model is required"
-		attemptClientModel = "<unknown>"
+		attemptClientModel = modelattr.UnknownPlaceholder
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
@@ -598,6 +610,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			SessionID:   sessionID,
 			ClientModel: clientModel,
 			Provisional: false,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("request_logger: messages session merge failed", "request_id", requestID, "error", err)
 		}
@@ -833,6 +846,8 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
+			PlatformOrigin:             platformOriginForKey(r.Context(), keyInfo),
+			AttemptBusinessKey:         reconciliationBusinessKey(keyInfo),
 			W:                          streamWriter,
 			R:                          r,
 			BodyBytes:                  upstreamBody,

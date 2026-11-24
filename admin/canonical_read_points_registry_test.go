@@ -2626,7 +2626,6 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"internal/collector/gateway_adapters.go": "collector 适配：① 延迟分位；② 模型计数；③ 30 秒计数；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"internal/quality/minute_aggregator.go":  "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"maas/usage.go":                          "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"internal/bucket/credit/provider.go":     "信用桶 backfill（INSERT..SELECT FROM request_logs_with_current_month，`ts >= now()-N 天` 谓词；Phase 1 脚手架无生产消费方，2026-11-11 从 v1 双臂收敛到 canonical 视图）⇒ 源由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 }
 
 // TestCanonicalViewCannotExpressPartitionPruning 是【行为判据】。

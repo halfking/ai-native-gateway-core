@@ -143,6 +143,7 @@ V2 调度、项目归属、网关准入、代理、阈值表、节点故障转�
 | 资源自愈监控 / 启动重试 / 身份限流器 | resource monitor、boot retry | 阈值与窗口 |
 | JEV 分类器（fail-open）/ 提示缓存 / 遥测兜底 | autoroute/classifier_jev.go | 激活值 1/true/on/enabled；凭据走 TYPESAFE_* |
 | 对象存储后端（S3/OSS/Cloudreve） | storage | 三套凭据，附件/备份外置 |
+| request_metrics 统计表填充器 | internal/metricsstore/processor.go | **容量三项可配**：`LLM_GATEWAY_METRICS_INTERVAL`（轮询间隔，默认 1m）、`LLM_GATEWAY_METRICS_BATCH_SIZE`（单批条数，默认 500）、`LLM_GATEWAY_METRICS_MAX_ROUNDS`（单轮最多连续追平几批，默认 20）。★ 原为硬编码「5 分钟 100 条」＝1,200 条/小时上限，而生产实测写入约 1,100 条/小时 ⇒ 余量仅 7%；现改为**按积压自适应追平**（每轮持续处理直到本批不满）。★ 非法值**回落默认并打日志**，不让网关起不来 |
 | 会话分析（SA）引擎 | settings/session_analytics_specs.go | 模型 alias 与聚类调度 |
 | Bleve 日志全文索引 | internal/logging/bleve_fanout.go | 默认关 |
 | 数据生命周期 cron | admin/data_lifecycle_cron_env.go | HOT_CRON_* 六项；默认 02:00 / 保留 8h / 批 500 / 重试 3 / 退避 30s |

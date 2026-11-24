@@ -1836,28 +1836,20 @@ var sessionAnalyticsFoundation981Down []byte
 //	★ 重编号原因（三条通道都没登记原件 ⇒ 永远不会被应用）见
 //	installer/internal/dbinit/runner.go 的 StartupFiles 注释。
 //
-//go:embed embeddata/startup/918_teams_table.sql
 var teamsTable918 []byte
 
-//go:embed embeddata/startup/918_teams_table.down.sql
 var teamsTable918Down []byte
 
-//go:embed embeddata/startup/925_user_teams.sql
 var userTeams925 []byte
 
-//go:embed embeddata/startup/925_user_teams.down.sql
 var userTeams925Down []byte
 
-//go:embed embeddata/startup/973_api_keys_team_id.sql
 var apiKeysTeamId973 []byte
 
-//go:embed embeddata/startup/973_api_keys_team_id.down.sql
 var apiKeysTeamId973Down []byte
 
-//go:embed embeddata/startup/986_team_budgets.sql
 var teamBudgets986 []byte
 
-//go:embed embeddata/startup/986_team_budgets.down.sql
 var teamBudgets986Down []byte
 
 // ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
@@ -1955,9 +1947,70 @@ var requestMetrics983 []byte
 //go:embed embeddata/startup/983_request_metrics.down.sql
 var requestMetrics983Down []byte
 
+// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+//
+//	原名 994_add_raw_model_name：与 994_session_analytics_owner_key_and_close_path
+//	撞号，且任何通道都没登记 ⇒ 该列在生产上不存在 ⇒ 写入必然 42703。
+//	★ 第二轮改号 994 → 1000（四位数对门隐形，被拦）→ 973（★ 逆序依赖：
+//	973 < 983 而两条自动枚举通道只按号排序 ⇒ 离线升级中止 / 建表但无列）
+//	★ ⇒ 最终取 **983b**（主号+字母后缀，仓内既有合法记法）：
+//	versionPrefix 解析成 983 ⇒ 同号按文件名 ⇒ 排在 983 建表件之后。
+//
+//go:embed embeddata/startup/983b_add_raw_model_name.sql
+var addRawModelName983b []byte
+
+//go:embed embeddata/startup/983b_add_raw_model_name.down.sql
+var addRawModelName983bDown []byte
+
+// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+//
+//	processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，
+//	★ 每批跑一次 ⇒ 而该索引从来不存在（迁移 983 的 11 个索引里没有它）
+//	⇒ 2026-11-24 生产只读 EXPLAIN 实测：全表并行扫描 + top-N 排序
+//	⇒ 340,904 行时 26,572 buffers / 117ms 每批。
+//
+//go:embed embeddata/startup/983c_add_occurred_cursor_index.sql
+var addOccurredCursorIndex983c []byte
+
+//go:embed embeddata/startup/983c_add_occurred_cursor_index.down.sql
+var addOccurredCursorIndex983cDown []byte
+
+// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
+//
+//	★ 这四条**只建了 canonical + embeddata 双副本**，却没登记进任何通道
+//	  （StartupFiles / embeddedSQLFiles / tsv 全缺）⇒ 新装库与升级库都拿不到
+//	  ⇒ 团队族四张表**从来没被任何通道建过** ⇒ maas/team_budget_gate 读不到表。
+//	★ 提交说明里写的「字节一致性：双副本」「交付渠道覆盖」与实际不符 ⇒ 本轮补齐接线。
+//
+//go:embed embeddata/startup/055_teams_table.sql
+var teamsTable055 []byte
+
+//go:embed embeddata/startup/055_teams_table.down.sql
+var teamsTable055Down []byte
+
+//go:embed embeddata/startup/056_user_teams.sql
+var userTeams056 []byte
+
+//go:embed embeddata/startup/056_user_teams.down.sql
+var userTeams056Down []byte
+
+//go:embed embeddata/startup/973_api_keys_team_id.sql
+var apiKeysTeamID973 []byte
+
+//go:embed embeddata/startup/973_api_keys_team_id.down.sql
+var apiKeysTeamID973Down []byte
+
+//go:embed embeddata/startup/058_team_budgets.sql
+var teamBudgets058 []byte
+
+//go:embed embeddata/startup/058_team_budgets.down.sql
+var teamBudgets058Down []byte
+
 // ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」
-//   —— 有真实计费的会话不再因 owner 名字命中探测正则而被剔（根因：
-//   (^deployment-gate) 正则误杀真实 agent 流量）。四个物化视图重建 + 15 索引重建。
+//
+//	—— 有真实计费的会话不再因 owner 名字命中探测正则而被剔（根因：
+//	(^deployment-gate) 正则误杀真实 agent 流量）。四个物化视图重建 + 15 索引重建。
+//
 //go:embed embeddata/startup/984_session_universe_cost_aware_probe_scope.sql
 var sessionUniverseCostAwareProbeScope984 []byte
 
@@ -1980,6 +2033,36 @@ var providerCallAttempts982 []byte
 
 //go:embed embeddata/startup/982_provider_call_attempts.down.sql
 var providerCallAttempts982Down []byte
+
+//go:embed embeddata/startup/987_provider_invoice_evidence.sql
+var providerInvoiceEvidence987 []byte
+
+//go:embed embeddata/startup/987_provider_invoice_evidence.down.sql
+var providerInvoiceEvidence987Down []byte
+
+//go:embed embeddata/startup/985_request_reconciliation_links.sql
+var requestReconciliationLinks985 []byte
+
+//go:embed embeddata/startup/985_request_reconciliation_links.down.sql
+var requestReconciliationLinks985Down []byte
+
+//go:embed embeddata/startup/986_provider_attempt_media_usage.sql
+var providerAttemptMediaUsage986 []byte
+
+//go:embed embeddata/startup/986_provider_attempt_media_usage.down.sql
+var providerAttemptMediaUsage986Down []byte
+
+//go:embed embeddata/startup/988_provider_invoice_usage_buckets.sql
+var providerInvoiceUsageBuckets988 []byte
+
+//go:embed embeddata/startup/988_provider_invoice_usage_buckets.down.sql
+var providerInvoiceUsageBuckets988Down []byte
+
+//go:embed embeddata/startup/925_supplier_contract_rates.sql
+var supplierContractRates925 []byte
+
+//go:embed embeddata/startup/925_supplier_contract_rates.down.sql
+var supplierContractRates925Down []byte
 
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
@@ -2624,14 +2707,6 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
 	// ★ 918/925/973/986（2026-11-23 团队功能底座轮，★ 原 055-058 ⇒ 曾用 982-985
 	// ⇒ 撞上游 982_provider_call_attempts 后避让）：teams 四件套。
-	"startup/918_teams_table.sql":           teamsTable918,
-	"startup/918_teams_table.down.sql":      teamsTable918Down,
-	"startup/925_user_teams.sql":            userTeams925,
-	"startup/925_user_teams.down.sql":       userTeams925Down,
-	"startup/973_api_keys_team_id.sql":      apiKeysTeamId973,
-	"startup/973_api_keys_team_id.down.sql": apiKeysTeamId973Down,
-	"startup/986_team_budgets.sql":          teamBudgets986,
-	"startup/986_team_budgets.down.sql":     teamBudgets986Down,
 	// ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
@@ -2656,6 +2731,24 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
 	"startup/983_request_metrics.sql":                         requestMetrics983,
 	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
+	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+	//   ★ 983 的补列件（主号+字母后缀）⇒ 必须排在 983 建表件之后。
+	"startup/983b_add_raw_model_name.sql":      addRawModelName983b,
+	"startup/983b_add_raw_model_name.down.sql": addRawModelName983bDown,
+	// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+	"startup/983c_add_occurred_cursor_index.sql":      addOccurredCursorIndex983c,
+	"startup/983c_add_occurred_cursor_index.down.sql": addOccurredCursorIndex983cDown,
+	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
+	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
+	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。
+	"startup/055_teams_table.sql":      teamsTable055,
+	"startup/055_teams_table.down.sql": teamsTable055Down,
+	"startup/056_user_teams.sql":       userTeams056,
+	"startup/056_user_teams.down.sql": userTeams056Down,
+	"startup/973_api_keys_team_id.sql":     apiKeysTeamID973,
+	"startup/973_api_keys_team_id.down.sql": apiKeysTeamID973Down,
+	"startup/058_team_budgets.sql":     teamBudgets058,
+	"startup/058_team_budgets.down.sql": teamBudgets058Down,
 	// ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」。
 	"startup/984_session_universe_cost_aware_probe_scope.sql":      sessionUniverseCostAwareProbeScope984,
 	"startup/984_session_universe_cost_aware_probe_scope.down.sql": sessionUniverseCostAwareProbeScope984Down,
@@ -2671,6 +2764,17 @@ var embeddedSQLFiles = map[string][]byte{
 	//   **不存在的文件** ⇒ ★★ **整个 installer 主包编译失败**（★ 上游重编号
 	//   那笔自己就漏了这两行 ⇒ ★ `origin/main` 上当场编译不过 ★★）。
 	// ★ ⇒ ★ 现只保留 983 的两行（★ 983 的 embed 声明见上）。
+
+	"startup/987_provider_invoice_evidence.sql":                          providerInvoiceEvidence987,
+	"startup/987_provider_invoice_evidence.down.sql":                     providerInvoiceEvidence987Down,
+	"startup/985_request_reconciliation_links.sql":                       requestReconciliationLinks985,
+	"startup/985_request_reconciliation_links.down.sql":                  requestReconciliationLinks985Down,
+	"startup/986_provider_attempt_media_usage.sql":                       providerAttemptMediaUsage986,
+	"startup/986_provider_attempt_media_usage.down.sql":                  providerAttemptMediaUsage986Down,
+	"startup/988_provider_invoice_usage_buckets.sql":                     providerInvoiceUsageBuckets988,
+	"startup/988_provider_invoice_usage_buckets.down.sql":                providerInvoiceUsageBuckets988Down,
+	"startup/925_supplier_contract_rates.sql":                            supplierContractRates925,
+	"startup/925_supplier_contract_rates.down.sql":                       supplierContractRates925Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

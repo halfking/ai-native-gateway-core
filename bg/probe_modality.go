@@ -182,7 +182,7 @@ func ProbeModality(ctx context.Context, endpoint, apiKey, model, modality string
 		}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := platformProbeDo(ctx, client, req, 0, model, "modality_probe")
 	latencyMs := int(time.Since(start).Milliseconds())
 	if err != nil {
 		return ModalityProbeResult{
