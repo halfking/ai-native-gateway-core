@@ -69,6 +69,8 @@ ONNXRUNTIME_SHARED_LIBRARY_PATH	component	ONNX 动态库路径（本地库，与
 PARITY_UPDATE_GOLDEN	component	更新 golden 文件的开关（布尔）
 PATH	component	环境杂项（PATH），测试只用来拼可执行路径
 PROVIDER_CONTRACT_KEY	component	外部 provider 契约测试用 key
+RECONCILIATION_INSTALLED_TEST_DSN	dsn_exclusive	★ 整体 DSN 但必须专用值（★ domains/reconciliation/report_integration_test.go:775 读它、★ :777 的跳过消息自证「set RECONCILIATION_INSTALLED_TEST_DSN to an isolated installer fixture」）★ ⇒ 且该腿会 ALTER TABLE public.provider_invoice_lines DROP COLUMN（★ 破坏性）⇒ ★★ 与通用 DSN 同值＝把「删列」对准产品库 ⇒ ★★ 事实源必须不导出（★ 与 GATEWAY_CANONICAL_TEST_DSN / GUARD_IT_DSN / LLM_GATEWAY_FEATURE_STATS_TEST_DSN 同款处置 · ★ 2026-11-24 合并轮二十一补登记）
+RECONCILIATION_TRANSPORT_TEST_DSN	dsn_exclusive	★ 整体 DSN 但必须专用值（★ domains/streaming/executors/reconciliation_transport_integration_test.go:34 读它、★ :36 的跳过消息自证「set RECONCILIATION_TRANSPORT_TEST_DSN to an empty reconciliation_transport_fixture_* database」）★ ⇒ 它要的是**一次性的空夹具库** ⇒ ★★ 与通用 DSN 同值＝让这条腿对着有数据的库跑 ⇒ ★★ 事实源必须不导出（★ 同 dsn_exclusive 处置 · ★ 2026-11-24 合并轮二十一补登记）
 RECONCILIATION_TEST_DSN	dsn_exclusive	请求/会话对账集成腿的专用 DSN：★ 文件头明写「Run only against an owned, empty reconciliation_fixture_* database」且腿内往 legacy_drift / request_wal_with_current_month / request_context_attrs / session_dim / usage_facts / provider_call_attempts / credit_ledger_with_current_month **批量 INSERT** ⇒ ★ 必须指向「本腿自有的空隔离库」⇒ 与通用 DSN 同值＝把夹具写进共享库 ⇒ 不能与通用 DSN 同值，故不进事实源（★ 2026-11-23 合并轮六代上游登记：★ 上游 aac6602ab 带进来的新腿、★ 上游未登记 ⇒ 本门判「没人答」）
 REDIS_ADDR	component	Redis 地址（host:port），绝不能填 PG DSN
 REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
