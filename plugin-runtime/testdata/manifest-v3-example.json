@@ -1,0 +1,154 @@
+{
+  "schema_version": 3,
+  "plugin_id": "example-analytics-plugin",
+  "display_name": "Analytics Plugin Example",
+  "plugin_version": "1.2.0",
+  "build_seq": 42,
+  "channel": "stable",
+  "gateway_compatibility": {
+    "min_version": "1.0.0",
+    "max_version": "2.0.0",
+    "api_contract": "gateway-plugin-v2"
+  },
+  "runtime": {
+    "entrypoint": "bin/analytics-plugin",
+    "protocol": "http-unix-socket",
+    "health_path": "/health",
+    "handshake_path": "/handshake",
+    "shutdown_grace_seconds": 15
+  },
+  "capabilities": [
+    "session.observe",
+    "audit.emit",
+    "response.observe"
+  ],
+  "permissions": [
+    "session.observe",
+    "audit.emit"
+  ],
+  "hooks": [
+    "on_activate",
+    "on_deactivate"
+  ],
+  "bindings": [
+    {
+      "binding_id": "audit-session-close",
+      "phase": "session_close",
+      "priority": 100,
+      "execution_mode": "sequential",
+      "capabilities": ["audit.emit"],
+      "timeout_ms": 5000,
+      "concurrency_limit": 10,
+      "failure_policy": "fail_open",
+      "dto_profile": "summary",
+      "enabled": true
+    }
+  ],
+  "pages": [
+    {
+      "path": "analytics",
+      "type": "dashboard",
+      "nav": {
+        "group": "analytics",
+        "label_key": "plugin.analytics.nav",
+        "super": false,
+        "platform_ops": false,
+        "tenant_only": false,
+        "order": 100
+      }
+    }
+  ],
+  "web": {
+    "mount": "/analytics",
+    "base_path": "/",
+    "entry": "index.html"
+  },
+  "activation": {
+    "module_key": "analytics",
+    "license_required": false,
+    "license": {
+      "mode": "open"
+    }
+  },
+  "api": "^1.0",
+  "requires": [
+    "postgresql",
+    "redis"
+  ],
+  "provides": [
+    "analytics.session",
+    "analytics.timeline"
+  ],
+  "essential": false,
+  "defaults": {
+    "enable_cache": true,
+    "cache_ttl_seconds": 300,
+    "batch_size": 100,
+    "retention_days": 30
+  },
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "enable_cache": {
+        "type": "boolean",
+        "title": "Enable Cache",
+        "title_key": "settings.enable_cache.title",
+        "description": "Enable Redis caching for analytics queries",
+        "description_key": "settings.enable_cache.desc",
+        "default": true
+      },
+      "cache_ttl_seconds": {
+        "type": "integer",
+        "title": "Cache TTL (seconds)",
+        "title_key": "settings.cache_ttl.title",
+        "description": "Time-to-live for cached analytics results",
+        "description_key": "settings.cache_ttl.desc",
+        "minimum": 60,
+        "maximum": 86400,
+        "default": 300
+      },
+      "batch_size": {
+        "type": "integer",
+        "title": "Batch Size",
+        "title_key": "settings.batch_size.title",
+        "description": "Number of records to process in each batch",
+        "description_key": "settings.batch_size.desc",
+        "minimum": 10,
+        "maximum": 1000,
+        "default": 100
+      },
+      "retention_days": {
+        "type": "integer",
+        "title": "Retention Days",
+        "title_key": "settings.retention_days.title",
+        "description": "Number of days to retain analytics data",
+        "description_key": "settings.retention_days.desc",
+        "minimum": 1,
+        "maximum": 365,
+        "default": 30
+      },
+      "log_level": {
+        "type": "string",
+        "title": "Log Level",
+        "title_key": "settings.log_level.title",
+        "description": "Logging verbosity level",
+        "description_key": "settings.log_level.desc",
+        "enum": ["debug", "info", "warn", "error"],
+        "default": "info"
+      }
+    },
+    "x-order": [
+      "enable_cache",
+      "cache_ttl_seconds",
+      "batch_size",
+      "retention_days",
+      "log_level"
+    ]
+  },
+  "client_assets": [
+    "web/index.html",
+    "web/style.css",
+    "web/app.js",
+    "web/assets/logo.png"
+  ]
+}

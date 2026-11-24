@@ -70,7 +70,7 @@ func (h *Handler) queryAnalyticsSummary(
 	)
 
 	if err != nil {
-		// 如果 usage_facts 表不存在或查询失��,尝试降级到 request_stats_minute
+		// 如果 usage_facts 表不存在或查询失败,尝试降级到 request_stats_minute
 		return h.queryAnalyticsSummaryFromMinute(ctx, dimension, identifier, tr, tenantID)
 	}
 
