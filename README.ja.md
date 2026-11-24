@@ -298,7 +298,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. ディレクトリ構成 | フル | フル（db/data と redis/data ディレクトリは作成されるが未使用） |
 | 6. `compose.yml` | 3 サービス | **`kx-citus` + `kx-redis` を除去**、gateway から `depends_on` と PG/Redis env を削除 |
 | 7. コンテナ起動 | 3 コンテナ | **`kx-llm-gateway-go` のみ** |
-| 8. データベース初期化 | PG ready 待機 + `InitSchema`（590+ 起動マイグレーション） | **スキップ**（SQLite が自動作成） |
+| 8. データベース初期化 | PG ready 待機 + `InitSchema`（407 起動マイグレーション） | **スキップ**（SQLite が自動作成） |
 | 9. ヘルスチェック | 5 項目フルチェック | コンテナ + `/healthz` のみ。レポート上の PG/Redis/Schema は強制 ✅ |
 
 **新規 install flags**

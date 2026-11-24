@@ -35,7 +35,7 @@ Gebaut mit **Go + PostgreSQL + Redis**, läuft heute in Produktion auf k3s (zwei
 | **Sicher** | AI Guardrails · DLP · Inline Interception · Vibe-Coding-Governance · SIEM/SOAR-Integration |
 | **Stabil** | Multi-Cloud-Orchestrierung · Circuit Breaker mit automatischer Wiederherstellung · 99,9 % SLA-Ziel |
 | **Günstig** | Semantischer Cache · Auto-Routing (Kosten-/Qualitäts-Policies) · Token-Metering · Prompt-Kompression |
-| **Enterprise-Integration** | MCP-Tool-Gateway (Roadmap) · API-Hub-Asset-Center (Roadmap) · Full-Chain-Audit · SIEM/SOAR |
+| **Enterprise-Integration** | MCP-Tool-Gateway (ausgeliefert) · API-Hub-Asset-Center (Roadmap) · Full-Chain-Audit · SIEM/SOAR |
 
 ## 🏗️ Drei Produktsäulen
 
@@ -104,7 +104,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Pfad | Rolle |
 |------|------|
 | `cmd/gateway/` | Composition-Root — Produktions-Einstiegspunkt als Single-Binary (Data + Control Plane) |
-| `domains/` | 69 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
+| `domains/` | 83 DDD-Domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, Hooks, Security … |
 | `admin/` + `web/` | Admin-REST-API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
 | `web-mobile/` | Mobiles Frontend (Vue 3 + TypeScript) — zweites Produktions-UI; das Deployment verweigert den Start ohne den `dist/`-Build |
 | `bg/` | Background-Worker — Probing, Lifecycle-Cleanup, Stats-Aggregation, Partition-Wartung |
@@ -298,7 +298,7 @@ In non-TTY (CI / `--skip-prompt`) ohne `--config` ist der Default `full`.
 | 5. Verzeichnislayout | voll | voll (db/data und redis/data werden angelegt, aber nicht genutzt) |
 | 6. `compose.yml` | 3 Services | **`kx-citus` + `kx-redis` entfernt**; Gateway verliert `depends_on` und PG/Redis-env |
 | 7. Container starten | 3 Container | **nur `kx-llm-gateway-go`** |
-| 8. DB-Initialisierung | Auf PG-ready warten + `InitSchema` (590+ Startup-Migrationen) | **Übersprungen** (SQLite legt automatisch an) |
+| 8. DB-Initialisierung | Auf PG-ready warten + `InitSchema` (407 Startup-Migrationen) | **Übersprungen** (SQLite legt automatisch an) |
 | 9. Healthcheck | 5-Punkt-Vollcheck | nur Container + `/healthz`; PG/Redis/Schema im Report erzwungen ✅ |
 
 **Neue Install-Flags**
@@ -365,7 +365,7 @@ Das vollständige Installer-Design finden Sie in [installer/README.md](installer
 | **Upstream-Modelle** | Einige große Anbieter | Breite Modellabdeckung + chinesische Domestic-Modelle + lokale Modelle |
 | **Credential-Fingerprint-Pool** | Basis | 42 User-Agents · 35 Accept-Language |
 | **Session-Governance** | Request-Level-Logs | Sticky Sessions + Vollinhalt-Replay + Kompression + 4-stufiger Lebenszyklus |
-| **MCP-Tool-Gateway** | Teilweise | Volle Auslieferung angezielt für Q3 2026 |
+| **MCP-Tool-Gateway** | Ausgeliefert | Stateless JSON-RPC-Datenebene (`POST /mcp`) + Kontrollebene (`/mcp/control/*`) |
 | **Chinesisch-freundlich** | Begrenzt | Volle chinesische UI + Domestic-Modelle + Alipay |
 | **Multi-Tenant-Audit** | Standard | RLS auf 90+ Tabellen · Tenant-Audits bei L1 = 0 |
 
@@ -408,6 +408,7 @@ Siehe [Detailed Comparison](docs/comparison.md) für mehr.
 - ✅ Session-Governance: Kompression, Replay, Lebenszyklus
 - ✅ Vue.js-Admin-Konsole
 - ✅ Docker-Compose-Schnellstart
+- ✅ MCP (Model Context Protocol) Service-Gateway — zustandslose JSON-RPC-Datenebene (`POST /mcp`) + Kontrollebene (Adapters / Tools / Agents / Skills / Credentials / Approvals), siehe [docs/mcp-gateway/](docs/mcp-gateway/)
 
 **Als Nächstes (3–6 Monate)**:
 
@@ -418,7 +419,6 @@ Siehe [Detailed Comparison](docs/comparison.md) für mehr.
 
 **In Exploration (6–12+ Monate)**:
 
-- 🔬 MCP (Model Context Protocol) Gateway-Integration — volle Auslieferung angezielt für Q3 2026
 - 🔬 Agent-to-Agent (A2A) Protokollunterstützung
 - 🔬 Kubernetes Operator (CRD-basiertes Deployment)
 

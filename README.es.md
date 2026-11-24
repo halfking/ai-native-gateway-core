@@ -298,7 +298,7 @@ En no-TTY (CI / `--skip-prompt`) sin `--config`, el valor por defecto es `full`.
 | 5. Estructura de directorios | completa | completa (db/data y redis/data se crean pero no se usan) |
 | 6. `compose.yml` | 3 servicios | **`kx-citus` + `kx-redis` eliminados**; el gateway pierde `depends_on` y el env de PG/Redis |
 | 7. Arranque de contenedores | 3 contenedores | **solo `kx-llm-gateway-go`** |
-| 8. Inicialización de la BD | esperar PG ready + `InitSchema` (590+ migraciones de arranque) | **saltada** (SQLite autocrea) |
+| 8. Inicialización de la BD | esperar PG ready + `InitSchema` (407 migraciones de arranque) | **saltada** (SQLite autocrea) |
 | 9. Comprobación de salud | control completo de 5 puntos | solo contenedor + `/healthz`; PG/Redis/Schema forzados a ✅ en el informe |
 
 **Nuevos flags de install**

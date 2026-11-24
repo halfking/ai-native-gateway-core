@@ -108,7 +108,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路径 | 职责 |
 |------|------|
 | `cmd/gateway/` | 组合根 —— 单二进制生产入口（数据面 + 控制面） |
-| `domains/` | 69 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 83 个 DDD 领域 —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | 移动端前端（Vue 3 + TypeScript）——第二生产前端；部署要求先构建 `dist/` |
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
@@ -364,7 +364,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. 目录结构 | full | full（db/data 与 redis/data 目录仍创建但不使用） |
 | 6. `compose.yml` | 3 服务 | **剥离 `kx-citus` + `kx-redis`**；gateway 移除 `depends_on` 与 PG/Redis env |
 | 7. 启动容器 | 3 容器 | **仅 `kx-llm-gateway-go`** |
-| 8. 数据库初始化 | 等待 PG ready + `InitSchema`（590+ startup 迁移） | **跳过**（SQLite 自动建表） |
+| 8. 数据库初始化 | 等待 PG ready + `InitSchema`（407 startup 迁移） | **跳过**（SQLite 自动建表） |
 | 9. 健康检查 | 5 项全检 | 仅容器 + `/healthz`；PG/Redis/Schema 在报告中强制显示 ✅ |
 
 **新增 install flags**

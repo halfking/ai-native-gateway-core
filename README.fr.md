@@ -104,7 +104,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Chemin | Rôle |
 |------|------|
 | `cmd/gateway/` | Racine de composition — point d’entrée de production en binaire unique (plans données + contrôle) |
-| `domains/` | 69 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
+| `domains/` | 83 domaines DDD — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, sécurité… |
 | `admin/` + `web/` | API REST d’admin + SPA Vue 3 + TypeScript (Element Plus, ECharts) |
 | `web-mobile/` | Frontend mobile (Vue 3 + TypeScript) — seconde UI de production ; le déploiement refuse de démarrer sans son build `dist/` |
 | `bg/` | Workers en arrière-plan — probing, nettoyage du cycle de vie, agrégation de stats, maintenance des partitions |
@@ -298,7 +298,7 @@ En non-TTY (CI / `--skip-prompt`) sans `--config`, la valeur par défaut est `fu
 | 5. Arborescence | complète | complète (db/data et redis/data créés mais inutilisés) |
 | 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` retirés** ; la gateway perd `depends_on` et l’env PG/Redis |
 | 7. Démarrage des conteneurs | 3 conteneurs | **`kx-llm-gateway-go` uniquement** |
-| 8. Initialisation de la base | attendre PG ready + `InitSchema` (590+ migrations de démarrage) | **sauté** (SQLite auto-crée) |
+| 8. Initialisation de la base | attendre PG ready + `InitSchema` (407 migrations de démarrage) | **sauté** (SQLite auto-crée) |
 | 9. Vérification de santé | contrôle complet en 5 points | conteneur + `/healthz` uniquement ; PG/Redis/Schema forcés ✅ dans le rapport |
 
 **Nouveaux flags d’install**

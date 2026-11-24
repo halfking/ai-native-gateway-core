@@ -108,7 +108,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | Path | Role |
 |------|------|
 | `cmd/gateway/` | Composition root — single-binary production entry (data + control plane) |
-| `domains/` | 69 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
+| `domains/` | 83 DDD domains — `streaming`, `dispatch`, `credential`, `session`(+v2), `ursm`, hooks, security… |
 | `admin/` + `web/` | Admin REST API + Vue 3 + TypeScript SPA (Element Plus, ECharts) |
 | `web-mobile/` | Mobile frontend (Vue 3 + TypeScript) — second production UI; deploy refuses to run without its `dist/` build |
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
@@ -431,7 +431,7 @@ In non-TTY (CI / `--skip-prompt`) without `--config`, the default is `full`.
 | 5. Directory layout | full | full (db/data and redis/data dirs created but unused) |
 | 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` stripped**; gateway loses `depends_on` + PG/Redis env |
 | 7. Start containers | 3 containers | **`kx-llm-gateway-go` only** |
-| 8. DB initialization | Wait for PG ready + `InitSchema` (590+ startup migrations) | **Skipped** (SQLite auto-creates) |
+| 8. DB initialization | Wait for PG ready + `InitSchema` (407 startup migrations) | **Skipped** (SQLite auto-creates) |
 | 9. Health check | 5-item full check | container + `/healthz` only; PG/Redis/Schema forced ✅ in report |
 
 **New install flags**
@@ -541,6 +541,7 @@ See [Detailed Comparison](docs/comparison.md) for more.
 - ✅ Session governance: compression, replay, lifecycle
 - ✅ Vue.js admin console
 - ✅ Docker Compose quick start
+- ✅ MCP (Model Context Protocol) service gateway — stateless JSON-RPC data plane (`POST /mcp`) + control plane (adapters / tools / agents / skills / credentials / approvals), see [docs/mcp-gateway/](docs/mcp-gateway/)
 
 **Next (3–6 months)**:
 
@@ -551,7 +552,6 @@ See [Detailed Comparison](docs/comparison.md) for more.
 
 **Exploring (6–12+ months)**:
 
-- 🔬 MCP (Model Context Protocol) gateway integration — full delivery targeted Q3 2026
 - 🔬 Agent-to-Agent (A2A) protocol support
 - 🔬 Kubernetes Operator (CRD-based deployment)
 

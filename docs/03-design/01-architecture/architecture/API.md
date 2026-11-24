@@ -67,6 +67,8 @@ curl -X POST https://llm.kxpms.cn/api/v1/license/trial \
 
 使用 License Key 在线激活。
 
+> ★ **2026-11-25 订正**：**主控（`llm.kxpms.cn:8443`）当前不提供该端点** —— `installer/cmd/llm-gw-installer/activate.go:63` 与 `installer/internal/activation/auto_activate.go:258` 均明写「主控不存在 `/api/v1/license/activate` 端点」（在线激活走 register 分支即激活）；`docs/archive/process/distribution-activation/appendices/B-API端点清单.md` 将其标为「待实现」。⇒ 本节描述的是**目标契约**，不是现役可用端点；对外可用端点以 `cmd/license-authority/` 的实际注册项为准。
+
 #### 请求
 
 ```bash
