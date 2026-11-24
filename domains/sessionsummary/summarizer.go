@@ -559,9 +559,12 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 	if !strings.HasPrefix(trimmed, "{") {
 		// 调试预览（2026-11-24 2041 审计轮脱敏订正）：原始 LLM 响应由用户会话内容
 		// 生成 ⇒ 全文（哪怕前 500 字符）进错误日志等于把会话片段落盘（隐私面）
-		// ⇒ 只记形态特征（rune 长度 / 首字符 / 是否 HTML），不记原文。
-		return nil, fmt.Errorf("failed to parse JSON: response does not look like JSON (starts with %q), response_shape: %s",
-			safePrefix(trimmed, 20), describeResponseShape(response))
+		// ⇒ 只记形态特征（rune 长度 / 首字符类别 / 是否 HTML），不记原文。
+		// 2026-11-25 12h 审计轮（0700）收口：safePrefix 只做 rune 截断不脱敏，
+		// 前 20/100 rune 仍是用户会话衍生内容 ⇒ 两处 %q 回显一并改为首字符
+		// **类别**（describeResponseShape 已含 first，这里不再重复回显原文）。
+		return nil, fmt.Errorf("failed to parse JSON: response does not look like JSON (prefix_class=%s), response_shape: %s",
+			firstRuneClass(trimmed), describeResponseShape(response))
 	}
 
 	var result struct {
@@ -576,8 +579,10 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		// 同上：原始响应只记形态特征，不落原文（隐私面）。
-		return nil, fmt.Errorf("failed to parse JSON: %w, extracted: %q, response_shape: %s",
-			err, safePrefix(jsonStr, 100), describeResponseShape(response))
+		// 2026-11-25 12h 审计轮（0700）：extracted 回显改为「rune 长度 + 首键名」，
+		// 不再回显原文前 100 rune（原 safePrefix(jsonStr,100) 是会话衍生内容）。
+		return nil, fmt.Errorf("failed to parse JSON: %w, extracted_shape: runes=%d first_key=%s, response_shape: %s",
+			err, len([]rune(strings.TrimSpace(jsonStr))), extractedFirstKey(jsonStr), describeResponseShape(response))
 	}
 
 	if result.Title == "" {
@@ -1131,8 +1136,6 @@ func truncateRunes(s string, n int) string {
 	return string(runes[:n])
 }
 
-// safePrefix returns the first n runes of s, or the entire string if shorter.
-// Used for safe error message previews.
 // extractJSONWithoutStripping 不做 thinking 剥离的提取（误剥回退路径专用）。
 func extractJSONWithoutStripping(text string) string {
 	return extractJSONFrom(text)
@@ -1153,10 +1156,53 @@ func describeResponseShape(s string) string {
 	return fmt.Sprintf("runes=%d first=%q html=%v", len(runes), first, strings.Contains(strings.ToLower(s), "<html"))
 }
 
-func safePrefix(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
+// firstRuneClass 返回首 rune 的**类别**（letter/digit/space/symbol/other），
+// 不返回原字符 —— 供错误日志描述响应形态而不落会话衍生内容（隐私面）。
+func firstRuneClass(s string) string {
+	s = strings.TrimSpace(s)
+	for _, r := range s {
+		switch {
+		case unicode.IsLetter(r):
+			return "letter"
+		case unicode.IsDigit(r):
+			return "digit"
+		case unicode.IsSpace(r):
+			return "space"
+		case unicode.IsPunct(r) || unicode.IsSymbol(r):
+			return "symbol"
+		default:
+			return "other"
+		}
 	}
-	return string(runes[:n]) + "..."
+	return "empty"
+}
+
+// extractedFirstKey 从（可能不完整的）JSON 文本里提取首个顶层键名，
+// 只回键名形态，不回值 —— 供错误日志定位解析阶段而不落会话衍生内容。
+// 提取不出时返回 "-"。
+func extractedFirstKey(jsonStr string) string {
+	s := strings.TrimSpace(jsonStr)
+	if !strings.HasPrefix(s, "{") {
+		return "-"
+	}
+	// 找第一个 `"key"` 后跟 `:` 的片段；只取 ASCII 可打印键名段。
+	quote := strings.IndexByte(s, '"')
+	if quote < 0 {
+		return "-"
+	}
+	rest := s[quote+1:]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 || end > 128 {
+		return "-"
+	}
+	key := rest[:end]
+	for _, r := range key {
+		if r < 0x20 || r > 0x7E {
+			return "-" // 键名含非可打印/非 ASCII 字符 ⇒ 只报形态不报内容
+		}
+	}
+	if !strings.Contains(rest[end+1:], ":") {
+		return "-"
+	}
+	return "len=" + strconv.Itoa(len(key))
 }
