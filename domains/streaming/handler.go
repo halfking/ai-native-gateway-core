@@ -35,6 +35,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                     //nolint:depguard // Wave 2-D: HTTP API integration
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/externalhost"                  //nolint:depguard // W3 external hooks pipeline integration
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/externalhost/contract"         //nolint:depguard // W3 external hooks contract types
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Goal retry outcome observer
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1568,6 +1570,12 @@ type ChatHandler struct {
 	quotaWorkersDone sync.WaitGroup
 	quotaQueueMu     sync.Mutex
 	quotaAccepting   bool
+
+	// externalHooks (W3 External Hooks, 2026-11-25) integrates external hook
+	// pipeline for request interception (onRequest) and response capture (onResponse).
+	// nil disables external hooks (requests proceed without hook calls).
+	// See domains/hooks/externalhost/INTEGRATION_GUIDE.md for integration details.
+	externalHooks *externalhost.PipelineIntegrator
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1644,6 +1652,15 @@ func (h *ChatHandler) SetConnectionRegistry(r *ConnectionRegistry) {
 	h.connectionRegistry = r
 }
 
+// SetExternalHooks (W3 External Hooks, 2026-11-25) configures external hook
+// pipeline integration for request interception and response capture.
+// Must be called before serving traffic (concurrent writes during ServeHTTP are unsafe).
+// nil disables external hooks (requests proceed without hook invocation).
+// See domains/hooks/externalhost/INTEGRATION_GUIDE.md for deployment guide.
+func (h *ChatHandler) SetExternalHooks(integrator *externalhost.PipelineIntegrator) {
+	h.externalHooks = integrator
+}
+
 func (h *ChatHandler) SetRequestJourney(recorder *requestjourney.Recorder, gatewayInstanceID string) {
 	h.journeyRecorder = recorder
 	h.journeyGatewayInstanceID = strings.TrimSpace(gatewayInstanceID)
@@ -1692,6 +1709,79 @@ func (h *ChatHandler) emitTrace(ctx context.Context, requestID string, ev gwtrac
 		return
 	}
 	ev.Append(ctx, h.traceRecorder, requestID)
+}
+
+// determineOrigin (W3 External Hooks, 2026-11-25) classifies request origin
+// for external hook context. Returns OriginLocal for local network requests,
+// OriginGatewayKey for requests with valid gateway keys, OriginRemote otherwise.
+func determineOrigin(r *http.Request, keyInfo *authentication.KeyInfo) contract.Origin {
+	// Check for local network first (highest precedence)
+	if isLocalNetwork(r.RemoteAddr) {
+		return contract.OriginLocal
+	}
+	
+	// Check for gateway key authentication
+	if keyInfo != nil && keyInfo.IsInternal {
+		return contract.OriginGatewayKey
+	}
+	
+	// Default to remote origin
+	return contract.OriginRemote
+}
+
+// isLocalNetwork checks if the remote address is from local/private network.
+func isLocalNetwork(remoteAddr string) bool {
+	// Extract IP from various formats:
+	// - IPv4: "1.2.3.4:5678" or "1.2.3.4"
+	// - IPv6 with port: "[::1]:5678"
+	// - IPv6 without port: "::1"
+	
+	host := remoteAddr
+	
+	// Handle IPv6 with brackets and port: [::1]:5678
+	if strings.HasPrefix(remoteAddr, "[") {
+		if idx := strings.Index(remoteAddr, "]"); idx != -1 {
+			host = remoteAddr[1:idx]
+		}
+	} else if strings.Contains(remoteAddr, "::") {
+		// Bare IPv6 without brackets (e.g., "::1")
+		// Don't try to parse port since :: indicates IPv6
+		host = remoteAddr
+	} else {
+		// IPv4 format - extract host from "host:port"
+		if idx := strings.LastIndex(remoteAddr, ":"); idx != -1 {
+			host = remoteAddr[:idx]
+		}
+	}
+	
+	// Check for localhost patterns
+	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return true
+	}
+	
+	// Check for private network ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+	if strings.HasPrefix(host, "10.") ||
+		strings.HasPrefix(host, "192.168.") ||
+		strings.HasPrefix(host, "172.16.") ||
+		strings.HasPrefix(host, "172.17.") ||
+		strings.HasPrefix(host, "172.18.") ||
+		strings.HasPrefix(host, "172.19.") ||
+		strings.HasPrefix(host, "172.20.") ||
+		strings.HasPrefix(host, "172.21.") ||
+		strings.HasPrefix(host, "172.22.") ||
+		strings.HasPrefix(host, "172.23.") ||
+		strings.HasPrefix(host, "172.24.") ||
+		strings.HasPrefix(host, "172.25.") ||
+		strings.HasPrefix(host, "172.26.") ||
+		strings.HasPrefix(host, "172.27.") ||
+		strings.HasPrefix(host, "172.28.") ||
+		strings.HasPrefix(host, "172.29.") ||
+		strings.HasPrefix(host, "172.30.") ||
+		strings.HasPrefix(host, "172.31.") {
+		return true
+	}
+	
+	return false
 }
 
 // SetSessionReuseWindow configures the look-back window used by
@@ -2932,6 +3022,8 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *authentication.KeyInfo
+	// W3 External Hooks: reqContext flows from onRequest to onResponse (2026-11-25)
+	var reqContext *externalhost.RequestContext
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
@@ -4612,12 +4704,81 @@ func (h *ChatHandler) serveWithExecutor(
 	auditCtx.RequestID = requestID
 	auditCtx.GWSessionID = gwSessionID
 	auditCtx.GWTaskID = gwTaskID
-	outboundForLog := explicitOutbound
-	if len(candidates) > 0 {
-		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
-	}
+		outboundForLog := explicitOutbound
+		if len(candidates) > 0 {
+			outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+		}
 
-	// ── Phase 2 Meta-tool expansion ────────────────────────────────────
+		// ── W3 External Hook: onRequest (2026-11-25) ────────────────────────
+		// Called BEFORE meta-tool expansion and session compression to allow hooks to:
+		//   - Block requests (compliance/policy checks)
+		//   - Rewrite request bodies (content moderation)
+		//   - Set state for onResponse correlation
+		//
+		// Failure modes (W3.2):
+		//   - timeout/crash → pass through (logged but not blocked)
+		//   - block decision → return error to client
+		//   - protected field change → pass through (logged)
+		if h.externalHooks != nil {
+			// Build hook context from request metadata
+			tenantID := "default"
+			if keyInfo != nil && keyInfo.TenantID != "" {
+				tenantID = keyInfo.TenantID
+			}
+			
+			hookCtx := externalhost.BuildHookContext(
+				r,
+				requestID,
+				gwSessionID,
+				tenantID,
+			)
+			hookCtx.Protocol = egressProtocol // resolved upstream protocol
+			hookCtx.Model = clientModel
+			hookCtx.Origin = determineOrigin(r, keyInfo)
+			
+			// Build request payload
+			reqPayload := externalhost.BuildRequestPayload(
+				r,
+				bodyBytes,
+				clientModel,
+				isStream,
+			)
+			
+			// Call onRequest hook
+			var rewrittenReq *contract.RequestPayload
+			var err error
+			rewrittenReq, reqContext, err = h.externalHooks.InterceptRequest(
+				r.Context(),
+				hookCtx,
+				reqPayload,
+			)
+			
+			// Handle block decision
+			if err != nil {
+				// Hook blocked request - return error to client
+				h.emitTrace(r.Context(), requestID,
+					gwtrace.ExternalHookBlock("onRequest", err.Error()))
+				captureAndEmitFailure("policy_violation", err.Error(), nil, nil, http.StatusForbidden)
+				writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "policy_violation",
+					fmt.Sprintf("Request blocked by policy: %s", err.Error()), nil)
+				return
+			}
+			
+			// Apply rewritten request if present
+			if rewrittenReq != nil && rewrittenReq.Body.Body != nil {
+				// Hook rewrote request - use modified body
+				bodyBytes = rewrittenReq.Body.Body
+				h.emitTrace(r.Context(), requestID,
+					gwtrace.ExternalHookRewrite("onRequest"))
+				slog.Info("external_hook_rewrote_request",
+					"request_id", requestID,
+					"original_bytes", reqPayload.Body.OriginalBytes,
+					"rewritten_bytes", len(bodyBytes))
+			}
+		}
+		// ── End External Hook: onRequest ─────────────────────────────────────
+
+		// ── Phase 2 Meta-tool expansion ────────────────────────────────────
 	// When the request's `tools` array contains the meta-tools
 	// (list_categories, load_tools), expand them in-place with the full
 	// tool set loaded from tool_registry. The expanded request is then
@@ -6949,6 +7110,62 @@ goalRetryLoopDone:
 	// above before the row is built, and every governance terminal has
 	// already returned with its failure audit.
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
+
+	// ── W3 External Hook: onResponse (2026-11-25) ────────────────────────
+	// Called AFTER response sent to client (fire-and-forget).
+	// Captures response metadata for audit/analytics without blocking EOF.
+	if h.externalHooks != nil && reqContext != nil && reqContext.OnRequestSucceeded {
+		// Build response payload with bounded body copy
+		responseStatus := http.StatusOK
+		if result != nil && result.Response != nil && result.Response.StatusCode > 0 {
+			responseStatus = result.Response.StatusCode
+		}
+		
+		responseHeaders := make(http.Header)
+		if result != nil && result.Response != nil && result.Response.Header != nil {
+			responseHeaders = result.Response.Header
+		}
+		
+		// Use bounded copy of response body (already limited by result.ResponseBody)
+		responseBody := result.ResponseBody
+		
+		actualModel := clientModel
+		if result != nil && result.Candidate.RawModel != "" {
+			actualModel = result.Candidate.RawModel
+		}
+		
+		respPayload := externalhost.BuildResponsePayload(
+			responseStatus,
+			responseHeaders,
+			responseBody,
+			actualModel,
+			isStream,
+		)
+		
+		// Update hook context with final values
+		tenantID := "default"
+		if keyInfo != nil && keyInfo.TenantID != "" {
+			tenantID = keyInfo.TenantID
+		}
+		
+		finalHookCtx := externalhost.BuildHookContext(
+			r,
+			requestID,
+			gwSessionID,
+			tenantID,
+		)
+		finalHookCtx.Protocol = egressProtocol
+		finalHookCtx.Model = clientModel
+		finalHookCtx.Origin = determineOrigin(r, keyInfo)
+		finalHookCtx.Abort = false // Client did not disconnect (we reached success path)
+		
+		// Capture response in background (doesn't block)
+		h.externalHooks.CaptureResponse(reqContext, finalHookCtx, respPayload)
+		
+		h.emitTrace(r.Context(), requestID,
+			gwtrace.ExternalHookCapture("onResponse"))
+	}
+	// ── End External Hook: onResponse ────────────────────────────────────
 
 	// ── Request WAL: async update on execution success ─────────────
 	if h.requestLogger != nil && result != nil {
