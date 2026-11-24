@@ -2014,11 +2014,11 @@ var providerInvoiceUsageBuckets988 []byte
 //go:embed embeddata/startup/988_provider_invoice_usage_buckets.down.sql
 var providerInvoiceUsageBuckets988Down []byte
 
-//go:embed embeddata/startup/989_supplier_contract_rates.sql
-var supplierContractRates989 []byte
+//go:embed embeddata/startup/925_supplier_contract_rates.sql
+var supplierContractRates925 []byte
 
-//go:embed embeddata/startup/989_supplier_contract_rates.down.sql
-var supplierContractRates989Down []byte
+//go:embed embeddata/startup/925_supplier_contract_rates.down.sql
+var supplierContractRates925Down []byte
 
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
@@ -2703,8 +2703,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/986_provider_attempt_media_usage.down.sql":                  providerAttemptMediaUsage986Down,
 	"startup/988_provider_invoice_usage_buckets.sql":                     providerInvoiceUsageBuckets988,
 	"startup/988_provider_invoice_usage_buckets.down.sql":                providerInvoiceUsageBuckets988Down,
-	"startup/989_supplier_contract_rates.sql":                            supplierContractRates989,
-	"startup/989_supplier_contract_rates.down.sql":                       supplierContractRates989Down,
+	"startup/925_supplier_contract_rates.sql":                            supplierContractRates925,
+	"startup/925_supplier_contract_rates.down.sql":                       supplierContractRates925Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

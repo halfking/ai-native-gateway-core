@@ -2049,7 +2049,25 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"986_provider_attempt_media_usage.sql",
 			"987_provider_invoice_evidence.sql",
 			"988_provider_invoice_usage_buckets.sql",
-			"989_supplier_contract_rates.sql",
+			// ★★ 供应商合同费率件 —— **原名 989_supplier_contract_rates.sql**
+			//   ⇒ ★ 2026-11-24 还号轮（12h 修订审计轮第三轮）：它与
+			//     989_migration_ledger_session_analytics_981_repair.sql **同占 989**
+			//     ⇒ ① 迁移号唯一性门红（Go 门 + 壳层门「≥500 号段禁止任何撞号」）
+			//     ⇒ ② **本安装器以文件名前缀为版本键**（migrationVersionOf：
+			//        取 "_" 前的数字）⇒ 台账里有 '989' 就跳过 ⇒ **增量安装会跳过
+			//        本件** ⇒ public.supplier_contract_rates 建不出来（审计档 L2）。
+			//   ★ 还号到 **925**（真空号：磁盘无 / git 历史无 / 211 台账无）：
+			//     ① **零字节变更** —— sha256 仍是 b32e8fb9…，与 211 部署通道账本
+			//        gateway_db_revision_sequences 记的 content_sha256 逐字一致
+			//        ⇒ 不触发 L23 内容指纹分叉（改字节才有分叉风险）；
+			//     ② **保留两道唯一性门的有效性** —— 若改用字母后缀 989b，
+			//        Go 门（`^[0-9]+_`）与壳层门（家族后缀豁免）会**同时对字母
+			//        后缀失明** ⇒ 把「响亮的撞号」变成「静默的撞号」；
+			//     ③ 文件自身的自登记仍是 '988'（**未改字节**）⇒ 211 台账里那行
+			//        '988' 依然属本件 ⇒ 台账语义不变、**零生产写**。
+			//   ★ 清单位置不动（仍排在 988 之后）：tsv 首列是序号，中间插行会把
+			//     后面所有序号整体 +1（仓内纪律：tsv 只追加）。
+			"925_supplier_contract_rates.sql",
 			// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
 			//   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
 			//     撞号（迁移号唯一性门红），且**任何通道都没登记它**

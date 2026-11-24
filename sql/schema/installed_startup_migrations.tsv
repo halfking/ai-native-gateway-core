@@ -414,7 +414,7 @@
 396	986_provider_attempt_media_usage.sql
 397	987_provider_invoice_evidence.sql
 398	988_provider_invoice_usage_buckets.sql
-399	989_supplier_contract_rates.sql
+399	925_supplier_contract_rates.sql
 400	983b_add_raw_model_name.sql
 401	055_teams_table.sql
 402	056_user_teams.sql
