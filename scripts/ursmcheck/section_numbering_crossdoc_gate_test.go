@@ -278,6 +278,7 @@ func TestSectionNumberingCrossDocSearchSurfaceIsNotNarrowed(t *testing.T) {
 // TestSectionNumberingCrossDocCheckerHasTeeth 是【自检臂】：★ 喂夹具、★ 门必须按预期反应。
 //
 // ★ 三个臂：
+//
 //	M1 【重复夹具】⇒ 必须报出重号
 //	M2 【悬空且无箭头】⇒ 必须报出悬空
 //	M3 【悬空但带箭头指向存在标题】⇒ **不得**报悬空（★ 证明那条例外不是恒真放水 ★）

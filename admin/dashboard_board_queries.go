@@ -52,7 +52,8 @@ func trendPointsCoverRange(tr boardTimeRange, points []boardTrendPoint) bool {
 //	请求级日志    的保留起点 = 更早（211 实测至少回溯到 2026-10-12）
 //
 // ⇒ 窗口跨过事实族起点时，卡片（少算）与饼图（全量）必然对不上；窗口没跨过
-//   （近 7 天）则恰好相等 ⇒ **缺陷只在长窗口显形**，很容易被「7 天看着没问题」掩盖。
+//
+//	（近 7 天）则恰好相等 ⇒ **缺陷只在长窗口显形**，很容易被「7 天看着没问题」掩盖。
 //
 // owner 决策（2026-11-24）：**整页切请求级日志** ⇒ 英雄区、趋势、饼图三条读链
 // 读同一张视图、同一终态集、同一探测谓词 ⇒ 整页一个宇宙，长短窗口一致。
@@ -127,8 +128,9 @@ func boardCreditsExpr(tenantID string) string {
 // boardSummaryLogsSQL 返回英雄区汇总的 SQL（读请求级日志）。
 //
 // ★ token 口径不因换源而变：视图里 total_tokens = NULLIF(prompt+completion, 0)
-//   （request_logs_with_current_month 的视图定义）⇒ 与 usage_facts 的
-//   「total = prompt + completion」契约（stats/event.go）天然一致。
+//
+//	（request_logs_with_current_month 的视图定义）⇒ 与 usage_facts 的
+//	「total = prompt + completion」契约（stats/event.go）天然一致。
 func boardSummaryLogsSQL(where, creditsExpr string) string {
 	return boardSummaryLogsUnionSQL(where, creditsExpr, false)
 }
@@ -180,7 +182,7 @@ func boardSummaryLogsUnionSQL(where, creditsExpr string, includeProbes bool) str
 				NULL::text AS identity_hash
 			FROM session_turns_probe_hot
 		) p
-		WHERE ` + where
+		WHERE ` + boardRewriteAlias(where, "p")
 	return `SELECT SUM(cnt), SUM(ok), SUM(pt), SUM(ct), SUM(tt), SUM(cr), SUM(cost), SUM(lat) FROM (
 		SELECT * FROM (` + businessSQL + `) b(cnt,ok,pt,ct,tt,cr,cost,lat)
 		UNION ALL
@@ -747,7 +749,7 @@ func boardPieFactsUnionSQL(where, creditsExpr string, includeProbes bool) string
 	}
 	// ★★ 2026-11-25：「含探测」时 UNION ALL 探测车道表（同英雄区/趋势修法）。
 	probeSQL := `
-			SELECT d.dim_type, ` + boardPieDimKeyCaseSQL() + ` AS dim_key, p.total_tokens, 0 AS credits, 0.0 AS cost_usd
+			SELECT d.dim_type, ` + boardRewriteAlias(boardPieDimKeyCaseSQL(), "p") + ` AS dim_key, p.total_tokens, 0 AS credits, 0.0 AS cost_usd
 			FROM (
 				SELECT
 					ts, tenant_id, provider_id, client_model, outbound_model, agent_name, client_ip,
@@ -764,7 +766,7 @@ func boardPieFactsUnionSQL(where, creditsExpr string, includeProbes bool) string
 				FROM session_turns_probe_hot
 			) p
 			CROSS JOIN unnest(` + boardPieDimTypeArraySQL() + `) AS d(dim_type)
-			WHERE ` + where + `
+			WHERE ` + boardRewriteAlias(where, "p") + `
 			  AND (d.dim_type <> 'error_kind' OR p.request_status = 'failure')
 	`
 	return `
@@ -1052,7 +1054,7 @@ func boardTrendLogsUnionSQL(bucketExpr, where, creditsExpr string, includeProbes
 		) p
 		WHERE %s
 		GROUP BY 1
-	`, bucketExpr, where)
+	`, boardRewriteAlias(bucketExpr, "p"), boardRewriteAlias(where, "p"))
 	return fmt.Sprintf(`
 		SELECT bucket, SUM(cnt), SUM(tok), SUM(cr), SUM(cost)
 		FROM (

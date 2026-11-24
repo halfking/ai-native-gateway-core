@@ -33,7 +33,7 @@ type HookHost interface {
 //   - Response capture completes even if client disconnects
 type PipelineIntegrator struct {
 	host HookHost
-	
+
 	// Metrics for monitoring
 	mu              sync.Mutex
 	requestTotal    int64
@@ -90,7 +90,7 @@ func (p *PipelineIntegrator) InterceptRequest(
 
 	// Call onRequest hook
 	outcome := p.host.OnRequest(ctx, hookCtx, req)
-	
+
 	// Track skipped hooks
 	if outcome.Skipped {
 		reqCtx.OnRequestSkipped = true
@@ -108,7 +108,7 @@ func (p *PipelineIntegrator) InterceptRequest(
 		p.mu.Lock()
 		p.requestFailed++
 		p.mu.Unlock()
-		
+
 		// W3.2: timeout/crash/protocol → pass through (fail-open)
 		// protected_field/hook → pass through but mark failed
 		// Pass through on failure, but don't call onResponse
@@ -177,7 +177,7 @@ func (p *PipelineIntegrator) CaptureResponse(
 
 		// Call onResponse hook
 		outcome := p.host.OnResponse(ctx, hookCtx, resp)
-		
+
 		if outcome.Failed() {
 			p.mu.Lock()
 			p.responseFailed++
@@ -205,7 +205,7 @@ func (p *PipelineIntegrator) CaptureResponseFromStream(
 	// Read up to MaxBodyBytes + 1 to detect truncation
 	buf := make([]byte, contract.MaxBodyBytes+1)
 	n, err := io.ReadFull(body, buf)
-	
+
 	// EOF or unexpected EOF within limit is fine
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		if n == 0 {
@@ -217,7 +217,7 @@ func (p *PipelineIntegrator) CaptureResponseFromStream(
 	payload := contract.Payload{
 		OriginalBytes: n,
 	}
-	
+
 	if n <= contract.MaxBodyBytes {
 		payload.Body = buf[:n]
 		payload.Truncated = false
@@ -229,10 +229,10 @@ func (p *PipelineIntegrator) CaptureResponseFromStream(
 	// Update response with captured body
 	respCopy := *resp
 	respCopy.Body = payload
-	
+
 	// Capture in background
 	p.CaptureResponse(reqCtx, hookCtx, &respCopy)
-	
+
 	return buf[:n], nil
 }
 
@@ -240,7 +240,7 @@ func (p *PipelineIntegrator) CaptureResponseFromStream(
 func (p *PipelineIntegrator) Stats() PipelineStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	return PipelineStats{
 		RequestTotal:    p.requestTotal,
 		RequestFailed:   p.requestFailed,
@@ -271,12 +271,12 @@ func BuildHookContext(r *http.Request, requestID, sessionID, tenantID string) *c
 		State:     make(map[string]string),
 		Abort:     false,
 	}
-	
+
 	// Set deadline from request context if present
 	if deadline, ok := r.Context().Deadline(); ok {
 		ctx.DeadlineUnixNano = deadline.UnixNano()
 	}
-	
+
 	return ctx
 }
 
@@ -286,14 +286,14 @@ func BuildHookContext(r *http.Request, requestID, sessionID, tenantID string) *c
 // This helper extracts method, path, and sanitized headers.
 func BuildRequestPayload(r *http.Request, body []byte, model string, stream bool) *contract.RequestPayload {
 	payload := &contract.RequestPayload{
-		Method: r.Method,
-		Path:   r.URL.Path,
+		Method:  r.Method,
+		Path:    r.URL.Path,
 		Headers: make(map[string]string),
-		Body:   contract.BoundedCopy(body),
-		Model:  model,
-		Stream: stream,
+		Body:    contract.BoundedCopy(body),
+		Model:   model,
+		Stream:  stream,
 	}
-	
+
 	// Copy sanitized headers (skip authorization/sensitive headers)
 	for k, vals := range r.Header {
 		if len(vals) == 0 {
@@ -306,7 +306,7 @@ func BuildRequestPayload(r *http.Request, body []byte, model string, stream bool
 		}
 		payload.Headers[k] = vals[0]
 	}
-	
+
 	return payload
 }
 
@@ -315,19 +315,19 @@ func BuildRequestPayload(r *http.Request, body []byte, model string, stream bool
 // Body should be bounded copy (use contract.BoundedCopy or CaptureResponseFromStream).
 func BuildResponsePayload(status int, headers http.Header, body []byte, model string, stream bool) *contract.ResponsePayload {
 	payload := &contract.ResponsePayload{
-		Status: status,
+		Status:  status,
 		Headers: make(map[string]string),
-		Body:   contract.BoundedCopy(body),
-		Model:  model,
-		Stream: stream,
+		Body:    contract.BoundedCopy(body),
+		Model:   model,
+		Stream:  stream,
 	}
-	
+
 	// Copy response headers
 	for k, vals := range headers {
 		if len(vals) > 0 {
 			payload.Headers[k] = vals[0]
 		}
 	}
-	
+
 	return payload
 }

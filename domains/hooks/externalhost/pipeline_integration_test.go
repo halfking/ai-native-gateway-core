@@ -51,15 +51,15 @@ func TestInterceptRequest_Continue(t *testing.T) {
 			}
 		},
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-001", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	rewritten, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
-	
+
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestInterceptRequest_Continue(t *testing.T) {
 	if !reqCtx.OnRequestSucceeded {
 		t.Error("expected OnRequestSucceeded=true")
 	}
-	
+
 	stats := integrator.Stats()
 	if stats.RequestTotal != 1 {
 		t.Errorf("RequestTotal = %d, want 1", stats.RequestTotal)
@@ -97,15 +97,15 @@ func TestInterceptRequest_Rewrite(t *testing.T) {
 			}
 		},
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-002", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat", Model: "gpt-4"}
-	
+
 	rewritten, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
-	
+
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,15 +132,15 @@ func TestInterceptRequest_Block(t *testing.T) {
 			}
 		},
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-003", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	rewritten, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
-	
+
 	if err == nil {
 		t.Fatal("expected error for block decision, got nil")
 	}
@@ -166,15 +166,15 @@ func TestInterceptRequest_Timeout(t *testing.T) {
 			}
 		},
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-004", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	rewritten, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
-	
+
 	// W3.2: timeout → pass through (fail-open)
 	if err != nil {
 		t.Errorf("expected nil error on timeout (pass-through), got %v", err)
@@ -185,7 +185,7 @@ func TestInterceptRequest_Timeout(t *testing.T) {
 	if reqCtx.OnRequestSucceeded {
 		t.Error("expected OnRequestSucceeded=false for timeout (don't call onResponse)")
 	}
-	
+
 	stats := integrator.Stats()
 	if stats.RequestFailed != 1 {
 		t.Errorf("RequestFailed = %d, want 1", stats.RequestFailed)
@@ -203,15 +203,15 @@ func TestInterceptRequest_ProtectedField(t *testing.T) {
 			}
 		},
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-005", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	rewritten, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
-	
+
 	// W3.2: protected field → pass through but mark failed
 	if err != nil {
 		t.Errorf("expected nil error on protected field (pass-through), got %v", err)
@@ -222,7 +222,7 @@ func TestInterceptRequest_ProtectedField(t *testing.T) {
 	if reqCtx.OnRequestSucceeded {
 		t.Error("expected OnRequestSucceeded=false for protected field")
 	}
-	
+
 	stats := integrator.Stats()
 	if stats.RequestFailed != 1 {
 		t.Errorf("RequestFailed = %d, want 1", stats.RequestFailed)
@@ -234,7 +234,7 @@ func TestCaptureResponse_StateFlow(t *testing.T) {
 	var capturedState map[string]string
 	var mu sync.Mutex
 	done := make(chan struct{})
-	
+
 	host := &mockHost{
 		onRequestFunc: func(ctx context.Context, hookCtx *contract.Context, req *contract.RequestPayload) *Outcome {
 			// onRequest sets state
@@ -253,9 +253,9 @@ func TestCaptureResponse_StateFlow(t *testing.T) {
 		},
 		timeout: 100 * time.Millisecond,
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{
 		RequestID: "req-006",
@@ -263,20 +263,20 @@ func TestCaptureResponse_StateFlow(t *testing.T) {
 		State:     make(map[string]string),
 	}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	// onRequest
 	_, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
 	if err != nil {
 		t.Fatalf("InterceptRequest failed: %v", err)
 	}
-	
+
 	// Extract state from hookCtx (host modified it)
 	reqCtx.HookState = hookCtx.State
-	
+
 	// onResponse
 	respPayload := &contract.ResponsePayload{Status: 200}
 	integrator.CaptureResponse(reqCtx, hookCtx, respPayload)
-	
+
 	// Wait for background goroutine (with timeout)
 	select {
 	case <-done:
@@ -284,10 +284,10 @@ func TestCaptureResponse_StateFlow(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("onResponse not called within timeout")
 	}
-	
+
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	if capturedState == nil {
 		t.Fatal("state not captured in onResponse")
 	}
@@ -303,7 +303,7 @@ func TestCaptureResponse_StateFlow(t *testing.T) {
 func TestCaptureResponse_SkippedOnRequestFailed(t *testing.T) {
 	onResponseCalled := false
 	var mu sync.Mutex
-	
+
 	host := &mockHost{
 		onRequestFunc: func(ctx context.Context, hookCtx *contract.Context, req *contract.RequestPayload) *Outcome {
 			return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureTimeout, Err: fmt.Errorf("timeout")}
@@ -316,34 +316,34 @@ func TestCaptureResponse_SkippedOnRequestFailed(t *testing.T) {
 		},
 		timeout: 100 * time.Millisecond,
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-007", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	// onRequest fails
 	_, reqCtx, _ := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
-	
+
 	if reqCtx.OnRequestSucceeded {
 		t.Fatal("expected OnRequestSucceeded=false for timeout")
 	}
-	
+
 	// onResponse should be skipped
 	respPayload := &contract.ResponsePayload{Status: 200}
 	integrator.CaptureResponse(reqCtx, hookCtx, respPayload)
-	
+
 	// Wait briefly to ensure onResponse doesn't get called
 	time.Sleep(200 * time.Millisecond)
-	
+
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	if onResponseCalled {
 		t.Error("onResponse should not be called when onRequest failed")
 	}
-	
+
 	stats := integrator.Stats()
 	if stats.ResponseSkipped != 1 {
 		t.Errorf("ResponseSkipped = %d, want 1", stats.ResponseSkipped)
@@ -353,7 +353,7 @@ func TestCaptureResponse_SkippedOnRequestFailed(t *testing.T) {
 // TestCaptureResponse_FireAndForget verifies onResponse doesn't block
 func TestCaptureResponse_FireAndForget(t *testing.T) {
 	blockChan := make(chan struct{})
-	
+
 	host := &mockHost{
 		onRequestFunc: func(ctx context.Context, hookCtx *contract.Context, req *contract.RequestPayload) *Outcome {
 			return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureNone}
@@ -365,30 +365,30 @@ func TestCaptureResponse_FireAndForget(t *testing.T) {
 		},
 		timeout: 5 * time.Second,
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-008", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	// onRequest
 	_, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
 	if err != nil {
 		t.Fatalf("InterceptRequest failed: %v", err)
 	}
-	
+
 	// CaptureResponse should return immediately (fire-and-forget)
 	start := time.Now()
 	respPayload := &contract.ResponsePayload{Status: 200}
 	integrator.CaptureResponse(reqCtx, hookCtx, respPayload)
 	elapsed := time.Since(start)
-	
+
 	// Should return in < 10ms (not wait for hook to complete)
 	if elapsed > 10*time.Millisecond {
 		t.Errorf("CaptureResponse blocked for %v, expected immediate return", elapsed)
 	}
-	
+
 	// Unblock the hook
 	close(blockChan)
 }
@@ -399,7 +399,7 @@ func TestCaptureResponseFromStream_BoundedCopy(t *testing.T) {
 	var truncated bool
 	var mu sync.Mutex
 	done := make(chan struct{})
-	
+
 	host := &mockHost{
 		onRequestFunc: func(ctx context.Context, hookCtx *contract.Context, req *contract.RequestPayload) *Outcome {
 			return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureNone}
@@ -414,31 +414,31 @@ func TestCaptureResponseFromStream_BoundedCopy(t *testing.T) {
 		},
 		timeout: 100 * time.Millisecond,
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-009", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	// onRequest
 	_, reqCtx, err := integrator.InterceptRequest(ctx, hookCtx, reqPayload)
 	if err != nil {
 		t.Fatalf("InterceptRequest failed: %v", err)
 	}
-	
+
 	// Create response body larger than MaxBodyBytes
 	largeBody := bytes.Repeat([]byte("x"), contract.MaxBodyBytes+1000)
 	bodyReader := bytes.NewReader(largeBody)
-	
+
 	respPayload := &contract.ResponsePayload{Status: 200}
-	
+
 	// Capture from stream
 	readBytes, err := integrator.CaptureResponseFromStream(reqCtx, hookCtx, respPayload, bodyReader)
 	if err != nil {
 		t.Fatalf("CaptureResponseFromStream failed: %v", err)
 	}
-	
+
 	// Wait for background capture
 	select {
 	case <-done:
@@ -446,10 +446,10 @@ func TestCaptureResponseFromStream_BoundedCopy(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("onResponse not called within timeout")
 	}
-	
+
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	// Verify truncation
 	if !truncated {
 		t.Error("expected Truncated=true for large body")
@@ -468,9 +468,9 @@ func TestBuildHookContext(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
 	defer cancel()
 	req = req.WithContext(ctx)
-	
+
 	hookCtx := BuildHookContext(req, "req-010", "sess-123", "tenant-456")
-	
+
 	if hookCtx.RequestID != "req-010" {
 		t.Errorf("RequestID = %q, want req-010", hookCtx.RequestID)
 	}
@@ -492,13 +492,13 @@ func TestBuildHookContext(t *testing.T) {
 func TestBuildRequestPayload(t *testing.T) {
 	req, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer secret")  // Should be filtered
+	req.Header.Set("Authorization", "Bearer secret") // Should be filtered
 	req.Header.Set("X-Request-ID", "req-011")
-	
+
 	body := []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)
-	
+
 	payload := BuildRequestPayload(req, body, "claude-sonnet-4", true)
-	
+
 	if payload.Method != "POST" {
 		t.Errorf("Method = %q, want POST", payload.Method)
 	}
@@ -511,12 +511,12 @@ func TestBuildRequestPayload(t *testing.T) {
 	if !payload.Stream {
 		t.Error("expected Stream=true")
 	}
-	
+
 	// Verify sensitive headers filtered
 	if _, exists := payload.Headers["Authorization"]; exists {
 		t.Error("Authorization header should be filtered")
 	}
-	
+
 	// Verify non-sensitive headers included
 	if ct := payload.Headers["Content-Type"]; ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
@@ -531,11 +531,11 @@ func TestBuildResponsePayload(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Content-Type", "text/event-stream")
 	headers.Set("X-Request-ID", "req-012")
-	
+
 	body := []byte(`data: {"content": "hello"}\n\n`)
-	
+
 	payload := BuildResponsePayload(200, headers, body, "claude-sonnet-4", true)
-	
+
 	if payload.Status != 200 {
 		t.Errorf("Status = %d, want 200", payload.Status)
 	}
@@ -557,18 +557,18 @@ func TestStats(t *testing.T) {
 			return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureNone}
 		},
 	}
-	
+
 	integrator := NewPipelineIntegrator(host)
-	
+
 	ctx := context.Background()
 	hookCtx := &contract.Context{RequestID: "req-013", Origin: contract.OriginLocal}
 	reqPayload := &contract.RequestPayload{Method: "POST", Path: "/v1/chat"}
-	
+
 	// Make 3 requests
 	for i := 0; i < 3; i++ {
 		integrator.InterceptRequest(ctx, hookCtx, reqPayload)
 	}
-	
+
 	stats := integrator.Stats()
 	if stats.RequestTotal != 3 {
 		t.Errorf("RequestTotal = %d, want 3", stats.RequestTotal)

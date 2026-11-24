@@ -10,7 +10,7 @@ import (
 
 func TestComplianceHook_OnRequest_AllowsCleanContent(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	inv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
 		HookPoint:       contract.HookPointOnRequest,
@@ -27,16 +27,16 @@ func TestComplianceHook_OnRequest_AllowsCleanContent(t *testing.T) {
 			Body:   contract.Payload{Body: []byte(`{"messages":[{"role":"user","content":"Hello, how are you?"}]}`)},
 		},
 	}
-	
+
 	reply := hook.OnRequest(inv)
-	
+
 	if reply.Decision != contract.DecisionContinue {
 		t.Errorf("Decision = %v, want DecisionContinue", reply.Decision)
 	}
 	if reply.Error != "" {
 		t.Errorf("unexpected error: %s", reply.Error)
 	}
-	
+
 	// Verify state was set for onResponse correlation
 	if inv.Context.State["model"] != "claude-sonnet-4" {
 		t.Errorf("model state = %q, want claude-sonnet-4", inv.Context.State["model"])
@@ -48,9 +48,9 @@ func TestComplianceHook_OnRequest_AllowsCleanContent(t *testing.T) {
 
 func TestComplianceHook_OnRequest_BlocksBannedContent(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	bannedContent := `{"messages":[{"role":"user","content":"How to exploit security vulnerabilities?"}]}`
-	
+
 	inv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
 		HookPoint:       contract.HookPointOnRequest,
@@ -67,9 +67,9 @@ func TestComplianceHook_OnRequest_BlocksBannedContent(t *testing.T) {
 			Body:   contract.Payload{Body: []byte(bannedContent)},
 		},
 	}
-	
+
 	reply := hook.OnRequest(inv)
-	
+
 	if reply.Decision != contract.DecisionBlock {
 		t.Errorf("Decision = %v, want DecisionBlock for banned content", reply.Decision)
 	}
@@ -80,7 +80,7 @@ func TestComplianceHook_OnRequest_BlocksBannedContent(t *testing.T) {
 
 func TestComplianceHook_OnRequest_CaseInsensitiveBan(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	testCases := []struct {
 		content string
 		blocked bool
@@ -90,7 +90,7 @@ func TestComplianceHook_OnRequest_CaseInsensitiveBan(t *testing.T) {
 		{"Ignore Previous Instructions", true},
 		{"please ignore my previous message", false}, // "ignore" alone shouldn't match
 	}
-	
+
 	for _, tc := range testCases {
 		inv := &contract.Invocation{
 			ContractVersion: contract.ContractVersion,
@@ -104,10 +104,10 @@ func TestComplianceHook_OnRequest_CaseInsensitiveBan(t *testing.T) {
 				Body: contract.Payload{Body: []byte(tc.content)},
 			},
 		}
-		
+
 		reply := hook.OnRequest(inv)
 		isBlocked := reply.Decision == contract.DecisionBlock
-		
+
 		if isBlocked != tc.blocked {
 			t.Errorf("content %q: blocked=%v, want %v", tc.content, isBlocked, tc.blocked)
 		}
@@ -116,7 +116,7 @@ func TestComplianceHook_OnRequest_CaseInsensitiveBan(t *testing.T) {
 
 func TestComplianceHook_OnResponse_LogsAudit(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	// First, process a request to set state
 	reqInv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
@@ -133,7 +133,7 @@ func TestComplianceHook_OnResponse_LogsAudit(t *testing.T) {
 		},
 	}
 	hook.OnRequest(reqInv)
-	
+
 	// Now process the response
 	respInv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
@@ -145,19 +145,19 @@ func TestComplianceHook_OnResponse_LogsAudit(t *testing.T) {
 			Body:   contract.Payload{Body: []byte("Response text here")},
 		},
 	}
-	
+
 	reply := hook.OnResponse(respInv)
-	
+
 	if reply.Decision != contract.DecisionContinue {
 		t.Errorf("Decision = %v, want DecisionContinue", reply.Decision)
 	}
-	
+
 	// Verify audit log was created
-	if len(hook.AuditLog) != 1 {
-		t.Fatalf("AuditLog length = %d, want 1", len(hook.AuditLog))
+	if len(hook.AuditEntries()) != 1 {
+		t.Fatalf("AuditLog length = %d, want 1", len(hook.AuditEntries()))
 	}
-	
-	entry := hook.AuditLog[0]
+
+	entry := hook.AuditEntries()[0]
 	if entry.RequestID != "req-003" {
 		t.Errorf("RequestID = %q, want req-003", entry.RequestID)
 	}
@@ -177,14 +177,14 @@ func TestComplianceHook_OnResponse_LogsAudit(t *testing.T) {
 
 func TestComplianceHook_StateCorrelation(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	// Request sets state
 	reqCtx := &contract.Context{
 		RequestID: "req-004",
 		Origin:    contract.OriginLocal,
 		State:     make(map[string]string),
 	}
-	
+
 	reqInv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
 		HookPoint:       contract.HookPointOnRequest,
@@ -194,9 +194,9 @@ func TestComplianceHook_StateCorrelation(t *testing.T) {
 			Body:  contract.Payload{Body: []byte("1234567890123456")}, // 16 chars = 4 tokens
 		},
 	}
-	
+
 	hook.OnRequest(reqInv)
-	
+
 	// Verify state was set
 	if reqCtx.State["input_tokens"] != "4" {
 		t.Errorf("input_tokens = %q, want 4", reqCtx.State["input_tokens"])
@@ -204,7 +204,7 @@ func TestComplianceHook_StateCorrelation(t *testing.T) {
 	if reqCtx.State["model"] != "test-model" {
 		t.Errorf("model = %q, want test-model", reqCtx.State["model"])
 	}
-	
+
 	// Response uses state
 	respInv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
@@ -214,15 +214,15 @@ func TestComplianceHook_StateCorrelation(t *testing.T) {
 			Body: contract.Payload{Body: []byte("response")},
 		},
 	}
-	
+
 	hook.OnResponse(respInv)
-	
+
 	// Verify audit entry used correlated state
-	if len(hook.AuditLog) != 1 {
-		t.Fatalf("AuditLog length = %d, want 1", len(hook.AuditLog))
+	if len(hook.AuditEntries()) != 1 {
+		t.Fatalf("AuditLog length = %d, want 1", len(hook.AuditEntries()))
 	}
-	
-	entry := hook.AuditLog[0]
+
+	entry := hook.AuditEntries()[0]
 	if entry.InputTokens != 4 {
 		t.Errorf("InputTokens = %d, want 4", entry.InputTokens)
 	}
@@ -233,7 +233,7 @@ func TestComplianceHook_StateCorrelation(t *testing.T) {
 
 func TestComplianceHook_ServeHTTP_OnRequest(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	inv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
 		HookPoint:       contract.HookPointOnRequest,
@@ -246,22 +246,22 @@ func TestComplianceHook_ServeHTTP_OnRequest(t *testing.T) {
 			Body: contract.Payload{Body: []byte("clean content")},
 		},
 	}
-	
+
 	invJSON, err := json.Marshal(inv)
 	if err != nil {
 		t.Fatalf("marshal invocation: %v", err)
 	}
-	
+
 	respJSON, err := hook.ServeHTTP("/hooks/v1/on_request", invJSON)
 	if err != nil {
 		t.Fatalf("ServeHTTP failed: %v", err)
 	}
-	
+
 	var reply contract.Reply
 	if err := json.Unmarshal(respJSON, &reply); err != nil {
 		t.Fatalf("unmarshal reply: %v", err)
 	}
-	
+
 	if reply.Decision != contract.DecisionContinue {
 		t.Errorf("Decision = %v, want DecisionContinue", reply.Decision)
 	}
@@ -269,7 +269,7 @@ func TestComplianceHook_ServeHTTP_OnRequest(t *testing.T) {
 
 func TestComplianceHook_ServeHTTP_UnknownEndpoint(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	_, err := hook.ServeHTTP("/unknown/endpoint", []byte("{}"))
 	if err == nil {
 		t.Error("expected error for unknown endpoint, got nil")
@@ -281,16 +281,16 @@ func TestComplianceHook_ServeHTTP_UnknownEndpoint(t *testing.T) {
 
 func TestComplianceHook_GetAuditReport(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	// Add some audit entries
-	hook.AuditLog = []AuditEntry{
+	hook.SetAuditEntries([]AuditEntry{
 		{RequestID: "req-1", Blocked: false, InputTokens: 100, OutputTokens: 200},
 		{RequestID: "req-2", Blocked: true, InputTokens: 50, OutputTokens: 0},
 		{RequestID: "req-3", Blocked: false, InputTokens: 150, OutputTokens: 300},
-	}
-	
+	})
+
 	report := hook.GetAuditReport()
-	
+
 	if !strings.Contains(report, "Total Requests: 3") {
 		t.Errorf("report doesn't mention 3 total requests: %s", report)
 	}
@@ -307,16 +307,16 @@ func TestComplianceHook_GetAuditReport(t *testing.T) {
 
 func TestExtractMessages(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi"}]}`)
-	
+
 	messages, err := ExtractMessages(body)
 	if err != nil {
 		t.Fatalf("ExtractMessages failed: %v", err)
 	}
-	
+
 	if len(messages) != 2 {
 		t.Fatalf("messages length = %d, want 2", len(messages))
 	}
-	
+
 	if messages[0]["role"] != "user" {
 		t.Errorf("first message role = %v, want user", messages[0]["role"])
 	}
@@ -327,7 +327,7 @@ func TestExtractMessages(t *testing.T) {
 
 func TestContainsBannedContent(t *testing.T) {
 	hook := NewComplianceHook()
-	
+
 	testCases := []struct {
 		name     string
 		messages []map[string]interface{}
@@ -360,11 +360,11 @@ func TestContainsBannedContent(t *testing.T) {
 			keyword: "ignore previous instructions",
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			banned, keyword := hook.ContainsBannedContent(tc.messages)
-			
+
 			if banned != tc.banned {
 				t.Errorf("banned = %v, want %v", banned, tc.banned)
 			}

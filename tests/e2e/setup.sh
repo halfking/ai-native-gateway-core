@@ -13,7 +13,10 @@ DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5433}"
 DB_NAME="${DB_NAME:-llm_gateway_test}"
 DB_USER="${DB_USER:-test}"
-DB_PASSWORD="${DB_PASSWORD:-test123}"
+# ★★ 2026-11-25（12h 修订审计轮 P1 修正）：★ 口令须与
+# ★★ tests/e2e/docker-compose.e2e.yml 的 POSTGRES_PASSWORD 一致 ★★（★ 之前 compose
+# ★★ 已改成 testpass123、而这里还留 test123 ⇒ ★★ e2e 认证失败 ★★）。
+DB_PASSWORD="${DB_PASSWORD:-testpass123}"
 
 export PGPASSWORD="$DB_PASSWORD"
 

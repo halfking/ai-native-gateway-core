@@ -108,18 +108,18 @@ KNOWN_SCRIPT_HITS=(
   "scripts/.mutate-840-throttle.sh:25"
   "scripts/audit/scan_startup_chain.py:20"
   "scripts/omnifree/e2e-verify.sh:46"
-  "scripts/setup-test-db.sh:42"
   "scripts/start-full.sh:40"
   "scripts/test-migration-430.sh:23"
   "scripts/test-migration-430.sh:340"
   "scripts/ursmcheck/hardcoded_dsn_targets.tsv:7"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:11"
   "scripts/ursmcheck/hardcoded_dsn_targets.tsv:12"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:16"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:17"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:18"
   "scripts/ursmcheck/hardcoded_dsn_targets.tsv:19"
   "scripts/verify-fpslot-fix.sh:299"
+  'scripts/setup-test-db.sh:57'
+  'scripts/ursmcheck/hardcoded_dsn_targets.tsv:13'
+  'scripts/ursmcheck/hardcoded_dsn_targets.tsv:20'
+  'scripts/ursmcheck/hardcoded_dsn_targets.tsv:21'
+  'scripts/ursmcheck/hardcoded_dsn_targets.tsv:22'
 )
 
 # ── 路径口径 ─────────────────────────────────────────────────────────
@@ -558,6 +558,9 @@ KNOWN_EXEMPT_CRED=(
   'web/src/App.vue	openChangePassword	ASSIGN	@[a-z-]+="'
   'web/src/views/OutputComplianceView.vue	output_compliance.redact_password	ASSIGN	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
   'web/src/views/UsersView.vue	onDrawerResetPassword	ASSIGN	@[a-z-]+="'
+  'maestro/run-mock-only.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
+  'maestro/run-session-analytics.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
+  'maestro/run-stats-range-picker.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
 )
 
 KNOWN_SORTED="$(printf '%s\n' "${KNOWN_EXEMPT_CRED[@]}" | grep -v '^__FILL__$' | sort -u)"
@@ -651,6 +654,8 @@ KNOWN_EXEMPT_ADDR=(
   'sql/migrations/startup/363_security_detector_config.sql	example\.com'
   'web-mobile/scripts/serve-current-build.mjs	127\.0\.0\.1'
   'web-mobile/src/api/gatewaySites.ts	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'domains/streaming/handler.go	0\.0\.0\.0'
+  'maestro/tools/probe-f1-legend.mjs	127\.0\.0\.1'
 )
 
 KNOWN_ADDR_SORTED="$(printf '%s\n' "${KNOWN_EXEMPT_ADDR[@]}" | grep -v '^__FILL__$' | sort -u)"

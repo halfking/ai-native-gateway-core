@@ -11184,4 +11184,19 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 056 | `056_user_teams.sql` | `75bc05aae05f04e9b2614fd33796d0d2d0dab55bd8b7daf49ba8ea43b35f2ef5` | pending deploy。用户与团队的多对多关联表。依赖 055，本轮补齐投递接线。 |
 | 057 | `057_api_keys_team_id.sql` | `399525282ac62d4a2f317fdb9bf9c64059e79c4316365adfcedee3ed2c98d542` | pending deploy。给 api_keys 追加可空 team_id 并外键引用 teams(id)。依赖 055，本轮补齐投递接线。 |
 | 058 | `058_team_budgets.sql` | `e1b4d054f8e12c5d258d21c59bb2daa3fe9de78857be6bf88a3a457f8c2564cb` | pending deploy。团队月度预算表。依赖 055，本轮补齐投递接线。 |
+| 999a | `999a_data_maintenance_playbook.sql` | `b0537884bfe3e33261ab1fd3b9213df106efd6848a093045a3eb6dde6e4ce661` | pending deploy。数据维护手册种子：播种六条 `data_maintenance:*` prompt 型手册条目（auto_execute=FALSE、fail-closed）。★ 2026-11-25（12h 修订审计轮）补登：★ 本件此前**只登记了 8/9 面**（投递路径两面已由 8181ebb38 补齐、★ 但**唯一 sha 台账面缺登记** ⇒ ★ 且 `internal/sqlguard/migration_registry_continuity_test.go` 的★ `^[0-9]{3}_` 版本前缀正则**看不见 `999a_…`**（4 位数＋字母后缀）⇒ ★ 漏登记是**静默**的 ⇒ ★ 本行补齐该面。 |
 > ★ **2026-11-24（合并轮二十二）**：★ 本表的 teams 族四行**按上游 canonical 字节**登记（★ `055`/`056`/`057`/`058`）⇒ ★ **并行车那条「加固版 + `973`」方案（★ 事务 ＋ `SET lock_timeout/statement_timeout` ＋ `public.` 限定）本轮未采用**（★ owner 轴待决项、★ 保守口径：★ 保持上游 055–058 原字节 ⇒ **不触发生产重放**）⇒ ★ ⇒ **故本表不登记 `973`**（★ 台账登记了磁盘上不存在的文件 ⇒ `verify-migration-checksums.sh` 判 fatal）★。
+## 2026-11-24T19:40:58Z — deploy 245 build_seq 3162 (8092699b)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 925 | `925_supplier_contract_rates.sql` | `b32e8fb99b6e156ce85c30198cf5bb71d157b4a66970333d0a32020c961b87ed` | applied+verified |
+| 982 | `982_provider_call_attempts.sql` | `5421564ddbb0b894689b87ff2ca2adb3c701c72143e0bf6b30ab8faaae3f106a` | applied+verified |
+| 983 | `983_request_metrics.sql` | `4441d11d03acbd154e568c41fa4e94ae717c40a66523db35aff120e6cc55da5e` | applied+verified |
+| 984 | `984_session_universe_cost_aware_probe_scope.sql` | `5292e73dd5c240600953b641758e3cc70fb5a8554e70823d86811a4582f4e40b` | applied+verified |
+| 985 | `985_request_reconciliation_links.sql` | `fc4430f8aba297fa449cf4f321fb5b4ee9753a766b656d413e42fb7a810c28a9` | applied+verified |
+| 986 | `986_provider_attempt_media_usage.sql` | `2e3be29b1a5102def9d6b459664897fa1bcc43e90465bd55f5a2e8c1a5dfecc9` | applied+verified |
+| 987 | `987_provider_invoice_evidence.sql` | `6bb0dc4760c805fedf3774d797203f41a448db4b45c69d74c629b0f302ffa5c8` | applied+verified |
+| 988 | `988_provider_invoice_usage_buckets.sql` | `3a46a04e819cc540c8590d6a02ab6c7bf33c6888860421948341959877186086` | applied+verified |
+| 989 | `989_migration_ledger_session_analytics_981_repair.sql` | `a66a2eddc8cf323d1b785dd74ffdd25cc255fc8b799c161f09e09458ea009599` | applied+verified |
+
