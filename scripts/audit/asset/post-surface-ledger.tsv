@@ -304,6 +304,8 @@
 /api/admin/prompt-injection/stats	ANY	admin/prompt_injection_handler.go:124	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/provider-cost-reconciliation	ANY	admin/provider_cost_reconciliation.go:51	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/provider-cost-reconciliation/bill	ANY	admin/provider_cost_reconciliation.go:52	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/provider-cost-reconciliation/invoices	ANY	admin/handler.go:1558	unknown				not-probed-unresolved	★ 2026-11-24 合并轮二十一补登：★ 上游新增端点（★ 路由清单刷新后新增、★ 台账行数原比清单少 2 条）★ ⇒ ★ 无探测观测 ⇒ 裁决按静态分级推导
+/api/admin/provider-cost-reconciliation/rates	ANY	admin/handler.go:1559	unknown				not-probed-unresolved	★ 2026-11-24 合并轮二十一补登：★ 上游新增端点（★ 路由清单刷新后新增、★ 台账行数原比清单少 2 条）★ ⇒ ★ 无探测观测 ⇒ 裁决按静态分级推导
 /api/admin/providers/{id}/enable	ANY	admin/handler.go:1364	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/admin/providers/{id}/test-now	ANY	admin/handler.go:1363	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/quality/attempts	ANY	cmd/gateway/main.go:7535	unknown				not-probed-unresolved	★ 静态分级：解析不出

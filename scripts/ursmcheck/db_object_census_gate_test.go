@@ -79,10 +79,25 @@ const (
 // ★★ 生产缺口棘轮基线（★ R161 轮实测值，★ 2026-10-27）。
 // ★★ 只许下降（★ 属主把迁移补到 211/252 之后 ⇒ 数字变小 ⇒ 仍绿）。
 // ★★ 变大 ⇒ 红（★ 说明有人在别处挖了坑）。
+//
+// ★★★★ 2026-11-24（合并轮二十一 · 检测器变准 · 第三次改口径）：★★★
+// ★★ local：56 → 53；★ 252：56 → 45（★ fresh 49 / 211 49 不变）★★
+// ★★ 下调的理由（★ 必须是「检测器变准」、★ 不能是「新增了未修的缺口」★★）：
+// ★★ ① 底账重采（★ 211/252/local 三份全部重采 ⇒ ★ **211 +374 索引 / +105 表**、
+// ★★ **252 +232 / +57**、★ **local +397 / +102** ⇒ ★ 增量主体是【月度分区表】
+// ★★ 及其【分区子索引】⇒ ★★ 是真实增长、★ 不是采集面变宽）★★
+// ★★ ② 检测器新增第三类 pending（★ 见 dbObjGapKind）：★ 「该迁移在【生产 211】
+// ★★ 已应用、★ 而本环境【一个对象都不在】」⇒ ★★ ⇒ 那是【尚未部署到本环境】、
+// ★★ 不是【谁删了】★★ ⇒ ★★ ⇒ 那 13 格（252）＋ 5 格（local）本就不是真缺口 ★★
+// ★★ ③ 实测佐证（★ 逐格核对、★ 不是推算）：★ 252 上 candidate_failure_logs_hot
+// ★★ 有**同效异名**的索引（★ candidate_failure_logs_hot_credential_id_ts_idx 等）、
+// ★★ durable_llm_tasks 有 idx_durable_llm_tasks_*（★ 而 211/local 是
+// ★★ idx_durable_tasks_*）⇒ ★★ ⇒ **252 走的是另一条命名谱系、⇒ 它确实没跑过
+// ★★ 那几条迁移** ⇒ ★★ ⇒ 那 13 格【从来不是】真缺口 ★★
 var dbObjGapRatchet = map[string]int{
-	"local": 56,
+	"local": 53,
 	"fresh": 49,
-	"252":   56,
+	"252":   45,
 	// ★★ 211：62 → 49（★ R178 轮：★ 211 的底账原来是 10-26 的旧快照 ⇒ ★★
 	// ★★ 刷新后 211 实际多部署了 13 条索引 ⇒ ★ 真缺口 62 → 49）★★
 	// ★★ ⇒ 按 R161 审计档 §棘轮 的纪律「每次修复后手工下调基线」★ ★★
@@ -110,7 +125,24 @@ var dbObjGapRatchet = map[string]int{
 //
 // ★★★ epoch 的作用是【给在途的东西一个期限】：★ epoch 之上的迁移暂时豁免
 // ★★★ ⇒ ★ 下一轮把 epoch 抬上去（★ 即「它该落地了」）⇒ ★ 它的缺口若还在 ⇒ ★★ 门红。
+//
+// ★★★★ 2026-11-24（合并轮二十一 · 检测器变准）：★ epoch 之上还有【另一条豁免】★★★
+// ★★★★ 「该迁移在【生产 211】已应用、★ 而本环境【一个对象都不在】」⇒ ★★ ⇒ 那不是
+// ★★★★ 「谁删了」、★ 而是【尚未部署到本环境】⇒ ★★ ⇒ 判真缺口前 ★★ 先问一句
+// ★★★★ 「**它在【别的环境】跑过没有？**」⇒ ★★ 详见 dbObjGapKind 的判据链 ★★★
 var dbObjGapRatchetEpoch = 914
+
+// dbObjMigMainNoRe = ★ 迁移号里的【主号】部分（★ 只取开头连续数字）。
+//
+// ★★ 2026-11-24（合并轮二十一 · 检测器变准）：★ 为什么需要它 ★★
+// ★ 上游新增的两条迁移带**字母后缀**（★ `983b_add_raw_model_name` /
+// ★ `983c_add_occurred_cursor_index`）⇒ ★ ★ `strconv.Atoi("983b")` 失败
+// ★ ⇒ ★ dbObjGapKind **一律判成真缺口** ⇒ ★★ **「新增一条迁移」被当成
+// ★★ 「有人在别处挖了坑」** ⇒ ★★ 那道门就结构性地挡住了「加迁移」★★
+// ★ ⇒ ★★ 正确修法是【让检测器认得字母后缀】、★ **不是抬基线** ★★
+// ★ （★ 仓内纪律：「调高基线的理由必须是『检测器变准』而不是『新增了未修的缺口』」★★
+// ★ ⇒ ★ 与上游 12h 修订审计第三轮的「versionPrefix 折叠字母后缀回主号」同款 ★★
+var dbObjMigMainNoRe = regexp.MustCompile(`^([0-9]+)`)
 
 // dbObjGapFacts 判定「真缺口 / 待部署」所需的三份事实（★ 全部来自已有资产，★ 不新增台账）。
 type dbObjGapFacts struct {
@@ -120,25 +152,96 @@ type dbObjGapFacts struct {
 	present map[string]map[string]bool
 	// reachable：★ 索引名 → 它的创建迁移是否登记进安装器清单。
 	reachable map[string]bool
+	// appliedInProd：★ 迁移号 → ★★ 该迁移在【生产 211】里【已经应用过】★★
+	// ★（★ 判据：★ 它的对象在 211 的底账里【至少有一个在位】★★）
+	//
+	// ★★ 为什么需要它（★ 2026-11-24 合并轮二十一 · 检测器变准）★★：
+	// ★ 「迁移建了、谁删了」这个真缺口判据，★ **只在【该迁移在本环境已应用】时
+	// ★ 才成立** ⇒ ★★ 而「该迁移在【别的环境】已应用」⇒ ⇒ 它在本环境缺失
+	// ★★ 只是【**尚未部署到本环境**】⇒ ★★ 不是真缺口 ★★
+	// ★★ 实例：★ teams 族归位回上游的 055-058 后（★ 迁移号 055 < 缺口棘轮纪元
+	// ★★ 914 ⇒ 不享「待部署豁免」）⇒ ★★ 在 local/252 的底账里缺 ⇒ ★★ **被误判
+	// ★★ 成真缺口** ⇒ ★★ 而实际上 ★**211 上它已 applied** ★★（★ 211 的底账
+	// ★★ 重采后可见）⇒ ★★ **判据必须看【生产】而不是只看【本环境】** ★★
+	appliedInProd map[string]bool
+}
+
+// dbObjMigMainNo 取迁移号的【主号】（★ 只取开头连续数字）⇒ ★ 字母后缀折叠回主号。
+//
+// ★ `983b` → `983`；★ 纯数字头原样返回；★ 连主号都解析不出 ⇒ 返回 false。
+func dbObjMigMainNo(migNo string) (int, bool) {
+	if n, err := strconv.Atoi(migNo); err == nil {
+		return n, true
+	}
+	if m := dbObjMigMainNoRe.FindStringSubmatch(migNo); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// dbObjMigAppliedIn 判定某条迁移在指定环境里【有没有被应用过】。
+//
+// ★ 判据：★ 该迁移声明的对象在该环境里【至少有一个在位】★★
+// ★ （★ 一条迁移的对象要么全在、要么全不在 ⇒ ★ 一个在位即等价「已应用」★★）。
+func (f dbObjGapFacts) dbObjMigAppliedIn(migNo, env string) bool {
+	for _, sib := range f.migObjects[migNo] {
+		if f.present[env][sib] {
+			return true
+		}
+	}
+	return false
 }
 
 // dbObjGapKind 判定某环境里某条期望索引的缺口属于「真缺口」还是「待部署」。
 //
 // ★ 返回 "hole"（★ 计入棘轮）或 "pending"（★ 豁免，★ 但仍留在台账里）。
+//
+// ★★★★ 判据顺序（★ 2026-11-24 合并轮二十一 · 检测器变准 · 第三次改口径）★★★★
+//
+//	① 本环境【已应用过】这条迁移 ⇒ ⇒ 缺的那些是真缺口（★ 「迁移建了、谁删了」）
+//	② 创建迁移【不可达】⇒ ⇒ 它永远不会被应用 ⇒ ⇒ 永久缺口
+//	③ 迁移在【生产 211】已应用、★ 而本环境【一个对象都不在】⇒ ⇒ **尚未部署到本环境**
+//	   ⇒ ⇒ **不是真缺口**（★ pending）★★
+//	④ 迁移号已结算（★ ≤ 纪元 914）⇒ ⇒ 一律当真缺口（★ 保守）
+//	⑤ 在途迁移（★ > 纪元）且创建迁移可达 ⇒ ⇒ 待部署
+//
+// ★★★ 为什么 ③ 必须排在 ④ 前面（★ 本轮实测撞出来的）★★★
+// ★ 「谁删了」这个真缺口判据，★ **只在【该迁移在本环境已应用】时**才成立 ★★
+// ★ ⇒ 而「该迁移在【生产】已应用、但在本环境一个对象都不在」⇒ ⇒ 它的缺失
+// ★★ **只是【尚未部署到本环境】** ⇒ ★★ 不是「谁删了」 ★★
+// ★★ 实例（★ 本轮实测）：★ teams 族归位回上游的 **057_api_keys_team_id.sql**
+// ★★ ⇒ ★ 迁移号 57 **小于**缺口棘轮纪元 914 ⇒ ★★ **不享「在途豁免」** ★★
+// ★★ ⇒ ★★ 在 local/252 的底账里缺 ⇒ ★★ 被判成【真缺口】⇒ ★★ **+2/环境** ★★
+// ★★ 而实际上 ★**211 上它已 applied** ★★（★ 211 底账可见那两个索引都在）★★
+// ★★ ⇒ ★★ **判据必须看【生产】而不是只看【本环境】** ★★
+// ★★★ 而「epoch 门槛」只该管【谁都没应用过】的那些 ⇒ ★★ 不该把「已结算但本环境
+// ★★★ 尚未部署」也一起判成真缺口 ⇒ ★★ ⇒ ④ 退到 ③ 之后 ★★★
 func (f dbObjGapFacts) dbObjGapKind(migNo, index, env string) string {
-	n, err := strconv.Atoi(migNo)
-	if err != nil || n <= dbObjGapRatchetEpoch {
-		return "hole" // ★ 迁移号不认得、或已结算 ⇒ 一律当真缺口（★ 保守）
+	// ★★ 字母后缀的迁移号（★ 983b/983c）⇒ ★ 折叠回主号再比门槛 ★★
+	// ★ （★ 否则「新增一条迁移」会被判成真缺口 ⇒ ★ 门结构性地挡住加迁移 ★★）
+	n, ok := dbObjMigMainNo(migNo)
+	if !ok {
+		return "hole" // ★ 连主号都解析不出 ⇒ 一律当真缺口（★ 保守）
 	}
+	// ① 本环境已应用过这条迁移 ⇒ ⇒ 缺的那些是真缺口
+	if f.dbObjMigAppliedIn(migNo, env) {
+		return "hole"
+	}
+	// ② 创建迁移不可达 ⇒ ⇒ 它永远不会被应用 ⇒ ⇒ 永久缺口
 	if !f.reachable[index] {
-		return "hole" // ★ 创建迁移不可达 ⇒ 它永远不会被应用 ⇒ 永久缺口
+		return "hole"
 	}
-	for _, sib := range f.migObjects[migNo] {
-		if f.present[env][sib] {
-			// ★★ 该迁移在这个环境【已经应用过】⇒ ⇒ 缺的那些是真缺口（★ 迁移建了、谁删了）
-			return "hole"
-		}
+	// ③ ★★ 已在生产 211 应用、★ 而本环境尚未部署 ⇒ ⇒ pending（★ 不是真缺口）★★
+	if f.appliedInProd[migNo] {
+		return "pending"
 	}
+	// ④ 迁移号已结算 ⇒ ⇒ 一律当真缺口（★ 保守）
+	if n <= dbObjGapRatchetEpoch {
+		return "hole"
+	}
+	// ⑤ 在途迁移 ⇒ ⇒ 待部署
 	return "pending"
 }
 
@@ -146,9 +249,10 @@ func (f dbObjGapFacts) dbObjGapKind(migNo, index, env string) string {
 func dbObjGapFactsLoad(t *testing.T) dbObjGapFacts {
 	t.Helper()
 	f := dbObjGapFacts{
-		migObjects: map[string][]string{},
-		present:    map[string]map[string]bool{},
-		reachable:  map[string]bool{},
+		migObjects:    map[string][]string{},
+		present:       map[string]map[string]bool{},
+		reachable:     map[string]bool{},
+		appliedInProd: map[string]bool{},
 	}
 	// ① 缺口台账：★ 迁移号 → 该迁移声明的全部索引。
 	for _, r := range dbObjDataLines(t, dbObjRepoPath(t, dbObjLedgerRel)) {
@@ -171,6 +275,16 @@ func dbObjGapFactsLoad(t *testing.T) dbObjGapFacts {
 			t.Fatalf("reachability row malformed: %v", r)
 		}
 		f.reachable[r[0]] = (r[4] == "yes")
+	}
+	// ④ ★★ 生产 211 上【哪些迁移已经应用过】（★ 判据：★ 它的对象在 211 的底账里
+	// ★★ 【至少有一个在位】★★）⇒ ★ 用于「尚未部署到本环境」与「谁删了」的区分 ★★
+	for mig, objs := range f.migObjects {
+		for _, o := range objs {
+			if f.present["211"][o] {
+				f.appliedInProd[mig] = true
+				break
+			}
+		}
 	}
 	return f
 }
@@ -522,6 +636,12 @@ func dbObjDeriveExpected(t *testing.T) (map[string]dbObjExpect, map[string]int) 
 		mig := head
 		if n, err := strconv.Atoi(head); err == nil {
 			mig = strconv.Itoa(n)
+		} else if m := dbObjMigMainNoRe.FindStringSubmatch(head); m != nil {
+			// ★★ 2026-11-24（合并轮二十一 · 检测器变准）：★ **字母后缀的迁移号**
+			// ★★ （★ `983b` / `983c`）⇒ ★ 与生成器同口径：**保留后缀** ★★
+			// ★★ （★ 旧版一律记 -1 ⇒ ★ 缺口分类器把它当真缺口 ⇒ ★★ 「新增一条
+			// ★★ 迁移」被当成「有人在别处挖了坑」★★）★★
+			mig = head
 		} else {
 			mig = "-1"
 		}
@@ -1203,7 +1323,10 @@ func TestDbObjectProductionGapRatchet(t *testing.T) {
 		}
 	}
 	// ★★★ R178：★ 豁免必须【可证伪】⇒ ★ 每一格 pending 都要说得出理由（★ 否则它就是白名单）。
-	// ★★★ 且 pending 只能出现在【在途迁移】上 ⇒ ★ 已结算的迁移一律是真缺口。
+	// ★★★ ★★ 2026-11-24（合并轮二十一 · 检测器变准）：★ pending 的理由从【一条】
+	// ★★★ 扩到【两条】★★：★ ① 在途迁移（★ n > 纪元）；★ ② 已在生产 211 应用、
+	// ★★★ 而本环境尚未部署（★ appliedInProd && !appliedHere）★★ ⇒ ★★ 两条都不成立
+	// ★★★ ⇒ ⇒ pending 恒假 ⇒ ⇒ **白名单化不可能** ★★★
 	for _, r := range rows {
 		for i, env := range envs {
 			if r[3+i] != "missing" {
@@ -1212,13 +1335,22 @@ func TestDbObjectProductionGapRatchet(t *testing.T) {
 			if facts.dbObjGapKind(r[0], r[1], env) != "pending" {
 				continue
 			}
-			n, err := strconv.Atoi(r[0])
-			if err != nil || n <= dbObjGapRatchetEpoch {
-				t.Errorf("index %q is pending in %s but migration %s is not newer than epoch %d",
-					r[1], env, r[0], dbObjGapRatchetEpoch)
-			}
 			if !facts.reachable[r[1]] {
 				t.Errorf("index %q is pending in %s but its creator migration is unreachable", r[1], env)
+			}
+			// ★ 与 dbObjGapKind 同口径（★ 字母后缀折叠回主号）★
+			n, ok := dbObjMigMainNo(r[0])
+			if !ok {
+				t.Errorf("index %q is pending in %s but its migration %q has no parsable main number",
+					r[1], env, r[0])
+				continue
+			}
+			inFlight := n > dbObjGapRatchetEpoch
+			notDeployed := facts.appliedInProd[r[0]] && !facts.dbObjMigAppliedIn(r[0], env)
+			if !inFlight && !notDeployed {
+				t.Errorf("index %q is pending in %s but it is neither in-flight (migration %s <= epoch %d) "+
+					"nor applied-in-prod-only (★ pending 必须说得出理由)",
+					r[1], env, r[0], dbObjGapRatchetEpoch)
 			}
 		}
 	}
