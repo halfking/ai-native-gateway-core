@@ -826,6 +826,20 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	where := strings.Join(clauses, " AND ")
 
+	// 2026-11-25: 诊断日志——记录查询参数以便排查"query failed"根因
+	queryStart := time.Now()
+	slog.InfoContext(ctx, "admin listLogs query starting",
+		"time_window_hours", end.Sub(start).Hours(),
+		"page", page,
+		"page_size", pageSize,
+		"filter_count", len(clauses),
+		"arg_count", len(args),
+		"include_probe", includeProbe,
+		"lane", lane,
+		"tenant_id", GetTenantID(r),
+		"is_tenant_admin", IsTenantAdmin(r),
+	)
+
 	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
 	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
 	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
@@ -896,11 +910,20 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	//	事务的三条语句，归还连接时并行度恢复默认。
 	tx, txErr := h.db.Begin(ctx)
 	if txErr != nil {
+		slog.ErrorContext(ctx, "admin listLogs transaction begin failed",
+			"error", txErr.Error(),
+			"elapsed_ms", time.Since(queryStart).Milliseconds(),
+		)
 		writeInternalErr(w, "query failed", txErr)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // 只读事务；Commit 成功后 Rollback 是无害的 ErrTxClosed
 	if _, txErr := tx.Exec(ctx, listLogsSerialPlanSQL); txErr != nil {
+		slog.ErrorContext(ctx, "admin listLogs set_config (serial plan) failed",
+			"error", txErr.Error(),
+			"sql", listLogsSerialPlanSQL,
+			"elapsed_ms", time.Since(queryStart).Milliseconds(),
+		)
 		writeInternalErr(w, "query failed", txErr)
 		return
 	}
@@ -948,12 +971,15 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		aggFromSQL = " FROM " + logsFrom + " WHERE " + where
 	}
 	// ★ 2026-11-23：本查询走串行事务（见上方 listLogsSerialPlanSQL 处注释）。
+	aggStart := time.Now()
 	if err := tx.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
 		&count, &promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
 		&totalTokens, &costSum, &creditsSum,
 	); err != nil {
 		slog.Warn("admin listLogs aggregate scan failed",
 			"err", err.Error(),
+			"arg_count", len(args),
+			"elapsed_ms", time.Since(aggStart).Milliseconds(),
 		)
 		// 聚合失败：退回单独的 COUNT（页面的 count 与列表仍然可用，
 		// 聚合字段保持零值）—— 与旧行为一致（旧：COUNT 失败即 500）。
@@ -963,8 +989,16 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			countSQL = "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 			scope = "tenant"
 		}
+		countStart := time.Now()
 		if err := tx.QueryRow(ctx, countSQL, args...).Scan(&count); err != nil {
-			slog.Error("admin listLogs count query failed", "scope", scope, "error", err)
+			slog.Error("admin listLogs count query failed",
+				"scope", scope,
+				"error", err.Error(),
+				"arg_count", len(args),
+				"filter_count", len(clauses),
+				"total_elapsed_ms", time.Since(queryStart).Milliseconds(),
+				"count_elapsed_ms", time.Since(countStart).Milliseconds(),
+			)
 			writeInternalErr(w, "query failed", err)
 			return
 		}
@@ -1076,6 +1110,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
 	`, traceSeqInner, logsFrom, where, orderBy, limitIdx, offsetIdx)
+	listQueryStart := time.Now()
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
 		FROM (%s) rl
@@ -1083,7 +1118,19 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		ORDER BY %s
 	`, requestLogsListCols, traceSeqOuter, innerSQL, requestLogsJoins, orderBy), listArgs...)
 	if err != nil {
-		slog.Error("admin listLogs page query failed", "error", err)
+		slog.Error("admin listLogs page query failed",
+			"error", err.Error(),
+			"arg_count", len(listArgs),
+			"expected_count", count,
+			"page", page,
+			"page_size", pageSize,
+			"offset", offset,
+			"include_probe", includeProbe,
+			"lane", lane,
+			"filter_count", len(clauses),
+			"list_query_elapsed_ms", time.Since(listQueryStart).Milliseconds(),
+			"total_elapsed_ms", time.Since(queryStart).Milliseconds(),
+		)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -1145,6 +1192,25 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// （数据已在内存里），照常返回并在服务端留痕。
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("admin listLogs serial-plan tx commit failed", "err", err.Error())
+	}
+
+	// 2026-11-25: 成功查询日志——记录性能指标以便分析慢查询模式
+	totalElapsed := time.Since(queryStart)
+	if totalElapsed > 5*time.Second {
+		slog.WarnContext(ctx, "admin listLogs query slow",
+			"total_elapsed_ms", totalElapsed.Milliseconds(),
+			"count", count,
+			"items_returned", len(items),
+			"page", page,
+			"page_size", pageSize,
+			"filter_count", len(clauses),
+		)
+	} else {
+		slog.InfoContext(ctx, "admin listLogs query completed",
+			"total_elapsed_ms", totalElapsed.Milliseconds(),
+			"count", count,
+			"items_returned", len(items),
+		)
 	}
 
 	// U4：lane=probe|probe_history 读的是业务表历史探测行 ⇒ 响应显式标
