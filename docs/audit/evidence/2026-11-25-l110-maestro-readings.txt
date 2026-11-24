@@ -1,0 +1,400 @@
+# Maestro 真机全链原始读数（★ 第 30 轮两遍，★ 现役 = 34b4a9a6 / build_seq 3267 ★）
+# 说明：★ maestro/reports/ 在 .gitignore 里 ⇒ 产物不进仓 ⇒ 这里**逐字**留一份可复核的副本 ★
+
+════════════════════ 产物目录 maestro/reports/20261125-064248 ════════════════════
+──────── summary.txt ────────
+seed-state=ok
+seed-maestro=ok
+flow rc=0 FAILED=0
+probe rc=0
+custom-range rc=0
+list-deeplink rc=0
+merged rc=0
+
+──────── seed-session-9223.txt ────────
+{
+  "seeded": true,
+  "mode": "expert",
+  "reusedTab": false,
+  "authMe": {
+    "status": 200,
+    "role": "super_admin"
+  }
+}
+
+──────── seed-session-9224.txt ────────
+{
+  "seeded": true,
+  "mode": "expert",
+  "reusedTab": false,
+  "authMe": {
+    "status": 200,
+    "role": "super_admin"
+  }
+}
+
+──────── seed-session-maestro.txt ────────
+{
+  "seeded": true,
+  "mode": "expert",
+  "reusedTab": true,
+  "authMe": {
+    "status": 200,
+    "role": "super_admin"
+  }
+}
+
+──────── assert-stats-range-picker.txt ────────
+ℹ️ 登录态就绪（https://llm.itestu.cn）
+
+──── A. /dashboard?tab=stats ────
+✅ A1 stats 页签存在日期范围选择器  — 找到 1 个 .kx-dr-trigger
+✅ A2 stats 页签日期范围有**固定档位**  — 档位 7 项：今天 / 昨天 / 近 7 天 / 近 14 天 / 近 30 天 / 本月 / 上月
+✅ A3 stats 页签日期范围**保留自定义起止**（.kx-dr-inputs 已渲染 ⇒ presets-only 未开）  — 自定义输入 2 个：开始日期 + 结束日期
+
+──── B. /dashboard?tab=board ────
+✅ B1 看板页签存在日期范围选择器  — 找到 2 个 .kx-dr-trigger
+✅ B2 看板页签同样有固定档位 + 自定义起止  — 档位 7 项 / 自定义 2 个
+
+──── C. 同一组件判定 ────
+✅ C1 stats 与 board 的固定档位**逐字同序相等**（⇒ 同一个组件/同一预设工厂）  — stats=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]  board=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]
+✅ C2 stats 与 board 的区间**显示值一致**（⇒ 共用同一份范围状态）  — stats=今天|11/25 – 11/25  board=今天|11/25 – 11/25
+
+──── D. /admin/session-analytics/users/overview ────
+✅ D1 会话分析用户页存在日期范围选择器  — 找到 2 个 .kx-dr-trigger
+✅ D2 会话分析用户页有**固定档位**  — 档位 7 项：今天 / 昨天 / 近 7 天 / 近 14 天 / 近 30 天 / 本月 / 上月
+✅ D3 会话分析用户页**保留自定义起止**  — 自定义输入 2 个
+✅ D4 会话分析用户页的档位与 stats 页**逐字同序相等**（⇒ 三处同一组件）  — sa=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]  stats=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]
+✅ D5 会话分析用户页的日期范围控件**在页头**（与刷新按钮同容器）  — 祖先链：stats-date-range-picker ← sa-range ← app-page-header__actions ← app-page-header ← session-analytics-users-view ← main-body
+✅ D6 会话分析用户页的日期范围控件**不再埋在 Top10 区块里**  — inTopUsers=false
+
+──── E. 统计说明提示符 ────
+✅ E-stats 1 存在「统计说明」提示符  — 标签文案：统计说明
+✅ E-stats 2 **点击前**说明正文不可见（⇒ 点击才展开，不是常驻横幅）  — bodyExists=true bodyVisible=false
+✅ E-stats 3 **点击后**说明正文可见且有实质内容  — bodyVisible=true  正文前 80 字：统计说明：本页面统计"首次请求在近1天内"的会话的全部请求和费用。注意：本页按「会话宇宙」规则剔除探测会话；生产实测显示这些被剔除的请求在请求日志里全部属于业务
+✅ E-stats 4 提示符**在刷新按钮旁**（同容器）  — nearRefresh=true
+✅ E-sa 1 存在「统计说明」提示符  — 标签文案：统计说明
+✅ E-sa 2 **点击前**说明正文不可见（⇒ 点击才展开，不是常驻横幅）  — bodyExists=true bodyVisible=false
+✅ E-sa 3 **点击后**说明正文可见且有实质内容  — bodyVisible=true  正文前 80 字：统计说明：本页面统计"首次请求在近7天内"的会话的全部请求和费用。注意：本页按「会话宇宙」规则剔除探测会话；生产实测显示这些被剔除的请求在请求日志里全部属于业务
+✅ E-sa 4 提示符**在刷新按钮旁**（同容器）  — nearRefresh=true
+
+──── F. /admin/board-operational ────
+✅ F1 运营面板存在日期范围选择器  — 找到 1 个 .kx-dr-trigger
+✅ F2 运营面板日期范围有**固定档位**  — 档位 7 项：今天 / 昨天 / 近 7 天 / 近 14 天 / 近 30 天 / 本月 / 上月
+✅ F3 运营面板日期范围**保留自定义起止**  — 自定义输入 2 个
+✅ F4 运营面板的档位与 stats 页**逐字同序相等**（⇒ 四处同一组件/同一预设工厂）  — bo=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]  stats=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]
+✅ F5 ★ 运营面板把**控件显示的区间**发给了看板接口（⇒ 显示 = 数据窗口，网络层证据）  — 请求 days=7  控件跨度=7 天
+
+RESULT: PASS（26 条）
+退出码：0
+
+──────── assert-board-op-custom-range.txt ────────
+ℹ️ 登录态就绪（https://llm.itestu.cn）
+✅ G1 ★ 自定义区间真的带 start/end 发给了看板接口（⇒ 自定义路径网络层证据）  — 请求=[2026-09-01..2026-09-10]  期望=[2026-09-01..2026-09-10]  apply已点=true
+✅ G2 ★ **触发器显示的区间** == 看板接口收到的窗口（⇒ 显示 = 数据，自定义路径）  — 触发器="自定义09/01 – 09/10"  推出=[2026-09-01..2026-09-10]  请求=[2026-09-01..2026-09-10]
+✅ G3 ★ 自定义区间时文案显示**起止日期**且**不含「最近 N 天」**（⇒ 文案不说假话）  — 1 处提示：2026-09-01 至 2026-09-10
+✅ H1 ★ **7 个固定档位逐个**对拍：触发器显示的区间 == 看板接口收到的窗口（⇒ 显示 = 数据，无档位盲区）  — today:11/25 – 11/25→days=1✔ | yesterday:11/24 – 11/24→[2026-11-24..2026-11-24]✔ | last7d:11/19 – 11/25→days=7✔ | last14d:11/12 – 11/25→[2026-11-12..2026-11-25]✔ | last30d:10/27 – 11/25→days=30✔ | thisMonth:11/01 – 11/25→[2026-11-01..2026-11-25]✔ | lastMonth:10/01 – 10/31→[2026-10-01..2026-10-31]✔
+✅ H2 ★ **7 个固定档位逐个**：页面文案说的天数/起止 == 实际窗口（⇒ 文案在每个档位都不说假话）  — today:数据时间范围：最近 1 天✔ | yesterday:2026-11-24 至 2026-11-24✔ | last7d:数据时间范围：最近 7 天✔ | last14d:2026-11-12 至 2026-11-25✔ | last30d:数据时间范围：最近 30 天✔ | thisMonth:2026-11-01 至 2026-11-25✔ | lastMonth:2026-10-01 至 2026-10-31✔
+
+RESULT: PASS（5 条）
+退出码：0
+
+──────── assert-board-op-list-deeplink.txt ────────
+ℹ️ 登录态就绪（https://llm.itestu.cn）
+✅ D1 ★ **深链 ?start=&end=** 真的把这两个值发给了看板接口（⇒ 深链到达后端，不是只在地址栏）  — 请求=[2026-11-01..2026-11-07]  期望=[2026-11-01..2026-11-07]  url=https://llm.itestu.cn/api/admin/dashboard/board?start=2026-11-01&end=2026-11-07&include_operational=1
+✅ D2 ★ 深链时**触发器显示的区间** == 请求窗口（⇒ 显示 = 数据）  — 触发器="11/01 – 11/07"  推出=[2026-11-01..2026-11-07]  请求=[2026-11-01..2026-11-07]
+✅ D3 ★ 深链**优先于** days（URL 同时带 start/end 与 days ⇒ 请求仍走 start/end 通道）  — 请求=[2026-11-01..2026-11-07] days=(未带)  url=https://llm.itestu.cn/api/admin/dashboard/board?start=2026-11-01&end=2026-11-07&include_operational=1
+✅ D4 ★ 无参进入列表页 ⇒ 默认 7 天窗口（⇒ 并入共享组件没改坏默认档位）  — 请求=days=7  触发器="11/19 – 11/25"
+
+RESULT: PASS（4 条）
+退出码：0
+
+──────── 18-stats-range-and-scope-hint.log ────────
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 18-stats-range-and-scope-hint
+Assert that (Optional) id: app-user-menu-name is visible... COMPLETED
+Open ${BASE_URL}/?login=1... COMPLETED
+Run _shared/login.yaml when id: login-modal-title is visible...
+Run _shared/login.yaml when id: login-modal-title is visible... SKIPPED
+Open ${BASE_URL}/dashboard?tab=board... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-yesterday is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last14d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Assert that id: kx-dr-apply is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Open ${BASE_URL}/dashboard?tab=stats... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: stats-scope-hint-label is visible... COMPLETED
+Assert that id: stats-scope-hint-body is not visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/users/overview... COMPLETED
+Assert that id: sa-page-users is visible... COMPLETED
+Assert that id: sa-page-users is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: sa-refresh-btn is visible... COMPLETED
+Assert that id: stats-scope-hint-label is visible... COMPLETED
+Assert that id: stats-scope-hint-body is not visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Open ${BASE_URL}/admin/board-operational... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-yesterday is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last14d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+
+════════════════════ 产物目录 maestro/reports/20261125-064948 ════════════════════
+──────── summary.txt ────────
+seed-state=ok
+seed-maestro=ok
+flow rc=0 FAILED=0
+probe rc=0
+custom-range rc=0
+list-deeplink rc=0
+merged rc=0
+
+──────── seed-session-9223.txt ────────
+{
+  "seeded": true,
+  "mode": "expert",
+  "reusedTab": false,
+  "authMe": {
+    "status": 200,
+    "role": "super_admin"
+  }
+}
+
+──────── seed-session-9224.txt ────────
+{
+  "seeded": true,
+  "mode": "expert",
+  "reusedTab": false,
+  "authMe": {
+    "status": 200,
+    "role": "super_admin"
+  }
+}
+
+──────── seed-session-maestro.txt ────────
+{
+  "seeded": true,
+  "mode": "expert",
+  "reusedTab": true,
+  "authMe": {
+    "status": 200,
+    "role": "super_admin"
+  }
+}
+
+──────── assert-stats-range-picker.txt ────────
+ℹ️ 登录态就绪（https://llm.itestu.cn）
+
+──── A. /dashboard?tab=stats ────
+✅ A1 stats 页签存在日期范围选择器  — 找到 1 个 .kx-dr-trigger
+✅ A2 stats 页签日期范围有**固定档位**  — 档位 7 项：今天 / 昨天 / 近 7 天 / 近 14 天 / 近 30 天 / 本月 / 上月
+✅ A3 stats 页签日期范围**保留自定义起止**（.kx-dr-inputs 已渲染 ⇒ presets-only 未开）  — 自定义输入 2 个：开始日期 + 结束日期
+
+──── B. /dashboard?tab=board ────
+✅ B1 看板页签存在日期范围选择器  — 找到 2 个 .kx-dr-trigger
+✅ B2 看板页签同样有固定档位 + 自定义起止  — 档位 7 项 / 自定义 2 个
+
+──── C. 同一组件判定 ────
+✅ C1 stats 与 board 的固定档位**逐字同序相等**（⇒ 同一个组件/同一预设工厂）  — stats=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]  board=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]
+✅ C2 stats 与 board 的区间**显示值一致**（⇒ 共用同一份范围状态）  — stats=今天|11/25 – 11/25  board=今天|11/25 – 11/25
+
+──── D. /admin/session-analytics/users/overview ────
+✅ D1 会话分析用户页存在日期范围选择器  — 找到 2 个 .kx-dr-trigger
+✅ D2 会话分析用户页有**固定档位**  — 档位 7 项：今天 / 昨天 / 近 7 天 / 近 14 天 / 近 30 天 / 本月 / 上月
+✅ D3 会话分析用户页**保留自定义起止**  — 自定义输入 2 个
+✅ D4 会话分析用户页的档位与 stats 页**逐字同序相等**（⇒ 三处同一组件）  — sa=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]  stats=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]
+✅ D5 会话分析用户页的日期范围控件**在页头**（与刷新按钮同容器）  — 祖先链：stats-date-range-picker ← sa-range ← app-page-header__actions ← app-page-header ← session-analytics-users-view ← main-body
+✅ D6 会话分析用户页的日期范围控件**不再埋在 Top10 区块里**  — inTopUsers=false
+
+──── E. 统计说明提示符 ────
+✅ E-stats 1 存在「统计说明」提示符  — 标签文案：统计说明
+✅ E-stats 2 **点击前**说明正文不可见（⇒ 点击才展开，不是常驻横幅）  — bodyExists=true bodyVisible=false
+✅ E-stats 3 **点击后**说明正文可见且有实质内容  — bodyVisible=true  正文前 80 字：统计说明：本页面统计"首次请求在近1天内"的会话的全部请求和费用。注意：本页按「会话宇宙」规则剔除探测会话；生产实测显示这些被剔除的请求在请求日志里全部属于业务
+✅ E-stats 4 提示符**在刷新按钮旁**（同容器）  — nearRefresh=true
+✅ E-sa 1 存在「统计说明」提示符  — 标签文案：统计说明
+✅ E-sa 2 **点击前**说明正文不可见（⇒ 点击才展开，不是常驻横幅）  — bodyExists=true bodyVisible=false
+✅ E-sa 3 **点击后**说明正文可见且有实质内容  — bodyVisible=true  正文前 80 字：统计说明：本页面统计"首次请求在近7天内"的会话的全部请求和费用。注意：本页按「会话宇宙」规则剔除探测会话；生产实测显示这些被剔除的请求在请求日志里全部属于业务
+✅ E-sa 4 提示符**在刷新按钮旁**（同容器）  — nearRefresh=true
+
+──── F. /admin/board-operational ────
+✅ F1 运营面板存在日期范围选择器  — 找到 1 个 .kx-dr-trigger
+✅ F2 运营面板日期范围有**固定档位**  — 档位 7 项：今天 / 昨天 / 近 7 天 / 近 14 天 / 近 30 天 / 本月 / 上月
+✅ F3 运营面板日期范围**保留自定义起止**  — 自定义输入 2 个
+✅ F4 运营面板的档位与 stats 页**逐字同序相等**（⇒ 四处同一组件/同一预设工厂）  — bo=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]  stats=[今天|昨天|近 7 天|近 14 天|近 30 天|本月|上月]
+✅ F5 ★ 运营面板把**控件显示的区间**发给了看板接口（⇒ 显示 = 数据窗口，网络层证据）  — 请求 days=7  控件跨度=7 天
+
+RESULT: PASS（26 条）
+退出码：0
+
+──────── assert-board-op-custom-range.txt ────────
+ℹ️ 登录态就绪（https://llm.itestu.cn）
+✅ G1 ★ 自定义区间真的带 start/end 发给了看板接口（⇒ 自定义路径网络层证据）  — 请求=[2026-09-01..2026-09-10]  期望=[2026-09-01..2026-09-10]  apply已点=true
+✅ G2 ★ **触发器显示的区间** == 看板接口收到的窗口（⇒ 显示 = 数据，自定义路径）  — 触发器="自定义09/01 – 09/10"  推出=[2026-09-01..2026-09-10]  请求=[2026-09-01..2026-09-10]
+✅ G3 ★ 自定义区间时文案显示**起止日期**且**不含「最近 N 天」**（⇒ 文案不说假话）  — 1 处提示：2026-09-01 至 2026-09-10
+✅ H1 ★ **7 个固定档位逐个**对拍：触发器显示的区间 == 看板接口收到的窗口（⇒ 显示 = 数据，无档位盲区）  — today:11/25 – 11/25→days=1✔ | yesterday:11/24 – 11/24→[2026-11-24..2026-11-24]✔ | last7d:11/19 – 11/25→days=7✔ | last14d:11/12 – 11/25→[2026-11-12..2026-11-25]✔ | last30d:10/27 – 11/25→days=30✔ | thisMonth:11/01 – 11/25→[2026-11-01..2026-11-25]✔ | lastMonth:10/01 – 10/31→[2026-10-01..2026-10-31]✔
+✅ H2 ★ **7 个固定档位逐个**：页面文案说的天数/起止 == 实际窗口（⇒ 文案在每个档位都不说假话）  — today:数据时间范围：最近 1 天✔ | yesterday:2026-11-24 至 2026-11-24✔ | last7d:数据时间范围：最近 7 天✔ | last14d:2026-11-12 至 2026-11-25✔ | last30d:数据时间范围：最近 30 天✔ | thisMonth:2026-11-01 至 2026-11-25✔ | lastMonth:2026-10-01 至 2026-10-31✔
+
+RESULT: PASS（5 条）
+退出码：0
+
+──────── assert-board-op-list-deeplink.txt ────────
+ℹ️ 登录态就绪（https://llm.itestu.cn）
+✅ D1 ★ **深链 ?start=&end=** 真的把这两个值发给了看板接口（⇒ 深链到达后端，不是只在地址栏）  — 请求=[2026-11-01..2026-11-07]  期望=[2026-11-01..2026-11-07]  url=https://llm.itestu.cn/api/admin/dashboard/board?start=2026-11-01&end=2026-11-07&include_operational=1
+✅ D2 ★ 深链时**触发器显示的区间** == 请求窗口（⇒ 显示 = 数据）  — 触发器="11/01 – 11/07"  推出=[2026-11-01..2026-11-07]  请求=[2026-11-01..2026-11-07]
+✅ D5 ★ 列表页用的是**共享封装** StatsDateRangePicker（⇒ 「并入」真的上线了；★ 旧构建是裸控件 ⇒ 本条会红）  — stats-date-range-picker=present
+✅ D3 ★ 深链**优先于** days（URL 同时带 start/end 与 days ⇒ 请求仍走 start/end 通道）  — 请求=[2026-11-01..2026-11-07] days=(未带)  url=https://llm.itestu.cn/api/admin/dashboard/board?start=2026-11-01&end=2026-11-07&include_operational=1
+✅ D4 ★ 无参进入列表页 ⇒ 默认 7 天窗口（⇒ 并入共享组件没改坏默认档位）  — 请求=days=7  触发器="11/19 – 11/25"
+
+RESULT: PASS（5 条）
+退出码：0
+
+──────── 18-stats-range-and-scope-hint.log ────────
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 18-stats-range-and-scope-hint
+Assert that (Optional) id: app-user-menu-name is visible... COMPLETED
+Open ${BASE_URL}/?login=1... COMPLETED
+Run _shared/login.yaml when id: login-modal-title is visible...
+Run _shared/login.yaml when id: login-modal-title is visible... SKIPPED
+Open ${BASE_URL}/dashboard?tab=board... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-yesterday is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last14d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Assert that id: kx-dr-apply is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Open ${BASE_URL}/dashboard?tab=stats... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: stats-scope-hint-label is visible... COMPLETED
+Assert that id: stats-scope-hint-body is not visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/users/overview... COMPLETED
+Assert that id: sa-page-users is visible... COMPLETED
+Assert that id: sa-page-users is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: sa-refresh-btn is visible... COMPLETED
+Assert that id: stats-scope-hint-label is visible... COMPLETED
+Assert that id: stats-scope-hint-body is not visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Assert that id: stats-scope-hint-body is visible... COMPLETED
+Tap on id: stats-scope-hint-label... COMPLETED
+Open ${BASE_URL}/admin/board-operational... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: stats-date-range-picker is visible... COMPLETED
+Assert that id: kx-dr-trigger is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+Assert that id: kx-dr-panel is visible... COMPLETED
+Assert that id: kx-dr-preset-today is visible... COMPLETED
+Assert that id: kx-dr-preset-yesterday is visible... COMPLETED
+Assert that id: kx-dr-preset-last7d is visible... COMPLETED
+Assert that id: kx-dr-preset-last14d is visible... COMPLETED
+Assert that id: kx-dr-preset-last30d is visible... COMPLETED
+Assert that id: kx-dr-preset-thisMonth is visible... COMPLETED
+Assert that id: kx-dr-preset-lastMonth is visible... COMPLETED
+Assert that id: kx-dr-inputs is visible... COMPLETED
+Assert that id: kx-dr-input-start is visible... COMPLETED
+Assert that id: kx-dr-input-end is visible... COMPLETED
+Tap on id: kx-dr-trigger... COMPLETED
+

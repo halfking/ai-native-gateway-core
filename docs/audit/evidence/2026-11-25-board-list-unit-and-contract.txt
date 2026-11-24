@@ -1,0 +1,13 @@
+# 列表页并入共享日期组件后的单测 + 契约门原始输出
+# 命令：npx vitest run src/views/BoardOperationalListView.test.ts src/components/analytics/statsRangeTestIds.contract.spec.ts
+# 时间：2026-11-25 07:08:56 +0800（★ 跑在被部署的那棵树 34b4a9a6 的内容上 ★）
+
+
+ RUN  v5.0.2 /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/web
+
+
+ Test Files  2 passed (2)
+      Tests  11 passed (11)
+   Start at  07:08:57
+   Duration  2.25s (environment 29%, tests 28%, import 23%, transform 19%)
+
