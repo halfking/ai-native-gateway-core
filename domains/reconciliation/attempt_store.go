@@ -366,7 +366,47 @@ func (r *AttemptRecorder) MarkNotSent(ctx context.Context, id string) error {
 		delivery=CASE WHEN delivery IN ('prepared','unknown') THEN 'not_sent' ELSE delivery END WHERE attempt_id=$1`)
 }
 
+// providerHTTPStatusMin / providerHTTPStatusMax 是 http_status 的合法值域。
+//
+// ★ 口径来源：982 迁移的列级约束 `CHECK (http_status BETWEEN 100 AND 599)`
+//
+//	（sql/migrations/startup/982_provider_call_attempts.sql）⇒ 越界值**写不进库**。
+//
+// ★ 2026-11-24 真 PG 17 实测（本地 fixture 库，982 真实 DDL）：
+//
+//	越界值会让**整条 UPDATE** 被 23514 拒收 ⇒ 连 delivery / sent_at /
+//	provider_request_id 一起丢（该行停在 prepared、sent_at 为 NULL）★
+//	⇒ 所以收敛点必须在**写库之前**，不能指望数据库兜底。
+const (
+	providerHTTPStatusMin = 100
+	providerHTTPStatusMax = 599
+)
+
+// providerHTTPStatusForWrite 把 HTTP 状态码收敛成「可入库的值」。
+//
+// ok=false 表示该状态码不在合法值域内（不是合法 HTTP 状态码）⇒ 调用方
+// 应当**跳过这一列**而不是整条拒收——传输证据（delivery/sent_at/
+// provider_request_id）比状态码本身更重要，丢不起。
+//
+// ★ 单一口径在这里（Go 侧），SQL 侧只做 COALESCE($2, 列) ⇒ 不会出现
+//
+//	「Go 判一个值域、SQL 判另一个值域」这种双口径漂移。
+func providerHTTPStatusForWrite(status int) (int, bool) {
+	if status < providerHTTPStatusMin || status > providerHTTPStatusMax {
+		return 0, false
+	}
+	return status, true
+}
+
 func (r *AttemptRecorder) MarkSent(ctx context.Context, id string, sentAt time.Time) error {
+	// ★ 2026-11-24（L5）零值时间会写成 0001-01-01（真 PG 实测）⇒ sent_at
+	//   语义被污染，且两个部分索引的谓词含义同时失真
+	//   （idx_..._sent 的 `sent_at IS NOT NULL` 会把它算作「已确认发送」，
+	//     idx_..._unconfirmed 的 `sent_at IS NULL` 会把它排除出「未确认」）
+	//   ⇒ 零值一律落到「现在」。
+	if sentAt.IsZero() {
+		sentAt = time.Now().UTC()
+	}
 	return r.update(ctx, id, true, `UPDATE public.provider_call_attempts SET delivery='sent',sent_at=COALESCE(sent_at,$2) WHERE attempt_id=$1`, sentAt)
 }
 
@@ -374,8 +414,20 @@ func (r *AttemptRecorder) RecordHTTP(ctx context.Context, id string, status int,
 	if sentAt.IsZero() {
 		sentAt = time.Now().UTC()
 	} // response proves dispatch; record confirmation time if transport hook unavailable
-	return r.update(ctx, id, true, `UPDATE public.provider_call_attempts SET delivery='sent', http_status=$2,
-		provider_request_id=COALESCE(NULLIF($3,''),provider_request_id), sent_at=COALESCE(sent_at,$4) WHERE attempt_id=$1`, status, requestID, sentAt)
+	// ★ 2026-11-24（L5）越界的 http_status **不写这一列**，但其余证据照落：
+	//   直接把越界值交给数据库会让**整条 UPDATE** 被 23514 拒收 ⇒
+	//   传输证据（delivery/sent_at/provider_request_id）跟着一起丢。
+	//   ⇒ 收敛后传 NULL，SQL 侧 COALESCE($2, http_status) 保持原值。
+	//   ★ 传 NULL 而不是 0：0 同样落在 CHECK 值域外 ⇒ 会被 23514 拒收。
+	var statusValue any
+	if s, ok := providerHTTPStatusForWrite(status); ok {
+		statusValue = s
+	} else {
+		slog.WarnContext(ctx, "provider attempt http status outside the writable range; status column skipped",
+			"attempt_id", id, "status", status)
+	}
+	return r.update(ctx, id, true, `UPDATE public.provider_call_attempts SET delivery='sent', http_status=COALESCE($2::integer,http_status),
+		provider_request_id=COALESCE(NULLIF($3,''),provider_request_id), sent_at=COALESCE(sent_at,$4) WHERE attempt_id=$1`, statusValue, requestID, sentAt)
 }
 
 func (r *AttemptRecorder) RecordUsage(ctx context.Context, id string, u UsageEvidence) error {

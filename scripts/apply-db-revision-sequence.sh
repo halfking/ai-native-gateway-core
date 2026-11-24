@@ -3741,14 +3741,18 @@ ledger_artifact_probe "998_session_summaries_task_association.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
 ledger_artifact_probe "999_session_summary_layers.sql" \
   "to_regclass('public.session_summary_layers') IS NOT NULL"
-# ★ 918/925/973/986 的产物 = 三张表 + 一列 + 各自主键/唯一约束与索引（★ 只点本组
-#   引入的对象；★ teams 的两个索引与 user_teams/team_budgets 的索引都在场）。
-#   ★ 列探针用 information_schema（★ api_keys.team_id 是普通列 ⇒ 口径正确，
-#     994 的 pg_catalog 教训只针对物化视图）。
-  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='teams' AND indexname IN ('idx_teams_owner_id','idx_teams_tenant_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='teams_tenant_name_key' AND conrelid='public.teams'::regclass) = 1"
-  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='user_teams' AND indexname IN ('idx_user_teams_user_id','idx_user_teams_team_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='user_teams_user_team_key' AND conrelid='public.user_teams'::regclass) = 1"
-  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
-  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
+# ★★★ 2026-11-24（看板真源统一轮部署实测）：★★ 此处原有**四条孤儿 SQL 字符串**
+# ★★★ （只剩判据、**丢了 `ledger_artifact_probe "<file>" \` 前缀**）⇒ shell 把 SQL
+# ★★★ 当命令执行 ⇒
+# ★★★   "…to_regclass('public.teams')…: command not found"
+# ★★★ ⇒ **[211] FATAL: DB 修订序列失败——直接启动会降级 lite，先修库再部署**
+# ★★★ ⇒ ★★ **任何部署都被卡死**（不止本轮）。
+# ★★★ 成因：teams 族反复改号（055-058 → 982-985 → 918/925/973/986 → 1000-1003
+# ★★★ → 回到 055-058）时，合并冲突把这几行**函数名前缀**弄丢，而 SQL 判据还在。
+# ★★★ ★★ 真正的 055-058 四条探针在本文件**下方**（teams 族投递段）逐字保留 ⇒
+# ★★★ ★★ 这里**只删掉孤儿行**，不重复登记（重复登记会让同一条判据跑两遍）。
+# ★★★ 防复发：scripts/ursmcheck/deploy_seq_probe_orphan_lines_test.go
+# ★★★ （检测「行首是字符串但上一行没有续行反斜杠」的孤儿行 ⇒ 必须为 0）。
 # ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
 #   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
 #   '981' 行已存在（两件事都成立才算记账修好了）。
