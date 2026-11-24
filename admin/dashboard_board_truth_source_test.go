@@ -160,8 +160,8 @@ func TestBoardHeroTrendAndPiesShareSameSourceAndPredicate(t *testing.T) {
 	where, _ := boardLogsWhereTerminal(tr, "", false)
 	statements := map[string]string{
 		"英雄区": boardSummaryLogsSQL(where, "r.credits_charged"),
-		"趋势":   boardTrendLogsSQL("date_trunc('hour', r.ts)", where, "r.credits_charged"),
-		"饼图":   boardPieFactsSQL(where, "r.credits_charged"),
+		"趋势":  boardTrendLogsSQL("date_trunc('hour', r.ts)", where, "r.credits_charged"),
+		"饼图":  boardPieFactsSQL(where, "r.credits_charged"),
 	}
 	for name, sql := range statements {
 		if !strings.Contains(sql, "FROM request_logs_with_current_month") {
@@ -199,11 +199,11 @@ func TestBoardHeroTrendAndPiesShareSameSourceAndPredicate(t *testing.T) {
 func TestBoardProbeScopeReachesPiesAndTrends(t *testing.T) {
 	code := readAdminFile(t, boardHandlerFile)
 	if !strings.Contains(code, "resolveBoardPies(ctx, filterTenant, tr, includeProbes)") {
-		t.Errorf("★ handler 没有把 includeProbes 传给 resolveBoardPies ⇒\n"+
+		t.Errorf("★ handler 没有把 includeProbes 传给 resolveBoardPies ⇒\n" +
 			"★ ★★ 看板切「含探测」时饼图仍是排除探测口径 ⇒ 页面两个数字对不上。")
 	}
 	if !strings.Contains(code, "resolveBoardTrends(ctx, filterTenant, tr, providerID, includeProbes)") {
-		t.Errorf("★ handler 没有把 includeProbes 传给 resolveBoardTrends ⇒\n"+
+		t.Errorf("★ handler 没有把 includeProbes 传给 resolveBoardTrends ⇒\n" +
 			"★ ★★ 看板切「含探测」时趋势图仍是排除探测口径 ⇒ 页面两个数字对不上。")
 	}
 	queries := readAdminFile(t, boardQueriesFile)
@@ -230,7 +230,7 @@ func TestBoardPiesFallbackIsMarkedDegraded(t *testing.T) {
 		t.Fatalf("找不到 queryBoardPies")
 	}
 	if !strings.Contains(body, "degraded.Keys = append(degraded.Keys, key)") {
-		t.Errorf("★ 饼图降级到预聚合维表时没有登记降级维度 ⇒ ★ 载荷不会带 degraded 标记 ⇒\n"+
+		t.Errorf("★ 饼图降级到预聚合维表时没有登记降级维度 ⇒ ★ 载荷不会带 degraded 标记 ⇒\n" +
 			"★ ★★ 而维表恒为排除探测口径 ⇒ 「口径不同」被静默吞掉（这正是本轮要消除的那类缺陷）。")
 	}
 }
