@@ -104,11 +104,31 @@ type probeCall struct {
 // ★ 解析失败**响亮失败**：形态变了（换行、换引号、参数顺序变）时必须让人知道，
 //
 //	而不是「解析不出来 ⇒ 当作没有违规」⇒ 门静默失效。
+//
+// ★★★ **★ 2026-11-24 修：★ 跳过【注释行】★★（★ 上游引入的脚本形态打到了本门的解析假设 ★★）：
+//
+//　★ 上游 `e044a916d`（★ 修「孤儿 SQL 行 ⇒ **所有部署 FATAL**」那个真事故 ★★）在部署脚本里
+//　★ 留了一段**事故说明的注释**，★ 其中含一个**示例形态**：
+//　★ `# ★★★ （只剩判据、**丢了 `ledger_artifact_probe "<file>" \` 前缀**）⇒ …`
+//　★ ⇒ ★★ **本门的 `probeCallRe` 不排除注释行 ⇒ ⇒ 把注释里的示例当成了真探针 ★★**
+//　★ ⇒ ★★ **⇒ 随后去找它后面的断言 SQL 行 ⇒ ⇒ 找不到 ⇒ ⇒ 三道门同时判红 ★★**
+//　★ ⇒ ★★★ **⇒ 修法：★ 解析前先跳过注释行（★ 注释里写的不是调用 ★★）★★** ★★★ ★★
+//
+//　★ ★★ **★ 而这必须配一条【反向自证】（★ 否则「跳过注释行」可能把真探针也跳掉 ★★）★★：
+//　★ ★★ 见 `TestParseArtifactProbesIgnoresCommentExamples`（★ 合成文本：★ 注释里的示例
+//　★ ★★ 【不计入】、★ 真探针【仍计入】★★ ⇒ ★★ 一次证明两件事 ★★）★★ ★★
+//　★ ★★ **★ 另一半保障：★ 「探针被整体注释掉」这个形态另有门在管（★ `TestM972ArtifactProbeStillAssertsTheArtifact`
+//　★ ★★ 专门钉 972 那条还在 ★★；★ 仓里另有 `scripts/ursmcheck/deploy_seq_probe_orphan_lines_test.go`
+//　★ ★★ 管孤儿行 ★★）⇒ ★★ **⇒ 跳过注释行不会造成【整体静默失效】★★** ★★ ★★
 func parseArtifactProbes(t *testing.T, text string) []probeCall {
 	t.Helper()
 	lines := strings.Split(text, "\n")
 	var calls []probeCall
 	for i, line := range lines {
+		// ★ ★ 注释行不是调用点（★ 注释里可能有【示例形态】★ ⇒ ★ 命中它就是误报 ★★）。
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
 		m := probeCallRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -131,7 +151,8 @@ func parseArtifactProbes(t *testing.T, text string) []probeCall {
 		if sql == "" {
 			t.Fatalf("解析产物探针 %q（第 %d 行）失败：找不到断言 SQL 行。\n"+
 				"★ 判据形态变了（换行/引号/续行方式）—— 必须同步改本门，"+
-				"否则门会静默失效（解析不出来 ≠ 没有违规）。", m[1], i+1)
+				"否则门会静默失效（解析不出来 ≠ 没有违规）。\n"+
+				"★ 该行原文：%s", m[1], i+1, strings.TrimSpace(line))
 		}
 		// 调用点上方连续的注释块。
 		var comments []string
@@ -282,5 +303,44 @@ func TestM972ArtifactProbeStillAssertsTheArtifact(t *testing.T) {
 	if sqlReferencesTable(found.sql, "credential_model_bindings") {
 		t.Errorf("972 的产物探针 SQL 里又出现了对 credential_model_bindings 的行级断言：\n%s\n"+
 			"★ 那是运行时状态 ⇒ 会把部署死锁（2026-11-17 已实测一次）。", found.sql)
+	}
+}
+
+// TestParseArtifactProbesIgnoresCommentExamples —— ★★ 变异自证臂：★★
+//
+// ★★ **「解析器跳过注释行」这件事本身、★ 必须被证成【只跳过注释、★ 不跳过真探针】★★。
+//
+// ★ ★★ **★ 为什么必须有这条臂（★ 本门自己的来历 ★★）★★★：★ ★★ 2026-11-24 上游把部署脚本里
+// ★ ★★ 那几条「孤儿 SQL 行」删掉时（★ ★ 那是修「**所有部署 FATAL**」那个真事故 ★★）、★ 在同一段
+// ★ ★★ 留了**事故说明的注释**、★ ★★ 而那段注释里含一个**示例形态**
+// ★ ★★ （★ `` `ledger_artifact_probe "<file>" \` `` ★★）★★ ⇒ ★★ **⇒ 本门的正则命中了注释里的
+// ★ ★★ 示例、★ 把它当真探针、★ 随后找不到断言 SQL 行 ⇒ ★★ 三道门同时判红 ★★**
+// ★ ★★ ⇒ ★★ 修法＝「跳过注释行」⇒ ★★ **⇒ 而【跳过注释行】有一个反向风险：★ 若它把【真探针】
+// ★ ★★ 也跳掉、★ 那「探针被注释掉 ⇒ 校验被弱化」这件事就会【静默通过】★★ ⇒ ★★ **⇒ 必须
+// ★ ★★ 由这条臂当场证伪 ★★** ★★★ ★★★
+//
+// ★ ★★ **判据形态（★ 合成文本、★ 不依赖仓内文件 ★★）★★：★ 文本里同时有
+// ★ ★★ **① 一行【注释里的示例探针】**（★ 形态与上游那段事故说明**逐字同款** ★★）与
+// ★ ★★ **② 一行【真探针】**（★ 后面跟着断言 SQL 行 ★★）★★ ⇒ ★★★ **⇒ 解析结果必须
+// ★ ★★ 【恰好 1 个】、★ 且【是那个真探针】★★ ⇒ ★★ **一次同时证明两件事：★ ① 注释里的示例
+// ★ ★★ 不再被误当探针（★ 误报已修 ★★）；★★ ② 真探针仍被解析（★ 没被一起跳过 ★★）★★** ★★★
+func TestParseArtifactProbesIgnoresCommentExamples(t *testing.T) {
+	synthetic := strings.Join([]string{
+		`# ★★★ 此处原有**四条孤儿 SQL 字符串**（★ 只剩判据、**丢了 ` + "`ledger_artifact_probe \"<file>\" \\`" + ` 前缀**）⇒ shell 把 SQL`,
+		`# ★★★ 当命令执行 ⇒`,
+		`ledger_artifact_probe "999_synthetic_probe.sql" \`,
+		`  "to_regclass('public.synthetic_thing') IS NOT NULL"`,
+	}, "\n")
+
+	probes := parseArtifactProbes(t, synthetic)
+	if len(probes) != 1 {
+		t.Fatalf("★ 自证臂红：★ 合成样本里注释中的示例**不得**被当探针、★ 而真探针必须被解析到 ⇒ ★ "+
+			"★ 期望恰好 1 个探针、★ 实得 %d 个（★ %v ★）★★", len(probes), probes)
+	}
+	if probes[0].name != "999_synthetic_probe.sql" {
+		t.Fatalf("★ 自证臂红：★ 解析到的应是那个【真探针】、★ 实得 %q", probes[0].name)
+	}
+	if !strings.Contains(probes[0].sql, "synthetic_thing") {
+		t.Fatalf("★ 自证臂红：★ 解析到的断言 SQL 不对：%q", probes[0].sql)
 	}
 }
