@@ -195,6 +195,7 @@
 | `maestro/flows/14-stats-consistency-test.yaml` | 统计口径一致性 | 5 | 是 | openLink 步数 5。 |
 | `maestro/flows/15-board-probe-scope.yaml` | 看板探测口径筛选 | 2 | 是 | openLink 步数 2。 |
 | `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。★ **必须经 `maestro/run-session-analytics.sh` 跑**（它负责喂动态段 owner、钉 zh-CN 界面语言、起全新 Chrome）—— 前置条件见 §4.4。 |
+| `maestro/flows/18-stats-range-and-scope-hint.yaml` | **时间范围统一 + 统计说明提示符**（看板 / 会话统计 / 会话分析用户页 / 运营面板） | 4 | 是 | ★ 2026-11-24~25 统一轮新增：第一层证明「浏览器真的能打开这四页、点到日期控件、面板真的展开」（判据全用 `data-testid` ⇒ 与界面语言解耦）。第二层语义对拍在 `maestro/tools/assert-stats-range-picker.mjs`（26 条）与 `maestro/tools/assert-board-op-custom-range.mjs`（5 条：自定义区间 + 7 档位逐个对拍）。★ **必须经 `maestro/run-stats-range-picker.sh` 跑**（它负责起全新 Chrome、顺延端口、注入凭据与视口，并按 `result.mjs` 的 `mergeExitCodes` 合并三层退出码）。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
 合计：**运行时路由 136 条**（§1.1 口径）。
@@ -1165,6 +1166,7 @@ maestro/
 ├── run-local.sh               ← 本地逐页入口（默认 BASE_URL=http://127.0.0.1:8782）
 ├── run-simple-overview.sh     ← 简易模式总览页入口（--screen-size 1440x1400）
 ├── run-stage-tree.sh          ← 请求阶段树入口（--screen-size 1440x1400，2026-11-17 新增）
+├── run-stats-range-picker.sh  ← ★ 时间范围统一 + 统计说明（三层：flow 18 / 主探针 / 自定义区间补充）
 ├── flows/
 │   ├── _shared/login.yaml     ← 共享登录流（被 runFlow 调）
 │   ├── _shared/switch-simple-mode.yaml ← 幂等切到简易模式
@@ -1179,12 +1181,21 @@ maestro/
 │   ├── 09-ops-maintain.yaml
 │   ├── 11-simple-overview.yaml
 │   ├── 12-live-stage-tree.yaml ← 请求阶段树 /live2（2026-11-17 新增）
+│   ├── 18-stats-range-and-scope-hint.yaml ← ★ 时间范围统一 + 统计说明（2026-11-25 统一轮）
 │   └── 90-dev-only.yaml
 └── tools/
     ├── cdp-client.mjs         ← 零依赖 CDP 公共件（connect/evaluate/openPage/waitFor）
+    ├── result.mjs             ← ★★ 断言**判定口径的唯一真源**：summarize（工具内口径）＋
+    │                             mergeExitCodes（跨工具口径：红 > 量具失效 > 绿）
+    ├── selftest.mjs           ← ★ 判定口径自检（不需浏览器；把三种结局与合并优先级钉死）
     ├── assert-overview.mjs    ← 简易总览页的页面内数值对拍
     ├── assert-stage-tree.mjs  ← 请求阶段树的页面内结构/口径对拍（2026-11-17 新增）
+    ├── assert-stats-range-picker.mjs  ← ★ 时间范围四页的结构/语义对拍（26 条，2026-11-25 统一轮）
+    ├── assert-board-op-custom-range.mjs ← ★ 运营面板**自定义区间 + 7 档位逐个**对拍（5 条，2026-11-25）
     ├── probe-selectors.mjs    ← 选择器语义实测探针（2026-11-17 新增）
     ├── seed-session.mjs       ← 无口令路径：CDP 预置登录态
     └── slow-pages.mjs         ← 从运行产物里筛「>2 秒」的页面
 ```
+
+★ 目录树只列**主干资产**；`maestro/flows/` 与 `maestro/tools/` 下的**完整清单**以目录实际内容为准
+（★ 2026-11-25 审计轮如实登记：本表与实际目录仍有若干条目未登记，属既有文档滞后，未擅自扩面补录）。

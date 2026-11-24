@@ -216,26 +216,37 @@ echo "---- 汇总 ----"
 cat "${SUMMARY}"
 echo "产物目录：${OUT}"
 
-# ── 判定：★ 三态（0=绿 / 1=红 / 2=量具失效），优先级 **红 > 量具失效 > 绿** ──
-if [ "${FLOW_RC}" -ne 0 ]; then
-  echo "VERDICT: FAIL（第一层 flow 红：rc=${FLOW_RC} FAILED=${FLOW_FAILED}）"
-  exit 1
-fi
-if [ "${PROBE_RC}" -eq 1 ]; then
-  echo "VERDICT: FAIL（第二层探针红：rc=${PROBE_RC}）"
-  exit 1
-fi
-if [ "${PROBE_RC}" -eq 2 ]; then
-  echo "VERDICT: 量具失效（探针 rc=2：断言未评估，**这不是产品缺陷**）"
+# ── 判定：★ 三态（0=绿 / 1=红 / 2=量具失效）──────────────────────────────
+# ★★ 合并口径**不在这个 shell 里写** ⇒ 调 maestro/tools/result.mjs 的
+#   mergeExitCodes（仓内判定口径的**唯一真源**）：
+#     跨工具优先级 = **红 > 量具失效 > 绿**
+#     （与「同一个工具内 gauge 优先」是两条**故意不同**的口径，理由见 result.mjs 头注②）
+# ★★ 为什么必须调它（2026-11-25 审计轮实测撞出）：
+#   本文件此前自己写 if 链 ⇒ 那是**第三份判定口径** ⇒ 必然漂移；
+#   而且那个顺序让「探针量具失效」**吃掉了补充层的红** ⇒
+#   **红被吃掉＝等于没有断言**（与 result.mjs 头注记录的历史事故同类）。
+MERGED_RC="$(node -e "
+import('node:url').then(async (u) => {
+  const m = await import(u.pathToFileURL('${ROOT}/maestro/tools/result.mjs').href)
+  process.stdout.write(String(m.mergeExitCodes([${FLOW_RC}, ${PROBE_RC}, ${CUSTOM_RC}])))
+})
+" 2>/dev/null)"
+if [ -z "${MERGED_RC}" ]; then
+  echo "!! 判定口径调用失败（result.mjs 的 mergeExitCodes 没返回）⇒ 量具失效"
   exit 2
 fi
-if [ "${CUSTOM_RC}" -eq 1 ]; then
-  echo "VERDICT: FAIL（第二层·补充·自定义区间红：rc=${CUSTOM_RC}）"
-  exit 1
-fi
-if [ "${CUSTOM_RC}" -eq 2 ]; then
-  echo "VERDICT: 量具失效（自定义区间探针 rc=2：断言未评估，**这不是产品缺陷**）"
-  exit 2
-fi
-echo "VERDICT: PASS（两层全绿）"
-exit 0
+printf 'merged rc=%s\n' "${MERGED_RC}" >>"${SUMMARY}"
+case "${MERGED_RC}" in
+  1)
+    echo "VERDICT: FAIL（flow rc=${FLOW_RC} FAILED=${FLOW_FAILED} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC}）"
+    exit 1
+    ;;
+  2)
+    echo "VERDICT: 量具失效（flow rc=${FLOW_RC} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC}：断言未评估，**这不是产品缺陷**）"
+    exit 2
+    ;;
+  *)
+    echo "VERDICT: PASS（两层全绿：flow rc=${FLOW_RC} / probe rc=${PROBE_RC} / custom-range rc=${CUSTOM_RC}）"
+    exit 0
+    ;;
+esac

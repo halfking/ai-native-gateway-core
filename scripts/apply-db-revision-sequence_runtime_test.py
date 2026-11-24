@@ -32,6 +32,11 @@ if '-Atqc' in args:
     q = args[args.index('-Atqc')+1]
     if 'WITH family(name)' in q:
         print(s['generation'])
+    elif 'to_regclass(\'public.gateway_db_installer_handoff\')' in q:
+        print(s.get('installer_tables', 'none'))
+    elif 'CROSS JOIN public.gateway_db_installer_migration_receipts' in q:
+        for name, source in s.get('installer_receipts', {}).items():
+            print(name + '|' + source)
     elif 'SELECT CASE' in q:
         print('canonical')
     elif 'SELECT content_sha256' in q:
@@ -160,6 +165,39 @@ class RuntimeFixture(unittest.TestCase):
                                 env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
+
+    def test_installer_handoff_rejects_missing_seal_and_mismatched_source(self):
+        root, state, env, names = self.fixture('psql', 'renamed')
+        initial = json.loads(state.read_text())
+        for tables, receipts, message in [
+            ('incomplete', {}, 'handoff tables are incomplete'),
+            ('present', {}, 'handoff is unsealed or receipts are incomplete'),
+            ('present', {names[0]: 'a' * 64}, 'receipt fingerprint differs for ' + names[0]),
+        ]:
+            with self.subTest(message=message):
+                fixture = dict(initial, installer_tables=tables, installer_receipts=receipts)
+                state.write_text(json.dumps(fixture))
+                result = self.run_fixture(root, env, expected=4)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(fixture, json.loads(state.read_text()))
+
+    def test_installer_handoff_only_executes_files_added_after_install(self):
+        root, state, env, names = self.fixture('psql', 'renamed')
+        fixture = json.loads(state.read_text())
+        fixture['installer_tables'] = 'present'
+        fixture['installer_receipts'] = {
+            name: hashlib.sha256((root / 'sql/migrations/startup' / name).read_bytes()).hexdigest()
+            for name in names[:-1]
+        }
+        state.write_text(json.dumps(fixture))
+        first = self.run_fixture(root, env)
+        self.assertEqual(first.stdout.count('already applied (installer receipt):'), 2)
+        after = json.loads(state.read_text())
+        self.assertEqual(len(after['executed']), 1)
+        self.assertEqual(list(after['ledger']), [PREFIX + names[-1]])
+        second = self.run_fixture(root, env)
+        self.assertNotIn('applying ', second.stdout)
+        self.assertEqual(after, json.loads(state.read_text()))
 
     def test_transports_generations_provenance_and_idempotency(self):
         for transport in ['psql', 'docker']:

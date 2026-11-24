@@ -63,6 +63,12 @@ if [ "@@FAIL_ALL@@" = "1" ]; then
   exit 1
 fi
 case "$sql" in
+  *"to_regclass('public.gateway_db_installer_handoff')"*)
+    printf '%s\n' "${FIXTURE_INSTALLER_TABLES:-none}"
+    ;;
+  *"CROSS JOIN public.gateway_db_installer_migration_receipts"*)
+    cat "${FIXTURE_INSTALLER_RECEIPTS:-/dev/null}"
+    ;;
   *"pg_class"*)  printf '%s\n' "@@EXISTS@@" ;;
   *"gateway_db_revision_sequences"*"count"*)
     # count 查询必须回行数（不是账内容）
@@ -234,6 +240,22 @@ if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "无断层"; then
   ok "臂 C 绿（EXIT=0）且报「无断层」"
 else
   bad "臂 C 期望 EXIT=0、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+note "安装器交接凭证覆盖，部署通道台账为空"
+make_fake_psql 0 /dev/null 0 "$instver_all"
+FIXTURE_INSTALLER_TABLES=present FIXTURE_INSTALLER_RECEIPTS="$FIXTURE_DIR/shas-all.tsv" run_gate
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "安装器凭证命中 ${plan_count} 条"; then
+  ok "封存凭证覆盖全量投递文件"
+else
+  bad "交接覆盖期望 EXIT=0，实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4)"
+fi
+FIXTURE_INSTALLER_TABLES=present run_gate
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "交接未封存或凭证不完整"; then
+  ok "缺少有效封存时判红"
+else
+  bad "未封存交接期望 EXIT=1，实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4)"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════

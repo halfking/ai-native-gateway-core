@@ -235,6 +235,151 @@ check(
   `${hints.length} 处提示：${hintAll.slice(0, 160)}`,
 )
 
+// ══════════════════════════════════════════════════════════════════════
+// H. 逐档位对拍：7 个固定档位，每个都证明「显示的区间 == 请求的窗口」
+// ══════════════════════════════════════════════════════════════════════
+// ★ 为什么必须逐档位（2026-11-25 审计轮发现）：主探针的 F5 只验了**默认档位**
+//   （近 7 ⇒ 请求 days=7），而 7 个档位里**有 4 个走的是 start/end 路径**
+//   （昨天 / 近14天 / 本月 / 上月 —— boardRangeFromKxRange 只归位 today/7d/30d，
+//   其余一律落 custom ⇒ 走 start/end）⇒ 那 4 条路径在生产上**没有独立证据**
+//   （不是缺信心，是缺覆盖）⇒ 本组把 7 个档位逐个走一遍并逐个对拍。
+const PRESET_IDS = ['today', 'yesterday', 'last7d', 'last14d', 'last30d', 'thisMonth', 'lastMonth']
+
+/** 从触发器显示的区间文本（"11/19 – 11/25"）反推出应请求的窗口。 */
+function windowFromRangeText(text) {
+  const m = /(\d{1,2})\/(\d{1,2})\s*[–—\-~]\s*(\d{1,2})\/(\d{1,2})/.exec(text || '')
+  if (!m) return null
+  const y = new Date().getFullYear()
+  const start = new Date(y, Number(m[1]) - 1, Number(m[2]))
+  let end = new Date(y, Number(m[3]) - 1, Number(m[4]))
+  if (end < start) end = new Date(y + 1, Number(m[3]) - 1, Number(m[4])) // 跨年
+  const fmt = (dt) =>
+    `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+  return { start: fmt(start), end: fmt(end), days: Math.round((end - start) / 86400000) + 1 }
+}
+
+/** 幂等地确保日期面板**可见**（触发器是 toggle ⇒ 盲目点会把它关上）。 */
+const PANEL_VISIBLE = `(() => {
+  const p = document.querySelector('.kx-dr-panel');
+  if (!p) return false;
+  const r = p.getBoundingClientRect();
+  const st = getComputedStyle(p);
+  return r.height > 0 && r.width > 0 && st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0';
+})()`
+async function ensurePanelOpen() {
+  for (let i = 0; i < 12; i++) {
+    if (await js(PANEL_VISIBLE)) return true
+    await js(`(() => { const t = document.querySelector('.kx-dr-trigger'); if (t) t.click(); return true })()`)
+    await sleep(400)
+  }
+  return false
+}
+
+const presetRows = []
+let presetWindowOk = true
+let presetHintOk = true
+let presetMeasured = 0
+let lastBoardUrl = ''
+
+for (const pid of PRESET_IDS) {
+  const row = { id: pid }
+  const opened = await ensurePanelOpen()
+  if (!opened) {
+    row.note = '面板打不开（量具）'
+    presetWindowOk = false
+    presetRows.push(row)
+    continue
+  }
+  const clicked = await js(
+    `(() => { const b = document.querySelector('[data-testid="kx-dr-preset-${pid}"]'); if (b) { b.click(); return true; } return false })()`,
+  )
+  if (!clicked) {
+    row.note = '档位按钮没找到（量具）'
+    presetWindowOk = false
+    presetRows.push(row)
+    continue
+  }
+  await sleep(400)
+  // 非 instant 模式 ⇒ 必须点「应用」才提交
+  await js(`(() => { const b = document.querySelector('[data-testid="kx-dr-apply"]'); if (b) b.click(); return !!b })()`)
+
+  // 等一条**新的**看板请求（performance 条目会累积 ⇒ 取最后一条且与上次不同）
+  let url = ''
+  for (let i = 0; i < 30; i++) {
+    await sleep(500)
+    const urls =
+      (await js(
+        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
+      )) || []
+    const latest = urls[urls.length - 1] || ''
+    if (latest && latest !== lastBoardUrl) {
+      url = latest
+      break
+    }
+  }
+  lastBoardUrl = url
+  let q = {}
+  try {
+    q = Object.fromEntries(new URL(url).searchParams.entries())
+  } catch {
+    q = {}
+  }
+  const rangeText = await js(
+    `(() => { const e = document.querySelector('.kx-dr-trigger__range'); return e ? (e.textContent || '').trim() : '' })()`,
+  )
+  const shown = windowFromRangeText(rangeText)
+  row.shown = rangeText
+  row.req = q.start ? `[${q.start}..${q.end}]` : `days=${q.days}`
+  if (!shown || !url) {
+    row.note = !url ? '没等到请求' : '显示区间读不到'
+    presetWindowOk = false
+  } else if (q.start && q.end) {
+    row.ok = q.start === shown.start && q.end === shown.end
+    if (!row.ok) presetWindowOk = false
+  } else if (q.days !== undefined) {
+    row.ok = Number(q.days) === shown.days
+    if (!row.ok) presetWindowOk = false
+  } else {
+    row.note = '请求既没带 start/end 也没带 days'
+    presetWindowOk = false
+  }
+  // 文案判据：预设档位的文案要么说「最近 N 天」（N == 窗口跨度），要么说起止日期（== 窗口起止）
+  let hintTexts = []
+  for (let i = 0; i < 12; i++) {
+    await sleep(400)
+    hintTexts =
+      (await js(
+        `(() => Array.from(document.querySelectorAll('.bo-time-range-hint')).map(e => (e.textContent || '').trim()).filter(Boolean))()`,
+      )) || []
+    if (hintTexts.length > 0) break
+  }
+  const hint = hintTexts[0] || ''
+  row.hint = hint
+  const mDays = /最近\s*(\d+)\s*天/.exec(hint)
+  const mDates = /(\d{4}-\d{2}-\d{2})\s*至\s*(\d{4}-\d{2}-\d{2})/.exec(hint)
+  let hintOk = false
+  if (mDays && shown) hintOk = Number(mDays[1]) === shown.days
+  else if (mDates && shown) hintOk = mDates[1] === shown.start && mDates[2] === shown.end
+  else if (hint === '' && shown) hintOk = true // 该区块未渲染（没有数据）⇒ 无文案可说
+  row.hintOk = hintOk
+  if (!hintOk) presetHintOk = false
+  presetMeasured++
+  presetRows.push(row)
+}
+
+check(
+  'H1 ★ **7 个固定档位逐个**对拍：触发器显示的区间 == 看板接口收到的窗口（⇒ 显示 = 数据，无档位盲区）',
+  presetMeasured === PRESET_IDS.length && presetWindowOk,
+  presetRows
+    .map((r) => `${r.id}:${r.note ? r.note : `${r.shown}→${r.req}${r.ok ? '✔' : '✘'}`}`)
+    .join(' | '),
+)
+check(
+  'H2 ★ **7 个固定档位逐个**：页面文案说的天数/起止 == 实际窗口（⇒ 文案在每个档位都不说假话）',
+  presetMeasured === PRESET_IDS.length && presetHintOk,
+  presetRows.map((r) => `${r.id}:${r.hint || '(无文案)'}${r.hintOk ? '✔' : '✘'}`).join(' | '),
+)
+
 const out = summarize(checks, { skipped })
 console.log('\n' + out.line)
 console.log(`退出码：${out.exitCode}`)
