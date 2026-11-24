@@ -236,6 +236,8 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 			"3 条非并发 CREATE INDEX 全部建在本文件刚 CREATE 的空表 public.provider_call_attempts 上（无存量扫描 ⇒ 建索引扫 0 行）；" +
 			"211 已 applied ⇒ 永不重跑、新装路径该表为空 ⇒ 无 914 型中止风险；" +
 			"补「实测」注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
+		// ★★ 【★ 键行采用上游那一侧（★ 上游自己认领了这号）★★；★ 下面这段是我方合并轮六/九/十的【代修论证】★★】
+		// ★★ "982": "applied(211)；字节冻结（211 schema_migrations 记 982|per-attempt supplier call evidence）；预算段已过（statement_timeout=10min）；" +
 		// ★★ 2026-11-24（合并轮九 · 代上游认领；★ 合并轮十随【重编号】改 key）：
 		// ★ request_metrics（★ 统计专用分区表）★ 本门判红：★ 文件里有 9 条
 		// **非并发** CREATE INDEX ⇒ 命中「全表扫描类 DDL」字面判据 ⇒ 但文件头
@@ -303,6 +305,9 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 			"预算段已过（文件自带 SET statement_timeout='10min'）；" +
 			"1 条非并发 CREATE INDEX 同一事务（BEGIN 3 / COMMIT 40）⇒ 目标表 provider_invoice_lines 由 987 早 0.8 秒建成且 211 实测至今 0 行 ⇒ 建索引扫 0 行；" +
 			"已 applied ⇒ 永不重跑 ⇒ 无 914 型中止风险；补注释即改已 applied 字节 ⇒ 只登记不改",
+		// ★★ 【★ 键行采用上游那一侧（★ 上游自己认领了这号）★★；★ 下面这段是我方合并轮六/九/十的【代修论证】★★】
+		// ★★ "983": "★★ 2026-11-24 合并轮十一订正：★ 本条原先写的【「从未应用 ⇒ 不受 L23 字节冻结约束」】**已被生产事实推翻** —— ★ 上游把该迁移重命名为 983（1000→983）★ ⇒ ★★ **生产 `public.schema_migrations` 里现在有 `983` 这一行**（★ `983|request_metrics statistics base table|2026-11-24 00:38:22.974221+08` ★★）★ ⇒ ★★ ⇒ ★★ **983 已【不是】从未应用** ⇒ ⇒ ★★ **字节冻结现在适用**（★ ★ 而我方**未改它的字节** ⇒ ★★ **零分叉风险** ★★）；" +
+
 		// ★★ 2026-11-24（12h 修订审计轮第三轮）：982（逐次供应商调用证据表）。
 		//
 		// ★ 为什么它会被本门判红：形态同 981/912/913/928 —— 本文件的 3 条

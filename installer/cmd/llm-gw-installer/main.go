@@ -1828,6 +1828,22 @@ var sessionAnalyticsFoundation981Down []byte
 //	  ⇒ 981 断链。★ 存量库能装上是**遗留 schema 早就有该列**的巧合。
 //	★ 与 990 逐字同形 ⇒ 990 之后重放是 no-op。
 //
+// ★ 918/925/973/986（2026-11-23 团队功能底座轮，★ 原编号 055-058 ⇒ 曾用 982-985
+// ⇒ 与上游 982_provider_call_attempts（aac6602ab，已 push）撞号 ⇒ 按 919 让号轮
+// 先例「未 push 方避让」改占真空号）：
+//
+//	teams / user_teams / api_keys.team_id / team_budgets 四件套。
+//	★ 重编号原因（三条通道都没登记原件 ⇒ 永远不会被应用）见
+//	installer/internal/dbinit/runner.go 的 StartupFiles 注释。
+var teamsTable918 []byte
+
+var teamsTable918Down []byte
+var userTeams925 []byte
+var userTeams925Down []byte
+var apiKeysTeamId973 []byte
+var apiKeysTeamId973Down []byte
+var teamBudgets986 []byte
+var teamBudgets986Down []byte
 // ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 //
 //	★ 2026-11-19 文档一致性轮补五点同步——并行车首提交只写了正典，
@@ -1967,6 +1983,9 @@ var teamsTable055Down []byte
 //go:embed embeddata/startup/056_user_teams.down.sql
 var userTeams056Down []byte
 
+//go:embed embeddata/startup/057_api_keys_team_id.sql
+var apiKeysTeamID057 []byte
+
 //go:embed embeddata/startup/057_api_keys_team_id.down.sql
 var apiKeysTeamID057Down []byte
 
@@ -1976,11 +1995,10 @@ var teamBudgets058Down []byte
 //go:embed embeddata/startup/056_user_teams.sql
 var userTeams056 []byte
 
-//go:embed embeddata/startup/057_api_keys_team_id.sql
-var apiKeysTeamID057 []byte
 
 //go:embed embeddata/startup/058_team_budgets.sql
 var teamBudgets058 []byte
+
 
 // ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」
 //
@@ -2692,6 +2710,8 @@ var embeddedSQLFiles = map[string][]byte{
 	//   ★ ⇒ ★ 加固版（锁预算 + 事务包裹 + public. 限定）**无法落到生产** ★★；
 	//   ★ ③ 两套并存 ⇒ 台账与 census expect 双份归属 ⇒ 门必红 ★★
 	//   ⇒ ★★ **⇒ 结论：采纳上游 055-058、★ 我方那条线整体退役** ★★
+	// ★ 918/925/973/986（2026-11-23 团队功能底座轮，★ 原 055-058 ⇒ 曾用 982-985
+	// ⇒ 撞上游 982_provider_call_attempts 后避让）：teams 四件套。
 	// ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
@@ -2765,6 +2785,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/988_provider_invoice_usage_buckets.down.sql": providerInvoiceUsageBuckets988Down,
 	"startup/925_supplier_contract_rates.sql":             supplierContractRates925,
 	"startup/925_supplier_contract_rates.down.sql":        supplierContractRates925Down,
+
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

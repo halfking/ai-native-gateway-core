@@ -898,6 +898,14 @@ dl_write_env() {
     # ★ **没进本白名单** ⇒ ★★ 容器形态下它【静默失效】（★ 不报错、不警告、只是
     # ★ 配置不生效）⇒ ★ 默认值必须为空（★ 未设时行为不变、★ 显式设了才开影子）。
     dl_emit_env_line LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED "${LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED:-}"
+    # ★★ 2026-11-24（合并轮二十 · 代上游登记）：★ 对账的平台计费开关
+    # ★ （domains/streaming/request_log_pipeline.go:1875 用 os.Getenv 读）
+    # ★ ⇒ 与上面的影子开关同款后果：★ 没进本白名单 ⇒ ★★ 容器形态下【静默失效】
+    # ★ （★ 不报错、不警告、只是配置不生效）⇒ ★ 默认值必须为空（★ 未设时行为不变）。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED "${LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED:-}"
+    # ★★ 2026-11-24（合并轮二十 · 代上游登记）：★ 对账「日默认」开关
+    # ★ （admin/capabilities.go:61 用 os.Getenv 读）★ 同款处置。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED "${LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED:-}"
     dl_emit_env_line URSM_V2_MODE "${URSM_V2_MODE:-authoritative}"
     # CORS is fail-closed in the gateway (middleware.NewCORSMiddleware panics
     # on an empty list). Honor an explicit LLM_GATEWAY_CORS_ORIGINS (e.g.

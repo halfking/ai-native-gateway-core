@@ -64,7 +64,9 @@ var exemptedDanglingRefs = map[string]string{
 	// ★ ⇒ 仓内 DDL 集合里**没有** `model` 这个关系是【正确的】⇒ ★
 	// ★ **提取器把「别名.列名」里的裸名当成了关系引用** ⇒ ★ **解析器假阳性**
 	// ★ ⇒ ★ 不是缺口、★ 不必建一张 `model` 表 ★★
-	"model": "解析器假阳性（别名限定的列名）：★ `a.model` 是 `public.provider_call_attempts` 的**列**（★ 982_provider_call_attempts.sql:19 `model text,`）★ ⇒ 仓内无 `model` 关系是正确形态 ⇒ 不是缺口",
+	// ★★ **【2026-11-24 合并并行车后】**：★ 本条另覆盖**第二种同形形态** ——
+	// ★★ `IS DISTINCT FROM model`（★ `FROM` 被当成关系位置）★★ ⇒ ★★ **完整证据见
+	// ★★ 下方 `model` 条目的注释块**（★ 两种形态共用同一个键）★★
 	// ── PostgreSQL 系统目录（pg_catalog）—— 由 PG 自身提供，仓内当然不建 ──
 	// ★ 这 11 个不是缺口 ⇒ 它们的「不在 DDL 集合里」是**正确**的。
 	"pg_am":               "PG 系统目录（pg_catalog）：由 PostgreSQL 自身提供 ⇒ 仓内不建是正确形态 ⇒ 不是缺口",
@@ -110,6 +112,32 @@ var exemptedDanglingRefs = map[string]string{
 	// 假阳性。全仓 `.sql` 对 `redis` 的引用只有 `redis_hit` / `redis_key` 列与
 	// `idx_stage_events_redis_miss` 索引名（词边界外），不存在名为 `redis` 的表。
 	"redis": "非 PG 关系引用：admin/dashboard_board.go:187 与 admin/probe_dashboard.go:2054 中 `redis` 是 JSON 响应的数据源标签（source/reader 字段值），非 SQL 关系引用 ⇒ 提取器假阳性",
+
+	// ── 2026-11-24 合并轮二十代上游定性：`IS DISTINCT FROM` 的右操作数是【列】──
+	//
+	// ★ 现象（★ 上游 aac6602ab 带进来的对账腿）：★ 悬空引用多出 1 个名字 `model`（1 处）
+	//   ⇒ 定位到 domains/reconciliation/invoice_report.go 的 invoiceReportSQL 字面量
+	//     （const 起始行 104 ⇒ 工具报的位置是字面量起点，不是命中点）。
+	// ★ 真正命中点（★ 逐字）：invoice_report.go:242
+	//   `WHEN NULLIF(model,'') IS NOT NULL AND attempt_model IS DISTINCT FROM model THEN 'model_mismatch'`
+	//   ⇒ ⇒ `IS DISTINCT FROM` 是 **NULL 安全的比较运算符**（不是 `FROM <relation>` 句式）
+	//   ⇒ ⇒ 它右侧的 `model` 是**列**，不是关系名。
+	// ★ 列存在的机器证据（★ 不是推断）：
+	//   · sql/migrations/startup/982_provider_call_attempts.sql:19 ⇒ `model text,`
+	//     （public.provider_call_attempts.model）
+	//   · sql/migrations/startup/987_provider_invoice_evidence.sql:32 ⇒ `model text,`
+	//     （public.provider_invoice_lines.model）
+	// ★ 提取器为什么误判：★ 关系位置词表含 `FROM` ⇒ ⇒ `IS DISTINCT FROM model` 里的
+	//   `FROM` 被当成关系位置 ⇒ ⇒ 紧跟其后的标识符被当成表名。
+	//   （★ 与 `static`（CTE 拼接）、`redis`（数据源标签）同族：**词法位置 ⇒ 关系**。）
+	// ★ 结论：★ 仓内**不存在**名为 `model` 的关系是正确形态 ⇒ 不是缺口。
+	// ★★ 【2026-11-24 合并并行车后 · 本车道追加形态】：★ 除本块这条
+	// ★★ `IS DISTINCT FROM model` 之外、★ 另有**同形的第二种**：
+	// ★★ `domains/reconciliation/invoice_report.go:106` 的
+	// ★★ `SELECT a.credential_id, a.model, …`（★ FROM 的是
+	// ★★ `public.provider_call_attempts a`）⇒ ★★ **提取器把「别名.列名」里的
+	// ★★ 裸名当成了关系引用** ⇒ ★★ 同属解析器假阳性、★ 同一个键 ★★
+	"model": "解析器假阳性（★ 两种同形形态）：★ ① `IS DISTINCT FROM` 是 NULL 安全比较运算符、不是 `FROM <relation>` 句式 ⇒ 其右侧标识符是列名 ⇒ domains/reconciliation/invoice_report.go:242 的 `attempt_model IS DISTINCT FROM model` 里的 `model` 是列；★ ② 别名限定列名被当成关系引用 ⇒ domains/reconciliation/invoice_report.go:106 的 `SELECT a.credential_id, a.model, …`（★ FROM 的是 `public.provider_call_attempts a`）里的 `model` 是列（机器证据：★ public.provider_call_attempts.model 见 sql/migrations/startup/982_provider_call_attempts.sql:19、★ public.provider_invoice_lines.model 见 sql/migrations/startup/987_provider_invoice_evidence.sql:32）⇒ 仓内无名为 model 的关系是正确形态 ⇒ 不是缺口",
 }
 
 // ★★ 三条判据共用【同一份】扫描结果（sync.Once）⇒

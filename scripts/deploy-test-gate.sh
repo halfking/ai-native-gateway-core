@@ -80,6 +80,18 @@ if [ -f "$REPO_ROOT/scripts/lib/go-toolchain.sh" ]; then
   . "$REPO_ROOT/scripts/lib/go-toolchain.sh"
 fi
 
+# ── 证据留存库（★ 2026-11-24：★ 被中断的那一轮也要留下读数）────────────
+# ★ 为什么独立成库（而不是内联在门脚本里）：★ 它的行为要被**实跑**测到 ⇒
+#   门禁 scripts/deploygate/deploy_gate_evidence_preservation_gate_test.go
+#   直接 source 本库、★ 在临时目录里造读数、★ 断言留存结果 ⇒ 钉住「留得下来」。
+# ★ 判据本身（★ 比哪些包、红绿怎么判）**一个字都没改** ⇒ ★ 它只是
+#   【把已经算出来的读数留下来】⇒ ★ 不动任何口径。
+if [ -f "$REPO_ROOT/scripts/lib/gate-evidence.sh" ]; then
+  . "$REPO_ROOT/scripts/lib/gate-evidence.sh"
+fi
+# ★ 证据根目录：★ 默认落在 TMPDIR 下、★ 可用 DD_GATE_EVIDENCE_DIR 覆盖。
+GATE_EVIDENCE_ROOT="${DD_GATE_EVIDENCE_DIR:-${TMPDIR:-/tmp}/llm-gw-gate-evidence}"
+
 # ★ 闸门用的 Go 基础镜像（docker 兜底路径用）。
 GO_IMAGE="${DD_TEST_GO_IMAGE:-golang:1.27.4-alpine}"
 # ★ 原生 go 的路径；留空自动探测（★ 按 go.mod 的版本要求挑，见 native_ok）。
@@ -401,9 +413,25 @@ fi
 #   下次启动的 sweep_stale_gate_worktrees 精确识别并清扫（F-22）。
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/llm-gateway-test-gate.XXXXXX")"
 base_tree=""
+# gate_verdict = ★ 本轮是否**已得出结论**（★ 1 ＝ 已通过 ⇒ 证据随 workdir 一起清掉；
+# ★ 0/未设 ＝ 被中断或 die ⇒ **先把读数留存下来**）。
+gate_verdict=0
 cleanup() {
   if [[ -n "$base_tree" && -d "$base_tree" ]]; then
     git worktree remove --force "$base_tree" >/dev/null 2>&1 || true
+  fi
+  # ★★ 2026-11-24：★ **被中断的运行必须留下证据** ⇒ ★★ 未得出结论时，
+  #   ★★ 先把已产出的读数拷进【稳定的证据目录】、★ 再删 workdir。
+  #   ★★ 原先无条件删 ⇒ ★★ 被掐断那一轮的「基线红清单」随之消失 ⇒ ★★
+  #   ★★ ⇒ 差集归因**做不了** ⇒ ★★ ⇒ 只能手工去隔离 worktree 定向重跑
+  #   ★★ （★ 本会话为 6 条红做过一次、★ 8.001s）★★。
+  if [[ "${gate_verdict}" != "1" && -d "$workdir" ]] && \
+     declare -F gate_evidence_preserve >/dev/null 2>&1; then
+    _gate_evidence_dir="$(gate_evidence_preserve "$workdir" "$GATE_EVIDENCE_ROOT" "gate-interrupted" 2>/dev/null || true)"
+    if [[ -n "${_gate_evidence_dir:-}" ]]; then
+      log "★ 本次闸门**未得出结论**（★ 被中断或 die）⇒ ★ 已把已产出的读数留存到：${_gate_evidence_dir} ★"
+      log "★   ★ 该目录里的基线读数**可能不完整** ⇒ ★ 差集只能在【基线已完成的包】上做 ⇒ ★ 其余包须另做定向复跑 ★"
+    fi
   fi
   rm -rf "$workdir" >/dev/null 2>&1 || true
 }
@@ -666,6 +694,7 @@ current_reds="$(red_names "$out_current")"
 
 if [[ -z "$current_reds" ]]; then
   log "★ 闸门通过：${packages[*]} 全绿 ★"
+  gate_verdict=1
   exit 0
 fi
 
@@ -732,6 +761,7 @@ fi
 
 if [[ -z "$new_reds" ]]; then
   log "★ 闸门通过：没有**新红**（★ 现有红灯均为基线既有）★"
+  gate_verdict=1
   exit 0
 fi
 

@@ -262,6 +262,24 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 漂移归属：★ 上游那 22 笔改 cmd/gateway/main.go ⇒ ★ 我方只改对拍表、
 		// ★ 不动上游代码（★ 与历次同款处置）。
 		file: "cmd/gateway/main.go", from: 9206, to: 9225,
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
+		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
+		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
+		// ★（★ 覆盖链体起点 `middleware.NewBuilder()` 到 SecurityHeaders 那一行）★。
+		// ★ 漂移归属（★ 实测、★ 不是推断）：★ ★★ `cmd/gateway/main.go` 与
+		// ★ `cmd/gateway/main_pipeline.go` 在**基线 cd288ad0c 的隔离 worktree 上
+		// ★ 与我方树逐字相同**（diff 无输出）⇒ ⇒ ⇒ 这段漂移**完全是上游带进来的**
+		// ★ ⇒ ★ **上游未同步本对拍表** ⇒ ★ 我方只改对拍表、★ 不动上游代码。
+		// ★ 同款自查（★ 逐锚点实测、★ 不按位移量推算）：
+		// ★ Recovery 9206 / Logging 注释 9208 / maintain 注释 9161 /
+		// ★ main_pipeline 启动日志 1523 ⇒ 四条锚点在两棵树上**完全同位**。
+		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
+		// ★★★ 其区间写作 **[9205,9225]**（★ 把链体起点 `middleware.NewBuilder()`
+		// ★★★ 那行也算了进去）★★ ⇒ ★★ **本门保留 [9206,9225]**（★ 逐字实测：
+		// ★★ `Add(middleware.NewRecoveryMiddleware())` 在 **9206**、
+		// ★★ `Add(middleware.NewSecurityHeadersMiddleware())` 在 **9225**）★★
+		// ★★★ ⇒ ★★ 且与设计页 `docs/subsystems/request-surface.md` 引用的
+		// ★★★ 「9206-9225」**逐字一致**（★ 两处必须同口径）★★★ ★★★
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
@@ -270,6 +288,8 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-24 第二十四次重钉（★ 合并轮二十一）：★ 原锚 [9147,9154]
 		// ★ ⇒ ★ 同上 ⇒ ★ 「Logging 必须排在 Auth」自陈注释漂到 **9208** ⇒
 		// ★ 本门按现状重钉为 [9208,9215] ★。
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9147,9154] ⇒ ★ 现状 9208-9215
+		// ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了）★。
 		file: "cmd/gateway/main.go", from: 9208, to: 9215,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
@@ -294,6 +314,11 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ ⇒ ★ 同上 ⇒ ★ R49-A1 那条自陈注释漂到 **9161** ⇒ ★ 本门按现状重钉为
 		// ★ [9161,9168]（★ 覆盖注释块 9161-9166 六行）★。
 		file: "cmd/gateway/main.go", from: 9161, to: 9168,
+		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
+		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
+		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页
+		// ★★★ `docs/subsystems/request-surface.md` 引用的「9161-9168」**逐字一致**
+		// ★★★ ⇒ ★★ 两处必须同口径）★★★ ★★★
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -342,6 +367,9 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-24 第二十四次重钉（★ 合并轮二十一）：★ 原锚 [1515,1515]
 		// ★ ⇒ ★ 上游在 main_pipeline.go 早期插了 8 行 ⇒ ★ v2 启动日志从 1515
 		// ★ 漂到 **1523** ⇒ ★ 本门按现状重钉为 [1523,1523] ★。
+		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [1515,1515] ⇒ ★ 现状 **1523**
+		// ★（★ 仍是那一条 slog.Info 调用、★ 语义对象未变）★。
+		// ★ 漂移归属同款：★ cmd/gateway/main_pipeline.go 在基线上与我方树逐字相同 ⇒ 上游带进来的。
 		file: "cmd/gateway/main_pipeline.go", from: 1523, to: 1523,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
