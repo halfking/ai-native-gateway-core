@@ -634,6 +634,8 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// projections. A 5s budget caused valid historical windows to return 500
 	// while the underlying request-log count remained healthy under load.
 	// 2026-11-25: 增加超时到60秒以处理大窗口查询和多过滤器场景
+	// 2026-11-25: 生产环境实测：24小时窗口+include_probe+2过滤器查询31K条仍超时
+	//             → 需要后续优化：索引分析、查询重构、或限制include_probe时的窗口
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
@@ -1167,8 +1169,15 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		// （internal_error_guard 纪律：err.Error() 不上 wire）。
 		slog.Error("admin listLogs rows iteration failed",
 			"err", err.Error(), "items_returned", len(items), "count", count)
-		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
-			"request log list query interrupted before completion: received %d of %d counted rows; storage-side error, retrying may help", len(items), count))
+		
+		// 2026-11-25: 超时错误提供更具体的用户指导
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+			writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+				"query timeout after 60 seconds (%d records found): try narrowing the time window (≤12 hours recommended when including probe traffic) or reducing filters", count))
+		} else {
+			writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+				"request log list query interrupted before completion: received %d of %d counted rows; storage-side error, retrying may help", len(items), count))
+		}
 		return
 	} else if scanErrCount > 0 {
 		slog.Warn("admin listLogs completed with partial scan failures", "scan_err_count", scanErrCount, "items_returned", len(items), "count", count)
