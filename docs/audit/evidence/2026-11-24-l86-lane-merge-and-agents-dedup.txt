@@ -149,3 +149,31 @@ AGENTS.md 行   归档档 行   字节      首行（截断）
 ★ 复核命令：
   git diff --name-status origin/main HEAD | grep -c '^D'          ⇒ 0
   git merge-base --is-ancestor <并行车尖端> HEAD                  ⇒ 0（成功）
+
+── ⑨ owner 授权 push ⇒ 第 5 次「push 前先并一次上游」＋ 推送 ──────────────
+
+★ owner 明确指示「请提交并推送」（★ explicitUserConfirmation=true、★ 与 ⑨ 之前那次「问卷超时自动选中」不同）
+★ ⇒ push 前按纪律再 fetch 上游 ⇒ origin/main 由 df38c8c8a 前进到 836ae5001（2 笔、★ 含代码）
+★ ⇒ 候选落后 2 笔 ⇒ 直接 push 会被拒 ⇒ 第 5 次「push 前先并一次上游」
+
+上游两笔：
+  b4940b7ad fix(board)     admin/dashboard_board_queries.go +281、新增 admin/dashboard_board_truth_source_test.go +240、
+                           admin/board_time_range.go / dashboard_board.go / dashboard_board_cache.go、
+                           web/src/components/board/BoardHeroRow.vue
+  836ae5001 docs(stats)   web/src/**/page-help/dashboard-stats-standards.{zh-CN,zh-TW,en-US,de-DE,es-ES,fr-FR,ja-JP}.md
+
+★ 合并：git merge --no-ff --no-commit origin/main ⇒ ★ 零冲突自动合并
+  （仅 admin/canonical_read_points_registry_test.go 自动合并）⇒ merge commit 24198b63c（父1=aeb76873b 父2=836ae5001）
+
+★ 合并后自查：★ go build ./... 主模块 EXIT=0 ｜ installer EXIT=0 ｜ go vet 六包无输出
+              ★ L 块号无重号 ｜ canonical 登记簿无同键重复
+
+★ 合并后全量闸门（★ 零红）：
+  主模块 MAIN_EXIT=0：admin 137.681s ｜ metricsstore 0.073s ｜ sqlguard 21.122s ｜ deploygate 3.740s
+                   ｜ ursmcheck 470.846s ｜ startup 27.255s ｜ schema 28.937s
+  installer INSTALLER_EXIT=0：5.657s ｜ 5.872s ｜ 47.075s
+  shell 门族 SHELL_EXIT=0（★ 三道全 PASS）
+  空库新装烟测 FRESH_EXIT=0（★ 四段全过：586 表 / 4 视图 / 414 行台账未变 / 部署通道真跑 / 指纹不重放）
+
+★ 通用式：★ ① 「授权了就可以直接推」是错的 ⇒ push 前必须再 fetch 上游
+           ★ ② 上游「docs-only」的直觉也会骗人 ⇒ 判断改动性质必须看 diff 清单、不能看提交标题
