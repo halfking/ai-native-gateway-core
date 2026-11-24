@@ -1,9 +1,11 @@
 # N11 补丁草案：211 `acc-pg17` 的 `/dev/shm` 放大到 1GB
 
-> ★ **状态：★ 未实施（★ 等 owner 一句授权）**
-> ★ **归属：★ 跨仓**（★ 目标文件在 `/opt/kaixuan/stacks/platform/docker-compose.platform.yml`，★ **不在任何 git 仓库里** ⇒ ⇒ ★ **本仓只留这份可审草案** ⇒ ★ 改动落地后请把实际 diff 回填本文件）
-> ★ **主档**：`docs/operations/2026-11-23-211配置优化执行报告.md` §9.19·附4（根因与处置方案）＋ §9.27 ⑾''''''' ⑨·补（补丁誊回本仓的建议）
-> ★ **只读现况核查器**：`scripts/pg17-shm-preflight.sh`（★ 严格只读、★ 一条命令出「现况 ＋ 爆炸半径」）
+> ★ **状态：★ ✅ 已实施（★ 2026-11-25 04:4x、★ owner 指示「按建议执行」 ★★）**
+> ★ **实测读数（★ 生效后 ★）**：★ `shm_size` ＝ **1073741824**（★ 1GB ★★）｜★ `/dev/shm` ＝ **1.0G**、★ 已用 **7.5M / 1%** ｜★ `dsm_segments=2` ｜★ **healthy_after = 9s** ｜★ **数据逐项一致**（★ `public` 表数 574→574、★ `sessions` 275,266→275,266、★ 库数 16→16 ⇒ `DATA_IDENTICAL=1` ★★）｜★ 网关侧（★ `llm-gateway-211-a` ⇒ `acc-pg17:5432` ★★）**TCP 连通 ok** ★★★
+> ★ **回填**：★ §② 的 diff **已按现网实际落地**（★ 见下方 §⑧ ★★）
+> ★ **归属：★ 跨仓**（★ 目标文件在 `/opt/kaixuan/stacks/platform/docker-compose.platform.yml`，★ **不在任何 git 仓库里** ⇒ ⇒ ★ **本仓只留这份可审草案** ⇒ ★ 改动落地后请把实际 diff 回填本文件）★ ★ ⇒ ★★ ⇒ **已回填（§⑧）★★**
+> ★ **主档**：`docs/operations/2026-11-23-211配置优化执行报告.md` §9.19·附4（根因与处置方案）＋ §9.27 ⑾''''''' ⑨·补（补丁誊回本仓的建议）＋ **§9.30 ㉓-42（★ 实际实施轮 ★）**
+> ★ **只读现况核查器**：`scripts/pg17-shm-preflight.sh`（★ 严格只读、★ 一条命令出「现况 ＋ 爆炸半径」）★ ★ ⇒ ★ **处置的验收＝「量具读数变了」★（★ 实测：★ `shm_size` 由 `67108864` 变 `1073741824`、★ `compose_shm_size_present` 由 `no` 变 `yes` ★★）★★★★**
 
 ---
 
@@ -86,3 +88,57 @@ docker compose -f /opt/kaixuan/stacks/platform/docker-compose.platform.yml \
 
 ★ ★ **「处置存在过」≠「当前启动路径会执行它」** —— ★ 仓内的启动脚本带 `--shm-size 1g`、★ 历史记录写「已生效」⇒ ★ 但 211 的 compose 在 2026-11-09 **replace 过容器** ⇒ ⇒ ★ 参数回到 Docker 默认 ⇒ ⇒ ★ **判定一条处置是否真的生效，要看「当前真正生效的那条启动路径」，而不是看仓库里有没有那行参数**。
 ★ ★★ **推论**：★ 凡是要**改启动参数**的处置，★ 都必须落进**真正生效的那条路径**（★ compose 键 / 启动脚本 / 编排清单）⇒ ★ ⇒ ★ 并且**要有能查「当前值」的只读量具**（★ 本轮那个量具就是 `scripts/pg17-shm-preflight.sh`）⇒ ★ ⇒ **处置的验收＝「量具读数变了」，而不是「我改了文件」**。
+
+---
+
+## ⑧ ★ 实际落地记录（★ 2026-11-25 04:4x、★ 本节按上文「改完请把实际 diff 回填本文件」的要求回填 ★★）
+
+### ⑧① 实际 diff（★ 与 §② 的草案【逐字一致】、★ 位置也在同一处 ★★）
+
+★ 备份：`/opt/kaixuan/stacks/platform/docker-compose.platform.yml.bak-20261125-044305`（★ 同目录已有十余个 `.bak-*`、★ 沿用同款留痕方式 ★★）
+
+```diff
+--- /opt/kaixuan/stacks/platform/docker-compose.platform.yml.bak-20261125-044305
++++ /opt/kaixuan/stacks/platform/docker-compose.platform.yml
+@@ -115,6 +115,12 @@
+     image: "kx-citus-pg17:amd64"
+     container_name: "acc-pg17"
+     restart: unless-stopped
++    # ★ N11（2026-11-25）：/dev/shm 默认 64MB ⇒ 并行查询的 DSM 段逼近上限
++    #   ⇒ PG 报 53100（could not resize shared memory segment）⇒ 显式放大到 1GB。
++    #   ★ 数据不动：PGDATA 是 bind mount（/opt/kaixuan/data/pg/acc-pg17）⇒ 只换容器壳。
++    #   ★ 生效需要 recreate（★ 须维护窗口）：docker compose … up -d --force-recreate acc_pg17
++    #   ★ 回滚：去掉本段（或改回 "64m"）⇒ 再 recreate 一次。
++    shm_size: "1gb"
+     entrypoint: ["docker-entrypoint.sh"]
+     command: ["postgres"]
+     environment:
+```
+
+### ⑧② 动手前的两条前置校验（★ 本轮新增、★ 都是「会毁掉现场」的那种坑 ★★）
+
+| 前置 | 为什么必须先做 | 本轮实测 |
+|---|---|---|
+| ★ **compose 项目名解析** | ★ 若项目名解析错、★ `up -d` 会去**新建一个项目** ⇒ ★ **撞容器名 / 起第二个库** ⇒ ★★ ⇒ **这是「一条命令毁掉现场」的最高危形态** | ★ 两种写法（★ `cd` 到 stack 目录 ／ ★ 直接 `-f` 绝对路径 ★）`docker compose ps` **都能列出现网的 `acc-pg17` 等容器** ⇒ ★ 项目名解析**与现网一致**（★ 容器标签 `com.docker.compose.project=kaixuan-platform` ★★）★★ |
+| ★ **改前只读核查器** | ★ 确认现状仍是「`shm_size=67108864` ＋ `compose_shm_size_present=no`」⇒ ★ **否则补丁的前提已被别人改掉** | ★ 实测：`shm_size=67108864`、`compose_shm_size_present=no`、`/dev/shm` 64M／已用 **18M（28%）**、`PGDATA` 仍是 bind mount ★★ |
+
+★ ★ **顺带记一条量具面的坑（★ 本轮真撞到 ★）**：★ 第一版远端脚本里用了 `docker exec -i` ⇒ ★ **`-i` 会把 ssh 的 heredoc stdin 传进去** ⇒ ★ psql 挂住、★ 整段脚本卡在第一条查询 ⇒ ★★ ⇒ ★ 修正＝**所有 `docker exec` 都加 `</dev/null`（或去掉 `-i`）** ⇒ ★★ ⇒ **★ ⇒ 【★ ⇒ 远端批处理里每个可能读 stdin 的子命令都要显式断开 stdin ★★★★】★★**
+
+### ⑧③ 生效与验收（★ 全实测 ★★）
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `ShmSize` | `67108864`（64MB） | **★ `1073741824`（1GB）★★** |
+| `/dev/shm` | 64M ／ 已用 18M（28%） | **★ 1.0G ／ 已用 7.5M（1%）★★** |
+| `dsm_segments` | 2 | 2（★ 不变 ★） |
+| 容器状态 | running/healthy | **★ 重建后 `healthy_after = 9s` ★★）** |
+| `public` 表数 | 574 | **★ 574（一致）★★** |
+| `sessions` 行数 | 275,266 | **★ 275,266（一致）★★** |
+| 库数（非模板） | 16 | **★ 16（一致）★★** |
+| 网关侧连通 | — | ★ **★ `llm-gateway-211-a` ⇒ `acc-pg17:5432` TCP ok ★★** |
+
+★ ⇒ ★ **验收口径（★ 与 §⑦ 的通用式同款 ★★）**：★ **判定＝「量具读数变了」** ⇒ ★ `shm_size` 由 `67108864` 变 `1073741824`、★ `compose_shm_size_present` 由 `no` 变 `yes` ⇒ ★★ ⇒ ★ **⇒ 「我改了文件」不算数、★ 「读数变了」才算数 ★★★★** ★★★
+
+### ⑧④ 诚实边界（如实登记 ★★）
+
+★ **① 本次只动了 `acc_pg17` 一个服务** ⇒ ★ **其余 5 个网络、50+ 容器只是短暂连不上它**（★ compose `--force-recreate` 只针对指定服务 ★★）｜★★ ★ **② 「可用性窗口」实测 = 重建到 healthy 约 9s ＋ 其间 PG 恢复**（★ 本次恢复量小、★ **未实测大恢复量下的时长** ★★）｜★★ ★ **③ §⑥ 的三个相邻问题【本补丁不解决、且仍然开着】**：★ `/dev/shm` 满了仍会报 53100（★ 只是天花板抬高 ★★）／★ 那些「未收编的并行路径」仍是候选（★ `dashboardapi` 全家、★ `getLog` 详情、★ `top-models`、★ `lifecycle` 大扫描、★ MV refresher ★★）／★ **落库不在版本控制**（★ 改动无 diff 可审 ⇒ ★ **本节就是那份 diff** ★★）｜★★ ★ **④ 未做「网络层摘掉对 15432 的外部访问」**（★ §⑤ 的建议 ★）⇒ ★ 外部通路（★ `0.0.0.0:15432`、★ LAN 内 `salesdecorate` 客户端 ★★）**在窗口内未被隔离** ⇒ ★ ★ ⇒ 【★ ⇒ 该步需要 LAN 侧协调、★ 我方无权限、★ 未做 —— 如实登记 ★★】★★ ｜★★ ★ **⑤ 本次落地的是【跨仓、非版本控制】的文件** ⇒ ★ **它不受本仓任何门保护** ⇒ ★ ⇒ **★ ⇒ 【★ ⇒ 它只能靠本文件＋备份＋只读量具三者一起守着 ⇒ ★★ ⇒ ★ ⇒ 这正是「跨仓改动要留可审副本」这条纪律的落点】★★★★** ★★★
