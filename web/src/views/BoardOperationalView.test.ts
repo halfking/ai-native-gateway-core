@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import BoardOperationalView from './BoardOperationalView.vue'
+import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
 import { fetchBoardOperational, fetchDashboardBoard } from '../api/board'
 import { testI18n } from '../test-utils/i18n'
 
@@ -213,5 +214,39 @@ describe('BoardOperationalView', () => {
 
     expect(w.text()).toContain('数据源不可用')
     expect(w.text()).toContain('趋势数据降级')
+  })
+
+  // ── 2026-11-25 统一轮：本页并入**共享时间范围组件**（四处结构同构）─────────
+  it('统一轮：用的是共享封装 StatsDateRangePicker，且自定义区间的窗口与界面显示一致', async () => {
+    mockedFetchOperational.mockResolvedValue(SAMPLE_OPERATIONAL)
+    mockedFetchBoard.mockResolvedValue(SAMPLE_BOARD)
+    const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
+    await flushPromises()
+
+    // ① 用的是**共享封装**（不是裸 KxDateRangePicker + 本页自写的一套预设）。
+    //   ⇒ 档位/跨度上限/交互形态与看板页、会话统计页、会话分析用户页**逐字同构**。
+    expect(w.findComponent(StatsDateRangePicker).exists()).toBe(true)
+
+    // ② 自定义区间 ⇒ 请求带 start/end（界面显示的区间 = 数据窗口，不是「最近 N 天」）。
+    await w.findComponent(StatsDateRangePicker).vm.$emit('apply', { start: '2026-09-01', end: '2026-09-10' })
+    await flushPromises()
+
+    expect(mockedFetchBoard).toHaveBeenLastCalledWith({ start: '2026-09-01', end: '2026-09-10', days: 10 })
+
+    // ③ 文案不许说假话：自定义区间显示**起止日期**，不再写「最近 N 天」。
+    expect(w.text()).toContain('2026-09-01 至 2026-09-10')
+    expect(w.text()).not.toContain('数据时间范围：最近 10 天')
+  })
+
+  it('统一轮：默认档位仍是「近 7 天 ⇒ days=7」，文案与请求都逐字不变（等价替换）', async () => {
+    mockedFetchOperational.mockResolvedValue(SAMPLE_OPERATIONAL)
+    mockedFetchBoard.mockResolvedValue(SAMPLE_BOARD)
+    const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
+    await flushPromises()
+
+    // ★ 这一条是「改动是等价替换」的证据：既有断言一条不用改就仍然成立。
+    expect(mockedFetchBoard).toHaveBeenCalledWith({ days: 7 })
+    expect(w.text()).toContain('数据时间范围：最近 7 天')
+    expect(w.text()).toContain('运营概览（7 天）')
   })
 })

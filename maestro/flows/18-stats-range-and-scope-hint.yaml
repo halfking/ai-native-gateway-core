@@ -160,9 +160,22 @@ url: ${BASE_URL}
 - tapOn:
     id: "stats-scope-hint-label"
 #
-# ═══ ④ 会话分析·用户页（/admin/session-analytics/users）══════════════════
+# ═══ ④ 会话统计整合页（/admin/session-analytics/users/overview）════════════
 # ★ 这一页本轮也做了同样的两件事：统一时间范围 + 提示符上移页头。
-- openLink: ${BASE_URL}/admin/session-analytics/users
+#
+# ★★ 2026-11-25：**URL 已更新**。别的会话（28957fe55「用户画像列表页挂回原 URL」）
+#   把 `/admin/session-analytics/users` 改指向 **UserProfileListView**，
+#   而本 flow 要断的会话统计整合页（SessionAnalyticsUsersView：会话统计面板 +
+#   统计说明提示符 + 共享日期组件）搬到了 **`/users/overview`**。
+#   ⇒ ★ **量具过期与产品缺陷长得一模一样**（断言红 ⇒ 像是页面坏了）⇒ 必须分辨：
+#     「量具打的是哪一页」是量具自己的责任（URL 过期 ⇒ 改量具），不是改产品。
+#   ⇒ ★ 顺带登记**第五处日期控件（已知例外，不在本轮统一口径）**：
+#     `/admin/session-analytics/users`（用户画像列表页 UserProfileListView）用的是
+#     **datetime 精度**预设（今天/昨天/近24小时/近7/14/30天/本月/上月，8 档）
+#     ⇒ 它的时间窗是**时刻窗**（近 24 小时有真实语义），与另外四处
+#     **日历日窗**（date 精度，7 档）**语义不同** ⇒ 强行并入会删掉「近 24 小时」
+#     ⇒ ⇒ 列为已知例外（owner 决策项），本轮不动。
+- openLink: ${BASE_URL}/admin/session-analytics/users/overview
 - extendedWaitUntil:
     visible:
       id: "sa-page-users"
@@ -217,3 +230,49 @@ url: ${BASE_URL}
     id: "stats-scope-hint-body"
 - tapOn:
     id: "stats-scope-hint-label"
+#
+# ═══ ⑤ 运营面板（/admin/board-operational）═══════════════════════════
+# ★ 2026-11-25：运营面板此前是**第四套**日期控件（今天/近7/近30/近90、跨度上限
+#   365 天）⇒ 与其余三页形态不同 ⇒ 本轮并入**共享组件** ⇒ 档位集合与其他三页
+#   **逐字同序相等**（本段把 7 个档位逐个断一遍 ⇒ 少一个就红）。
+- openLink: ${BASE_URL}/admin/board-operational
+- extendedWaitUntil:
+    visible:
+      id: "stats-date-range-picker"
+    timeout: 30000
+- assertVisible:
+    id: "stats-date-range-picker"
+# ★ 该页在加载期把控件置为 disabled ⇒ 锚点此刻是 kx-dr-trigger-disabled ⇒
+#   extendedWaitUntil 会**一直等到可交互**为止（2026-11-24 量具修正的用意）。
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 30000
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- assertVisible:
+    id: "kx-dr-preset-today"
+- assertVisible:
+    id: "kx-dr-preset-yesterday"
+- assertVisible:
+    id: "kx-dr-preset-last7d"
+- assertVisible:
+    id: "kx-dr-preset-last14d"
+- assertVisible:
+    id: "kx-dr-preset-last30d"
+- assertVisible:
+    id: "kx-dr-preset-thisMonth"
+- assertVisible:
+    id: "kx-dr-preset-lastMonth"
+- assertVisible:
+    id: "kx-dr-inputs"
+- assertVisible:
+    id: "kx-dr-input-start"
+- assertVisible:
+    id: "kx-dr-input-end"
+- tapOn:
+    id: "kx-dr-trigger"
