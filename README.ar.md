@@ -298,7 +298,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. بنية المجلدات | كاملة | كاملة (تُنشأ مجلدات db/data وredis/data دون استخدام) |
 | 6. `compose.yml` | 3 خدمات | **يُستبعد منه `kx-citus` + `kx-redis`**؛ يفقد gateway ‏`depends_on` وبيئة PG/Redis |
 | 7. تشغيل الحاويات | 3 حاويات | **`kx-llm-gateway-go` فقط** |
-| 8. تهيئة قاعدة البيانات | انتظار جاهزية PG + `InitSchema` (590+ ترحيل عند بدء التشغيل) | **يُتخطى** (SQLite ينشئ تلقائيًا) |
+| 8. تهيئة قاعدة البيانات | انتظار جاهزية PG + `InitSchema` (407 ترحيل عند بدء التشغيل) | **يُتخطى** (SQLite ينشئ تلقائيًا) |
 | 9. فحص الصحة | فحص كامل من 5 بنود | حاوية + `/healthz` فقط؛ PG/Redis/Schema تُفرض ✅ في التقرير |
 
 **أعلام التثبيت الجديدة**

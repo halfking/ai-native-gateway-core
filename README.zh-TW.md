@@ -298,7 +298,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. 目錄結構 | 完整 | 完整（db/data 與 redis/data 目錄仍會建立但不使用） |
 | 6. `compose.yml` | 3 個服務 | **剝離 `kx-citus` + `kx-redis`**；gateway 移除 `depends_on` 與 PG/Redis env |
 | 7. 啟動容器 | 3 個容器 | **僅 `kx-llm-gateway-go`** |
-| 8. 資料庫初始化 | 等待 PG ready + `InitSchema`（590+ 個啟動遷移） | **跳過**（SQLite 自動建表） |
+| 8. 資料庫初始化 | 等待 PG ready + `InitSchema`（407 個啟動遷移） | **跳過**（SQLite 自動建表） |
 | 9. 健康檢查 | 5 項全檢 | 僅容器 + `/healthz`；PG/Redis/Schema 在報告中強制顯示 ✅ |
 
 **新增 install flags**
