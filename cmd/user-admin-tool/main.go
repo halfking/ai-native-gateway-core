@@ -81,6 +81,14 @@ func listUsers(ctx context.Context, pool *pgxpool.Pool) {
 		fmt.Printf("%-5d %-15s %-20s %-20s %-30s %-15s %-8t\n",
 			id, tenantID, username, displayName, email, role, enabled)
 	}
+	// ★ rows 终检：迭代中断（连接断开 / 服务端错误）时 rows.Next() 会提前返回
+	//   false ⇒ 不看 rows.Err() 就会**静默截断**这张用户表（打印半截、退出码 0）
+	//   ⇒ ⇒ 工具的使用者会以为那就是全部用户。
+	//   ★ 本工具是**一次性运维 CLI**：扫描失败已用 log.Fatalf 处理 ⇒ 这里同口径
+	//     直接退出，不把半截表格当成完整结果交出去。
+	if err := rows.Err(); err != nil {
+		log.Fatalf("Rows iteration failed: %v", err)
+	}
 	fmt.Println()
 }
 
