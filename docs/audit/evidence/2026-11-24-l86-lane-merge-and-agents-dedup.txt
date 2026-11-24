@@ -177,3 +177,17 @@ AGENTS.md 行   归档档 行   字节      首行（截断）
 
 ★ 通用式：★ ① 「授权了就可以直接推」是错的 ⇒ push 前必须再 fetch 上游
            ★ ② 上游「docs-only」的直觉也会骗人 ⇒ 判断改动性质必须看 diff 清单、不能看提交标题
+
+── ⑨·补 第 6 次上游并入（★ 闸门跑到一半时上游又推了 4 笔）──────────────────
+
+★ 上游 836ae5001 → 27e719539（4 笔）：
+  27e719539 Merge github/main（收编提交旧 SHA 对齐）
+  53a2a3c88 / 7096710f6 chore(audit)：收编 2026-11-23 统一轮遗留产物（★ 报告 HTML ＋ 4 个一次性脚本）
+  c91f763fb fix(sessionsummary)：修复 LLM 返回 thinking 标签导致 JSON 解析失败
+    ⇒ domains/sessionsummary/summarizer.go ＋ 新增 domains/sessionsummary/thinking_tags_test.go
+
+★ 合并：★ git merge --no-ff --no-commit origin/main ⇒ ★ 零冲突自动合并 ⇒ merge commit 0138eca79（父1=fb1d62bd5 父2=27e719539）
+★ 合并后自查：★ go build ./...（★ 主模块 ＋ installer）EXIT=0 ｜ go vet 七包无输出
+★ 合并后全量闸门：★ MAIN_EXIT=0（admin 112.029s ｜ metricsstore 0.049s ｜ sqlguard 23.243s ｜ deploygate 3.097s
+                    ｜ ursmcheck 382.321s ｜ startup 30.431s ｜ schema 36.328s）
+                    ｜ INSTALLER_EXIT=0 ｜ SHELL_EXIT=0 ｜ FRESH_EXIT=0（四段全过）⇒ 零红
