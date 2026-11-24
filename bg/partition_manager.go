@@ -292,6 +292,7 @@ func (pm *PartitionManager) run(ctx context.Context) {
 	// own worker so a backlog cannot block these maintenance operations.
 	if pm.db != nil {
 		pm.ensureNextMonthPartitions(ctx)
+		pm.scheduleSessionFamilyAnalyzeSettings(ctx)
 		pm.archiveOldPartitionsIfNeeded(ctx)
 		// D8-d: read-only scan for rows stranded in a `*_default` partition.
 		// A hit means that month's partition can no longer be created (§9.152).
@@ -309,6 +310,7 @@ func (pm *PartitionManager) run(ctx context.Context) {
 		case <-mainTicker.C:
 			if pm.db != nil {
 				pm.ensureNextMonthPartitions(ctx)
+				pm.scheduleSessionFamilyAnalyzeSettings(ctx)
 				pm.archiveOldPartitionsIfNeeded(ctx)
 				pm.checkDefaultPartitionResidue(ctx)
 			}
