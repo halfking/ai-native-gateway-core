@@ -3741,6 +3741,18 @@ ledger_artifact_probe "998_session_summaries_task_association.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
 ledger_artifact_probe "999_session_summary_layers.sql" \
   "to_regclass('public.session_summary_layers') IS NOT NULL"
+# ★★★ 2026-11-24（看板真源统一轮部署实测）：★★ 此处原有**四条孤儿 SQL 字符串**
+# ★★★ （只剩判据、**丢了 `ledger_artifact_probe "<file>" \` 前缀**）⇒ shell 把 SQL
+# ★★★ 当命令执行 ⇒
+# ★★★   "…to_regclass('public.teams')…: command not found"
+# ★★★ ⇒ **[211] FATAL: DB 修订序列失败——直接启动会降级 lite，先修库再部署**
+# ★★★ ⇒ ★★ **任何部署都被卡死**（不止本轮）。
+# ★★★ 成因：teams 族反复改号（055-058 → 982-985 → 918/925/973/986 → 1000-1003
+# ★★★ → 回到 055-058）时，合并冲突把这几行**函数名前缀**弄丢，而 SQL 判据还在。
+# ★★★ ★★ 真正的 055-058 四条探针在本文件**下方**（teams 族投递段）逐字保留 ⇒
+# ★★★ ★★ 这里**只删掉孤儿行**，不重复登记（重复登记会让同一条判据跑两遍）。
+# ★★★ 防复发：scripts/ursmcheck/deploy_seq_probe_orphan_lines_test.go
+# ★★★ （检测「行首是字符串但上一行没有续行反斜杠」的孤儿行 ⇒ 必须为 0）。
 # ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
 #   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
 #   '981' 行已存在（两件事都成立才算记账修好了）。
@@ -3792,21 +3804,6 @@ ledger_artifact_probe "983b_add_raw_model_name.sql" \
 ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
   "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
-# ★★ 2026-11-24（第四轮）：本段此前带**四行孤儿判据**（★ teams / user_teams /
-#   api_keys.team_id / team_budgets 各一条「索引 ＋ 唯一约束」判据，★ 但**没有**
-#   ledger_artifact_probe 前缀 ⇒ shell 把它们当命令执行 ⇒ **exit 127** ⇒
-#   ★★ **DB 修订序列中止 ⇒ 211 部署中止**（★ 归属：**上游 origin/main 引入**，★
-#   ★ 本轮做**零语义阻断修复**：删掉这四行孤儿）。
-# ★★ 为什么**不**把它们 AND 进下面 055-058 的判据：
-#   ① 漂移门（apply-db-revision-sequence_test.sh「probe drifted from file」）
-#      要求探针行里**所有 ≥5 字符的引号字符串**在迁移文件里**逐字出现** ⇒
-#      而那几条判据用了 'public' / 'public.teams' 形态 ⇒ **过不了漂移门**
-#      ⇒ ★ 这正是它们当初写成了孤儿的原因（★ 写不出合规形式）；
-#   ② ★ 加上「索引 ＋ 约束」判据后，**判据可能在生产上永不满足**
-#      （★ 生产 teams 族的索引名与约束名未做只读核实）⇒ ⇒ **部署会失败**。
-# ⇒ ★★ **结论：判据缺口登记待 owner（★ 「teams 族索引/约束的产物判据缺失」）★★；
-#   ★★ 若将来要补，**必须**按漂移门口径写（★ 判据里的字符串字面量逐字取自
-#   ★★ 迁移文件，★ 不用 'public' 形态，★ 并先在 211 上只读核实索引/约束真名）★★。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
 ledger_artifact_probe "055_teams_table.sql" \
   "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
