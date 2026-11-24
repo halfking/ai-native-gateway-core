@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -520,13 +521,11 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 	// 验证提取的内容是否看起来像 JSON
 	trimmed := strings.TrimSpace(jsonStr)
 	if !strings.HasPrefix(trimmed, "{") {
-		// 记录原始响应的前 500 个字符以便调试
-		preview := response
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		return nil, fmt.Errorf("failed to parse JSON: response does not look like JSON (starts with %q), preview: %s",
-			safePrefix(trimmed, 20), preview)
+		// 调试预览（2026-11-24 2041 审计轮脱敏订正）：原始 LLM 响应由用户会话内容
+		// 生成 ⇒ 全文（哪怕前 500 字符）进错误日志等于把会话片段落盘（隐私面）
+		// ⇒ 只记形态特征（rune 长度 / 首字符 / 是否 HTML），不记原文。
+		return nil, fmt.Errorf("failed to parse JSON: response does not look like JSON (starts with %q), response_shape: %s",
+			safePrefix(trimmed, 20), describeResponseShape(response))
 	}
 
 	var result struct {
@@ -540,13 +539,9 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 	}
 
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		// 记录原始响应的前 500 个字符以便调试
-		preview := response
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		return nil, fmt.Errorf("failed to parse JSON: %w, extracted: %q, preview: %s",
-			err, safePrefix(jsonStr, 100), preview)
+		// 同上：原始响应只记形态特征，不落原文（隐私面）。
+		return nil, fmt.Errorf("failed to parse JSON: %w, extracted: %q, response_shape: %s",
+			err, safePrefix(jsonStr, 100), describeResponseShape(response))
 	}
 
 	if result.Title == "" {
@@ -904,7 +899,7 @@ func stripThinkingTags(text string) string {
 		}
 		text = text[:start] + text[start+end+8:]
 	}
-	
+
 	// Remove other common XML-like wrapper tags
 	for _, tag := range []string{"<response>", "<output>", "<answer>"} {
 		if idx := strings.Index(text, tag); idx != -1 {
@@ -916,15 +911,34 @@ func stripThinkingTags(text string) string {
 			text = text[:idx]
 		}
 	}
-	
+
 	return strings.TrimSpace(text)
 }
 
 // extractJSON 从可能包含 markdown 或 thinking tags 的文本中提取 JSON
 func extractJSON(text string) string {
-	// First strip thinking tags and XML wrappers
-	text = stripThinkingTags(text)
-	
+	// First strip thinking tags and XML wrappers.
+	// ★ 误剥回退（2026-11-24 2041 审计轮）：stripThinkingTags 按**裸字符串匹配**剥
+	//   <answer>/</output> 等标签 ⇒ JSON **字符串值内部**的字面标签（如摘要正文
+	//   提及 "user asked <answer> what"）会被误切 ⇒ 提取出残缺 JSON。回退策略：
+	//   剥离结果若不再是合法 JSON 片段（首尾大括号缺失），回退到原文重新提取
+	//   —— 原文里 <think> 前缀形态已由调用方 parseSummaryResponse 的 HasPrefix("{")
+	//   与剥离路径覆盖，正常 <think> 包裹场景不受影响。
+	stripped := stripThinkingTags(text)
+	// ★ 误剥回退判据（2026-11-24 2041 审计轮）：剥离把 JSON 骨架字符（{ 或 }）也
+	//   切掉了 ⇒ JSON 字符串值内含字面标签被误剥 ⇒ 回退原文（骨架计数下降是误剥的
+	//   精确信号；正常 <think> 包裹场景骨架计数不变）。
+	if strings.Count(stripped, "{") < strings.Count(text, "{") ||
+		strings.Count(stripped, "}") < strings.Count(text, "}") {
+		return extractJSONWithoutStripping(text)
+	}
+	text = stripped
+
+	return extractJSONFrom(text)
+}
+
+// extractJSONFrom 是 extractJSON 的主体（不做 thinking 剥离）。
+func extractJSONFrom(text string) string {
 	// Try markdown JSON blocks first
 	start := strings.Index(text, "```json")
 	if start != -1 {
@@ -1058,6 +1072,26 @@ func truncateRunes(s string, n int) string {
 
 // safePrefix returns the first n runes of s, or the entire string if shorter.
 // Used for safe error message previews.
+// extractJSONWithoutStripping 不做 thinking 剥离的提取（误剥回退路径专用）。
+func extractJSONWithoutStripping(text string) string {
+	return extractJSONFrom(text)
+}
+
+// describeResponseShape 返回响应的**形态特征**摘要（2026-11-24 2041 审计轮新增）：
+// rune 长度 / 首个可见 rune / 是否 HTML —— 足以判别「返回了 HTML 登录页」这类
+// 常见故障形态，又不把会话衍生内容写进日志。全程 rune 安全（多字节不撕裂）。
+func describeResponseShape(s string) string {
+	runes := []rune(strings.TrimSpace(s))
+	first := "-"
+	for _, r := range runes {
+		if !unicode.IsSpace(r) {
+			first = string(r)
+			break
+		}
+	}
+	return fmt.Sprintf("runes=%d first=%q html=%v", len(runes), first, strings.Contains(strings.ToLower(s), "<html"))
+}
+
 func safePrefix(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {
