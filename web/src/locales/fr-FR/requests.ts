@@ -88,8 +88,6 @@ export default {
       label: 'Inclure les sondes',
       badge: 'avec sondes',
       hint: 'Une fois activé, la liste et les totaux incluent le trafic des sondes (même périmètre que le rapprochement fournisseur) ; le coût des lignes de sondes provient de la table de faits du rapprochement et reste vide tant qu\'il n\'est pas enregistré',
-      windowClamped: 'fenêtre limitée aux dernières {hours} h',
-      windowClampedHint: 'Les requêtes incluant les sondes comptent au maximum les dernières {hours} heures : lorsque la plage de temps sélectionnée dépasse {hours} heures, seules les dernières {hours} heures sont comptées ; réduisez la plage de temps pour correspondre à la sélection',
     },
   },
   errorKind: {

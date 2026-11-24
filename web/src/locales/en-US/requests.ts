@@ -64,8 +64,6 @@ export default {
       label: 'Include probes',
       badge: 'with probes',
       hint: 'When enabled, the list and totals include probe traffic (same caliber as the supplier reconciliation); probe-row costs come from the reconciliation fact table and stay empty until recorded',
-      windowClamped: 'window capped at last {hours}h',
-      windowClampedHint: 'Queries that include probes count at most the most recent {hours} hours: when the selected time range is longer than {hours} hours, only the last {hours} hours are counted; narrow the time range to match your selection',
     },
     trace: {
       sessionSummaryHint: 'Only available when a session ID filter is active',

@@ -65,8 +65,6 @@ export default {
       label: '包含探测',
       badge: '含探测',
       hint: '开启后列表与统计包含探测流量（与供应商对账同口径）；探测行的费用取自对账事实表，未落账的行费用为空',
-      windowClamped: '窗口已截到近 {hours} 小时',
-      windowClampedHint: '含探测的查询最多统计最近 {hours} 小时：所选时间范围超过 {hours} 小时时，只计入最近 {hours} 小时；缩小时间范围即可与所选一致',
     },
     trace: {
       sessionSummaryHint: '仅在会话 ID 筛选下可用',
