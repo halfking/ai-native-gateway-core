@@ -368,8 +368,10 @@ func MigrationPathLess(a, b string) bool { return migrationPathLess(a, b) }
 //
 // ★★★ ★★ 而 dbinit 侧的 migrationVersionOf（**台账跳过**口径）**刻意不折叠**：★
 //	· 它判的是「这条迁移是否已应用」（查 public.schema_migrations.version）★
-//	· 折叠后 989b 会去查台本 '989' ⇒ 而 '989' 行是**别的迁移**写的
-//	  ⇒ ⇒ 989b 被**假跳过** ⇒ public.supplier_contract_rates 在新装实例上建不出来
+//	· 折叠后 983b 会去查台本 '983' ⇒ 而 '983' 行是**request_metrics 建表件**写的
+//	  ⇒ ⇒ 983b 被**假跳过** ⇒ raw_model_name 列永不落地 ⇒ 落库必 42703
+//	· （★ 纯数字号段不受影响：★ 供应商合同费率件已还号到**真空号 925** ⇒
+//	  ★ 它的版本键 925 在台本里无人占 ⇒ 折叠与否都不影响它 ★）
 //	  ⇒ ★⇒ 两个函数的语义**必须不同**：本函数＝**排序**口径（折叠），
 //	    migrationVersionOf＝**台账跳过**口径（不折叠）。
 //	  ⇒ ★ 详见 installer/internal/dbinit/migration_version_identity_test.go

@@ -38,7 +38,10 @@ func sortWithProductionSort(names []string) []string {
 //        ⇒ 983b/983c 排在 983 之后（★ 本轮已修：折叠前实测 983b 排第 14 位、
 //          983 排第 658 位 ⇒ 离线升级里补列件先于建表件 ⇒ ON_ERROR_STOP=1 整体中止）。
 //      · dbinit.migrationVersionOf（**台账跳过**）⇒ 字母后缀**不折叠**
-//        ⇒ 不参与版本键 ⇒ 永不被同号行假跳过（★ 折叠会重新引入 989b 被假跳过）。
+//        ⇒ 不参与版本键 ⇒ 字母后缀件永不被同号行假跳过
+//        （★ 折叠会重新引入它被假跳过：★ 983b 一旦去查 '983' ⇒ 而 '983' 行
+//          在生产账本里存在（request_metrics 建表件写的）⇒ 补列件被跳过 ⇒
+//          列永不落地 ⇒ 落库必 42703 ★）。
 //      ⇒ ★ 两个函数的语义**必须保持不同** ⇒ 本门分别钉住两侧。
 //
 // ★★★ ③ **自登记版本号 == 文件名版本号**（★ 台本「谁拥有这一行」的唯一性）
@@ -83,7 +86,7 @@ func TestMigrationIdentity_PureNumericVersionKeyIsUnique(t *testing.T) {
 		t.Fatalf("★ ≥500 号段的 startup 迁移**纯数字版本键重复** ⇒ 安装器腿按「文件名版本号查台账」判定时，\n"+
 			"★ 先执行的那条会占住该行 ⇒ **后执行的那条被假跳过** ⇒ 它的产物永不落地。\n"+
 			"★ 重复项：\n  %s\n"+
-			"★ 修法：把后一条改成**同族字母后缀**（如 989b_…）⇒ 非纯数字前缀不参与版本键 ⇒ 不再被假跳过。",
+			"★ 修法：把后一条**还号到真空数字号**（★ 磁盘无 / git 历史无 / 生产台账无）⇒ 纯数字且无人占 ⇒ 不再被假跳过。\n"+"★ ★★ **别用字母后缀**：★ 字母后缀对 Go 门（`^[0-9]+_`）与壳层门（家族后缀豁免）**同时失明**\n"+"★ ★★ ⇒ 把「响亮的撞号」变成「静默的撞号」★ ★（★ 2026-11-24 并行车 989→925 的实测结论 ★）。",
 			strings.Join(dupes, "\n  "))
 	}
 }
@@ -95,7 +98,8 @@ func versionKeyDupMessage(v int, a, b string) string {
 // ── 门 ①'（★ 棘轮）：台账自登记版本号必须等于文件名版本号 ───────────────
 //
 // ★ 存量豁免清单（★ 8 条，每条都有分类；★ 豁免集合必须**恰好**等于扫描结果
-//   ⇒ 新增错位 ⇒ 红；修好一条 ⇒ 也要从清单里删掉 ⇒ 红 ⇒ ★⇒ **只许变好**）。
+//
+//	⇒ 新增错位 ⇒ 红；修好一条 ⇒ 也要从清单里删掉 ⇒ 红 ⇒ ★⇒ **只许变好**）。
 var selfRegistrationKnownExceptions = map[string]struct {
 	written string
 	kind    string
@@ -109,11 +113,11 @@ var selfRegistrationKnownExceptions = map[string]struct {
 	// ★★ 错位一格（★ 真缺陷：★ 生产台本上这五行被前一条覆盖 ⇒ 运维读台本被误导。
 	//   ★★ 彻底修复需要**改这 5 条已 applied 迁移的字节** ⇒ 触 L23 字节冻结
 	//   ★★ ⇒ 属 owner 决策项（★ 主档 §4-L1 已登记，★ 本轮不擅自拍板）。
-	"985_request_reconciliation_links.sql":  {"984", "错位一格（L1，owner 决策项）"},
+	"985_request_reconciliation_links.sql":   {"984", "错位一格（L1，owner 决策项）"},
 	"986_provider_attempt_media_usage.sql":   {"985", "错位一格（L1，owner 决策项）"},
 	"987_provider_invoice_evidence.sql":      {"986", "错位一格（L1，owner 决策项）"},
 	"988_provider_invoice_usage_buckets.sql": {"987", "错位一格（L1，owner 决策项）"},
-	"989b_supplier_contract_rates.sql":       {"988", "错位一格（L1，owner 决策项）"},
+	"925_supplier_contract_rates.sql":        {"988", "错位一格（L1，owner 决策项）"},
 }
 
 var selfRegistrationInsertPattern = regexp.MustCompile(
@@ -187,7 +191,6 @@ func TestMigrationIdentity_LetterSuffixNeverParticipatesInVersionKey(t *testing.
 	cases := []string{
 		"983b_add_raw_model_name.sql",
 		"983c_add_occurred_cursor_index.sql",
-		"989b_supplier_contract_rates.sql",
 		"361b_xxx.sql",
 		"478p2_affinity.sql",
 	}
@@ -204,42 +207,71 @@ func TestMigrationIdentity_LetterSuffixNeverParticipatesInVersionKey(t *testing.
 }
 
 // ── 门 ③（★ 核心行为门）：供应商合同费率表不得被假跳过 ──────────────────
+//
+// ★★★ 判据在 2026-11-24 **升级过一次**（★ 别退回旧判据）：★★★
+//
+//	旧判据＝「磁盘上的那个文件必须**不是纯数字前缀**」⇒ ★★ 它会把**更好的解法**
+//	（还号到**真空数字号 925**）误判成缺陷 ⇒ ★★ **假红** ★★
+//
+//	现判据＝「**版本键在生产账本里无人占**」⇒ ★★ 这是**更强**的性质 ★★
+//	（★ 纯数字 + 空号 ⇒ 不依赖「字母后缀不参与版本键」这个副作用 ⇒
+//	  ★★ 它同时对**两条通道**都成立 ★★）⇒ ★★ 且**允许**更好的解法 ★★。
+//
+// ★ 为什么这重要：★ 989 撞号的根因是「**同一个版本键被两件迁移共用**」
+//
+//	⇒ 修法不是「让第二件失去版本键」（字母后缀）⇒ ★★ 而是「让第二件拿到一个**空号**」
+//	⇒ ★★ 后者对**唯一性门可见**（纯数字 ⇒ 门看得见）★★ ⇒ ★★ 字母后缀则让门**失明** ★★。
 func TestMigrationIdentity_SupplierContractRatesIsNeverFalselySkipped(t *testing.T) {
 	applied := productionLedgerShape()
 
-	// ★ 主臂：改用同族后缀后，该迁移**不得**被台账里的 '989' 行假跳过。
-	const newName = "989b_supplier_contract_rates.sql"
+	// ★ 主臂：还号到 **925**（★ 纯数字 + 真空号）⇒ 版本键 925 在生产账本里**无人占**
+	// ⇒ ⇒ 无论 '984'…'989' 哪一行是谁写的，925 都不会被假跳过。
+	const newName = "925_supplier_contract_rates.sql"
+	v, ok := migrationVersionOf(newName)
+	if !ok {
+		t.Fatalf("★ %s 的前缀**不是纯数字** ⇒ 它不参与版本键判定 ⇒ ★ 本门的前提（纯数字 + 空号）需要重新评估。", newName)
+	}
+	if applied[v] {
+		t.Errorf("★ %s 的版本键 %d 在生产账本形态里**已被占** ⇒ 它会被假跳过 ⇒ "+
+			"★ public.supplier_contract_rates 在新装实例上建不出来。\n"+
+			"★ 修法：还号到**真空数字号**（★ 磁盘无 / git 历史无 / 生产台账无）。", newName, v)
+	}
 	if !startupPending(newName, applied) {
-		t.Errorf("★ %s 在生产账本形态（'989' 行已被 ledger repair 占用）下被判「已应用」⇒ "+
+		t.Errorf("★ %s 在生产账本形态（'984'…'989' 各行已被占用）下被判「已应用」⇒ "+
 			"★ 会被**假跳过** ⇒ public.supplier_contract_rates 在新装实例上建不出来。\n"+
-			"★ 修法：文件名用**同族字母后缀**（非纯数字前缀 ⇒ 不参与版本键 ⇒ 恒 pending）。", newName)
+			"★ 修法：还号到**真空数字号**（★ 别用字母后缀：★ 唯一性门对字母后缀**失明**）。", newName)
 	}
 
 	// ★ 对照臂（★ 固化已坐实的事实，★ 防「有人以为这是新缺陷」）：
-	//   旧名带纯数字前缀 ⇒ 查 '989' ⇒ 命中 ledger repair 写的行 ⇒ 跳过。
+	//   旧名带纯数字前缀 989 ⇒ 查 '989' ⇒ 命中 ledger repair 写的行 ⇒ 跳过。
 	const oldName = "989_supplier_contract_rates.sql"
 	if startupPending(oldName, applied) {
 		t.Errorf("★ 对照臂失效：%s 在生产账本形态下**居然**不被跳过 ⇒ "+
 			"★ 说明安装器腿的跳过判据变了 ⇒ 本门的前提（按文件名版本号查台账）需要重新评估。", oldName)
 	}
 
-	// ★ 对照臂 2：纯数字前缀**确实**参与版本键判定（★ 证明门 ② 不是恒真）。
+	// ★ 对照臂 2：纯数字前缀**确实**参与版本键判定（★ 证明门 ②/门 ③ 的前提不是恒真）。
 	if startupPending("985_request_reconciliation_links.sql", applied) {
 		t.Errorf("★ 对照臂失效：纯数字前缀的迁移居然不参与版本键判定 ⇒ 门 ②/门 ③ 的前提需要重新评估。")
 	}
 
 	// ★★★ 磁盘绑定（★ 把上面的**纯函数性质**绑到**磁盘上真实存在的那个文件**）：
-	// ★ 若磁盘上还是纯数字前缀的 `989_supplier_contract_rates.sql`，
+	// ★ 若磁盘上还是旧名 `989_supplier_contract_rates.sql`，
 	// ★ 则上面主臂只是一句「假如叫这个名字就不会被跳过」的假设 ⇒ **测不到真实产物**。
 	for _, name := range startupMigrationFiles(t) {
 		if !strings.Contains(name, "supplier_contract_rates") {
 			continue
 		}
-		if _, ok := migrationVersionOf(name); ok {
-			t.Errorf("★ 磁盘上的供应商合同费率迁移仍叫 %s（**纯数字前缀**）⇒ \n"+
-				"★ ★★ 它参与安装器腿的版本键判定 ⇒ 台账里 '989' 行（ledger repair 写的）\n"+
+		if name != newName {
+			t.Errorf("★ 磁盘上的供应商合同费率迁移叫 %s ⇒ \n"+
+				"★ ★★ 它的版本键是 %s ⇒ 台账里 '989' 行（ledger repair 写的）\n"+
 				"★ ★★ 会把它假跳过 ⇒ **新装实例上 public.supplier_contract_rates 建不出来**。\n"+
-				"★ 修法：改名为同族字母后缀 989b_supplier_contract_rates.sql（★ 文件内容/字节不变）。", name)
+				"★ 修法：还号到 **925**（★ 文件内容/字节不变 ⇒ 不触 L23 字节冻结）。", name, name)
+			continue
+		}
+		// ★★ 还号到位 ⇒ 它的版本键必须在生产账本里**无人占**（★ 同一判据，绑到磁盘）。
+		if k, ok := migrationVersionOf(name); ok && applied[k] {
+			t.Errorf("★ 磁盘上的 %s 版本键 %d 在生产账本里**已被占** ⇒ 仍会被假跳过。", name, k)
 		}
 	}
 }
@@ -253,9 +285,9 @@ func TestMigrationIdentity_DeployChannelKeysByFileNameAndFingerprint(t *testing.
 	}
 	body := string(raw)
 	if !strings.Contains(body, `marker="${sequence_name}:${base}"`) {
-		t.Errorf("★ 部署通道脚本不再按「序列名:文件名」构造 marker ⇒ \n"+
-			"★ 它可能改成了按 schema_migrations.version 记账 ⇒ \n"+
-			"★ ★★ 那么「安装器腿按文件名版本号查台账」与「部署通道」将变成同一套口径 ⇒ \n"+
+		t.Errorf("★ 部署通道脚本不再按「序列名:文件名」构造 marker ⇒ \n" +
+			"★ 它可能改成了按 schema_migrations.version 记账 ⇒ \n" +
+			"★ ★★ 那么「安装器腿按文件名版本号查台账」与「部署通道」将变成同一套口径 ⇒ \n" +
 			"★ ★★ 本文件的门 ①/门 ③ 的前提（两条通道口径不一致）需要重新评估。")
 	}
 	if !strings.Contains(body, "content_sha256") {
@@ -266,9 +298,12 @@ func TestMigrationIdentity_DeployChannelKeysByFileNameAndFingerprint(t *testing.
 // ── 门 ⑤（★ 跨口径对照）：排序口径（折叠）与跳过口径（不折叠）必须不同 ──
 //
 // ★★★ 这是本轮最容易被「顺手统一」掉的地方：★
+//
 //	· 有人看到两个函数都叫「解析文件名前缀」⇒ 可能会把它们**统一**★
-//	· 但统一到「折叠」⇒ 989b 会被台账里 '989' 行假跳过 ⇒ 供应商合同费率表建不出来
-//	· 统一到「不折叠」⇒ 离线升级里 983b 排到建表件之前 ⇒ 离线升级整体中止
+//	· 但统一到「折叠」⇒ 983b 会去查台账里的 '983' 行（request_metrics 建表件写的，**在**）
+//	  ⇒ 补列件被**假跳过** ⇒ raw_model_name 列永不落地 ⇒ 落库必 42703
+//	· 统一到「不折叠」⇒ 离线升级里 983b 排到建表件之前 ⇒ ALTER 落空 ⇒ 离线升级整体中止
+//
 // ★★ ⇒ 两个方向都会出事 ⇒ ⇒ 必须**分别**钉住 ★★。
 func TestMigrationIdentity_SortScopeFoldsButSkipScopeDoesNot(t *testing.T) {
 	// ★ 跳过口径（dbinit）：**不折叠** ⇒ 字母后缀不参与版本键。
@@ -313,7 +348,9 @@ func startupMigrationFiles(t *testing.T) []string {
 }
 
 // productionLedgerShape 生产账本形态（211 只读实测，2026-11-24）：
-// ★ '984'…'988' 由 985/986/987/988/989_supplier 依次错位写入，'989' 由 ledger repair 写入。
+// ★ '984' 由 985 写、'985' 由 986 写、'986' 由 987 写、'987' 由 988 写、
+// ★ '988' 由**供应商合同费率件自己**写（★ 它自登记 '988' ⇒ 错位一格，属 L1）、
+// ★ '989' 由 989_migration_ledger_session_analytics_981_repair 写。
 func productionLedgerShape() map[int]bool {
 	return map[int]bool{984: true, 985: true, 986: true, 987: true, 988: true, 989: true}
 }

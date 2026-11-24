@@ -90,10 +90,10 @@ var dependencyNumberPattern = regexp.MustCompile(`\b[0-9]{3}\b`)
 
 // autoEnumMigration 是一个 startup 迁移的编号信息。
 type autoEnumMigration struct {
-	base string   // 文件名（含 .sql）
-	num  int      // 数字主号（★ 字母后缀折叠回主号 ★）
-	suf  string   // 后缀（"983b" 的 "b"；纯数字号为空）
-	deps []int    // 声明的依赖主号
+	base string // 文件名（含 .sql）
+	num  int    // 数字主号（★ 字母后缀折叠回主号 ★）
+	suf  string // 后缀（"983b" 的 "b"；纯数字号为空）
+	deps []int  // 声明的依赖主号
 }
 
 // autoEnumParseNumber 把文件名前缀解析成（主号, 后缀）。
@@ -268,6 +268,7 @@ func autoEnumSortLexical(files []string) []string {
 // **数字前缀升序**；同号时**按文件名**先后。
 //
 // ★★★ 2026-11-24 订正（★ 本轮实测坐实的「假绿」闭环）：★★★
+//
 //	★ 原实现是**自造**的：用本文件的 autoEnumParseNumber（★ 它对字母后缀做
 //	  「剥掉尾部字母」折叠 ⇒ "983b" ⇒ (983,"b")）★
 //	★ 而**生产**的 versionPrefix 当时是 strconv.Atoi(name[:idx]) ⇒ "983b" ⇒ **Atoi 失败**
@@ -279,7 +280,8 @@ func autoEnumSortLexical(files []string) []string {
 //	★ ⇒ 现改为**直接调用生产排序函数** ⇒ ★★ 口径合一 ⇒ ★★ 门与生产同序。
 //
 // ★★ autoEnumParseNumber 仍然保留（★ 它承担的是「解析主号+后缀」与
-//    「主迁移判定」两个职责，★ 与排序无关）★★。
+//
+//	「主迁移判定」两个职责，★ 与排序无关）★★。
 func autoEnumSortNumericPrefix(files []string) []string {
 	out := append([]string(nil), files...)
 	sort.SliceStable(out, func(i, j int) bool {

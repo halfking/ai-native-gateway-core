@@ -204,6 +204,89 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 			"补注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
 		"999": "applied(211/252)；字节冻结（checksum 3f374cd0… 与磁盘逐字一致）；预算段已过（statement_timeout=10min）；" +
 			"「实测」已在真库发生（211/252 均跑完、4 条索引建在本文件新建的空表 public.session_summary_layers 上 ⇒ 无存量扫描）；补注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
+		// ★★ 2026-11-24（12h 修订审计轮第三轮）：982（逐次供应商调用证据表）。
+		//
+		// ★ 为什么它会被本门判红：形态同 981/912/913/928 —— 本文件的 3 条
+		//   **非并发** CREATE INDEX（idx_provider_call_attempts_sent /
+		//   _unconfirmed / _request）建在 **本文件刚 CREATE 的空表**
+		//   public.provider_call_attempts 上 ⇒ 门按字面判「全表扫描类 DDL」。
+		//   ⇒ 本门读到 maxSeconds=600（文件自带 SET statement_timeout='10min'
+		//   ⇒ **预算段已过**）⇒ 唯一缺的是**「实测」注释**段。
+		//
+		// ★ 为什么按「字节冻结」登记而不是改字节（★ 见 L23）：
+		//   ① **211 已 applied**（只读实测，211 / acc-pg17，2026-11-24）：
+		//      · public.schema_migrations 有 '982' 行（applied_at
+		//        2026-11-23 19:56:49.088737+08）；
+		//      · 部署通道权威台账 public.gateway_db_revision_sequences 有
+		//        `session-summary-and-integrity-2026-09:982_provider_call_attempts.sql`
+		//        行，content_sha256 = **5421564ddbb0b894…**，与磁盘 sha256
+		//        **5421564ddbb0b894689b87ff2ca2adb3c701c72143e0bf6b30ab8faaae3f106a**
+		//        **逐字一致** ⇒ 已 applied ⇒ **改字节即 L23 同款分叉**
+		//        （部署在迁移校验段被内容指纹 fail-closed 拦下）。
+		//   ② **两条可能重跑它的路径都没有 914 型「拍小了中止部署」的风险**：
+		//      · 已 applied 的环境（211 等）：**已跑完、索引已在位 ⇒ 永不重跑**；
+		//      · 唯一还会跑它的是**全新空库**（新装）⇒ public.provider_call_attempts
+		//        是**空表** ⇒ 建索引扫的是 **0 行** ⇒ 毫秒级 ⇒ 30s 角色级超时足够。
+		//   ③ 文件**已自带** SET statement_timeout='10min' ⇒ PG 语义下它
+		//      **不会主动中止**（与 900/958 的「靠角色级 30s 侥幸通过」不同）。
+		//
+		// ★ 豁免的不是「没量过就拍预算」——量得出来且结论确定：索引建在
+		//   **本文件新建的空表**上 ⇒ 存量上限就是 0 行 ⇒ 抬到 10min 也不会
+		//   让它更安全，只会给人「这张表有百万级存量」的错觉（同 928 的理由）。
+		// ★ 若将来要在一个**大存量**库上重建这 3 个索引 ⇒ 按 761 先例
+		//   **另立新迁移**并实测抬预算，**不要**改 982 的字节。
+		"982": "applied(211)；字节冻结（211 部署通道台账 content_sha256=5421564ddbb0b894… 与磁盘 sha256 逐字一致）；" +
+			"预算段已过（文件自带 SET statement_timeout='10min'）；" +
+			"3 条非并发 CREATE INDEX 全部建在本文件刚 CREATE 的空表 public.provider_call_attempts 上（无存量扫描 ⇒ 建索引扫 0 行）；" +
+			"211 已 applied ⇒ 永不重跑、新装路径该表为空 ⇒ 无 914 型中止风险；" +
+			"补「实测」注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
+		// ★★ 2026-11-24（12h 修订审计轮第三轮）：983 / 985 / 987 / 988 ——
+		// ★★ **同一个成因的四个**：这四条是 2026-11-23~24 那批新迁移，
+		// ★★ 写了「重 DDL」却**没写「实测」注释** ⇒ 本门读到「预算段已过
+		// ★★ （都自带 SET statement_timeout='10min'）但缺实测段」⇒ 判红。
+		// ★★ ★ 为什么不能靠「补一句注释」解决（★ 见 L23）：
+		// ★★   四条在 211 **都已 applied**，且 211 部署通道权威台账
+		// ★★   public.gateway_db_revision_sequences 记的 content_sha256 与磁盘
+		// ★★   sha256 **逐字一致**（只读实测，2026-11-24）：
+		// ★★     · 983_request_metrics.sql                    4441d11d03acbd15…
+		// ★★     · 985_request_reconciliation_links.sql       5be6e05afc279f47…
+		// ★★     · 987_provider_invoice_evidence.sql          9b068a3a5ff3fac0…
+		// ★★     · 988_provider_invoice_usage_buckets.sql     8433c53c98882425…
+		// ★★   ⇒ 改字节 = 内容指纹分叉（部署在迁移校验段 fail-closed）⇒ 只登记不改。
+		// ★★ ★ 为什么它们**没有 914 型「拍小了中止部署」的风险**（★ 关键事实）：
+		// ★★   ① 983：CREATE TABLE(40) + 分区表(141) + **11 条 CREATE INDEX**(149-)
+		// ★★      全部在**同一个事务内**（BEGIN 在 32、COMMIT 在 234）⇒ 建索引时
+		// ★★      表内**0 行**（文件头自述「Affected Rows: 0（新表创建）」）
+		// ★★      ⇒ 无存量扫描。★ 今日该表 346,604 行是**应用之后**由处理器写入的
+		// ★★      （211 台账 applied_at=2026-11-24 00:38:22）⇒ 与建索引时刻无关。
+		// ★★   ② 985：CREATE TABLE(7) + 3 条索引(18-22) 同一事务（BEGIN 3 /
+		// ★★      COMMIT 37）⇒ 建索引时 0 行 ⇒ 211 实测该表**至今 0 行**。
+		// ★★   ③ 987：CREATE TABLE ×2(8, 26) + 4 条索引(41-48) 同一事务
+		// ★★      （BEGIN 4 / COMMIT 66）⇒ 其中 2 条建在新表上（0 行）、
+		// ★★      另 2 条建在 982 的 provider_call_attempts 上（211 实测**0 行**）。
+		// ★★   ④ 988：ALTER provider_invoice_lines + 1 条索引(34) 同一事务
+		// ★★      （BEGIN 3 / COMMIT 40）⇒ 目标表 provider_invoice_lines 由 987
+		// ★★      于**早 0.8 秒**建成且**至今 0 行**（211 实测）⇒ 建索引扫 0 行。
+		// ★★   ⇒ 四条都已 applied ⇒ **永不重跑**；新装路径同为空表 ⇒ 无中止风险。
+		// ★ ★ 豁免的不是「没量过就拍预算」——量过且结论确定：建索引扫的行数是
+		//   **0**（建表与建索引同事务）⇒ 抬到 10min 也不会让它更安全，只会给人
+		//   「这张表有百万级存量」的错觉（同 928 的理由）。
+		"983": "applied(211)；字节冻结（211 部署通道台账 content_sha256=4441d11d03acbd15… 与磁盘 sha256 逐字一致）；" +
+			"预算段已过（文件自带 SET statement_timeout='10min'）；" +
+			"11 条非并发 CREATE INDEX 与 CREATE TABLE(分区表) 在**同一事务**内（BEGIN 32 / COMMIT 234）⇒ 建索引时表内 0 行（无存量扫描）；" +
+			"211 已 applied ⇒ 永不重跑、新装路径同为空表 ⇒ 无 914 型中止风险；补「实测」注释即改已 applied 字节 ⇒ L23 同款分叉 ⇒ 只登记不改",
+		"985": "applied(211)；字节冻结（211 部署通道台账 content_sha256=5be6e05afc279f47… 与磁盘 sha256 逐字一致）；" +
+			"预算段已过（文件自带 SET statement_timeout='10min'）；" +
+			"3 条非并发 CREATE INDEX 与 CREATE TABLE 同一事务（BEGIN 3 / COMMIT 37）⇒ 建索引时 0 行；" +
+			"211 实测 public.request_reconciliation_links 至今 0 行；已 applied ⇒ 永不重跑、新装路径为空表 ⇒ 无 914 型中止风险；补注释即改已 applied 字节 ⇒ 只登记不改",
+		"987": "applied(211)；字节冻结（211 部署通道台账 content_sha256=9b068a3a5ff3fac0… 与磁盘 sha256 逐字一致）；" +
+			"预算段已过（文件自带 SET statement_timeout='10min'）；" +
+			"4 条非并发 CREATE INDEX 同一事务（BEGIN 4 / COMMIT 66）⇒ 2 条建在本文件新建的两张空表上、2 条建在 982 的 provider_call_attempts 上（211 实测 0 行）⇒ 建索引扫 0 行；" +
+			"已 applied ⇒ 永不重跑、新装路径同为空表 ⇒ 无 914 型中止风险；补注释即改已 applied 字节 ⇒ 只登记不改",
+		"988": "applied(211)；字节冻结（211 部署通道台账 content_sha256=8433c53c98882425… 与磁盘 sha256 逐字一致）；" +
+			"预算段已过（文件自带 SET statement_timeout='10min'）；" +
+			"1 条非并发 CREATE INDEX 同一事务（BEGIN 3 / COMMIT 40）⇒ 目标表 provider_invoice_lines 由 987 早 0.8 秒建成且 211 实测至今 0 行 ⇒ 建索引扫 0 行；" +
+			"已 applied ⇒ 永不重跑 ⇒ 无 914 型中止风险；补注释即改已 applied 字节 ⇒ 只登记不改",
 	}
 	// 全表扫描类 DDL 的形态。
 	validateRe := regexp.MustCompile(`(?i)VALIDATE\s+CONSTRAINT`)

@@ -70,7 +70,7 @@ mismatch=0
 
 # Build map: filename -> recorded sha256 from changelog table rows.
 # Changelog rows look like: `| 614 | `614_session_bodies_hot.sql` | `<sha>` | ...`
-# ★ 2026-11-24：★ 版本列放宽到支持**字母后缀**（`983b` / `983c` / `989b`）⇒
+# ★ 2026-11-24：★ 版本列放宽到支持**字母后缀**（`983b` / `983c`）⇒
 #   ★ 此前「主号+字母后缀」的迁移**完全不在本门校验面内**（★ 正则只匹配纯数字）⇒
 #   ★ 它们的字节漂移不会被本门发现 ⇒ ⇒ 现在纳入。
 declare -A recorded

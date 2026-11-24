@@ -29,7 +29,7 @@ import (
 //
 //	case okA: return false // a 带前缀、b 无前缀：无前缀（bootstrap）在前
 //
-// ★★★ ⇒ ★★ **字母后缀记法（983b / 983c / 989b …）被解析成「无数字前缀」**
+// ★★★ ⇒ ★★ **字母后缀记法（983b / 983c / 361b …）被解析成「无数字前缀」**
 //      ⇒ ⇒ 它们被排到 **所有纯数字迁移之前**
 //      ⇒ ⇒ ★★ `983b_add_raw_model_name.sql`（ALTER TABLE request_metrics ADD COLUMN）
 //      **排在 `983_request_metrics.sql`（建表）之前** ⇒ 表还不存在 ⇒ ALTER 落空
@@ -46,15 +46,16 @@ import (
 //
 // ★ ① **主臂（行为门）**：用**生产排序函数** `migrationPathLess` 给真实 startup
 //   迁移文件名排序 ⇒ 断言 **字母后缀件排在其主号迁移之后**
-//   （983b/983c 在 983 之后；989b 在 989 之后）。
+//   （983b/983c 在 983 之后；★ 同族其它后缀件同理）。
 // ★ ② **对照臂**：纯数字迁移之间的数值序仍正确（900 < 983）⇒ 证明门不是恒真。
 // ★ ③ **对照臂**：bootstrap 类（无数字前缀）仍排在带前缀之前（既有语义不变）。
 //
 // ── 与 dbinit 侧 `migrationVersionOf` 的语义区别（★ 必须区分，否则两边都错）──
 //
 // ★ dbinit 的 migrationVersionOf 用来判「这条迁移是否已应用」（查台账 version）。
-// ★ 它**必须不折叠**：★ 折叠后 989b 会去查台账 '989' ⇒ 而 '989' 行是
-// ★ ledger repair 写的 ⇒ ⇒ 989b 被**假跳过** ⇒ public.supplier_contract_rates
+// ★ 它**必须不折叠**：★ 折叠后 983b 会去查台账 '983' ⇒ 而 '983' 行是
+// ★ request_metrics 建表件写的 ⇒ ⇒ 983b 被**假跳过** ⇒ raw_model_name 列
+// ★ 永不落地 ⇒ 落库必 42703
 // ★ 在新装实例上建不出来（★ 详见 installer/internal/dbinit/migration_version_identity_test.go）。
 // ★★ ⇒ 两个函数**必须保持语义不同**：
 // ★★   upgrader.versionPrefix ＝ **排序**口径 ⇒ 折叠（字母后缀归主号组）

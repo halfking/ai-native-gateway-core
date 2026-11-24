@@ -2853,7 +2853,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/986_provider_attempt_media_usage.sql"
   "$ROOT_DIR/sql/migrations/startup/987_provider_invoice_evidence.sql"
   "$ROOT_DIR/sql/migrations/startup/988_provider_invoice_usage_buckets.sql"
-  "$ROOT_DIR/sql/migrations/startup/989b_supplier_contract_rates.sql"
+  # ★★ 供应商合同费率件 —— **原名 989_supplier_contract_rates.sql**，2026-11-24 还号到
+  #   **925**（真空号）：它与 989_migration_ledger_session_analytics_981_repair.sql
+  #   **同占 989** ⇒ 唯一性门红 + 安装器以文件名前缀为版本键 ⇒ 增量安装会跳过本件
+  #   ⇒ public.supplier_contract_rates 建不出来（审计档 L2）。
+  #   ★ **零字节变更**（sha256 仍 b32e8fb9… ⇒ 与 211 部署通道账本记的指纹逐字一致
+  #     ⇒ 不触发 L23 内容指纹分叉）；★ 文件自身自登记仍是 '988'（未改字节）
+  #     ⇒ 211 台账那行 '988' 依然属本件 ⇒ 台账语义不变、零生产写。
+  "$ROOT_DIR/sql/migrations/startup/925_supplier_contract_rates.sql"
   # ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
   #   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
   #     撞号 ⇒ 换号（四位数 1000 对全部守卫隐形，被当场拦下；973 则是**逆序依赖**
@@ -3730,7 +3737,7 @@ ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
 # ★★ 984 与 985 **共用台账号 984**（★ 985 的自登记写的是 '984' ⇒ 错位一格，★ 主档 §4-L1）
 #   ⇒ ⇒ 「984」这一行的归属取决于执行顺序 ⇒ ★★ **这两条 probe 只能保持 version 判据**
 #   ⇒ 若两边都加 description 条件 ⇒ **必然有一边红** ⇒ ⇒ 彻底修需要**改 985 的字节**（触 L23 ⇒ owner 决策）。
-# ★★ 而 986/987/988/989b 各自的台账号**归属唯一** ⇒ 它们的 probe 已改成「version + description」双条件。
+# ★★ 而 986/987/988/925 各自的台账号**归属唯一** ⇒ 它们的 probe 已改成「version + description」双条件。
 ledger_artifact_probe "985_request_reconciliation_links.sql" \
   "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985') = 1"
 ledger_artifact_probe "986_provider_attempt_media_usage.sql" \
@@ -3739,7 +3746,15 @@ ledger_artifact_probe "987_provider_invoice_evidence.sql" \
   "to_regclass('public.provider_invoices') IS NOT NULL AND to_regclass('public.provider_invoice_lines') IS NOT NULL AND to_regclass('public.idx_provider_invoices_provider_month') IS NOT NULL AND to_regclass('public.idx_provider_invoice_lines_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_provider_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_account_time') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '986' AND description LIKE 'normalized supplier invoice evidence%') = 1"
 ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
   "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '987' AND description LIKE 'structured supplier invoice usage buckets%') = 1"
-ledger_artifact_probe "989b_supplier_contract_rates.sql" \
+# ★★ 供应商合同费率件（2026-11-24 还号到 925，原名 989_…）：★ 探针的台账行判据
+#   从 '989' **改成 '988'** —— ★ 因为**本件自己的自登记就是 '988'**
+#   （文件尾部 INSERT INTO public.schema_migrations VALUES ('988', …)，
+#     ★ 改号不改字节 ⇒ 自登记值不动 ⇒ 211 台账里 '988' 那行一直属本件）。
+#   ★ 旧判据 '989' 是**假阳性**：那行是**另一个** 989 件
+#     （989_migration_ledger_session_analytics_981_repair.sql）写的
+#     ⇒ 本件即使没跑过，探针也会绿 ⇒ 探针失去鉴别力。
+#   ★ 现在断言的是**本件真正写下的那行** ⇒ 探针恢复鉴别力（跑没跑过一眼可辨）。
+ledger_artifact_probe "925_supplier_contract_rates.sql" \
   "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988' AND description LIKE 'effective supplier contract rate evidence%') = 1"
 # ★ 983b 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
 #   ★ 这条 probe 是本轮新增迁移的**唯一**到位证据：
