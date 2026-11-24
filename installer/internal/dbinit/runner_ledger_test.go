@@ -3,6 +3,7 @@ package dbinit
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,45 @@ import (
 func embeddataStartupDir(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(embeddataRoot(t), "startup")
+}
+
+func TestRetiredRequestCostBackfillPreservesCatalogUpdates(t *testing.T) {
+	path := filepath.Join(embeddataStartupDir(t), "565_cost_usd_pricing_backfill.sql")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapted, err := adaptRetiredRequestCostBackfill(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(adapted)
+	guard := strings.Index(sql, `\if :apply_legacy_hot_backfill`)
+	if guard <= strings.Index(sql, "-- 3) catalog_estimate") ||
+		guard >= strings.Index(sql, "FROM request_logs_hot h") ||
+		!strings.Contains(sql, "\\endif\nCOMMIT;") {
+		t.Fatal("565 compatibility must leave pricing catalog updates outside the legacy hot-table guard")
+	}
+	if _, err := adaptRetiredRequestCostBackfill([]byte("BEGIN; COMMIT;")); err == nil {
+		t.Fatal("an unrecognized historical statement boundary must fail")
+	}
+}
+
+func TestPsqlQueryKeepsNoticesOutOfSuccessfulProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires an executable shell fixture")
+	}
+	bin := t.TempDir()
+	docker := filepath.Join(bin, "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\nprintf 'WARNING: fixture worker unavailable\\n' >&2\nprintf 't\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	r := NewRunner("fixture", "fixture", "fixture", bin)
+	result, err := r.psqlQuery("SELECT true")
+	if err != nil || result != "t\n" {
+		t.Fatalf("successful catalog probe output = %q, error = %v", result, err)
+	}
 }
 
 // contractPhrase 是「安装器专属资产」在文件头里的**契约声明**。

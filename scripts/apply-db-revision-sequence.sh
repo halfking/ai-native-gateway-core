@@ -263,15 +263,6 @@ sequence_name="session-summary-and-integrity-2026-09"
 # silently skipped 656 after it was added to the list (2026-09-05 PG log audit:
 # ensure/promote auto_route_selections functions missing on every boot). Each
 # underlying migration is idempotent, so re-running is safe.
-psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
-# 2026-09-21 252 部署验证轮（纪律⑨，F4 机制债收口）：台账从"按文件名记账"
-# 升级为"文件名+内容指纹记账"。content_sha256 为 NULL 的行是历史遗留记账
-# （指纹通道上线前应用，无法证明当时应用的是哪个内容版本）；此后本脚本的
-# 每次应用都记录当前文件内容 sha256，同名文件内容变更即可被识别并重放
-# （通道契约：每个迁移幂等，重跑安全——见文件头注释）。
-psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text"
-psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS execution_sha256 text, ADD COLUMN IF NOT EXISTS runtime_adaptation text"
-
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | cut -d' ' -f1
@@ -3339,9 +3330,64 @@ END
 # 产物必须真实在场」，不是「库里所有记账行」）。
 declare -a sha_matched_markers=()
 
+# A fresh installer seals these receipts only after all of its SQL succeeds.
+# The version ledger cannot establish file identity or prove execution.
+installer_receipts=""
+installer_tables="$(psql_query "
+SELECT CASE
+  WHEN to_regclass('public.gateway_db_installer_handoff') IS NULL
+   AND to_regclass('public.gateway_db_installer_migration_receipts') IS NULL THEN 'none'
+  WHEN to_regclass('public.gateway_db_installer_handoff') IS NOT NULL
+   AND to_regclass('public.gateway_db_installer_migration_receipts') IS NOT NULL THEN 'present'
+  ELSE 'incomplete'
+END")"
+if [[ "$installer_tables" != none && "$installer_tables" != present ]]; then
+  printf 'error: installer handoff tables are incomplete\n' >&2
+  exit 4
+fi
+if [[ "$installer_tables" == present ]]; then
+  installer_receipts="$(psql_query "
+SELECT r.file_name || '|' || r.content_sha256
+FROM public.gateway_db_installer_handoff h
+CROSS JOIN public.gateway_db_installer_migration_receipts r
+WHERE h.file_count = (SELECT count(*) FROM public.gateway_db_installer_migration_receipts)")"
+  if [[ -z "$installer_receipts" ]]; then
+    printf 'error: installer handoff is unsealed or receipts are incomplete\n' >&2
+    exit 4
+  fi
+fi
+
+installer_source_hash() {
+  awk -F '|' -v file="$1" '$1 == file { print $2; exit }' <<< "$installer_receipts"
+}
+if [[ -n "$installer_receipts" ]]; then
+  for file in "${files[@]}"; do
+    base="${file##*/}"
+    installer_sha="$(installer_source_hash "$base")"
+    if [[ -n "$installer_sha" && "$installer_sha" != "$(sha256_file "$file")" ]]; then
+      printf 'error: installer receipt fingerprint differs for %s\n' "$base" >&2
+      exit 4
+    fi
+  done
+fi
+
+psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+# 2026-09-21 252 部署验证轮（纪律⑨，F4 机制债收口）：台账从"按文件名记账"
+# 升级为"文件名+内容指纹记账"。content_sha256 为 NULL 的行是历史遗留记账
+# （指纹通道上线前应用，无法证明当时应用的是哪个内容版本）；此后本脚本的
+# 每次应用都记录当前文件内容 sha256，同名文件内容变更即可被识别并重放
+# （通道契约：每个迁移幂等，重跑安全——见文件头注释）。
+psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text"
+psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS execution_sha256 text, ADD COLUMN IF NOT EXISTS runtime_adaptation text"
+
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
-  base="$(basename "$file")"
+  base="${file##*/}"
+  if [[ -n "$installer_receipts" && -n "$(installer_source_hash "$base")" ]]; then
+    sha_matched_markers+=("${base}")
+    printf 'already applied (installer receipt): %s\n' "${file#"$ROOT_DIR/"}"
+    continue
+  fi
   if [[ "$base" == 696_request_logs_view_system_fingerprint.sql ]]; then
     repair_request_logs_view_tail
   fi

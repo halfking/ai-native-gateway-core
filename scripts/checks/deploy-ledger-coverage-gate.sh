@@ -2,6 +2,9 @@
 # =====================================================================
 # scripts/checks/deploy-ledger-coverage-gate.sh —— 「部署通道投递面 ↔ 权威账」覆盖门
 #
+# 新装库以封存的安装器文件凭证和部署通道台账共同核对指纹。以下方案 C 的
+# 版本号诊断只适用于没有安装器凭证的历史库。
+#
 # ★★ 2026-11-23 L34 续轮新增（★ 方案 C：★ owner 清单里**唯一可在本仓自主落地**
 # ★★ 的一项 —— ★ 它**只加前置断言门**、★ **不改任何投递行为** ★★）。
 #
@@ -180,10 +183,37 @@ if [ "${ledger_table_exists:-0}" != "0" ]; then
 fi
 
 if [ "${ledger_table_exists:-0}" = "0" ]; then
-  note "  ℹ 权威账表 public.gateway_db_revision_sequences **不存在** ⇒ ★ 这台库上部署通道**从未跑过**（★ 与「跑了但没记账」是两回事）"
+  note "  ℹ 权威账表 public.gateway_db_revision_sequences **不存在**"
 else
   note "  ℹ 权威账 public.gateway_db_revision_sequences 存在、★ 当前 ${ledger_rows:-0} 行"
 fi
+
+installer_receipts_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-installer.XXXXXX")"
+trap 'rm -f "$plan_file" "$installer_receipts_file"' EXIT
+installer_tables="$(q "SELECT CASE
+  WHEN to_regclass('public.gateway_db_installer_handoff') IS NULL
+   AND to_regclass('public.gateway_db_installer_migration_receipts') IS NULL THEN 'none'
+  WHEN to_regclass('public.gateway_db_installer_handoff') IS NOT NULL
+   AND to_regclass('public.gateway_db_installer_migration_receipts') IS NOT NULL THEN 'present'
+  ELSE 'incomplete'
+END")" || abort "读取安装器交接凭证表失败"
+case "$installer_tables" in
+  none) ;;
+  present)
+    q "SELECT r.file_name || chr(9) || r.content_sha256
+       FROM public.gateway_db_installer_handoff h
+       CROSS JOIN public.gateway_db_installer_migration_receipts r
+       WHERE h.file_count = (SELECT count(*) FROM public.gateway_db_installer_migration_receipts)" \
+       >"$installer_receipts_file" || abort "读取安装器交接凭证失败"
+    if [ ! -s "$installer_receipts_file" ]; then
+      bad "安装器交接未封存或凭证不完整"
+    else
+      # q omits its final newline. Preserve line boundaries for awk.
+      printf '\n' >>"$installer_receipts_file"
+    fi
+    ;;
+  *) bad "安装器交接凭证表不完整" ;;
+esac
 
 # ═══════════════════════════════════════════════════════════════════════
 # ── 判据 ②：★ 投递面 ↔ 权威账的覆盖（★ **断层在这里显形**）────────────
@@ -208,7 +238,7 @@ class_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-class.XXXXXX")"
 missing_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-missing.XXXXXX")"
 class2_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-class2.XXXXXX")"
 installer_version_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-instver.XXXXXX")"
-trap 'rm -f "${plan_file:-}" "${ledger_markers_file:-}" "${class_file:-}" "${missing_file:-}" "${class2_file:-}" "${installer_version_file:-}"' EXIT
+trap 'rm -f "${plan_file:-}" "${ledger_markers_file:-}" "${class_file:-}" "${missing_file:-}" "${class2_file:-}" "${installer_version_file:-}" "${installer_receipts_file:-}"' EXIT
 : >"$ledger_markers_file"
 
 if [ "${ledger_table_exists:-0}" != "0" ]; then
@@ -281,7 +311,7 @@ fi
 sha_map_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-shas.XXXXXX")"
 present_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-present.XXXXXX")"
 absent_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-absent.XXXXXX")"
-trap 'rm -f "${plan_file:-}" "${ledger_markers_file:-}" "${class_file:-}" "${missing_file:-}" "${class2_file:-}" "${installer_version_file:-}" "${sha_map_file:-}" "${present_file:-}" "${absent_file:-}"' EXIT
+trap 'rm -f "${plan_file:-}" "${ledger_markers_file:-}" "${class_file:-}" "${missing_file:-}" "${class2_file:-}" "${installer_version_file:-}" "${sha_map_file:-}" "${present_file:-}" "${absent_file:-}" "${installer_receipts_file:-}"' EXIT
 : >"$present_file"
 : >"$absent_file"
 while IFS= read -r base; do
@@ -316,17 +346,28 @@ awk '
   FILENAME == ARGV[1] { cur[$1] = $2; next }
   FILENAME == ARGV[2] { stored[$1] = $2; next }
   FILENAME == ARGV[3] { gone[$1] = 1; next }
+  FILENAME == ARGV[4] { installer[$1] = $2; next }
   {
     base = $0
     if (base in gone) { print base "\tabsent\t投递面文件在磁盘上不在场 ⇒ 通道跑到它会直接失败"; next }
+    if (base in installer) {
+      if (installer[base] == cur[base]) { print base "\tinstaller\t"; next }
+      print base "\tinstaller_stale\t安装器凭证与源文件指纹不一致"
+      next
+    }
     if (!(base in stored)) { print base "\tmissing\t"; next }
     if (stored[base] == "<NULL>") { print base "\tlegacy\t"; next }
     if ((base in cur) && stored[base] == cur[base]) { print base "\tcovered\t"; next }
     print base "\tstale\t账里指纹与当前文件不一致 ⇒ 通道会按当前内容重放"
   }
-' "$sha_map_file" "$ledger_markers_file" "$absent_file" "$plan_file" >"$class_file"
+' "$sha_map_file" "$ledger_markers_file" "$absent_file" "$installer_receipts_file" "$plan_file" >"$class_file"
 
 covered=$(awk -F'\t' '$2=="covered"{c++} END{print c+0}' "$class_file")
+installed=$(awk -F'\t' '$2=="installer"{c++} END{print c+0}' "$class_file")
+if grep -q $'\tinstaller_stale\t' "$class_file"; then
+  bad "安装器凭证与当前文件指纹不一致"
+  awk -F'\t' '$2=="installer_stale"{print "      · " $1}' "$class_file"
+fi
 legacy=$(awk -F'\t' '$2=="legacy"{c++} END{print c+0}' "$class_file")
 missing=$(awk -F'\t' '$2=="missing"{c++} END{print c+0}' "$class_file")
 stale=$(awk -F'\t' '$2=="stale"{c++} END{print c+0}' "$class_file")
@@ -349,9 +390,11 @@ awk -F'\t' '$2=="missing"{print $1}' "$class_file" >"$missing_file"
 # ★★★ ★★ **⇒ 只读查 `public.schema_migrations`**（★ 安装器那本账 ★★）★★ ★★★
 # ★★★ ★★ ★★ 方案 C 的边界**不变**（★ 必须写清楚 ★★）：★★
 # ★★★ ★★ ★★ 本门**只读**第二本账**只为分类缺口**、★ **不写、不改、不回灌** ★★★
-# ★★★ ★★ ★★ ⇒ ★★ **部署通道本身仍然只认它自己那本账**（★ 那正是方案 A 要解决的 ★★）★★
-# ★★★ ★★ ★★ ⇒ ★★ **⇒ 本门没有让部署通道「认安装器的账」**（★ 仍是纯观测 ★★★）
-if [ "${missing:-0}" -gt 0 ]; then
+# 历史版本号仅参与这个诊断，部署通道的跳过依据为逐文件凭证或部署台账。
+if [ "${missing:-0}" -gt 0 ] && [ -s "$installer_receipts_file" ]; then
+  pending="$missing"
+  pending_list="$(awk '{print "      · " $0}' "$missing_file")"
+elif [ "${missing:-0}" -gt 0 ]; then
   installer_versions_ok=0
   installer_versions_rc=0
   installer_versions="$(q "select version from public.schema_migrations")" || installer_versions_rc=$?
@@ -402,7 +445,7 @@ else
   pending_list=""
 fi
 
-note "  ℹ 投递面 ${plan_count} 条 ｜ 覆盖（★ 指纹一致、★ 通道会跳过 ★）${covered} 条 ｜ legacy 行（★ 无指纹 ★）${legacy} 条 ｜ **内容加固重放（★ 指纹过期、★ 通道按设计重放 ★★）${stale} 条** ｜ 缺口 ${missing} 条 ⇒ ★ **断层 ${fault} 条** ｜ 待部署 ${pending} 条 ｜ 磁盘不在场 ${absent_count} 条"
+note "  ℹ 投递面 ${plan_count} 条 ｜ 部署指纹命中 ${covered} 条 ｜ 安装器凭证命中 ${installed} 条 ｜ legacy 行（★ 无指纹 ★）${legacy} 条 ｜ **内容加固重放（★ 指纹过期、★ 通道按设计重放 ★★）${stale} 条** ｜ 缺口 ${missing} 条 ⇒ ★ **断层 ${fault} 条** ｜ 待部署 ${pending} 条 ｜ 磁盘不在场 ${absent_count} 条"
 
 # ★★ 「文件不在场」也是红（★ 通道跑到它会**直接失败**、★ 那不是重放风险 ★★）★★
 absent_list="$(awk -F'\t' '$2=="absent"{print "      · " $1 "（" $3 "）"}' "$class_file")"
@@ -436,7 +479,7 @@ else
       printf '      · ……（★ 其余 %d 条省略）\n' "$((pending - 20))"
     fi
   else
-    note "  ✔ 投递面每一条都在权威账里有记录 ⇒ ★ **无断层**（★ ⇒ 这台库上重放不会因「账不互通」而炸）"
+    note "  ✔ 投递面由部署台账或安装器凭证覆盖，**无断层**"
   fi
 fi
 
