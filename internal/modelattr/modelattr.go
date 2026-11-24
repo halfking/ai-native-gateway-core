@@ -24,9 +24,12 @@
 // was no model to attribute". It is deliberately distinct from the empty
 // string so that "we looked and found nothing" stays distinguishable from
 // "we never looked". Every write site must use this constant rather than an
-// inline literal — the regression gate in
+// inline literal — the regression gate
+// TestInlineUnknownPlaceholderLiteralIsCentralized in
 // internal/modelattribution counts the inline literals and goes red when one
-// appears outside this package.
+// appears outside this package (code-level literals only; SQL string
+// literals inside COALESCE/NULLIF chains are governed by the SQL-chain
+// ratchet in the same package, and comment lines are ignored).
 //
 // UnknownBucket is the read-side bucket: "no model could be attributed". It
 // is what every SQL aggregation should group into when nothing else is known.

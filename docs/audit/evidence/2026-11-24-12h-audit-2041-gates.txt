@@ -1,0 +1,27 @@
+=== 12h 审计轮 2026-11-24 2041 门禁实测证据 ===
+时间: 2026-11-24 20:41:58
+HEAD: 3f480bee101f4bfd84360a5032a0b837b9882c71
+
+--- go build ./... ---
+rc=0
+
+--- installer build ---
+rc=0
+
+--- 关键门 ---
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	0.948s
+ok  	github.com/kaixuan/llm-gateway-go/internal/metricsstore	1.789s
+ok  	github.com/kaixuan/llm-gateway-go/internal/healthstateguard	1.177s
+ok  	github.com/kaixuan/llm-gateway-go/internal/billguard	9.678s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionsummary	0.438s
+ok  	github.com/kaixuan/llm-gateway-go/domains/analytics	0.666s
+ok  	github.com/kaixuan/llm-gateway-go/maas	1.213s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	0.773s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/upgrader	1.172s
+
+--- checksum 门 ---
+[verify-checksums] OK: 354 registered migrations verified, 825 unregistered (warn-only)
+
+--- 迁移唯一性壳门 ---
+  ✅ 变异臂：日期命名文件被判 NONNUMERIC
+PASS=7 FAIL=0

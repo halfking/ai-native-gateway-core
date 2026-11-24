@@ -129,7 +129,7 @@ func TestExtractJSON_WithThinkingTags(t *testing.T) {
 
 func TestParseSummaryResponse_WithThinkingTags(t *testing.T) {
 	s := &Summarizer{}
-	
+
 	// Test with thinking tags
 	response := `<think>We need answer JSON based on truncated message.</think>{
   "title": "测试标题",
@@ -140,12 +140,12 @@ func TestParseSummaryResponse_WithThinkingTags(t *testing.T) {
   "expert_type": "software_engineering",
   "tags": ["测试", "开发"]
 }`
-	
+
 	summary, err := s.parseSummaryResponse(response, "test-session-key")
 	if err != nil {
 		t.Fatalf("parseSummaryResponse() error = %v", err)
 	}
-	
+
 	if summary.Title != "测试标题" {
 		t.Errorf("Title = %q, want %q", summary.Title, "测试标题")
 	}
