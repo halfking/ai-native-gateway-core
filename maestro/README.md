@@ -195,7 +195,7 @@
 | `maestro/flows/14-stats-consistency-test.yaml` | 统计口径一致性 | 5 | 是 | openLink 步数 5。 |
 | `maestro/flows/15-board-probe-scope.yaml` | 看板探测口径筛选 | 2 | 是 | openLink 步数 2。 |
 | `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。★ **必须经 `maestro/run-session-analytics.sh` 跑**（它负责喂动态段 owner、钉 zh-CN 界面语言、起全新 Chrome）—— 前置条件见 §4.4。 |
-| `maestro/flows/18-stats-range-and-scope-hint.yaml` | **时间范围统一 + 统计说明提示符**（看板 / 会话统计 / 会话分析用户页 / 运营面板） | 4 | 是 | ★ 2026-11-24~25 统一轮新增：第一层证明「浏览器真的能打开这四页、点到日期控件、面板真的展开」（判据全用 `data-testid` ⇒ 与界面语言解耦）。第二层语义对拍在 `maestro/tools/assert-stats-range-picker.mjs`（26 条）与 `maestro/tools/assert-board-op-custom-range.mjs`（5 条：自定义区间 + 7 档位逐个对拍）。★ **必须经 `maestro/run-stats-range-picker.sh` 跑**（它负责起全新 Chrome、顺延端口、注入凭据与视口，并按 `result.mjs` 的 `mergeExitCodes` 合并三层退出码）。 |
+| `maestro/flows/18-stats-range-and-scope-hint.yaml` | **时间范围统一 + 统计说明提示符**（看板 / 会话统计 / 会话分析用户页 / 运营面板） | 4 | 是 | ★ 2026-11-24~25 统一轮新增：第一层证明「浏览器真的能打开这四页、点到日期控件、面板真的展开」（判据全用 `data-testid` ⇒ 与界面语言解耦）。第二层语义对拍在 `maestro/tools/assert-stats-range-picker.mjs`（26 条）与 `maestro/tools/assert-board-op-custom-range.mjs`（5 条：自定义区间 + 7 档位逐个对拍）。★ **必须经 `maestro/run-stats-range-picker.sh` 跑**（它负责起全新 Chrome、顺延端口、注入凭据与视口，并按 `result.mjs` 的 `mergeExitCodes` 合并三层退出码）。★ **2026-11-25 起默认走「CDP 预置会话」**：runner 在 211 本机现签 JWT ⇒ 注入浏览器 ⇒ **完全不走 UI 登录** ⇒ 因此**不受生产 captcha 闸门约束**（机制与计数清零条件见 §6.4，实现与两态实测表见 §6.5.1）。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
 合计：**运行时路由 136 条**（§1.1 口径）。
@@ -785,16 +785,44 @@ Maestro 的 `tapOn` 文本匹配按 DOM 顺序取第一个命中，会打到访�
   - **无口令** ⇒ §6.5 的 CDP 预置会话（`maestro/tools/seed-session.mjs`，
     用 `Network.setCookie` 直接写 HttpOnly cookie —— **不经页面 JS**，所以不受本节限制）。
 
-### 6.4 已知坑：自适应验证码
+### 6.4 已知坑：自适应验证码（★ 2026-11-25 逐行核实：这是一个**死锁**，不是「等一等就好」）
 
-后端有自适应验证码闸门（`admin/auth_captcha.go:474`）：**连续登录失败达到阈值后强制要求 captcha**。
-★ **2026-11-18 订正**：弹窗**现在会渲染验证码输入框**了（`LoginModal.vue` 的
-  `<CaptchaInput v-if="showCaptcha">`，`showCaptcha` 在服务端回 `captcha_required` /
-  `captcha_invalid` 时置真）—— 旧记载「没有渲染验证码输入框」已过期。
-  ⇒ 但 flow 仍过不去：**验证码要人看图作答**，Maestro 不会看图
-  ⇒ 症状是「登录弹窗里多出一个验证码输入框」，判据①（弹窗关闭）会红。
-  先把失败计数清掉（换 IP / 等窗口过期）；**没有口令时**用 §6.5 的 CDP 预置会话
-  （它绕开 UI 登录，也绕开验证码）。
+后端有自适应验证码闸门。★ 旧记载里的「等窗口过期」是**错的**——失败计数**没有 TTL**。
+
+**确切机制（三段，逐行可查）**：
+
+1. **计数是纯内存态、无 TTL**：`admin/auth_captcha.go:217`
+   `loginFailuresGlobal = newLoginFailureCounter()`；阈值
+   `CaptchaFailureThreshold = 3`（`admin/auth_captcha.go:74`）；
+   判定 `required(key) = consecutive(key) >= 阈值`（`admin/auth_captcha.go:202`）。
+   ⇒ 进程不重启 ⇒ 计数永不过期。
+2. **闸门挂在密码校验之前**：`admin/auth.go:229`
+   `if !h.verifyLoginCaptcha(w, clientIP, req.CaptchaID, req.CaptchaCode) { return }`
+   —— 该处上方注释明写「刻意放在任何 DB 查询与 bcrypt 之前」。
+   ⇒ `captcha_required` 时**走不到密码校验** ⇒ 就算口令是对的也过不去。
+3. **清零只发生在「成功登录」**：`clearLoginFailures(clientIP)`
+   （`admin/auth_captcha.go:509`）只在 `admin/auth.go` 的四条成功路径上被调用。
+   ⇒ 第 2 条让「成功」在闸门打开后**不可达** ⇒ **计数永远清不掉**。
+
+⇒ ★ **结论：某个来源 IP 一旦连续失败到阈值，它就被永久锁死**
+  （直到网关进程重启把内存计数清掉）。仓内**没有任何管理端点能重置它**
+  （`grep clearLoginFailures` 只命中成功路径与定义本身）。
+  ⇒ 症状：登录弹窗里多出验证码输入框（`LoginModal.vue` 的
+  `<CaptchaInput v-if="showCaptcha">`，服务端回 `captcha_required` 时置真），
+  判据①（弹窗关闭）必红；**且重试多少次都不会好**。
+  ⇒ **正解不是去解验证码**（验证码要人看图作答，Maestro 不会看图），
+    而是**别走这条登录路径**：用 §6.5 的 CDP 预置会话
+    （绕开 `/api/auth/token` ⇒ 压根不碰闸门 ⇒ 与该状态**无关**）。
+
+★ **排查/验证用的隔离手法**（避免污染真实用户桶）：
+  失败计数按 `clientIPFromRequest` 分桶，而它取的是 **`X-Forwarded-For` 的第一段**
+  （`admin/auth.go:639`）；nginx 用 `$proxy_add_x_forwarded_for` ⇒ 真实 IP 被追加到
+  末尾 ⇒ **第一段是客户端可控的** ⇒ 给请求加 `X-Forwarded-For: 10.99.99.99`
+  就能把失败计数打进一个**隔离桶**，不碰任何真实用户的桶。
+  实测（2026-11-25）：隔离桶连错 3 次后，同桶 `POST /api/auth/token` 返回
+  **400 `captcha_required`**（连**正确口令**也一样 ⇒ 死锁成立），
+  同桶 `GET /api/auth/me` 带预置 cookie 仍 **200** ⇒ 会话路径不受闸门约束；
+  而不带 XFF 的真实桶 `required=false` ⇒ **没被污染**。
 
 ### 6.5 无口令路径：CDP 预置会话（`maestro/tools/seed-session.mjs`）
 
@@ -847,6 +875,72 @@ maestro test --driver-host-port 9222 --headless --no-ansi \
 `maestro/flows/11-simple-overview.yaml` 开头：`launchApp` 带 `clearState: true`
 把 cookie 与 localStorage 一起清干净 ⇒ 登录后必定落在专家面，再点顶栏的
 切换按钮（`data-testid="work-mode-switch"`）切到简易模式）。
+
+#### 6.5.1 ★ runner 已内置这条路径（2026-11-25 captcha 死锁根治轮）
+
+`maestro/run-stats-range-picker.sh` 现在**默认**走预置会话（不再依赖管理员口令）：
+
+| 旋钮 | 默认 | 含义 |
+|---|---|---|
+| `SEED_ENABLE` | `1` | `0` ⇒ 退回纯 UI 登录路径（老行为） |
+| `SEED_SSH_HOST` | `211` | 现签 JWT 的机器；**签名密钥不出这台机器** |
+| `SEED_TOKEN_FILE` | 空 | 已备好的令牌文件（给了就不现签；**调用方自己负责删**） |
+| `SEED_MODE` | `expert` | 注入的工作模式 |
+| `SEED_TTL` | `1800` | 现签令牌的 TTL（秒） |
+
+流程：**现签 → 验令牌 → 注入两个浏览器 → 跑 flow 与探针 → trap 删令牌文件**。
+★ **要注入的是「两个浏览器」，但它们不是同一对**（★ 2026-11-25 实测踩出来的）：
+  - **CDP 探针用的那个 Chrome**（runner 自己起的，`--remote-debugging-port=PROBE_CDP_PORT`）
+    ⇒ 直接 `--cdp http://127.0.0.1:<port>` 注入 ✓
+  - **Maestro 自己起的那个 Chrome**（★ flow 真正跑的那个 ★）
+    ⇒ ⚠️ **不是** runner 起的那一个！Maestro 的 web 驱动用 Selenium 的 `ChromeDriver`
+      **自起** Chrome（临时 profile `org.chromium.Chromium.scoped_dir.*`），
+      ⇒ **`--driver-host-port` 对 web 完全无效**（那是给 Android adb forward 用的）
+      ⇒ ⇒ **注入到 runner 的 Chrome 上＝注入了一个没人用的浏览器**（静默失效，不报错！）
+    ⇒ 正确做法：**顺着父子关系认领**（`maestro` → `chromedriver` → `Chrome`）
+      → 从 Chrome 命令行取 `--user-data-dir` → 读 `<profile>/DevToolsActivePort` 拿 CDP 端口
+      → `seed-session.mjs --reuse-tab` 接管它的页（**不关它**，那是 flow 要用的）
+⇒ ★ 注入**必须发生在 flow 的第一次导航之前** ⇒ flow 的第一步是一个
+  `extendedWaitUntil {visible: app-user-menu-name, optional: true}`：
+  注入成功后那一页会显示已登录 ⇒ 顶栏出现用户菜单 ⇒ 这个等待**提前结束**；
+  没预置时它等满 timeout 也**不判红**（实测：optional ⇒ AssertionFailure 降级为 warning）
+  ⇒ 后面自然走 UI 登录。★ flow 的第二段因此是条件分流（见下）。
+★ 令牌落在 **0600 临时文件**里、**不打印**、**跑完即删**（trap 负责；
+调用方自带的 `SEED_TOKEN_FILE` 不归脚本管 ⇒ 不删）。
+★ 注入前先 `GET /api/auth/me` 验一次（只取状态码）：令牌不被后端认就别注入
+——否则等于把一张废卡塞进浏览器，后面照样走成访客 ⇒ 又回到 captcha 死锁。
+★ ★ **子进程必须有「超时 ＋ 强制退出」**：实测 `seed-session.mjs` 的 WebSocket
+  **close 握手可能不返回** ⇒ Node 进程不退出 ⇒ **上游 runner 被卡死**（只能人工杀）
+  ⇒ 工具内已加**显式 `process.exit` ＋ unref 看门狗**，runner 侧再加 `run_with_timeout`
+  （★ macOS 的 bash 3.2 **没有 `timeout` 命令** ⇒ 自己实现 ★）。
+
+★ **flow 里怎么区分「已预置」与「要 UI 登录」？**
+  判据只有一个：**登录弹窗出没出现**（`when: visible: id: login-modal-title`）。
+  两态都实测过（2026-11-25，探针直读 DOM）：
+
+  | 状态 | 访问 `/?login=1` | `login-modal-title` | `app-user-menu-name` | `llmgw_user_info` |
+  |---|---|---|---|---|
+  | 访客（无预置） | 停在 `/?login=1` | **在** | 不在 | absent |
+  | 预置会话 | 停在 `/?login=1` | **不在** | **在** | present |
+
+  机制：预置时 `seed-session.mjs` 往 localStorage 写了 `llmgw_user_info`
+  ⇒ `web/src/store.ts:123` 在**模块加载时**回填 `store.userInfo`
+  ⇒ `App.vue:58` 的 `isLoggedIn` 在 setup 时已为真
+  ⇒ `App.vue:247` 的 `watch(route.query.login)` 不再调 `openLogin()` ⇒ 弹窗不开。
+  ⇒ 这是**确定性**判据（不靠「等多久」），且天然降级：
+  令牌失效时弹窗会出现 ⇒ 自动退回 UI 登录路径。
+
+★ **为什么把 flow 18 原 §0 的「起点归零（登出）」删掉了？**
+  因为它和预置会话**互斥**：登出会把刚注入的会话打死 ⇒ 预置路径根本走不到 §2。
+  而它原本要防的「上一轮留下登录态」在本 runner 里**不存在**
+  （每轮起全新 Chrome + 全新 profile）⇒ 该步骤在新设计下**没有存在价值**，保留即事故。
+
+★ Maestro 的 `when` 语义（2.11.0 源码核实，`maestro-orchestra/Orchestra.kt` 的
+  `runFlowCommand`）：条件为假 ⇒ 整段 `runFlow` 记为 **SKIPPED**（不是 FAILED）
+  ⇒ 预置会话下登录段被跳过，flow 仍然全绿。
+  ★ `runFlow` 的 `when` 只认 `visible` / `notVisible` / `scriptCondition`（元素/脚本条件），
+  **不支持**按 env 变量分支 ⇒ 「有预置就跳过登录」只能落在**页面状态**上
+  ⇒ 这就是上面那张表存在的理由。
 
 ### 6.6 ★ web 驱动的能力边界（2026-11-17 逐条实测，**写 flow 前必读**）
 
@@ -1193,7 +1287,7 @@ maestro/
     ├── assert-stats-range-picker.mjs  ← ★ 时间范围四页的结构/语义对拍（26 条，2026-11-25 统一轮）
     ├── assert-board-op-custom-range.mjs ← ★ 运营面板**自定义区间 + 7 档位逐个**对拍（5 条，2026-11-25）
     ├── probe-selectors.mjs    ← 选择器语义实测探针（2026-11-17 新增）
-    ├── seed-session.mjs       ← 无口令路径：CDP 预置登录态
+    ├── seed-session.mjs       ← 无口令路径：CDP 预置登录态（★ `--reuse-tab`：接管**已有**的页而不新建 ⇒ 用来给「Maestro 自起的那个 Chrome」注入）
     └── slow-pages.mjs         ← 从运行产物里筛「>2 秒」的页面
 ```
 

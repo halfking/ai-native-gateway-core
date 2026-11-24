@@ -31,23 +31,54 @@
 #   （它负责起全新 Chrome（带 --lang=zh-CN）、顺延端口、注入凭据与视口）。
 url: ${BASE_URL}
 ---
-# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
-# ★ 锚点来源：web/src/components/shell/UserMenuDropdown.vue
-#   → app-user-menu-name（显示名 span，不带 title/aria-label ⇒ data-testid 生效）
-#   → app-user-menu-logout（登出按钮）
-# ★ 保持 optional: true：runner 每次起**全新** Chrome ⇒ 本来就没有登录态
-#   ⇒ 这两步通常是空操作 ⇒ 若改成必选，「菜单不存在」会直接把 flow 判红。
-- openLink: ${BASE_URL}/dashboard
-- tapOn:
-    id: "app-user-menu-name"
-    optional: true
-- tapOn:
-    id: "app-user-menu-logout"
-    optional: true
+# ── 0. 起点：**会话分流**（CDP 预置会话 ⇄ 真实 UI 登录）────────────────────
+# ★★ 2026-11-25 重写（captcha 死锁根治轮）。原 §0「起点归零（登出）」+ §1「无条件
+#   UI 登录」两条**都必须**改掉，否则自动化会把自己锁死：
 #
-# ── ① 真实 UI 登录（共享 flow；三段判据见 _shared/login.yaml 头注）─────────
+#   ① 后端的登录失败计数是**纯内存、无 TTL**，只靠「成功登录一次」清零
+#      （admin/auth_captcha.go:509 clearLoginFailures）；
+#      而 captcha 闸门挂在**任何 DB 查询与 bcrypt 之前**（admin/auth.go:229，
+#      注释明写「刻意放在任何 DB 查询与 bcrypt 之前」）
+#      ⇒ captcha_required 时**走不到密码校验** ⇒ 成功不可达 ⇒ 计数永不清
+#      ⇒ 连续失败到阈值（CaptchaFailureThreshold=3）后，UI 登录**永远红**。
+#   ② 原 §0 的「归零登出」在**预置会话**下会把刚注入的会话**打死**
+#      ⇒ 预置路径（seed-session）根本走不到 §2。
+#   ⇒ 现在：**没有「归零」这回事**（runner 每轮起全新浏览器 ⇒ 本来就没有旧登录态；
+#      而预置会话是**要保住**的登录态），改成按判据自动分流。
+#
+# ★ 判据只有一个：**登录弹窗出没出现**（2026-11-25 两态各实测一遍）：
+#   · 访客（无预置）：访问 /?login=1 ⇒ 弹窗**开着** ⇒ 需要 UI 登录
+#   · 预置会话：访问 /?login=1 ⇒ 弹窗**不开**
+#     （机制：seed-session.mjs 往 localStorage 写了 llmgw_user_info
+#      ⇒ web/src/store.ts:123 模块加载即回填 userInfo
+#      ⇒ App.vue:58 isLoggedIn 在 setup 时已为真
+#      ⇒ App.vue:247 的 watch(route.query.login) 不再调 openLogin()）
+#   ⇒ 这是**确定性**判据（不靠「等多久」）。
+#
+# ⓪ 先等「预置会话」落地（**第一步，不能省**）：
+#   ★ runner 是在 **Maestro 启动之后、第一次导航之前**用 CDP 往**它那个**浏览器
+#     里注入会话的（Maestro 的 web 驱动**自起** Chrome ⇒ `--driver-host-port`
+#     对 web 无效 ⇒ 注入必须落到它自己的浏览器上）。
+#   ⇒ 注入的那一页会显示已登录 ⇒ 顶栏出现用户菜单 ⇒ 这个 optional 等待
+#     **在预置成功时提前结束**（不必干等满）；没预置时它等满 timeout 也**不判红**
+#     （实测：optional ⇒ AssertionFailure 被降级成 warning）⇒ 后面自然走 UI 登录。
+- extendedWaitUntil:
+    visible:
+      id: "app-user-menu-name"
+    timeout: 20000
+    optional: true
+- openLink: ${BASE_URL}/?login=1
+#
+# ── ① UI 登录（共享 flow；三段判据见 _shared/login.yaml 头注）─────────────
+# ★ `when` 语义（Maestro 2.11.0 源码实测，见 maestro-orchestra/Orchestra.kt
+#   的 runFlowCommand/evaluateCondition）：条件为假 ⇒ 整段 runFlow 记为 **SKIPPED**
+#   （不是 FAILED）⇒ 预置会话下这一步被跳过，flow 仍然全绿。
+# ★ 预置路径**完全不走** /api/auth/token ⇒ 也就不受 captcha 闸门约束 ⇒ 根治成立。
 - runFlow:
     file: _shared/login.yaml
+    when:
+      visible:
+        id: "login-modal-title"
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}

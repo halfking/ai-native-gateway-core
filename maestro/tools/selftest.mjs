@@ -130,6 +130,45 @@ t('★ 防回归：run-stats-range-picker.sh 的判定必须调 mergeExitCodes�
   }
 })
 
+// ── 防回归：captcha 死锁的三处结构不许被改回去 ─────────────────────────────
+// ★ 为什么单独钉：这三处是 2026-11-25「根治生产登录 captcha 闸门死锁」轮的成果，
+//   而它们的失效形态都是**静默**的（不报错、只是又变回「会把自己锁死」）：
+//   ① flow 少了 `when` ⇒ 预置会话下仍走 UI 登录 ⇒ captcha 一触发就永久变红；
+//   ② flow 多了「登出归零」⇒ 把刚注入的会话打死 ⇒ 预置路径根本走不到断言；
+//   ③ 少了一处 seed 调用 ⇒ 那一层静默退化成访客。
+//   ⇒ 语义钉测证明不了「结构还在」⇒ 必须静态钉。
+const FLOW_18 = join(import.meta.dirname, '..', 'flows', '18-stats-range-and-scope-hint.yaml')
+
+t('★ 防回归：flow 18 的登录段必须带 when 条件（否则预置会话会退回 UI 登录 ⇒ captcha 死锁复发）', () => {
+  const src = readFileSync(FLOW_18, 'utf8')
+  if (!/runFlow:[\s\S]{0,400}?when:[\s\S]{0,200}?login-modal-title/.test(src)) {
+    throw new Error('flow 18 的 _shared/login.yaml 调用没有带 when: visible: login-modal-title')
+  }
+})
+
+t('★ 防回归：flow 18 不得再有「登出归零」（它会把刚注入的预置会话打死）', () => {
+  const src = readFileSync(FLOW_18, 'utf8')
+  if (src.includes('app-user-menu-logout')) {
+    throw new Error('flow 18 出现了 app-user-menu-logout ⇒ 预置会话会被登出打死')
+  }
+})
+
+t('★ 防回归：runner 必须调 seed-session（探针浏览器 + Maestro 自己的浏览器，两处缺一不可）', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'run-stats-range-picker.sh'), 'utf8')
+  if (!src.includes('seed-session.mjs')) throw new Error('runner 没调 seed-session.mjs ⇒ 预置会话这条路径断了')
+  if (!src.includes('--reuse-tab')) throw new Error('runner 没往 Maestro 自己的浏览器注入（--reuse-tab）')
+  if (!src.includes('DevToolsActivePort')) {
+    throw new Error('runner 没读 DevToolsActivePort ⇒ 找不到 Maestro 那个 Chrome 的 CDP 端口')
+  }
+})
+
+t('★ 防回归：seed-session.mjs 必须显式退出（close 握手不返回 ⇒ 进程吊死 ⇒ runner 卡死）', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'tools', 'seed-session.mjs'), 'utf8')
+  if (!/process\.exit\(0\)/.test(src)) {
+    throw new Error('seed-session.mjs 没有显式 process.exit(0) ⇒ WebSocket close 握手不返回时会吊死')
+  }
+})
+
 let bad = 0
 for (const c of cases) {
   console.log(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : '  —— ' + c.err}`)
