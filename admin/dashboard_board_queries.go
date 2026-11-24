@@ -40,34 +40,37 @@ func trendPointsCoverRange(tr boardTimeRange, points []boardTrendPoint) bool {
 // queryBoardSummary returns the board hero numbers (总请求数/Token/费用/积分/
 // 成功率/均延迟) for the window, with the probe toggle.
 //
-// ## 2026-11-20（口径对齐轮）：主源换成 usage_facts（对账级真源）
+// ## 2026-11-24 第二轮（owner 拍板）：主源换成**请求级日志**（整页同源）
 //
-// owner 对拍需求：board「包含探测」必须等于 /admin/reconciliation 的供应商
-// 对账、「不包含探测」必须等于内部对账。211 真库 7 天逐日实测（2026-11-20）：
+// 背景：第一轮把趋势与饼图切到请求级日志后，「近30天」页签出现 **2.08 倍**的
+// 页面内口径差（卡片/趋势读 usage_facts = 163,457，饼图读请求日志 = 331,373）。
+// 根因不是切片写错，而是**两个宇宙的历史覆盖起点不同**：
 //
-//	report_snapshots daily_grain    == usage_facts 全量（逐日 0 差）
-//	report_snapshots internal_grain == usage_facts traffic_class='business'（逐日 0 差）
+//	usage_facts  的写入起点 = 2026-11-10 13:38（该时刻一次批量 DELETE 抹掉了
+//	               2026-10-12~11-10 的 ≈35.2 万行真实业务事实，证据链见
+//	               docs/12小时内修订审计-2026-11-24-0704.md §C）
+//	请求级日志    的保留起点 = 更早（211 实测至少回溯到 2026-10-12）
 //
-// 而旧主源 request_stats_minute 在**部署日会漏行**：当天 16:00/18:00 UTC 两个
-// 部署窗口分别 -1/-21 笔、-3.0M tokens（真库对拍）——分钟表写入者
-// bg.StatsMinuteRollup 是「游标 + 30min 有界 resweep」的扫描器，重启/迟到
-// 超过 resweep 窗的终态行永久漏统。usage_facts 由 EventWriter 事务内落库
-// （insertUsageFactTx），无此丢失面。
+// ⇒ 窗口跨过事实族起点时，卡片（少算）与饼图（全量）必然对不上；窗口没跨过
+//   （近 7 天）则恰好相等 ⇒ **缺陷只在长窗口显形**，很容易被「7 天看着没问题」掩盖。
 //
-// 口径映射（与 reportrollup 的 queryGrainDay / internalTenantDaySQL 同源同谓词）：
+// owner 决策（2026-11-24）：**整页切请求级日志** ⇒ 英雄区、趋势、饼图三条读链
+// 读同一张视图、同一终态集、同一探测谓词 ⇒ 整页一个宇宙，长短窗口一致。
 //
-//	includeProbes=false → AND traffic_class='business'（== internal 对账 == /api/logs 默认业务 lane）
-//	includeProbes=true  → 无 class 过滤（== provider 对账全量）
+// ★★★ 代价（必须如实记录，不是白拿的）：★★★
 //
-// usage_facts 只含终态行（success/failure/rate_limited，见 stats/event.go
-// 的过滤），与 board 旧口径的状态集一致；occurred_at 有前导索引（迁移 749）。
+//	① 英雄区不再与「供应商对账」逐字相等（对账侧读 report_snapshots/usage_facts）。
+//	   但对账侧同样受那 35.2 万行丢失影响 ⇒ 继续用事实族当看板真源，
+//	   等于「用一个已知少算 2 倍的源当真相」。
+//	② 探测谓词从 traffic_class（事实族列）换成 markers 谓词（日志列）⇒
+//	   与对账的分面口径在边缘行上可能不同（详见 boardLogsWhereTerminal 的注释）。
 //
-// 回退链保持既有形状：usage_facts 缺（42P01，未迁移环境）或查询失败时，
+// 回退链保持既有形状：请求级日志视图缺（42P01，未迁移环境）或查询失败时，
 // exclude 模式落回旧分钟表口径（本文件下方 queryBoardSummaryMinute）——那是
 // 修复前 board 一直在显示的数字，作为降级值不会比改前更差；include 模式没有
 // 分钟表等价物（分钟表根本不含探测行），直接交给调用方的 logs fallback。
 func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
-	if s, ok := h.queryBoardSummaryFacts(ctx, tenantID, tr, includeProbes); ok {
+	if s, ok := h.queryBoardSummaryLogs(ctx, tenantID, tr, includeProbes); ok {
 		return s, true
 	}
 	if includeProbes {
@@ -83,64 +86,92 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 // Second return is false when the table is missing (42P01 → caller falls back)
 // or the query failed for another reason (timeout etc. → same fallback: the
 // minute path serves the pre-fix numbers, and a Warn is logged so the degrade
-// boardFactsWhere 返回英雄区与趋势**共用**的 WHERE 片段（同一张表 usage_facts、
-// 同一个探测谓词）。
+// boardLogsWhereTerminal 返回英雄区与趋势**共用**的 WHERE 片段
+// （请求级日志 + 终态状态集 + 探测口径），并与**饼图主路径逐字同源**。
 //
-// ★★★ 为什么抽成共用构造器（★ 本轮真源统一的结构性保证 ★★★）：
-// ★★★ 「卡片 == Σ趋势桶」这个不变量**不能靠两边各写各的、然后靠门去比对文本**——
+// ★★★ 2026-11-24 第二轮（★ owner 拍板「整页切请求级日志」）：★★★
+// ★★★ 英雄区与趋势此前读 usage_facts、饼图读请求级日志 ⇒ **两个宇宙**。
+// ★★★ 而这两个宇宙的**历史覆盖起点不同**（事实族的写入起点 vs 日志的保留起点），
+// ★★★ 窗口一旦跨过事实族起点，同一页就会出现两个打架的总数
+// ★★★ （生产实测 2026-11-24「近30天」页签：卡片 163,457 vs 饼图 331,373 ⇒ 差 2.08 倍；
+// ★★★ 「近7天」页签因窗口全在覆盖期内而恰好相等 ⇒ **缺陷只在长窗口显形**）。
+// ★★★ ⇒ 现在**英雄区、趋势、饼图三条读链全部读同一张请求级日志视图**，
+// ★★★ 且共用本构造器 ⇒ 整页同一宇宙、同一谓词、同一终态集。
+//
+// ★ 关于探测谓词：请求级日志上没有 traffic_class 列 ⇒ 只能用 markers 谓词
+// （bg.ProbeTrafficExclusionPredicateView，与饼图、降级路径逐字同源）。
+// ★ ★★ 代价（必须如实记录）：traffic_class 与 markers 谓词是**两把尺**，
+// ★ ★★ 在边缘行上可能分叉；但**事实族在 2026-11-10 13:37 丢失了 ≈35.2 万行**
+// ★ ★★ （证据链见 docs/12小时内修订审计-2026-11-24-0704.md §C）⇒ 继续拿事实族
+// ★ ★★ 当看板真源，等于「用一个已知少算了 2 倍的源当真相」⇒ 整页同源优先。
+//
+// ★★★ 为什么抽成共用构造器（★ 真源统一的结构性保证 ★★★）：
+// ★★★ 「卡片 == Σ趋势桶」这个不变量**不能靠两边各写各的、再靠门比对文本**——
 // ★★★ 那种写法一旦有人改了一边，门要么误报要么漏报。
 // ★★★ 现在英雄区与趋势**必须**调用本函数 ⇒ 同表同谓词由**结构**保证，
 // ★★★ 门只负责验证「真的都调了它」（admin/dashboard_board_truth_source_test.go 门 ③）。
-//
-// ★ 关于探测谓词为什么用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
-// ★ usage_facts 的 class 在写入时由 origin_stage 派生（stats/event.go trafficClass），
-// ★ 对账快照就是按它分面的——board 想与对账逐字相等，就必须用同一列，
-// ★ 而不是再按 markers 算一遍（markers 与 stage 的判定面不同，混用必然在边缘行上分叉）。
-func boardFactsWhere(tenantID string, tr boardTimeRange, includeProbes bool) (string, []any) {
-	where := "occurred_at >= $1 AND occurred_at < $2"
-	args := []any{tr.Start, tr.End}
-	if tenantID != "" {
-		where += " AND tenant_id = $3"
-		args = append(args, tenantID)
-	}
-	if !includeProbes {
-		where += " AND traffic_class = 'business'"
-	}
+func boardLogsWhereTerminal(tr boardTimeRange, tenantID string, includeProbes bool) (string, []any) {
+	where, args := boardLogsWhereProbeScope(tr, "r", tenantID, includeProbes)
+	where += " AND r.request_status IN ('success','failure','rate_limited')"
 	return where, args
 }
 
-// boardSummaryFactsSQL 返回英雄区汇总的 SQL（读 usage_facts）。
-func boardSummaryFactsSQL(where string) string {
+// boardCreditsExpr 返回看板（英雄区/趋势/饼图）**共用**的积分表达式。
+//
+// ★ 三条读链必须用**同一个**表达式，否则同一页的积分卡与各饼图切片的积分对不上。
+// ★ includeDefaultTenant 的口径与既有降级路径一致（admin/dashboard_board_fallback.go）。
+func boardCreditsExpr(tenantID string) string {
+	return maas.RequestLogCreditsSQL("r", tenantID == "" || tenantID == "default")
+}
+
+// boardSummaryLogsSQL 返回英雄区汇总的 SQL（读请求级日志）。
+//
+// ★ token 口径不因换源而变：视图里 total_tokens = NULLIF(prompt+completion, 0)
+//   （request_logs_with_current_month 的视图定义）⇒ 与 usage_facts 的
+//   「total = prompt + completion」契约（stats/event.go）天然一致。
+func boardSummaryLogsSQL(where, creditsExpr string) string {
 	return `
 		SELECT
 			COUNT(*),
-			COUNT(*) FILTER (WHERE status = 'success'),
-			COALESCE(SUM(prompt_tokens), 0),
-			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(cost_amount), 0),
-			COALESCE(SUM(credits_charged), 0),
-			COALESCE(SUM(latency_ms), 0)
-		FROM usage_facts
+			COUNT(*) FILTER (WHERE r.request_status = 'success'),
+			COALESCE(SUM(r.prompt_tokens), 0),
+			COALESCE(SUM(r.completion_tokens), 0),
+			COALESCE(SUM(r.total_tokens), 0),
+			COALESCE(SUM(` + creditsExpr + `), 0),
+			COALESCE(SUM(r.cost_usd), 0),
+			COALESCE(SUM(r.latency_ms), 0)
+		FROM request_logs_with_current_month r
 		WHERE ` + where
 }
 
-// is visible in server logs).
-func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
-	where, args := boardFactsWhere(tenantID, tr, includeProbes)
+// queryBoardSummaryLogs 从**请求级日志**算英雄区汇总（与饼图、趋势同一宇宙）。
+//
+// ★★★ 2026-11-24 第二轮：★ 此前读 usage_facts（对账真源），但事实族在
+// ★★★ 2026-11-10 13:37 丢失 ≈35.2 万行 ⇒ 任何跨过该点的窗口，卡片都少算
+// ★★★ （实测「近30天」页签少算 2.08 倍）⇒ owner 拍板整页切请求级日志。
+//
+// ★ 与饼图同源的三个要素：**同一张视图**、**同一个终态集**
+// （request_status IN ('success','failure','rate_limited')）、**同一个探测谓词**
+// （boardLogsWhereProbeScope ⇒ bg.ProbeTrafficExclusionPredicateView）。
+//
+// Second return is false when the query failed (missing view → 42P01, timeout,
+// etc.) so the caller can fall back to the legacy minute path.
+func (h *Handler) queryBoardSummaryLogs(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
+	where, args := boardLogsWhereTerminal(tr, tenantID, includeProbes)
 
-	var totalReq, successCnt, promptTok, compTok, credits, latencySum int64
+	var totalReq, successCnt, promptTok, compTok, totalTok, credits, latencySum int64
 	var costUSD float64
-	err := h.db.QueryRow(ctx, boardSummaryFactsSQL(where), args...).Scan(
-		&totalReq, &successCnt, &promptTok, &compTok, &costUSD, &credits, &latencySum)
+	err := h.db.QueryRow(ctx, boardSummaryLogsSQL(where, boardCreditsExpr(tenantID)), args...).Scan(
+		&totalReq, &successCnt, &promptTok, &compTok, &totalTok, &credits, &costUSD, &latencySum)
 	if err != nil {
 		if !IsMissingRelationError(err) {
-			slog.Warn("board summary (usage_facts) failed, falling back to minute path",
+			slog.Warn("board summary (request-level logs) failed, falling back to minute path",
 				"tenant_id", tenantID, "start", tr.Start, "end", tr.End, "error", err)
 		}
 		return nil, false
 	}
 	if totalReq == 0 && !includeProbes {
-		// 空窗口保持旧行为：分钟表还有一次机会（它可能在 usage_facts 尚未
+		// 空窗口保持旧行为：分钟表还有一次机会（它可能在请求级日志尚未
 		// 迁移的环境里有数据），空结果交回旧链路判定。
 		return nil, false
 	}
@@ -161,7 +192,7 @@ func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, t
 		"total_requests":          totalReq,
 		"total_prompt_tokens":     promptTok,
 		"total_completion_tokens": compTok,
-		"total_tokens":            promptTok + compTok,
+		"total_tokens":            totalTok,
 		"total_cost_usd":          costUSD,
 		"total_credits_charged":   credits,
 		"success_rate":            successRate,
@@ -169,7 +200,7 @@ func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, t
 		"active_api_keys":         activeKeys,
 		"active_models":           activeModels,
 		"providers":               providers,
-		"summary_source":          "usage_facts",
+		"summary_source":          "request_logs",
 	}, true
 }
 
@@ -687,10 +718,11 @@ func boardPieFactsSQL(where, creditsExpr string) string {
 // ★★ 生产实测对拍（211 只读，7 天窗口，排除探测）：★ 各维度请求数与维表差异
 // ★★ 0.003% ~ 0.064%（2~4 笔的时间边界差）⇒ ★★ 切源不改变数字口径。
 func (h *Handler) queryBoardPiesFacts(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string][]boardPieItem, error) {
-	where, args := boardLogsWhereProbeScope(tr, "r", tenantID, includeProbes)
-	where += " AND r.request_status IN ('success','failure','rate_limited')"
+	// ★ 与英雄区、趋势**共用** boardLogsWhereTerminal ⇒ 三条读链同表同谓词同终态集
+	// （结构保证，不是靠两边各写各的）。
+	where, args := boardLogsWhereTerminal(tr, tenantID, includeProbes)
 
-	creditsExpr := maas.RequestLogCreditsSQL("r", true)
+	creditsExpr := boardCreditsExpr(tenantID)
 
 	rows, err := h.db.Query(ctx, boardPieFactsSQL(where, creditsExpr), args...)
 	if err != nil {
@@ -831,16 +863,22 @@ func (h *Handler) queryDimPie(ctx context.Context, tenantID string, tr boardTime
 // ★★ usage_facts」（与英雄区同表同探测谓词）⇒ ★★ include_probes 开关现在
 // ★★ **同时联动英雄区与趋势图**（过去趋势恒为排除探测 ⇒ 卡片与趋势口径分裂）。
 //
-// ★★ 降级顺序：facts → minute（预聚合，恒排除探测）→ logs（明细，恒排除探测）。
+// ★★ 2026-11-24 第二轮（owner 拍板「整页切请求级日志」）：★★ ★ 主路径再改为
+// ★★ ★ **请求级日志**（与英雄区、饼图同一张视图、同一终态集、同一探测谓词）
+// ★★ ★ ⇒ 整页一个宇宙 ⇒ 「近30天」页签不再出现「卡片 163,457 vs 饼图 331,373」
+// ★★ ★ 这种 2.08 倍的页面内分裂（成因：事实族在 2026-11-10 13:37 丢了 ≈35.2 万行，
+// ★★ ★ 其覆盖起点与日志不同 ⇒ 证据链见 docs/12小时内修订审计-2026-11-24-0704.md §C）。
+//
+// ★★ 降级顺序：logs（请求级）→ minute（预聚合，恒排除探测）→ logs 明细回退。
 // ★★ 后两条降级路径的探测口径与英雄区可能不同 ⇒ 打日志说明；整个看板在
-// ★★ usage_facts 缺失时本来就走 legacy 链（英雄区也会降级）⇒ 属既有降级语义。
+// ★★ 请求级日志视图缺失时本来就走 legacy 链（英雄区也会降级）⇒ 属既有降级语义。
 func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
-	points, err := h.queryBoardTrends(ctx, tenantID, tr, providerID, includeProbes)
+	points, err := h.queryBoardTrendsLogs(ctx, tenantID, tr, providerID, includeProbes)
 	if err != nil {
 		if !IsMissingRelationError(err) {
 			return nil, err
 		}
-		// usage_facts 未迁移 ⇒ 先试分钟表，再落日志。
+		// 请求级日志视图未迁移 ⇒ 先试分钟表，再落日志。
 		if minute, mErr := h.queryBoardTrendsMinute(ctx, tenantID, tr, providerID); mErr == nil && len(minute) > 0 {
 			slog.Warn("board trends fell back to the minute rollup (probe scope may differ from the hero summary)",
 				"tenant_id", tenantID, "start", tr.Start, "end", tr.End, "include_probes", includeProbes)
@@ -874,46 +912,43 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 	return fallback, nil
 }
 
-// queryBoardTrends 从**请求级事实表**（usage_facts）算趋势分桶。
-//
-// ★★ 这是 2026-11-24 真源统一轮的**主路径**：★ 过去趋势读预聚合表
-// ★★ （request_stats_minute），而那张表在写入时已剔除探测流量 ⇒ ★★ 结构上无法响应
-// ★★ include_probes ⇒ ★★ 看板切「含探测」时卡片变、趋势图不动。
-// ★★ 现在趋势与英雄区汇总（queryBoardSummaryFacts）**读同一张表、用同一个探测谓词**
-// ★★ （traffic_class = 'business'）⇒ ★★ 趋势各桶之和与卡片逐项相等。
-//
-// ★★ 探测谓词刻意用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
-// ★★ 与 queryBoardSummaryFacts 同源（usage_facts 的 class 在写入时由 origin_stage
-// ★★ 派生），保证「英雄区排除探测 ⇒ 趋势也排除探测」是同一把尺。
-// boardTrendFactsSQL 返回趋势主路径的 SQL（读 usage_facts，与英雄区同表同谓词）。
+// boardTrendLogsSQL 返回趋势主路径的 SQL（读请求级日志，与英雄区/饼图同表同谓词）。
 //
 // ★ 单独抽成函数是为了让门禁能验证**实际执行的语句**（而不是去比对某个函数体里的
 // ★ 源文本）——★ 2026-11-24 生产事故证明：源文本门会在 SQL 被重排/抽取后**误报**，
 // ★ 而行为门测的是 PG 真正收到的东西。
-func boardTrendFactsSQL(bucketExpr, where string) string {
+func boardTrendLogsSQL(bucketExpr, where, creditsExpr string) string {
 	return fmt.Sprintf(`
 		SELECT %s,
 			COUNT(*),
-			COALESCE(SUM(total_tokens), 0),
-			COALESCE(SUM(credits_charged), 0),
-			COALESCE(SUM(cost_amount), 0)
-		FROM usage_facts
+			COALESCE(SUM(r.total_tokens), 0),
+			COALESCE(SUM(%s), 0),
+			COALESCE(SUM(r.cost_usd), 0)
+		FROM request_logs_with_current_month r
 		WHERE %s
 		GROUP BY 1
 		ORDER BY 1 ASC
-	`, bucketExpr, where)
+	`, bucketExpr, creditsExpr, where)
 }
 
-func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
-	// ★ 与英雄区**共用** boardFactsWhere ⇒ 同表同谓词由结构保证（不是靠两边各写各的）。
-	where, args := boardFactsWhere(tenantID, tr, includeProbes)
+// queryBoardTrendsLogs 从**请求级日志**算趋势分桶（与英雄区、饼图同一宇宙）。
+//
+// ★★★ 2026-11-24 第二轮：★★ ★ 此前读 usage_facts（第一轮从预聚合分钟表切过来）。
+// ★★★ ★ 现在整页切请求级日志（owner 拍板）⇒ 三条读链同一张视图、同一终态集、
+// ★★★ ★ 同一探测谓词 ⇒ 长短窗口都不再出现「卡片与饼图差 2 倍」。
+//
+// ★★ 过去趋势读预聚合表（request_stats_minute），而那张表在写入时已剔除探测流量
+// ★★ ⇒ ★★ 结构上无法响应 include_probes ⇒ ★★ 看板切「含探测」时卡片变、趋势图不动。
+func (h *Handler) queryBoardTrendsLogs(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
+	// ★ 与英雄区**共用** boardLogsWhereTerminal ⇒ 同表同谓词由结构保证（不是靠两边各写各的）。
+	where, args := boardLogsWhereTerminal(tr, tenantID, includeProbes)
 	if providerID > 0 {
-		where += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
+		where += fmt.Sprintf(" AND r.provider_id = $%d", len(args)+1)
 		args = append(args, providerID)
 	}
-	bucketExpr := sqlTrendBucket("occurred_at", tr.trendBucketMinutes())
+	bucketExpr := sqlTrendBucket("r.ts", tr.trendBucketMinutes())
 
-	rows, err := h.db.Query(ctx, boardTrendFactsSQL(bucketExpr, where), args...)
+	rows, err := h.db.Query(ctx, boardTrendLogsSQL(bucketExpr, where, boardCreditsExpr(tenantID)), args...)
 	if err != nil {
 		return nil, err
 	}

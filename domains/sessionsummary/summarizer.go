@@ -8,7 +8,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -152,6 +155,15 @@ func (s *Summarizer) SetModel(model string) {
 	}
 }
 
+// maxSummaryCompletionTokens 是摘要类调用的 max_tokens 上限。
+//
+// 2026-11-24 批判审计轮（F-A，P1）：此前 600 被上游 thinking 模型的
+// <think> 推理段整段吃光，JSON 尚未输出即被截断 ⇒ 生产 6h 实测 111 次
+// "unexpected end of JSON input"（占该 worker 解析失败的 74%）。提到
+// 1500 给「thinking + JSON 本体（约 200-400 token）」留出余量；后台
+// worker 调用量低（分钟级一次），成本影响可忽略。
+const maxSummaryCompletionTokens = 1500
+
 // GenerateSummary 生成完整的会话总结（异步调用）
 func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey string) (*SessionSummary, error) {
 	// 0. 防御：GenerateRollingSummary 有 nil 检查（降级本函数后仍会走到这里
@@ -186,7 +198,7 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 	// 4. 调用 LLM 生成总结
 	response, err := s.llmClient.Complete(ctx, prompt,
 		WithModel(s.model),
-		WithMaxTokens(600),
+		WithMaxTokens(maxSummaryCompletionTokens),
 		WithTemperature(0.3),
 		WithSystemPrompt("你是一个专业的会话分析助手，擅长提取会话的核心信息并生成简洁的标题和摘要，同时识别请求方的智能体类型与专家领域。"),
 	)
@@ -206,8 +218,13 @@ func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey s
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
 		return nil, fmt.Errorf("failed to save summary: %w", err)
 	}
+	// 2026-11-24 批判审计轮（F-B，P1）：摘要已落库 ⇒ 标题同步失败不应把整个
+	// 操作判死——此前 return err 导致 worker 对同一 event 无限重试（生产日志
+	// "resolve title task: no rows in result set" 反复出现，每轮重跑一次 LLM）。
+	// 标题是辅助字段；同步失败降级为 warn，摘要结果照常返回。
 	if err := s.syncCanonicalSessionTitle(ctx, tenantID, summary.SessionKey, summary.Title); err != nil {
-		return nil, fmt.Errorf("failed to synchronize session title: %w", err)
+		slog.Warn("sessionsummary: canonical title sync failed (summary kept)",
+			"session_key", summary.SessionKey, "error", err)
 	}
 
 	// 7. 缓存结果（24小时）
@@ -244,9 +261,13 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 %s`, truncated)
 
 	// 4. 调用 LLM
+	// 2026-11-24 批判审计轮（F-C）：30 token 会被 thinking 模型的 <think> 段
+	// 整段吃光 ⇒ 标题从未生成（静默走首句降级），或 <think> 正文被截成 50
+	// rune 的垃圾文本直接落库。提到 200 给 thinking 留余量，返回后剥离
+	// thinking 标签再取标题。
 	title, err := s.llmClient.Complete(ctx, prompt,
 		WithModel(s.model),
-		WithMaxTokens(30),
+		WithMaxTokens(200),
 		WithTemperature(0.5),
 	)
 	if err != nil {
@@ -254,8 +275,13 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 		return s.extractTitleFromFirstMessage(firstMessage), nil
 	}
 
+	title = stripThinkingTags(title)
 	title = strings.TrimSpace(title)
 	title = strings.Trim(title, "\"'`")
+	// 剥离后可能为空（thinking 吃光预算且无正文）⇒ 走首句降级，不落空标题
+	if title == "" || strings.HasPrefix(title, "<think") {
+		return s.extractTitleFromFirstMessage(firstMessage), nil
+	}
 
 	// 限制长度
 	if len(title) > 50 {
@@ -333,6 +359,10 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage, sysPrefix str
 	sb.WriteString("  \"expert_type\": \"该智能体的专家领域（如 software_engineering|security|data_science|devops|testing|design|research；无法判断为 unknown）\",\n")
 	sb.WriteString("  \"tags\": [\"会话标签（3-6个，简短小写英文或中文，如 debugging|go|sql 迁移）\"]\n")
 	sb.WriteString("}\n\n")
+	// 2026-11-24 批判审计轮（F-E）：生产观测到两类可避免的解析失败——
+	// ① LLM 回声对话内容（把被截断的用户 JSON 原样输出，如 {"action":...}）；
+	// ② 字段值用省略号截断（"..." 不是合法 JSON）。显式禁止。
+	sb.WriteString("硬性要求：直接输出上述 JSON 对象，不要输出任何思考过程；不要复述或引用对话内容；字段值必须完整，禁止用省略号（...）截断。\n\n")
 	sb.WriteString("提示：智能体的身份与专家领域通常写在客户端注入的系统提示词（system prompt）开头，请优先依据系统提示词节选判断；对话内容由用户决定，不代表智能体身份。\n\n")
 	if strings.TrimSpace(sysPrefix) != "" {
 		sb.WriteString("系统提示词节选（来自客户端，仅用于识别智能体与专家领域）：\n<system_prompt>\n")
@@ -384,6 +414,9 @@ func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []Sessio
 	sb.WriteString("  \"expert_type\": \"该智能体的专家领域（如 software_engineering|security|data_science|devops|testing|design|research；无法判断为 unknown）\",\n")
 	sb.WriteString("  \"tags\": [\"会话标签（3-6个，简短小写英文或中文）\"]\n")
 	sb.WriteString("}\n\n")
+
+	// F-E 同款（2026-11-24 批判审计轮）：禁止回声对话内容与省略号截断。
+	sb.WriteString("硬性要求：直接输出上述 JSON 对象，不要输出任何思考过程；不要复述或引用对话内容；字段值必须完整，禁止用省略号（...）截断。\n\n")
 
 	sb.WriteString("提示：智能体的身份与专家领域通常写在客户端注入的系统提示词（system prompt）开头，请优先依据系统提示词节选判断。\n\n")
 	if strings.TrimSpace(sysPrefix) != "" {
@@ -451,7 +484,7 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 	prompt := s.buildRollingPrompt(prevSummary, messages, sysPrefix)
 	response, err := s.llmClient.Complete(ctx, prompt,
 		WithModel(s.model),
-		WithMaxTokens(600),
+		WithMaxTokens(maxSummaryCompletionTokens),
 		WithTemperature(0.3),
 		WithSystemPrompt("你是一个专业的会话分析助手，擅长增量更新会话总结，同时识别请求方的智能体类型与专家领域。"),
 	)
@@ -468,8 +501,11 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 	if err := s.saveSummaryToDB(ctx, tenantID, summary); err != nil {
 		return nil, fmt.Errorf("failed to save rolling summary: %w", err)
 	}
+	// F-B 同款（2026-11-24 批判审计轮）：滚动摘要已落库 ⇒ 标题同步失败降级为
+	// warn，不再把整个操作判死（避免 worker 对已保存摘要无限重试）。
 	if err := s.syncCanonicalSessionTitle(ctx, tenantID, summary.SessionKey, summary.Title); err != nil {
-		return nil, fmt.Errorf("failed to synchronize rolling session title: %w", err)
+		slog.Warn("sessionsummary: canonical title sync failed (rolling summary kept)",
+			"session_key", summary.SessionKey, "error", err)
 	}
 	if err := s.cacheSummary(ctx, tenantID, summary, 24*time.Hour); err != nil {
 		fmt.Printf("warn: failed to cache summary: %v\n", err)
@@ -798,6 +834,11 @@ func (s *Summarizer) syncCanonicalSessionTitle(ctx context.Context, tenantID, se
 		ORDER BY ts DESC, request_id DESC
 		LIMIT 1
 	`, sessionKey, tenantID).Scan(&taskID); err != nil {
+		// 2026-11-24 批判审计轮（F-B）：会话没有任何「成功的非自动」请求行
+		// （如纯自动/综合会话）⇒ 没有可挂标题的任务 ⇒ 直接跳过，不算失败。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		return fmt.Errorf("resolve title task: %w", err)
 	}
 
@@ -883,21 +924,26 @@ func (s *Summarizer) extractTitleFromFirstMessage(message string) string {
 
 // stripThinkingTags removes <think>...</think> tags and other XML-like wrapper
 // tags that extended thinking models may output before the actual JSON response.
+// 2026-11-24 批判审计轮（F-D）：同时覆盖 <thinking> 变体（部分上游模型
+// 使用 <thinking> 而非 <think>）。
 func stripThinkingTags(text string) string {
-	// Remove all <think>...</think> blocks (may appear multiple times)
-	for {
-		start := strings.Index(text, "<think>")
-		if start == -1 {
-			break
+	// Remove all <think>...</think> / <thinking>...</thinking> blocks
+	for _, pair := range [][2]string{{"<think>", "</think>"}, {"<thinking>", "</thinking>"}} {
+		open, close := pair[0], pair[1]
+		for {
+			start := strings.Index(text, open)
+			if start == -1 {
+				break
+			}
+			end := strings.Index(text[start:], close)
+			if end == -1 {
+				// Unclosed tag, remove just the opening marker itself and let
+				// extractJSON find the JSON in what remains
+				text = text[:start] + text[start+len(open):]
+				break
+			}
+			text = text[:start] + text[start+end+len(close):]
 		}
-		end := strings.Index(text[start:], "</think>")
-		if end == -1 {
-			// Unclosed tag, remove just the <think> marker itself and let
-			// extractJSON find the JSON in what remains
-			text = text[:start] + text[start+7:]
-			break
-		}
-		text = text[:start] + text[start+end+8:]
 	}
 
 	// Remove other common XML-like wrapper tags

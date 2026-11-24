@@ -5,15 +5,16 @@ Die Tabs „Board", „Sitzungsstatistik" und „Anbieter-Abgleich" fassen dense
 > Messgrundlage: 2026-11-23 21:05 (Asia/Shanghai) im Produktivbetrieb gemessen. Alle Zahlen stammen aus **demselben Zeitpunkt** (innerhalb einer einzigen SQL-Abfrage), Fenster = `NOW()-7 Tage`; die Seite „Anbieter-Abgleich" wurde zusätzlich über den geschlossenen Kalendertagsbereich `2026-11-17 ~ 2026-11-23` gemessen und taggenau gegen die Faktentabelle abgeglichen.
 >
 > ★ Korrektur (Runde „Datumsbereich angleichen", 2026-11-23): Der Tab „Sitzungsstatistik" verwendet jetzt **denselben** Zeitbereich wie der Tab „Board" (gleiche Steuerung, gleicher Kalendertagsbereich) ⇒ die unten aufgeführten Werte der Sitzungsstatistik stammen noch aus dem **nicht angeglichenen** (rollierenden) Fenster und müssen im neuen Fenster neu gemessen werden; die Werte von Board und Anbieter-Abgleich sind nicht betroffen.
+> ★★ Korrektur (Runde „Wahrheitsquelle vereinheitlichen", 2026-11-24): ★★ Die Wahrheitsquelle des Boards wurde von der Anfrage-Faktentabelle `usage_facts` **vollständig auf die Anfrage-Logs `request_logs_with_current_month` umgestellt** — Hero-Karten, Nutzungstrend und Pie-Charts lesen nun **dieselbe View, dieselbe Endstatus-Menge und dieselbe Probe-Bedingung** ⇒ ein Universum für die ganze Seite, und lange Fenster (letzte 30 Tage) zerlegen die Seite nicht mehr in zwei Zahlen (Karte und Pie-Charts unterschieden sich um das Doppelte). ⇒ **die Algorithmen- und Quellenbeschreibungen auf dieser Seite sind auf das neue Kaliber korrigiert**; die **gemessenen Board-Zahlen unten stammen aber weiterhin aus der Messung vom 2026-11-23 (Kaliber vor der Umstellung)** und müssen im neuen Kaliber neu gemessen werden (als offene Aufgabe vermerkt). Die Seite „Anbieter-Abgleich" liest `report_snapshots` / `usage_facts` und ist daher **nicht mehr garantiert ziffernidentisch mit dem Board** — siehe Einschränkung 7 am Ende dieser Seite.
 
 ## Wie die drei Module zusammenhängen
 
 | | Board | Sitzungsstatistik | Anbieter-Abgleich |
 | --- | --- | --- | --- |
 | Zähleinheit | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**) | Eine Sitzung zählt als eine Zeile mit den **kumulierten Werten** dieser Sitzung (**auf Sitzungs-Ebene**) | Ein Modellaufruf zählt als eine Zeile (**auf Anfrage-Ebene**, je Anbieter aggregiert) |
-| Quelle der Wahrheit | Anfrage-Faktentabelle `usage_facts` | Sitzungsübersicht `session_summaries` + Sitzungsuniversum | Tagessnapshot-Tabelle `report_snapshots` |
+| Quelle der Wahrheit | Anfrage-Logs `request_logs_with_current_month` | Sitzungsübersicht `session_summaries` + Sitzungsuniversum | Tagessnapshot-Tabelle `report_snapshots` |
 | Zeitfenster | Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis jetzt | **Derselbe Bereich wie das Board** (Kalendertage in der Systemzeitzone: Mitternacht von heute-(N-1) bis Ende des letzten Tages; freier Start/Ende wählbar) | **Geschlossener Kalendertagsbereich** (ganzer Tag, inklusive des vollen letzten Tages) |
-| Probe-Verkehr | Ausgeschlossen über `traffic_class` (umschaltbar) | Ausgeschlossen über die Regeln des **Sitzungsuniversums** | **Nicht ausgeschlossen** (gesamter Verkehr, einschließlich „Nicht zugeordnet") |
+| Probe-Verkehr | Ausgeschlossen über die Probe-Marker in den Anfrage-Logs (umschaltbar) | Ausgeschlossen über die Regeln des **Sitzungsuniversums** | **Nicht ausgeschlossen** (gesamter Verkehr, einschließlich „Nicht zugeordnet") |
 | Reifegrad | Echtzeit | Echtzeit | **T+1-Snapshot** (Tage, die noch nicht abgeschlossen sind, hinken hinterher) |
 
 **Fazit vorab**: Die Zahlen der drei Module **sollen nicht gleich sein** — andere Zähleinheit, anderes Zeitfenster, andere Probe-Ausschlussregeln, anderer Reifegrad. Ein modulübergreifender Vergleich muss diese vier Punkte zuerst angleichen; einfaches Subtrahieren führt in die Irre.
@@ -44,7 +45,7 @@ Probe-Verkehr (Health-Check / Selbsttest) steht in der Faktentabelle separat als
 | Aktive Schlüssel | Anzahl der derzeit aktivierten Schlüssel | **Konfigurationsbasiert, unabhängig vom Zeitfenster** |
 | Fehlerzahl | Summe je Fehlerklasse aus der Fehlerverteilung; ohne diese Schätzung über „Gesamt-Anfragen × (1 − Erfolgsquote)" | Die Schätzung kann um ein paar Zeilen abweichen |
 | Kreisdiagramme (Modell / Anbieter / Mandant / Client…) | Anfragen, Token, Kosten je Dimension gruppiert | Aus dem Anfrage-Log — dieselbe Quelle wie die Karten oben (gleicher Probe-Umfang) |
-| Nutzungstrend | Anfragen, Token, Kosten, Credits je Zeitbucket | **Dieselbe Quelle wie die Karten oben**: dieselbe Anfrage-Faktentabelle `usage_facts` und dieselbe Probe-Bedingung ⇒ die Buckets summieren sich zur Karte |
+| Nutzungstrend | Anfragen, Token, Kosten, Credits je Zeitbucket | **Dieselbe Quelle wie die Karten oben**: dieselben Anfrage-Logs `request_logs_with_current_month`, dieselbe Probe-Bedingung und dieselbe Endstatus-Menge ⇒ die Buckets summieren sich zur Karte |
 
 ### Wie das Zeitfenster berechnet wird
 
@@ -57,7 +58,7 @@ Probe-Verkehr (Health-Check / Selbsttest) steht in der Faktentabelle separat als
 Die Credit-Karte zeigt **nicht** die im gewählten Fenster verbrauchten Credits: Die Credit-Spalte der Anfrage-Faktentabelle ist derzeit immer 0 (gemessen: alle 298.037 Zeilen sind 0), angezeigt wird die **Live-Differenz nach dem Cache-Stand**. Daher gilt:
 
 - Der Wechsel zwischen „Heute / letzte 7 Tage / letzte 30 Tage" lässt die Credit-Karte **unverändert** (gemessen: alle drei 86.925).
-- Nutzungstrend und Credit-Karte derselben Seite stammen jetzt **aus derselben Quelle** (beide lesen die Anfrage-Faktentabelle `usage_facts`) ⇒ die Credits der Buckets summieren sich zur Karte.
+- Nutzungstrend und Credit-Karte derselben Seite stammen jetzt **aus derselben Quelle** (beide lesen die Anfrage-Logs `request_logs_with_current_month`) ⇒ die Credits der Buckets summieren sich zur Karte.
 
 Für ein belastbares Credit-Konto nutzen Sie die Seiten „Nutzung & Kosten" und „Abgleich"; die Credit-Karte des Boards taugt nicht für Zeitreihenvergleiche.
 
@@ -153,7 +154,7 @@ Die Anbieterzeilen der Abgleich-Seite (einschließlich „Nicht zugeordnet") **s
 3. **Dann die Probe-Berechnungsgrundlage angleichen**: Das Board lässt sich auf „Probes einschließen" umstellen; die Sitzungsstatistik schließt nach den Regeln des Sitzungsuniversums aus; **der Abgleich enthält immer die Probes**. Weichen die Anfragenzahlen stark ab, während die Kosten ähnlich bleiben ⇒ zuerst die Probes prüfen.
 4. **Dann den Reifegrad angleichen**: Der Abgleich ist ein T+1-Snapshot, **die Daten des laufenden Tages hinken zwingend hinterher**; vor dem Vergleich prüfen, bis zu welchem Tag der Snapshot reicht.
 5. **Auf Degradierungsmarkierungen achten**: Zeigt eine Karte „degradiert / nicht vertrauenswürdig / nicht berechenbar", bedeuten diese Nullen nicht „kein Verkehr".
-6. **Trenddiagramm und Karten des Boards stammen jetzt aus derselben Quelle**: beide lesen die Anfrage-Faktentabelle `usage_facts` mit derselben Probe-Bedingung ⇒ die Buckets sollten sich zur Karte summieren. Wenn nicht: zuerst das `degraded`-Flag in der Nutzlast prüfen (bei Rückfall auf die voraggregierten Tabellen weicht der Probe-Umfang ab), dann die Zeitfenster abgleichen.
+6. **Trenddiagramm und Karten des Boards stammen jetzt aus derselben Quelle**: beide lesen die Anfrage-Logs `request_logs_with_current_month` mit derselben Probe-Bedingung ⇒ die Buckets sollten sich zur Karte summieren. Wenn nicht: zuerst das `degraded`-Flag in der Nutzlast prüfen (bei Rückfall auf die voraggregierten Tabellen weicht der Probe-Umfang ab), dann die Zeitfenster abgleichen.
 7. **„Heute" konnte fehlschlagen (behoben am 2026-11-23)**: Die Voreinstellung „Heute" der Sitzungsstatistik lief reproduzierbar in ein 30-Sekunden-Timeout, weil auf der Datenbankseite der Join-Index fehlte (Index am 2026-11-23 ergänzt: Abfragezeit von 121,8 s auf 0,19 s). Zeigt die Seite den Fehler wieder an, ist der Index erneut verschwunden — dann bitte den Bereitschaftsdienst prüfen lassen, ob `idx_session_dim_session_key` vorhanden ist.
 
 ## Bekannte Einschränkungen (gemessen 2026-11-23)
@@ -164,3 +165,4 @@ Die Anbieterzeilen der Abgleich-Seite (einschließlich „Nicht zugeordnet") **s
 4. **Verzögerung des Abgleich-Snapshots am selben Tag**: Der Abgleich ist T+1, **die Daten des heutigen Tages sind unvollständig**; direkt von den Echtzeit-Zahlen des Boards abgezogen entsteht daher immer eine Differenz.
 5. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
 6. **Probe-Umfang im degradierten Zustand**: Wenn Pie-Charts und Trend des Boards nach einem Fehler des Hauptpfads auf die voraggregierten Tabellen zurückfallen, sind diese immer „ohne Sonden“ ⇒ im Modus „Sonden enthalten“ weichen sie vom Hero-Summary ab (die Nutzlast trägt dann ein `degraded`-Flag — es ist kein stiller Degradationsfall).
+7. **Board und Anbieter-Abgleich sind nicht mehr garantiert ziffernidentisch (2026-11-24, Runde 2)**: Die Board-Wahrheitsquelle ist auf die Anfrage-Logs umgestellt, der Abgleich liest weiterhin `report_snapshots` / `usage_facts`. Für Zeiträume mit intakter Faktentabelle sind beide gleich; sobald das Fenster **vor 2026-11-10 13:38** zurückreicht, **unterschätzt** die Abgleichseite — die Faktentabelle verlor in diesem Moment ≈352.000 echte Geschäftsfakten (2026-10-12 ~ 2026-11-10; Beweiskette in der Audit-Hauptdatei §C), während die Anfrage-Logs diesen Verkehr weiterhin enthalten. ⇒ **Die Differenz zwischen Abgleich und Board ist über den unterschiedlichen historischen Startpunkt der Quellen zu erklären, nicht als Rechenfehler**; für buchhaltungsgenau Zahlen gilt die Abgleichseite (inklusive ihrer bekannten Tagesverzögerung).
