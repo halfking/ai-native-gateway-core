@@ -17,9 +17,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/contextbudget"
 	"github.com/kaixuan/llm-gateway-go/internal/largebody"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 )
 
@@ -154,6 +156,13 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 		if err != nil {
 			g.reject(w, r, 400, "request_read_failed", "request body could not be read")
 			return
+		}
+		// ★ 2026-11-24（模型归属审计）：prefix 已在手上 ⇒ 把 model 摘出来挂到
+		// request context。往后的每一个拒绝出口（归档失败 / 缩减失败 / 会话
+		// 解析失败 / 归档重绑失败）都靠它把请求归到客户端真正要的模型上，
+		// 而不是记成 "<unknown>"。
+		if m := modelFromBodyPrefix(prefix); m != "" {
+			r = setIngressModel(r, m)
 		}
 		// Client-selected identities are untrusted until the parsed body's
 		// precedence and the existing session ownership gate have both run.
@@ -505,6 +514,118 @@ func prepBudgetLabel() string {
 	return fmt.Sprintf("%ds", int64(largeIngressPrepBudget/time.Second))
 }
 
+// rejectedRequestModel recovers the model the client asked for, so that an
+// ingress rejection is still attributable to a model.
+//
+// ★ 2026-11-24（模型归属审计）：reject() 此前把 client_model 硬编码成
+// "<unknown>"。211 生产实测：那 14 个入口拒绝出口产出的 1,290 行里，
+// **body 明明已经在手上**（归档已完成、或 prefix 已读入内存），却 100% 记成
+// "<unknown>" ⇒ 模型用量榜上凭空多出一个叫 "<unknown>" 的"模型"，
+// 且这些行全部 success_count=0 ⇒ 成功率被拉低。
+//
+// ★★ 取值来源**只有两条，且都要求 body 已经被合法读过**：
+//
+//  1. 已读入内存的 body 前缀（ingressModelKey）：归档前的前缀 ⇒ 零 I/O。
+//  2. 归档体（LargeRequestArchive）：body 已落盘 ⇒ 用 largebody.Index 读出
+//     envelope 的 model 字段（该索引器本就为 "model" 建立了字段跨度，
+//     见 internal/largebody/index.go）。这是 body 很大、model 字段靠后时
+//     唯一可靠的来源。
+//
+// ★★★ **刻意不做**的事：**不从 r.Body 再读一次**。
+// 入口拒绝有一条硬契约——「拒绝时不得再读网络 body」（
+// TestLargeIngressAuthenticatesBeforeReading 钉住：401 时 body 必须没被读，
+// 否则未鉴权的请求就能借网关把 body 读进内存，成为放大器）。而且
+// 401/403/415/429/容量这几类出口发生在**任何 body 读取之前**，此时去读
+// body 恰恰是那条契约禁止的行为。
+//
+// ⇒ 所以「body 尚未被读过」的拒绝出口（401 鉴权失败 / 403 租户不符 /
+// 415 编码不支持 / 429 容量满 / 503 归档不可用）**在模型上不可归因**，
+// 它们的 client_model 仍是占位符。这是**正确**的：那些请求连内容长度都
+// 没进网关，网关确实不知道客户端要的是哪个模型。生产实测这几类合计
+// 约 149 行，相对 1,320 行未知模型只占 11%。
+//
+// 找不到时返回 modelattr.UnknownPlaceholder（写侧占位符），与全仓其它
+// 失败路径的语义一致；读侧由 internal/modelattr 归一到 "unknown" 桶。
+func (g *LargeIngress) rejectedRequestModel(r *http.Request) string {
+	if r == nil {
+		return modelattr.UnknownPlaceholder
+	}
+	ctx := r.Context()
+	// 1) 已读入内存的 body 前缀。
+	if m := ingressModelFromContext(ctx); m != "" {
+		return m
+	}
+	// 2) 已归档的 body。
+	if ref, ok := LargeRequestArchive(ctx); ok && g.store != nil {
+		if m := g.archivedRequestModel(ctx, ref); m != "" {
+			return m
+		}
+	}
+	return modelattr.UnknownPlaceholder
+}
+
+// ingressModelKey carries the model discovered in the body prefix, so that a
+// later rejection can attribute the request without re-reading the body.
+type ingressModelKey struct{}
+
+// setIngressModel records the model discovered in the body prefix.
+func setIngressModel(r *http.Request, model string) *http.Request {
+	if r == nil || model == "" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), ingressModelKey{}, model))
+}
+
+// ingressModelFromContext reads back the prefix-derived model.
+func ingressModelFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	m, _ := ctx.Value(ingressModelKey{}).(string)
+	return m
+}
+
+// archivedRequestModel reads just the "model" field out of an archived
+// request body. Bounded memory: the indexer streams the archive and never
+// materializes the whole body.
+func (g *LargeIngress) archivedRequestModel(ctx context.Context, ref largebody.Ref) string {
+	f, err := g.store.Open(ctx, ref)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	doc, err := largebody.Index(ctx, f)
+	if err != nil {
+		return ""
+	}
+	return normalizeIngressModel(doc.Model)
+}
+
+// modelFromBodyPrefix reads a bounded prefix of the body and extracts the
+// model field from it.
+//
+// ★ 只用于**已经把 body 读进内存**之后（prefix / 归档后仍在 context 里的
+// 那份），**不用于**尚未读过的 body —— 入口拒绝有「拒绝时不得再读网络
+// body」的硬契约（见 rejectedRequestModel 的说明）。
+func modelFromBodyPrefix(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return normalizeIngressModel(extractModelFromBody(body))
+}
+
+// normalizeIngressModel applies the same normalization the chat path applies
+// to a client-supplied model (alias prefix strip + lowercase canonicalization)
+// so an ingress-rejected request groups under the same model key as a request
+// that was accepted.
+func normalizeIngressModel(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	return modelname.CanonicalizeClientModel(ApplyAliasPrefix(raw))
+}
+
 // reject 写出入口拒绝响应。message 进日志/遥测（稳定英文）；客户端看到的
 // 句子与旁键由可选的 rej 覆盖（见 ingressRejection）。
 func (g *LargeIngress) reject(w http.ResponseWriter, r *http.Request, status int, code, message string, rej ...ingressRejection) {
@@ -522,7 +643,7 @@ func (g *LargeIngress) reject(w http.ResponseWriter, r *http.Request, status int
 	if cached, ok := r.Context().Value(sanitizeVerifiedKeyContextKey{}).(sanitizeVerifiedKey); ok && cached.info != nil {
 		logCtx.SetKey(cached.info)
 	}
-	logCtx.SetClientModel("<unknown>")
+	logCtx.SetClientModel(g.rejectedRequestModel(r))
 	logCtx.SetClientStatus(status)
 	if client := g.handler.telemetryClient; client != nil && client.Enabled() {
 		state := telemetry.RequestStatusFailure

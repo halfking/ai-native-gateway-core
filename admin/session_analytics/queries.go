@@ -1599,30 +1599,32 @@ func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 // ============================================================================
 //
 // ★ 为什么需要这一层：Dashboard 的「供应商 Top5」原先靠前端从
-//   session-analytics 的 top_models 聚合，但那份数据有两个致命问题：
-//   ① top_models 只返回 **3 条**（GetOverview 里 getTopModels(…, 3)），
-//      聚合出的「Top5 供应商」最多 3 行，且不是全量 Top5；
-//   ② model_usage_aggregates 的 model 列是**纯模型名**（不含 provider 前缀），
-//      前端 split('/')[0] 会把整个模型名当成 provider（如 "claude-sonnet-4-5"）。
-//   ⇒ 供应商维度必须由 SQL 按 provider 列直接聚合。
+//
+//	session-analytics 的 top_models 聚合，但那份数据有两个致命问题：
+//	① top_models 只返回 **3 条**（GetOverview 里 getTopModels(…, 3)），
+//	   聚合出的「Top5 供应商」最多 3 行，且不是全量 Top5；
+//	② model_usage_aggregates 的 model 列是**纯模型名**（不含 provider 前缀），
+//	   前端 split('/')[0] 会把整个模型名当成 provider（如 "claude-sonnet-4-5"）。
+//	⇒ 供应商维度必须由 SQL 按 provider 列直接聚合。
 //
 // ★ 口径真源：model_usage_aggregates（迁移 981/994），**请求级**口径，
-//   与 model-ranking / overview 的 top_models 同源 ⇒ 三者数字自洽。
+//
+//	与 model-ranking / overview 的 top_models 同源 ⇒ 三者数字自洽。
 //
 // ProviderRanking 供应商排行项
 type ProviderRanking struct {
-	Rank          int     `json:"rank"`
-	Provider      string  `json:"provider"`
-	ModelCount    int64   `json:"model_count"`
-	RequestCount  int64   `json:"request_count"`
-	SuccessCount  int64   `json:"success_count"`
-	SuccessRate   float64 `json:"success_rate"`
-	TotalTokens   int64   `json:"total_tokens"`
-	TotalCost     float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
-	InternalCost  float64 `json:"internal_cost"` // 内部成本（美元）
-	ExternalCost  float64 `json:"external_cost"` // 外部成本（积分）
-	UserCount     int64   `json:"user_count"`
-	LastUsedAt    string  `json:"last_used_at"`
+	Rank         int     `json:"rank"`
+	Provider     string  `json:"provider"`
+	ModelCount   int64   `json:"model_count"`
+	RequestCount int64   `json:"request_count"`
+	SuccessCount int64   `json:"success_count"`
+	SuccessRate  float64 `json:"success_rate"`
+	TotalTokens  int64   `json:"total_tokens"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
+	UserCount    int64   `json:"user_count"`
+	LastUsedAt   string  `json:"last_used_at"`
 }
 
 // ProviderRankingResponse 供应商排行响应
@@ -1634,7 +1636,8 @@ type ProviderRankingResponse struct {
 //
 // ★ model_count 用 COUNT(DISTINCT model) —— 同一 provider 下的模型数。
 // ★ user_count 用 SUM(user_count)（模型级 user_count 之和，同一用户跨模型会重复计数，
-//   与 ModelRanking 保持同口径，不引入第二种计数语义）。
+//
+//	与 ModelRanking 保持同口径，不引入第二种计数语义）。
 const providerRankingSQL = `
 		SELECT
 			provider,
@@ -1731,14 +1734,17 @@ func GetProviderRanking(ctx context.Context, db *sql.DB, tenantID *string, start
 // ============================================================================
 //
 // ★ 为什么需要：用户要求「top5 的模型、用户、供应商、任务」四维统计，
-//   但本包此前只有**用户视角**的任务列表（GetProjectTasks：某 owner 的某 project
-//   下的任务），没有**全局任务排行** ⇒ 任务维度无法单独成榜。
+//
+//	但本包此前只有**用户视角**的任务列表（GetProjectTasks：某 owner 的某 project
+//	下的任务），没有**全局任务排行** ⇒ 任务维度无法单独成榜。
 //
 // ★ 口径真源：project_task_aggregates（迁移 981/994），**会话级**口径
-//   （与 user_session_aggregates 同源）⇒ 任务榜与用户榜数字自洽。
+//
+//	（与 user_session_aggregates 同源）⇒ 任务榜与用户榜数字自洽。
 //
 // ★ task 列语义：空串 = 「无具体任务」（迁移 981 唯一索引要求列上无 NULL），
-//   故统计时用 NULLIF(task, '') 过滤 —— 否则「无任务」会被算成一个任务。
+//
+//	故统计时用 NULLIF(task, '') 过滤 —— 否则「无任务」会被算成一个任务。
 //
 // TaskRanking 任务排行项
 type TaskRanking struct {
@@ -1938,7 +1944,10 @@ func GetUserModelUsage(ctx context.Context, db *sql.DB, owner, startDate, endDat
 //	  与同族 GetModelRanking 的 0~100 百分比口径**不同**（登记项，见审计报告 P2-7）。
 const userModelUsageSQL = `
 		SELECT
-			COALESCE(rl.outbound_model, rl.client_model, 'unknown') AS model,
+			COALESCE(
+				NULLIF(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>'),
+				NULLIF(NULLIF(TRIM(rl.client_model), ''), '<unknown>'),
+				'unknown') AS model,
 			COUNT(*) AS request_count,
 			COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
 			(COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)

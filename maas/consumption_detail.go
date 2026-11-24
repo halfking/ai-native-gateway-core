@@ -69,7 +69,11 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 		       ` + alias + `.credential_id,
 		       COALESCE(c.label, ''),
 		       ` + alias + `.canonical_id,
-		       COALESCE(mc.canonical_name, NULLIF(` + alias + `.outbound_model, ''), NULLIF(` + alias + `.client_model, ''), 'unknown'),
+		       COALESCE(
+		         NULLIF(NULLIF(TRIM(mc.canonical_name), ''), '<unknown>'),
+		         NULLIF(NULLIF(TRIM(` + alias + `.outbound_model), ''), '<unknown>'),
+		         NULLIF(NULLIF(TRIM(` + alias + `.client_model), ''), '<unknown>'),
+		         'unknown'),
 		       COUNT(*)::bigint,
 		       COALESCE(SUM(` + alias + `.prompt_tokens), 0)::bigint,
 		       COALESCE(SUM(` + alias + `.completion_tokens), 0)::bigint,

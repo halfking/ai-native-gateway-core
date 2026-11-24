@@ -7,6 +7,8 @@ import (
 	"log"
 	"math"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -676,12 +678,132 @@ func (p *Processor) batchEnrichModelInfo(ctx context.Context, modelNames []strin
 	return mappings, nil
 }
 
-// Run 启动后台任务（阻塞式循环）
-func (p *Processor) Run(ctx context.Context, interval time.Duration, batchSize int) {
-	log.Printf("MetricsProcessor started (gateway_node=%s, interval=%v, batch_size=%d)",
-		p.gatewayNode, interval, batchSize)
+// Config 是 request_metrics 处理器的运行参数。
+//
+// ★ 2026-11-24 吞吐优化轮：原实现把「每 5 分钟 100 条」硬编码在
+//
+//	cmd/gateway/main.go 的 Run(ctx, 5*time.Minute, 100) 调用里。
+//
+//	⇒ 那是**占位常量**，不是容量测算：生产实测写入速率约 1,100 条/小时
+//	（近 1 小时均值 18.1 条/分钟，峰值 63 条/分钟），
+//	而「5 分钟 100 条」的上限只有 **1,200 条/小时** ⇒ 余量仅 7%。
+//	⇒ 实测 61/61 个批次全部处理满 100 条 ⇒ 处理器**长期贴着天花板跑**
+//	⇒ 任何流量增长都会立刻转化为**数据滞后**（统计表落后真实用量）。
+//
+// ★ 三条修法（缺一不可）：
+//
+//	① 间隔与批量**可配**（环境变量）⇒ 不用改代码发版就能调容量。
+//	② **自适应追平**：每轮不只处理一批，而是持续处理直到
+//	   「本批不满」或「达到本轮上限」⇒ 积压时自动加速，
+//	   空闲时自动降频（不会空转打库）。
+//	③ 单批写入改为**单条多行 INSERT** ⇒ 批内 N 次网络往返变 1 次。
+type Config struct {
+	// Interval 是轮询间隔（两次追平之间的静默期）。
+	Interval time.Duration
+	// BatchSize 是单批最大条数。
+	BatchSize int
+	// MaxRoundsPerTick 是单轮内最多连续追多少批。
+	//
+	// ★ 上限存在的原因：追平是「一直处理到不满批为止」，
+	//   若上游写入速度 > 单批处理速度 ⇒ 无限循环 ⇒ 永不让出连接池。
+	//   有了上限，最坏情况退化成「每轮处理 MaxRoundsPerTick × BatchSize 条」。
+	MaxRoundsPerTick int
+}
 
-	ticker := time.NewTicker(interval)
+// DefaultConfig 返回默认配置。
+//
+// ★ 默认值来自**生产实测**（211，2026-11-24）：
+//
+//   - BatchSize=500：单批写入实测 8.5ms（多行 INSERT）；维度增强查询
+//     随 ID 数增长很慢（100 个 ID → 30ms 执行 + 37ms 规划；
+//     1000 个 ID → 65ms 执行 + 34ms 规划 ⇒ 规划时间几乎不随批量增长）。
+//   - MaxRoundsPerTick=20 ⇒ 单轮上限 10,000 条，
+//     按实测单批 ~150ms 算 ⇒ 最坏占满一轮约 3s（远小于 5 分钟间隔）。
+//   - Interval=1 分钟：实测写入速率约 1,100 条/小时（18 条/分钟）
+//     ⇒ 1 分钟间隔 + 500 条批量 ⇒ 单批即可覆盖 5 分钟的写入量
+//     ⇒ 数据滞后从「最多 5 分钟」降到「最多 1 分钟」。
+func DefaultConfig() Config {
+	return Config{
+		Interval:         time.Minute,
+		BatchSize:        500,
+		MaxRoundsPerTick: 20,
+	}
+}
+
+// ConfigFromEnv 在默认配置基础上套用环境变量覆盖。
+//
+// ★ 三个环境变量（都可省略，省略即用默认值）：
+//
+//	LLM_GATEWAY_METRICS_INTERVAL         轮询间隔，如 "30s"、"2m"
+//	LLM_GATEWAY_METRICS_BATCH_SIZE       单批最大条数
+//	LLM_GATEWAY_METRICS_MAX_ROUNDS       单轮内最多连续追多少批
+//
+// ★ 为什么做成环境变量而不是改代码发版：
+//
+//	处理器容量必须随流量调，而流量是运行时事实 ⇒ 改代码发版才能调的参数，
+//	在流量高峰时是**来不及**的 ⇒ 必须能在不改代码的前提下调整。
+//
+// ★ 解析失败的处置：**回落默认值并打日志**，不静默、不启动失败。
+//
+//	理由：后台 worker 的配置项写错不该让整个网关起不来
+//	（那会把「统计表延迟」升级成「网关不可用」）。
+func ConfigFromEnv(base Config) Config {
+	cfg := base
+
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_METRICS_INTERVAL")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_INTERVAL=%q 解析失败（%v）⇒ 回落默认值 %v", raw, err, cfg.Interval)
+		case d <= 0:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_INTERVAL=%q 非正数 ⇒ 回落默认值 %v", raw, cfg.Interval)
+		default:
+			cfg.Interval = d
+		}
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_METRICS_BATCH_SIZE")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		switch {
+		case err != nil:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_BATCH_SIZE=%q 解析失败（%v）⇒ 回落默认值 %d", raw, err, cfg.BatchSize)
+		case n <= 0:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_BATCH_SIZE=%q 非正数 ⇒ 回落默认值 %d", raw, cfg.BatchSize)
+		default:
+			cfg.BatchSize = n
+		}
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_METRICS_MAX_ROUNDS")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		switch {
+		case err != nil:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_MAX_ROUNDS=%q 解析失败（%v）⇒ 回落默认值 %d", raw, err, cfg.MaxRoundsPerTick)
+		case n <= 0:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_MAX_ROUNDS=%q 非正数 ⇒ 回落默认值 %d", raw, cfg.MaxRoundsPerTick)
+		default:
+			cfg.MaxRoundsPerTick = n
+		}
+	}
+
+	return cfg
+}
+
+// Run 启动后台任务（阻塞式循环）。
+//
+// ★ 2026-11-24 吞吐优化轮：每轮**自适应追平**——
+//
+//	旧形态：每 tick 只处理一批（batchSize 条）⇒ 上限 = batchSize/interval
+//	  ⇒ 「5 分钟 100 条」⇒ 1,200 条/小时 ⇒ 实测流量已占 92%。
+//	新形态：每 tick 连续处理多批，直到「本批不满」（追平了）或
+//	  「达到 MaxRoundsPerTick」（让出资源）⇒
+//	  ★ 空闲时：一批就满不了 ⇒ 只查一次库（不空转）。
+//	  ★ 积压时：自动连续追 ⇒ 吞吐从「固定上限」变成「按积压自适应」。
+func (p *Processor) Run(ctx context.Context, cfg Config) {
+	log.Printf("MetricsProcessor started (gateway_node=%s, interval=%v, batch_size=%d, max_rounds=%d)",
+		p.gatewayNode, cfg.Interval, cfg.BatchSize, cfg.MaxRoundsPerTick)
+
+	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 
 	for {
@@ -690,13 +812,47 @@ func (p *Processor) Run(ctx context.Context, interval time.Duration, batchSize i
 			log.Println("MetricsProcessor stopped")
 			return
 		case <-ticker.C:
-			processed, err := p.ProcessBatch(ctx, batchSize)
-			if err != nil {
-				log.Printf("Error processing batch: %v", err)
-			} else if processed > 0 {
-				log.Printf("Processed %d metrics", processed)
-			}
+			p.drain(ctx, cfg)
 		}
+	}
+}
+
+// drain 在一轮内连续追平积压。
+//
+// ★ 退出条件有两个（缺一不可）：
+//
+//	① 本批不满（processed < batchSize）⇒ 说明已追平（没有更多数据了）⇒ 停。
+//	② 达到 MaxRoundsPerTick ⇒ 让出连接池/IO，下一轮继续追。
+//
+// ★ 为什么不用「processed == 0」当停止条件：processed==0 既可能是
+//
+//	「追平了」也可能是「读失败但没报错」，用满批与否判断更贴合语义。
+func (p *Processor) drain(ctx context.Context, cfg Config) {
+	total := 0
+	rounds := 0
+
+	for rounds < cfg.MaxRoundsPerTick {
+		if ctx.Err() != nil {
+			return
+		}
+
+		processed, err := p.ProcessBatch(ctx, cfg.BatchSize)
+		if err != nil {
+			log.Printf("Error processing batch (round %d, total %d): %v", rounds+1, total, err)
+			return
+		}
+
+		rounds++
+		total += processed
+
+		// 本批不满 ⇒ 已追平（没有更多待处理数据）⇒ 停止本轮。
+		if processed < cfg.BatchSize {
+			break
+		}
+	}
+
+	if total > 0 {
+		log.Printf("Processed %d metrics in %d round(s)", total, rounds)
 	}
 }
 
