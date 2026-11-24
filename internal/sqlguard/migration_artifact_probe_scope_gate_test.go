@@ -109,6 +109,14 @@ func parseArtifactProbes(t *testing.T, text string) []probeCall {
 	lines := strings.Split(text, "\n")
 	var calls []probeCall
 	for i, line := range lines {
+		// ★ 2026-11-24：**注释行里出现 probe 字样不算调用点** ——
+		// 部署脚本头部的大段事故注释（看板真源统一轮）逐字引用了
+		// `ledger_artifact_probe "<file>" \` 的形态 ⇒ 若不跳过注释行，
+		// 解析器把它当调用点、找不到断言 SQL 行 ⇒ 整个探针门崩
+		//（origin/main 上即红，先于本轮）。注释行不携带任何调用语义。
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
 		m := probeCallRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
