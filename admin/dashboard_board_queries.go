@@ -130,7 +130,11 @@ func boardCreditsExpr(tenantID string) string {
 //   （request_logs_with_current_month 的视图定义）⇒ 与 usage_facts 的
 //   「total = prompt + completion」契约（stats/event.go）天然一致。
 func boardSummaryLogsSQL(where, creditsExpr string) string {
-	return `
+	return boardSummaryLogsUnionSQL(where, creditsExpr, false)
+}
+
+func boardSummaryLogsUnionSQL(where, creditsExpr string, includeProbes bool) string {
+	businessSQL := `
 		SELECT
 			COUNT(*),
 			COUNT(*) FILTER (WHERE r.request_status = 'success'),
@@ -142,6 +146,46 @@ func boardSummaryLogsSQL(where, creditsExpr string) string {
 			COALESCE(SUM(r.latency_ms), 0)
 		FROM request_logs_with_current_month r
 		WHERE ` + where
+	if !includeProbes {
+		return businessSQL
+	}
+	// ★★ 2026-11-25：「含探测」时 UNION ALL 探测车道表（session_turns_probe_hot）。
+	// ★★ 探测流量已物理隔离（迁移928，LLM_GATEWAY_PROBE_LANE_PHYSICAL=1）⇒
+	// ★★ request_logs_with_current_month 视图**只读业务表**（session_turns / session_turns_hot）
+	// ★★ ⇒ 结构上读不到探测行 ⇒ 「含探测/不含探测」切换后数据不变（生产实测211）。
+	// ★★ 探测表缺列适配：request_status 由 success/status_code/error_kind 构造（与视图同款）；
+	// ★★ cost_usd/identity_hash 探测表没有 ⇒ NULL；credits_charged 探测表有但看板不用它。
+	probeSQL := `
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE p.request_status = 'success'),
+			COALESCE(SUM(p.prompt_tokens), 0),
+			COALESCE(SUM(p.completion_tokens), 0),
+			COALESCE(SUM(p.total_tokens), 0),
+			0,
+			0.0,
+			COALESCE(SUM(p.latency_ms), 0)
+		FROM (
+			SELECT
+				ts, tenant_id, provider_id, client_model, outbound_model, agent_name, client_ip,
+				prompt_tokens, completion_tokens, total_tokens, latency_ms, error_kind,
+				CASE
+					WHEN success IS NULL THEN NULL
+					WHEN success THEN 'success'
+					WHEN error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited'
+					WHEN status_code = 429 THEN 'rate_limited'
+					ELSE 'failure'
+				END AS request_status,
+				NULL::numeric(18,8) AS cost_usd,
+				NULL::text AS identity_hash
+			FROM session_turns_probe_hot
+		) p
+		WHERE ` + where
+	return `SELECT SUM(cnt), SUM(ok), SUM(pt), SUM(ct), SUM(tt), SUM(cr), SUM(cost), SUM(lat) FROM (
+		SELECT * FROM (` + businessSQL + `) b(cnt,ok,pt,ct,tt,cr,cost,lat)
+		UNION ALL
+		SELECT * FROM (` + probeSQL + `) p(cnt,ok,pt,ct,tt,cr,cost,lat)
+	) u`
 }
 
 // queryBoardSummaryLogs 从**请求级日志**算英雄区汇总（与饼图、趋势同一宇宙）。
@@ -161,7 +205,7 @@ func (h *Handler) queryBoardSummaryLogs(ctx context.Context, tenantID string, tr
 
 	var totalReq, successCnt, promptTok, compTok, totalTok, credits, latencySum int64
 	var costUSD float64
-	err := h.db.QueryRow(ctx, boardSummaryLogsSQL(where, boardCreditsExpr(tenantID)), args...).Scan(
+	err := h.db.QueryRow(ctx, boardSummaryLogsUnionSQL(where, boardCreditsExpr(tenantID), includeProbes), args...).Scan(
 		&totalReq, &successCnt, &promptTok, &compTok, &totalTok, &credits, &costUSD, &latencySum)
 	if err != nil {
 		if !IsMissingRelationError(err) {
@@ -670,13 +714,62 @@ func boardPieDimKeyCaseSQL() string {
 // ★ （admin/dashboard_board_pie_sql_integration_test.go）——★ 生产事故证明：
 // ★ 「SQL 文本看着对」与「PG 能执行它」是两件事。
 func boardPieFactsSQL(where, creditsExpr string) string {
-	return `
-		WITH dimmed AS (
+	return boardPieFactsUnionSQL(where, creditsExpr, false)
+}
+
+func boardPieFactsUnionSQL(where, creditsExpr string, includeProbes bool) string {
+	businessSQL := `
 			SELECT d.dim_type, ` + boardPieDimKeyCaseSQL() + ` AS dim_key, r.total_tokens, ` + creditsExpr + ` AS credits, r.cost_usd
 			FROM request_logs_with_current_month r
 			CROSS JOIN unnest(` + boardPieDimTypeArraySQL() + `) AS d(dim_type)
 			WHERE ` + where + `
 			  AND (d.dim_type <> 'error_kind' OR r.request_status = 'failure')
+	`
+	if !includeProbes {
+		return `
+		WITH dimmed AS (` + businessSQL + `
+		), agg AS (
+			SELECT dim_type, dim_key,
+				COUNT(*) AS requests,
+				COALESCE(SUM(total_tokens), 0) AS tokens,
+				COALESCE(SUM(credits), 0) AS credits,
+				COALESCE(SUM(cost_usd), 0) AS cost_usd
+			FROM dimmed
+			GROUP BY dim_type, dim_key
+		), ranked AS (
+			SELECT agg.*, ROW_NUMBER() OVER (PARTITION BY dim_type ORDER BY requests DESC, dim_key) AS rn
+			FROM agg
+		)
+		SELECT dim_type, dim_key, requests, tokens, credits, cost_usd
+		FROM ranked WHERE rn <= 25
+		ORDER BY dim_type, requests DESC
+	`
+	}
+	// ★★ 2026-11-25：「含探测」时 UNION ALL 探测车道表（同英雄区/趋势修法）。
+	probeSQL := `
+			SELECT d.dim_type, ` + boardPieDimKeyCaseSQL() + ` AS dim_key, p.total_tokens, 0 AS credits, 0.0 AS cost_usd
+			FROM (
+				SELECT
+					ts, tenant_id, provider_id, client_model, outbound_model, agent_name, client_ip,
+					prompt_tokens, completion_tokens, total_tokens, latency_ms, error_kind,
+					CASE
+						WHEN success IS NULL THEN NULL
+						WHEN success THEN 'success'
+						WHEN error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited'
+						WHEN status_code = 429 THEN 'rate_limited'
+						ELSE 'failure'
+					END AS request_status,
+					NULL::numeric(18,8) AS cost_usd,
+					NULL::text AS identity_hash
+				FROM session_turns_probe_hot
+			) p
+			CROSS JOIN unnest(` + boardPieDimTypeArraySQL() + `) AS d(dim_type)
+			WHERE ` + where + `
+			  AND (d.dim_type <> 'error_kind' OR p.request_status = 'failure')
+	`
+	return `
+		WITH dimmed AS (` + businessSQL + `
+			UNION ALL` + probeSQL + `
 		), agg AS (
 			SELECT dim_type, dim_key,
 				COUNT(*) AS requests,
@@ -724,7 +817,7 @@ func (h *Handler) queryBoardPiesFacts(ctx context.Context, tenantID string, tr b
 
 	creditsExpr := boardCreditsExpr(tenantID)
 
-	rows, err := h.db.Query(ctx, boardPieFactsSQL(where, creditsExpr), args...)
+	rows, err := h.db.Query(ctx, boardPieFactsUnionSQL(where, creditsExpr, includeProbes), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -918,7 +1011,11 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 // ★ 源文本）——★ 2026-11-24 生产事故证明：源文本门会在 SQL 被重排/抽取后**误报**，
 // ★ 而行为门测的是 PG 真正收到的东西。
 func boardTrendLogsSQL(bucketExpr, where, creditsExpr string) string {
-	return fmt.Sprintf(`
+	return boardTrendLogsUnionSQL(bucketExpr, where, creditsExpr, false)
+}
+
+func boardTrendLogsUnionSQL(bucketExpr, where, creditsExpr string, includeProbes bool) string {
+	businessSQL := fmt.Sprintf(`
 		SELECT %s,
 			COUNT(*),
 			COALESCE(SUM(r.total_tokens), 0),
@@ -927,8 +1024,45 @@ func boardTrendLogsSQL(bucketExpr, where, creditsExpr string) string {
 		FROM request_logs_with_current_month r
 		WHERE %s
 		GROUP BY 1
-		ORDER BY 1 ASC
 	`, bucketExpr, creditsExpr, where)
+	if !includeProbes {
+		return businessSQL + "\n\t\tORDER BY 1 ASC"
+	}
+	// ★★ 2026-11-25：「含探测」时 UNION ALL 探测车道表（同英雄区修法）。
+	probeSQL := fmt.Sprintf(`
+		SELECT %s,
+			COUNT(*),
+			COALESCE(SUM(p.total_tokens), 0),
+			0,
+			0.0
+		FROM (
+			SELECT
+				ts, tenant_id, provider_id, client_model, outbound_model, agent_name, client_ip,
+				prompt_tokens, completion_tokens, total_tokens, latency_ms, error_kind,
+				CASE
+					WHEN success IS NULL THEN NULL
+					WHEN success THEN 'success'
+					WHEN error_kind IN ('rate_limit_exceeded', 'key_throttled') THEN 'rate_limited'
+					WHEN status_code = 429 THEN 'rate_limited'
+					ELSE 'failure'
+				END AS request_status,
+				NULL::numeric(18,8) AS cost_usd,
+				NULL::text AS identity_hash
+			FROM session_turns_probe_hot
+		) p
+		WHERE %s
+		GROUP BY 1
+	`, bucketExpr, where)
+	return fmt.Sprintf(`
+		SELECT bucket, SUM(cnt), SUM(tok), SUM(cr), SUM(cost)
+		FROM (
+			%s
+			UNION ALL
+			%s
+		) u(bucket, cnt, tok, cr, cost)
+		GROUP BY 1
+		ORDER BY 1 ASC
+	`, businessSQL, probeSQL)
 }
 
 // queryBoardTrendsLogs 从**请求级日志**算趋势分桶（与英雄区、饼图同一宇宙）。
@@ -948,7 +1082,7 @@ func (h *Handler) queryBoardTrendsLogs(ctx context.Context, tenantID string, tr 
 	}
 	bucketExpr := sqlTrendBucket("r.ts", tr.trendBucketMinutes())
 
-	rows, err := h.db.Query(ctx, boardTrendLogsSQL(bucketExpr, where, boardCreditsExpr(tenantID)), args...)
+	rows, err := h.db.Query(ctx, boardTrendLogsUnionSQL(bucketExpr, where, boardCreditsExpr(tenantID), includeProbes), args...)
 	if err != nil {
 		return nil, err
 	}
