@@ -10,6 +10,15 @@ export default {
     error: {
       scanningFailed: "Anomalie de chargement : {count} enregistrements ont été récupérés mais ne peuvent pas être affichés. Il s’agit généralement d’un problème de format de données côté serveur ; demandez à un administrateur de vérifier les journaux du backend.",
     },
+    loading: {
+      title: 'Chargement des journaux de requêtes…',
+      slow: 'Requête en cours – le volume de données est important, veuillez patienter…',
+      still: 'Requête toujours en cours, veuillez patienter…',
+      elapsed: 'En attente depuis {n} s',
+      hint: 'C’est long : réduisez la plage de temps ou les filtres{probe}, puis réessayez',
+      probeSuffix: ', ou désactivez « Inclure le trafic de probe »',
+    },
+    queryFailedRow: 'Échec de la requête – aucune donnée récupérée (voir le message ci-dessus)',
     filter: {
       keyAll: 'Toutes les clés',
       providerAll: 'Tous les fournisseurs',

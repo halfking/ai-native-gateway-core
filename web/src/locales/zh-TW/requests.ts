@@ -11,6 +11,15 @@ export default {
     error: {
       scanningFailed: "資料載入異常：查詢到 {count} 筆記錄，但無法正常顯示。這通常是伺服器端資料格式問題，請聯絡管理員檢查後端記錄。",
     },
+    loading: {
+      title: '正在載入請求日誌…',
+      slow: '正在查詢，資料量較大，請稍候…',
+      still: '仍在查詢，請稍候…',
+      elapsed: '已等候 {n} 秒',
+      hint: '等待時間較長：可以縮小時間範圍、減少篩選條件{probe}後重試',
+      probeSuffix: '，或關閉「包含探測流量」',
+    },
+    queryFailedRow: '查詢失敗，未取得資料（原因見上方提示）',
     filter: {
       keyAll: '全部 Key',
       providerAll: '全部供應商',

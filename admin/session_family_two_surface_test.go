@@ -67,6 +67,17 @@ var sessionFamilyBareParentReaders = map[string]string{
 	"db/request_logs_view_schema.go": "710 视图体拼装器：session_turns_hot 与 session_turns " +
 		"（以及 details 层两面的）投影片段是**不同的字符串常量**，两面在 9 处配对出现。" +
 		"真库已核实：request_logs_with_current_month = hot∪parent，118 列、三列有值。",
+	// db/session_turns_windowed_source.go：上面那条带分区键界的姊妹形态（R181），
+	// 2026-11-25 从 db/request_logs_view_schema.go **原样搬来**（那边是视图装配文件，
+	// 不许出现 LEFT JOIN LATERAL）。两面的配对方式逐字未变：hot 臂与父表臂是
+	// SessionFamilyTurnsWindowedArms 返回的两条字面量，由 SessionFamilyTurnsSourceWindowedSQL
+	// 用 UNION ALL 接起来（分页路径按臂各取 top-K 后同样 UNION ALL 归并）；details 两面
+	// 同理（每条 turns 臂各带一段按键点查）。真库对拍见
+	// db/session_family_windowed_lookup_test.go 的 RowSetEqualsLegacyOnJoin（双向 EXCEPT 为空）。
+	"db/session_turns_windowed_source.go": "R181 带分区键界的两臂读源（从 db/request_logs_view_schema.go 原样搬来）：" +
+		"session_turns_hot 臂与 session_turns 臂是 SessionFamilyTurnsWindowedArms 的两条字面量，" +
+		"由 SessionFamilyTurnsSourceWindowedSQL 以 UNION ALL 接起来；details 两面同理。" +
+		"真库对拍：TestSessionFamilyTurnsSourceWindowedSQL_RowSetEqualsLegacyOnJoin（双向 EXCEPT 为空）。",
 	"domains/session/v2/session_aggregator.go": "UPDATE 只写 session_turns_hot（:198，写方形状正确）；" +
 		":452 另有 `for _, table := range []string{\"public.session_turns_hot\", \"public.session_turns\"}` " +
 		"——两面由表名切片遍历表达，字面量里只出现一次父表名，逐串判必然误报。",

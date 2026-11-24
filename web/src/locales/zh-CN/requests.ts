@@ -10,6 +10,17 @@ export default {
     error: {
       scanningFailed: "数据加载异常：查询到 {count} 条记录，但无法正常显示。这通常是服务端数据格式问题，请联系管理员检查后端日志。",
     },
+    // 2026-11-25：加载态与失败态文案（加载态按已等待秒数分档，见 utils/logsLoadingCopy.ts）。
+    loading: {
+      title: '正在加载请求日志…',
+      slow: '正在查询，数据量较大，请稍候…',
+      still: '仍在查询，请稍候…',
+      elapsed: '已等待 {n} 秒',
+      hint: '等待时间较长：可以缩小时间范围、减少过滤条件{probe}后重试',
+      probeSuffix: '，或关闭「包含探测流量」',
+    },
+    // 查询失败 ≠ 没有数据：表格体的失败行不许写「无记录」。
+    queryFailedRow: '查询失败，未取得数据（原因见上方提示）',
     filter: {
       keyAll: '全部 Key',
       providerAll: '全部供应商',

@@ -39,6 +39,9 @@ import {
   resolveLogsPageOverflow,
   scanFailureCount,
 } from '../utils/requestLogsScanOutcome'
+// ★ 2026-11-25：过期请求防护（请求序号）与加载态文案（按已等待秒数分档）。
+import { createLatestRequestGuard } from '../utils/latestRequestGuard'
+import { logsLoadingCopy } from '../utils/logsLoadingCopy'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -119,23 +122,37 @@ watch(includeProbe, v => {
   resetPageAndLoad()
 })
 
-// 2026-11-25: 探测流量查询可能需要较长时间（最多120秒）
-const isLongQuery = computed(() => {
-  if (!includeProbe.value) return false
-  const range = timeRange()
-  const start = new Date(range.from)
-  const end = new Date(range.to)
-  const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
-  return hours > 6 // 探测流量 + 超过6小时窗口视为长查询
-})
+// ── 2026-11-25 加载态：过期请求防护 ＋ 可见的等待读数 ─────────────────────
+//
+// ★ 请求序号（utils/latestRequestGuard.ts）：连续切换时间范围 / 筛选时，只有
+//   **最后一次**发出的请求可以落地。此前没有任何过期判定 ⇒ 先发出的慢请求会在
+//   之后返回，把列表 / 统计覆盖成旧范围的数据、或把它的超时错误写进 error；
+//   先完成的那个还会提前关掉 loading ⇒ 界面上就是「切了时间范围后列表没数据 /
+//   冒出旧报错」。
+//
+// ★ 中止旧请求：被新选择取代的请求直接 abort ⇒ 服务端随之取消查询（释放数据库
+//   资源），而不是让它跑满 60 秒。被中止的请求按序号丢弃，不进错误面。
+const latestLoad = createLatestRequestGuard()
+let loadAbort: AbortController | null = null
 
-// 2026-11-25: 动态加载提示信息
-const loadingMessage = computed(() => {
-  if (isLongQuery.value) {
-    return '正在查询探测流量数据，可能需要1-2分钟，请耐心等待...'
+// ★ 已等待秒数：给用户一个「确实还在动」的读数。文案按**实际等待时间**分档
+//   （utils/logsLoadingCopy.ts）——不再按查询参数预判「可能需要 1-2 分钟」，
+//   查询根修后那种预判会长期谎报时长。
+const loadingElapsed = ref(0)
+let loadingClock: ReturnType<typeof setInterval> | null = null
+function startLoadingClock() {
+  stopLoadingClock()
+  loadingElapsed.value = 0
+  loadingClock = setInterval(() => {
+    loadingElapsed.value += 1
+  }, 1000)
+}
+function stopLoadingClock() {
+  if (loadingClock !== null) {
+    clearInterval(loadingClock)
+    loadingClock = null
   }
-  return '正在加载数据...'
-})
+}
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -155,9 +172,24 @@ function startAutoRefresh() {
   stopAutoRefresh()
   autoRefreshTimer = setInterval(() => {
     if (!loading.value) {
-      load()
+      backgroundRefresh()
     }
   }, 30000)
+}
+
+// 2026-11-25：自动刷新是「后台悄悄换数据」，不是用户发起的查询 ⇒ **不弹加载态**
+// （否则开着自动刷新时，醒目的加载动画每 30 秒把整张表盖一次）。
+// 它与用户主动加载共用 load() 的序号 / 中止 / 落地规则：期间用户一旦切了时间范围，
+// 这次后台刷新的响应照样按过期丢弃。
+let silentLoad = false
+function backgroundRefresh() {
+  silentLoad = true
+  try {
+    void load()
+  } finally {
+    // load() 在第一个 await 之前就同步读走了 silentLoad，这里可以立刻还原。
+    silentLoad = false
+  }
 }
 
 function stopAutoRefresh() {
@@ -177,6 +209,9 @@ watch(autoRefresh, (enabled) => {
 
 onBeforeUnmount(() => {
   stopAutoRefresh()
+  // 离开页面：在途的列表请求不再有人接收 ⇒ 中止它，别让查询白跑。
+  loadAbort?.abort()
+  stopLoadingClock()
 })
 
 const showCompressionGuide = ref(false)
@@ -209,6 +244,11 @@ const openDetailWithTrace = ref(false)
 // 2026-07-02: 接入 vue-i18n，附件相关文案走 t() 键
 // （键定义在 web/src/locales/*.ts，对齐参考文档 §6）。
 const { t } = useI18n()
+// 2026-11-25 加载态文案：按**已等待秒数**分档（utils/logsLoadingCopy.ts），词条在
+// locales/<lang>/requests.ts 的 list.loading.*（8 个语种逐个定义）。
+const loadingCopy = computed(() => logsLoadingCopy(loadingElapsed.value, t, includeProbe.value))
+const loadingTitle = computed(() => loadingCopy.value.title)
+const loadingHint = computed(() => loadingCopy.value.hint)
 
 // Tenant info for display
 const tenantLabel = computed(() => {
@@ -1141,8 +1181,17 @@ function logsQueryParams(range: { from: string; to: string }) {
 }
 
 async function load() {
-  loading.value = true
+  // ★ 2026-11-25：领号 ＋ 中止上一个请求。此后凡是「对不上号」的响应 / 错误 /
+  //   收尾一律丢弃——它们属于发出它们那一刻的界面，而界面已经变了。
+  const seq = latestLoad.next()
+  loadAbort?.abort()
+  const abort = new AbortController()
+  loadAbort = abort
+  // 后台刷新（自动刷新定时器）不弹加载态；用户主动加载才弹。
+  const silent = silentLoad
+  loading.value = !silent
   error.value = null
+  if (!silent) startLoadingClock()
   void loadBodyCache()
   try {
     const range = timeRange()
@@ -1151,7 +1200,9 @@ async function load() {
       // ★ 排行深链维度（用量趋势页六张排行卡片点击跳转而来）——**必须转发**，
       //   否则点卡片过来看到的是未筛选的全量（这正是本轮修的缺陷）。
       ...deepLinkQuery(),
-    })
+    }, { signal: abort.signal })
+    // 过期响应（期间用户又切了时间范围 / 筛选）⇒ 丢弃，不覆盖新的界面。
+    if (!latestLoad.isCurrent(seq)) return
     // ★ 2026-11-23 审计轮（P1-1）：判据与后端 admin/logs.go:1133 **逐项对齐**。
     //   后端的扫描故障判据是三项：items 空 **且** count>0 **且** scanErrCount>0；
     //   而第三项只在服务端可见（真发生时后端直接回 500，不会回 200）
@@ -1174,8 +1225,9 @@ async function load() {
         ...logsQueryParams(range),
         // ★ 同上：深链维度必须在请求里转发（与首次请求同一口径）。
         ...deepLinkQuery(),
-      })
+      }, { signal: abort.signal })
     }
+    if (!latestLoad.isCurrent(seq)) return
     rows.value = resp.items
     total.value = resp.count
     aggregate.value = resp.aggregate ?? null
@@ -1187,6 +1239,8 @@ async function load() {
     //   服务端可见 ⇒ 200 响应上这个组合**只说明页码越界**（已在上面处理）。
     //   ⇒ 真扫描故障由 catch 分支按服务端的 500 判定，不再在这里猜。
   } catch (e: unknown) {
+    // 过期请求的失败（被新请求中止 / 离开页面时中止）⇒ 丢弃：它不是当前这次查询的错。
+    if (!latestLoad.isCurrent(seq) || abort.signal.aborted) return
     // ★ 服务端**明确**回 500「data scanning failed」⇒ 真正的行扫描故障
     //   （admin/logs.go:1133-1140）⇒ 用这一族专有文案，并带上服务端回传的
     //   命中记录数（从消息里取；取不到就退回通用错误文案，**不编数字**）。
@@ -1199,7 +1253,11 @@ async function load() {
       error.value = surfaceError(e)
     }
   } finally {
-    loading.value = false
+    // 只有最新那次请求可以收尾：先完成的旧请求不许提前关掉 loading。
+    if (latestLoad.isCurrent(seq)) {
+      loading.value = false
+      stopLoadingClock()
+    }
   }
 }
 
@@ -1734,8 +1792,13 @@ onMounted(async () => {
             style="font-size:11px;padding:2px 4px;white-space:nowrap"
           >{{ t('requests.list.probeScope.badge') }}</span>
         </label>
-        <span style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
-        <button class="btn btn-primary btn-sm" style="cursor:pointer;white-space:nowrap" @click.stop="resetPageAndLoad">🔍 查询</button>
+        <span data-testid="logs-total" style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
+        <button
+          class="btn btn-primary btn-sm"
+          data-testid="logs-query-button"
+          style="cursor:pointer;white-space:nowrap"
+          @click.stop="resetPageAndLoad"
+        >🔍 查询</button>
         <button class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="清空全部条件" @click.stop="clearAllFilters">⟲ 清空条件</button>
         <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap">{{ showFilters ? '收拢 ▲' : '展开 ▼' }}</span>
       </div>
@@ -1905,18 +1968,22 @@ onMounted(async () => {
       @change-size="onPageSizeChange"
     />
 
-    <div class="card">
-      <!-- 2026-11-25: 醒目的加载覆盖层 -->
-      <div v-if="loading" class="loading-overlay">
-        <div class="loading-content">
-          <div class="loading-spinner"></div>
-          <p class="loading-message">{{ loadingMessage }}</p>
-          <p v-if="isLongQuery" class="loading-hint">查询窗口较大，预计需要更长时间</p>
-        </div>
-      </div>
-      
+    <div class="card logs-table-card">
+      <!-- 2026-11-25 加载态（醒目、可见、有读数）——同一个指示器，两副面孔：
+             · 卡片顶部一条不确定进度条：只要在查就一直在走（任何情况下都看得见）；
+             · 没有可显示的行（首屏 / 切换时间范围后重查）：表格体里一整块加载态
+               —— 转动的双环 ＋ 文案 ＋「已等待 N 秒」＋ 骨架条，高度足够，居中。
+               此前这里是一行 visibility:hidden 的「加载中…」⇒ 卡片只有一个表头高，
+               覆盖层被裁掉 ⇒ 用户看到的是一张空表，误以为「没有数据」；
+             · 已有行（刷新 / 改筛选 / 翻页）：不遮住现有内容，只走进度条、表格淡化。 -->
+      <div v-if="loading" class="logs-loading-bar" data-testid="logs-loading-bar" aria-hidden="true"></div>
+
       <DataTable min-width="960px">
-      <table class="data-table request-log-table" style="width:100%;font-size:12px">
+      <table
+        class="data-table request-log-table"
+        :class="{ 'is-refreshing': loading && rows.length > 0 }"
+        style="width:100%;font-size:12px"
+      >
         <thead>
           <tr>
             <th v-if="traceMode" class="col-seq">#</th>
@@ -1935,8 +2002,36 @@ onMounted(async () => {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="listColCount" style="visibility:hidden">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td :colspan="listColCount">无记录</td></tr>
+          <tr v-if="loading && !rows.length">
+            <td :colspan="listColCount" class="logs-loading-cell">
+              <div class="logs-loading" role="status" aria-live="polite" data-testid="logs-loading">
+                <div class="logs-loading__orb" aria-hidden="true">
+                  <span class="logs-loading__ring"></span>
+                  <span class="logs-loading__arc"></span>
+                  <span class="logs-loading__dot"></span>
+                </div>
+                <p class="logs-loading__title">{{ loadingTitle }}</p>
+                <p class="logs-loading__elapsed" data-testid="logs-loading-elapsed">
+                  {{ t('requests.list.loading.elapsed', { n: loadingElapsed }) }}
+                </p>
+                <p v-if="loadingHint" class="logs-loading__hint" data-testid="logs-loading-hint">
+                  {{ loadingHint }}
+                </p>
+                <div class="logs-loading__skeleton" aria-hidden="true">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </td>
+          </tr>
+          <!-- 查询失败 ≠ 没有数据：失败时表格体不许写「无记录」（原因在上方红色提示里）。 -->
+          <tr v-else-if="error && !rows.length">
+            <td :colspan="listColCount" class="logs-empty-cell logs-empty-cell--error">
+              {{ t('requests.list.queryFailedRow') }}
+            </td>
+          </tr>
+          <tr v-else-if="!rows.length">
+            <td :colspan="listColCount" class="logs-empty-cell" data-testid="logs-empty">无记录</td>
+          </tr>
           <tr
             v-for="r in rows"
             :key="r.request_id + r.ts"
@@ -2425,64 +2520,209 @@ onMounted(async () => {
 /* 2026-08-10: 折叠筛选头部栏按钮去除按住拖拽文本选择 */
 .filter-section .filter-bar .btn { user-select: none; }
 
-/* 2026-11-25: 醒目的加载覆盖层样式 */
-.loading-overlay {
+/* ── 2026-11-25 加载态 ──────────────────────────────────────────────────────
+ *
+ * 目标：让「正在查」这件事**看得见、说得清**——在做什么、等了多久、等久了怎么办。
+ * 此前这里是一行 visibility:hidden 的「加载中…」加一个被裁掉的覆盖层，
+ * 用户看到的是一张空表 ⇒ 误以为「没有数据」。
+ *
+ * 配色全部走主题变量（--accent / --text-primary / --overlay-*），深浅色主题都成立；
+ * 不写死白底黑字（上一版的 rgba(255,255,255,.95) 白底在深色主题下很突兀）。
+ */
+
+/* 顶部不确定进度条：只要在查就走。卡片圆角 14px ⇒ 进度条贴顶并跟随圆角。 */
+.logs-table-card {
+  position: relative;
+}
+.logs-loading-bar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  backdrop-filter: blur(2px);
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  z-index: 2;
+}
+.logs-loading-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -45%;
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--accent) 85%, transparent);
+  animation: logs-loading-slide 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes logs-loading-slide {
+  to {
+    left: 100%;
+  }
 }
 
-.loading-content {
+/* 首屏 / 切换范围后重查：表格体里一整块加载态（足够高，一眼可见）。 */
+.logs-loading-cell {
+  padding: 0 !important;
+}
+.logs-loading {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
-  padding: 32px;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  justify-content: center;
+  gap: 10px;
+  min-height: 340px;
+  padding: 40px 16px;
 }
-
-.loading-spinner {
-  width: 64px;
-  height: 64px;
-  border: 6px solid rgba(59, 130, 246, 0.2);
-  border-top-color: var(--accent, #3b82f6);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-.loading-message {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary, #1f2937);
-  text-align: center;
-  max-width: 400px;
-}
-
-.loading-hint {
-  margin: 0;
-  font-size: 14px;
-  color: var(--text-secondary, #6b7280);
-  text-align: center;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-/* 确保 card 元素有相对定位以支持绝对定位的覆盖层 */
-.card {
+/* 双环转轮：内环快速自旋 + 外弧反向慢转 + 中心脉冲点。 */
+.logs-loading__orb {
   position: relative;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 6px;
+}
+.logs-loading__ring,
+.logs-loading__arc,
+.logs-loading__dot {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+}
+.logs-loading__ring {
+  inset: 0;
+  border: 6px solid color-mix(in srgb, var(--accent) 16%, transparent);
+  border-top-color: var(--accent);
+  animation: logs-loading-spin 0.9s linear infinite;
+}
+.logs-loading__arc {
+  inset: -10px;
+  border: 3px solid transparent;
+  border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: logs-loading-spin 2.6s linear infinite reverse;
+}
+.logs-loading__dot {
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  background: var(--accent);
+  animation: logs-loading-pulse 0.9s ease-in-out infinite;
+}
+@keyframes logs-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes logs-loading-pulse {
+  0%,
+  100% {
+    transform: scale(0.55);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.logs-loading__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+.logs-loading__elapsed {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.logs-loading__hint {
+  margin: 0;
+  max-width: 520px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* 骨架条：示意「表格正在填进来」，比一个转圈更能说明这是加载而不是空表。 */
+.logs-loading__skeleton {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: min(560px, 82%);
+  margin-top: 10px;
+}
+.logs-loading__skeleton span {
+  display: block;
+  height: 10px;
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text-primary) 11%, transparent),
+    transparent
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: logs-loading-shimmer 1.4s linear infinite;
+}
+.logs-loading__skeleton span:nth-child(1) {
+  width: 100%;
+}
+.logs-loading__skeleton span:nth-child(2) {
+  width: 84%;
+  animation-delay: 0.18s;
+}
+.logs-loading__skeleton span:nth-child(3) {
+  width: 62%;
+  animation-delay: 0.36s;
+}
+@keyframes logs-loading-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 刷新 / 改筛选 / 翻页（已有行）：不遮住现有内容，只淡化并暂时不可点。 */
+.request-log-table.is-refreshing tbody {
+  opacity: 0.55;
+  transition: opacity 0.15s ease-out;
+  pointer-events: none;
+}
+
+/* 空态与失败态分开说：「查询失败」不许写成「无记录」。 */
+.logs-empty-cell {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.logs-empty-cell--error {
+  color: var(--danger);
+}
+
+/* 系统开了「减弱动态效果」：动画停，但指示器保持可见（进度条改成常亮）。 */
+@media (prefers-reduced-motion: reduce) {
+  .logs-loading-bar::after {
+    left: 0;
+    width: 100%;
+    opacity: 0.6;
+    animation: none;
+  }
+  .logs-loading__ring,
+  .logs-loading__arc,
+  .logs-loading__dot,
+  .logs-loading__skeleton span {
+    animation: none;
+  }
 }
 </style>
