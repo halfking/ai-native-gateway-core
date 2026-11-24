@@ -83,8 +83,20 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 // Second return is false when the table is missing (42P01 → caller falls back)
 // or the query failed for another reason (timeout etc. → same fallback: the
 // minute path serves the pre-fix numbers, and a Warn is logged so the degrade
-// is visible in server logs).
-func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
+// boardFactsWhere 返回英雄区与趋势**共用**的 WHERE 片段（同一张表 usage_facts、
+// 同一个探测谓词）。
+//
+// ★★★ 为什么抽成共用构造器（★ 本轮真源统一的结构性保证 ★★★）：
+// ★★★ 「卡片 == Σ趋势桶」这个不变量**不能靠两边各写各的、然后靠门去比对文本**——
+// ★★★ 那种写法一旦有人改了一边，门要么误报要么漏报。
+// ★★★ 现在英雄区与趋势**必须**调用本函数 ⇒ 同表同谓词由**结构**保证，
+// ★★★ 门只负责验证「真的都调了它」（admin/dashboard_board_truth_source_test.go 门 ③）。
+//
+// ★ 关于探测谓词为什么用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
+// ★ usage_facts 的 class 在写入时由 origin_stage 派生（stats/event.go trafficClass），
+// ★ 对账快照就是按它分面的——board 想与对账逐字相等，就必须用同一列，
+// ★ 而不是再按 markers 算一遍（markers 与 stage 的判定面不同，混用必然在边缘行上分叉）。
+func boardFactsWhere(tenantID string, tr boardTimeRange, includeProbes bool) (string, []any) {
 	where := "occurred_at >= $1 AND occurred_at < $2"
 	args := []any{tr.Start, tr.End}
 	if tenantID != "" {
@@ -92,18 +104,14 @@ func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, t
 		args = append(args, tenantID)
 	}
 	if !includeProbes {
-		// 与 reportrollup 内部对账同一谓词（grainDaySQL businessOnly 分支）。
-		// 刻意用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
-		// usage_facts 的 class 在写入时由 origin_stage 派生（stats/event.go
-		// trafficClass），对账快照就是按它分面的——board 想与对账逐字相等，
-		// 就必须用同一列，而不是再按 markers 算一遍（markers 与 stage 的
-		// 判定面不同，混用必然在边缘行上分叉）。
 		where += " AND traffic_class = 'business'"
 	}
+	return where, args
+}
 
-	var totalReq, successCnt, promptTok, compTok, credits, latencySum int64
-	var costUSD float64
-	err := h.db.QueryRow(ctx, `
+// boardSummaryFactsSQL 返回英雄区汇总的 SQL（读 usage_facts）。
+func boardSummaryFactsSQL(where string) string {
+	return `
 		SELECT
 			COUNT(*),
 			COUNT(*) FILTER (WHERE status = 'success'),
@@ -113,7 +121,16 @@ func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, t
 			COALESCE(SUM(credits_charged), 0),
 			COALESCE(SUM(latency_ms), 0)
 		FROM usage_facts
-		WHERE `+where, args...).Scan(
+		WHERE ` + where
+}
+
+// is visible in server logs).
+func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
+	where, args := boardFactsWhere(tenantID, tr, includeProbes)
+
+	var totalReq, successCnt, promptTok, compTok, credits, latencySum int64
+	var costUSD float64
+	err := h.db.QueryRow(ctx, boardSummaryFactsSQL(where), args...).Scan(
 		&totalReq, &successCnt, &promptTok, &compTok, &costUSD, &credits, &latencySum)
 	if err != nil {
 		if !IsMissingRelationError(err) {
@@ -549,29 +566,102 @@ var boardPieDimKeyExprs = map[string]string{
 	"error_kind":    `COALESCE(NULLIF(r.error_kind,''), '__unknown__')`,
 }
 
-// boardPieDimValuesSQL 生成 LATERAL VALUES 的维度展开子句（顺序 = boardPieDimTypes）。
+// boardPieDimTypeArraySQL 生成维度展开用的**常量数组**（顺序 = boardPieDimTypes）。
 //
-// ★★ 为什么用「一次扫描 + LATERAL VALUES 展开」而不是「7 次独立查询」：
+// ★★★ 2026-11-24 生产事故订正（★ 本轮第二道真缺陷 ★★★）：
+// ★★★ **初版用的是 `CROSS JOIN LATERAL (VALUES …) AS d(dim_type, dim_key)`**，
+// ★★★ 它在生产上**每次调用都报错**：
+// ★★★   ERROR: input of anonymous composite types is not implemented (0A000)
+// ★★★   LOCATION: record_in, rowtypes.c:103
+// ★★★ 且**非确定性**（同一 SQL 有时过、有时炸）—— 根因不是数据，是**协议**：
+// ★★★   · 生产走 pgx = **扩展协议 + 预备语句**；psql 简单协议**永不**触发；
+// ★★★   · 预备语句在通用计划（generic plan）下，PG 必须把 LATERAL 子查询里
+// ★★★     对**外层**的引用参数化；外层是**视图** RTE（request_logs_with_current_month），
+// ★★★     整行引用 ⇒ **匿名 record 类型** ⇒ 生成 RECORD 类型的 Param ⇒
+// ★★★     执行期调用 record_in ⇒ 报「匿名复合类型不支持」。
+// ★★★   · ★★ 触发条件是「PG 这次选了哪个计划」★★：★ 生产上**连炸 5 次**
+// ★★★     （11:48:32~11:48:55，各窗口各一条日志）；★ 随后在 211 上用**逐字等价**
+// ★★★     的 SQL 手跑**连过 8 次**；★ 强制通用计划（SET plan_cache_mode =
+// ★★★     force_generic_plan）复现时**时炸时不炸**（两份只差换行的 SQL，前者炸、
+// ★★★     后者过）⇒ 统计信息/并行度/成本估算在变 ⇒ 坏计划时好时坏被选中。
+// ★★★   · ★★ 推论（★ 本轮最重要的一条工程教训 ★）：★ **「psql 手测连过 8 次」
+// ★★★     不足以否定生产上的红** ⇒ ★★ 凡是「PG 计划相关」的失败，执行型门禁
+// ★★★     **没有确定性** ⇒ ★★ 确定性守卫只能靠**形状**（禁掉相关 LATERAL）⇒
+// ★★★     ★★ 而本修法是**结构上消灭**这条路（无相关子查询 ⇒ 不可能有 RECORD Param）。
+// ★★★ ⇒ 修法：**不用相关子查询**。改成 `CROSS JOIN unnest(ARRAY[…]) AS d(dim_type)`
+// ★★★ （常量数组 ⇒ 函数扫描 ⇒ 无外层引用 ⇒ 无 RECORD Param）+ `CASE d.dim_type`
+// ★★★ 取 dim_key ⇒ 计划期稳定，且**仍是单次扫描**（每行展开 7 个维度）。
+// ★★★ 生产实测（211 只读）：LATERAL 形态在生产上连炸 5 次；unnest 形态
+// ★★★ 在同库上 PREPARE / 显式 PREPARE / 强制通用计划各跑 3~8 次，**0 错**。
+//
+// ★★ 为什么仍然用「一次扫描 + 行展开」而不是「7 次独立查询」：
 // ★★ bg/stats_minute_rollup.go 的 rollupDims 就是**7 次独立 INSERT = 7 次全表扫描**
 // ★★ ⇒ 这正是 admin/dashboard_board_fallback.go 里注释所说的「7 次顺序饼图查询 ≈ 9.8s、
 // ★★ 打爆 handler 的 10s 超时」的同款代价。
 // ★★ 改成**单次扫描 + 行展开**后，生产实测（2026-11-24，211 只读）：
 // ★★   7 天窗口 454ms、30 天窗口 1.74s ⇒ ★★ 比旧降级路径快 21 倍。
-func boardPieDimValuesSQL() string {
+func boardPieDimTypeArraySQL() string {
 	var b strings.Builder
-	b.WriteString("(")
+	b.WriteString("ARRAY[")
 	for i, d := range boardPieDimTypes {
 		if i > 0 {
-			b.WriteString(",")
+			b.WriteString(", ")
 		}
-		b.WriteString("\n                ('")
+		b.WriteString("'")
 		b.WriteString(d.dimType)
-		b.WriteString("', ")
-		b.WriteString(boardPieDimKeyExprs[d.dimType])
-		b.WriteString(")")
+		b.WriteString("'")
 	}
-	b.WriteString("\n            )")
+	b.WriteString("]")
 	return b.String()
+}
+
+// boardPieDimKeyCaseSQL 生成按 dim_type 分派的 dim_key 表达式（CASE 形态）。
+//
+// ★ 表达式取自 boardPieDimKeyExprs（与 bg/stats_minute_rollup.go 的 rollupDimQueries
+// ★ 逐字同源，跨文件一致性由 admin/dashboard_board_truth_source_test.go 门 ⑥ 钉住）。
+// ★ 顺序用 boardPieDimTypes（**不用 map 迭代序**）⇒ SQL 文本确定 ⇒ 预备语句缓存可用。
+func boardPieDimKeyCaseSQL() string {
+	var b strings.Builder
+	b.WriteString("CASE d.dim_type")
+	for _, d := range boardPieDimTypes {
+		b.WriteString("\n            WHEN '")
+		b.WriteString(d.dimType)
+		b.WriteString("' THEN ")
+		b.WriteString(boardPieDimKeyExprs[d.dimType])
+	}
+	b.WriteString("\n           END")
+	return b.String()
+}
+
+// boardPieFactsSQL 返回饼图主路径（请求级日志、单次扫描）的完整 SQL。
+//
+// ★ 单独抽成函数是为了让**真库门**能拿到**逐字同一份**语句去执行
+// ★ （admin/dashboard_board_pie_sql_integration_test.go）——★ 生产事故证明：
+// ★ 「SQL 文本看着对」与「PG 能执行它」是两件事。
+func boardPieFactsSQL(where, creditsExpr string) string {
+	return `
+		WITH dimmed AS (
+			SELECT d.dim_type, ` + boardPieDimKeyCaseSQL() + ` AS dim_key, r.total_tokens, ` + creditsExpr + ` AS credits, r.cost_usd
+			FROM request_logs_with_current_month r
+			CROSS JOIN unnest(` + boardPieDimTypeArraySQL() + `) AS d(dim_type)
+			WHERE ` + where + `
+			  AND (d.dim_type <> 'error_kind' OR r.request_status = 'failure')
+		), agg AS (
+			SELECT dim_type, dim_key,
+				COUNT(*) AS requests,
+				COALESCE(SUM(total_tokens), 0) AS tokens,
+				COALESCE(SUM(credits), 0) AS credits,
+				COALESCE(SUM(cost_usd), 0) AS cost_usd
+			FROM dimmed
+			GROUP BY dim_type, dim_key
+		), ranked AS (
+			SELECT agg.*, ROW_NUMBER() OVER (PARTITION BY dim_type ORDER BY requests DESC, dim_key) AS rn
+			FROM agg
+		)
+		SELECT dim_type, dim_key, requests, tokens, credits, cost_usd
+		FROM ranked WHERE rn <= 25
+		ORDER BY dim_type, requests DESC
+	`
 }
 
 // queryBoardPiesFacts 从**请求级日志**算 7 个维度的饼图（单次扫描）。
@@ -602,31 +692,7 @@ func (h *Handler) queryBoardPiesFacts(ctx context.Context, tenantID string, tr b
 
 	creditsExpr := maas.RequestLogCreditsSQL("r", true)
 
-	rows, err := h.db.Query(ctx, `
-		WITH dimmed AS (
-			SELECT d.dim_type, d.dim_key, r.total_tokens, `+creditsExpr+` AS credits, r.cost_usd
-			FROM request_logs_with_current_month r
-			CROSS JOIN LATERAL (VALUES
-`+boardPieDimValuesSQL()+`
-			) AS d(dim_type, dim_key)
-			WHERE `+where+`
-			  AND (d.dim_type <> 'error_kind' OR r.request_status = 'failure')
-		), agg AS (
-			SELECT dim_type, dim_key,
-				COUNT(*) AS requests,
-				COALESCE(SUM(total_tokens), 0) AS tokens,
-				COALESCE(SUM(credits), 0) AS credits,
-				COALESCE(SUM(cost_usd), 0) AS cost_usd
-			FROM dimmed
-			GROUP BY dim_type, dim_key
-		), ranked AS (
-			SELECT agg.*, ROW_NUMBER() OVER (PARTITION BY dim_type ORDER BY requests DESC, dim_key) AS rn
-			FROM agg
-		)
-		SELECT dim_type, dim_key, requests, tokens, credits, cost_usd
-		FROM ranked WHERE rn <= 25
-		ORDER BY dim_type, requests DESC
-	`, args...)
+	rows, err := h.db.Query(ctx, boardPieFactsSQL(where, creditsExpr), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -819,25 +885,13 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 // ★★ 探测谓词刻意用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
 // ★★ 与 queryBoardSummaryFacts 同源（usage_facts 的 class 在写入时由 origin_stage
 // ★★ 派生），保证「英雄区排除探测 ⇒ 趋势也排除探测」是同一把尺。
-func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
-	where := "occurred_at >= $1 AND occurred_at < $2"
-	args := []any{tr.Start, tr.End}
-	argN := 3
-	if tenantID != "" {
-		where += fmt.Sprintf(" AND tenant_id = $%d", argN)
-		args = append(args, tenantID)
-		argN++
-	}
-	if !includeProbes {
-		where += " AND traffic_class = 'business'"
-	}
-	if providerID > 0 {
-		where += fmt.Sprintf(" AND provider_id = $%d", argN)
-		args = append(args, providerID)
-	}
-	bucketExpr := sqlTrendBucket("occurred_at", tr.trendBucketMinutes())
-
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+// boardTrendFactsSQL 返回趋势主路径的 SQL（读 usage_facts，与英雄区同表同谓词）。
+//
+// ★ 单独抽成函数是为了让门禁能验证**实际执行的语句**（而不是去比对某个函数体里的
+// ★ 源文本）——★ 2026-11-24 生产事故证明：源文本门会在 SQL 被重排/抽取后**误报**，
+// ★ 而行为门测的是 PG 真正收到的东西。
+func boardTrendFactsSQL(bucketExpr, where string) string {
+	return fmt.Sprintf(`
 		SELECT %s,
 			COUNT(*),
 			COALESCE(SUM(total_tokens), 0),
@@ -847,7 +901,19 @@ func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boar
 		WHERE %s
 		GROUP BY 1
 		ORDER BY 1 ASC
-	`, bucketExpr, where), args...)
+	`, bucketExpr, where)
+}
+
+func (h *Handler) queryBoardTrends(ctx context.Context, tenantID string, tr boardTimeRange, providerID int64, includeProbes bool) ([]boardTrendPoint, error) {
+	// ★ 与英雄区**共用** boardFactsWhere ⇒ 同表同谓词由结构保证（不是靠两边各写各的）。
+	where, args := boardFactsWhere(tenantID, tr, includeProbes)
+	if providerID > 0 {
+		where += fmt.Sprintf(" AND provider_id = $%d", len(args)+1)
+		args = append(args, providerID)
+	}
+	bucketExpr := sqlTrendBucket("occurred_at", tr.trendBucketMinutes())
+
+	rows, err := h.db.Query(ctx, boardTrendFactsSQL(bucketExpr, where), args...)
 	if err != nil {
 		return nil, err
 	}
