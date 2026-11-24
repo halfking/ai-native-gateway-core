@@ -6,8 +6,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { surfaceError } from '../i18n/errorSurface'
 import { fetchDashboardBoard, type BoardPayload, type BoardPieItem } from '../api/board'
 import { ANALYTICS_REGISTRY, type AnalyticsDimension } from '../config/analyticsRegistry'
-import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useRangeDays } from '../composables/useSpanDaysRange'
+import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
+import { boardRangeFromKxRange, toBoardTimeQuery } from '../utils/boardTimeRange'
+import { rangeFromSpanDays } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 
 const route = useRoute()
@@ -25,22 +26,25 @@ const dimension = computed(() => {
 
 // 时间范围
 //
-// ★ 2026-11-23 批判式审计轮：改用 useRangeDays + 支持 URL 里的 start/end。
-//   此前用 useSpanDaysRange（自定义区间被压成「跨度天数」）⇒ 用户选的历史
-//   区间拿到的却是「最近 N 天」。board 后端本就支持真实区间。
-const timeRange = ref(Number(route.query.days) || 7)
+// ★ 2026-11-25 并入统一轮：★ 此前本页是**第四套**形态（裸 KxDateRangePicker +
+//   自带 4 档预设：今天/近7/近30/**近90**、自定义跨度上限 365 天）⇒ 与其余页不同构。
+//   ⇒ 现在用**共享组件** StatsDateRangePicker（7 档 + 自定义起止）⇒ 区间口径一律经
+//     boardRangeFromKxRange → toBoardTimeQuery（★ 看板页同一把尺 ★）
+//     ⇒ **界面显示的区间 = 数据窗口**（文案不说假话）。
+//   ★ **深度链接（board 下钻）语义保留**：URL 里的 start/end 直接作为当前区间
+//     ⇒ toBoardTimeQuery 走 start/end 通道 ⇒ 外部链接仍能钉到某段历史区间。
+//   ★ 代价（与运营面板页同款）：本页的「近 90 天」档位并入后消失（自定义上限 92 天
+//     仍可覆盖同等窗口）⇒ 判为非能力回退；但**自定义跨度上限由 365 天收窄到 92 天**
+//     ⇒ 比运营面板页多一处真实收窄（该页原有 365 天上限）⇒ 已在决策单登记。
 const urlStart = typeof route.query.start === 'string' ? route.query.start : ''
 const urlEnd = typeof route.query.end === 'string' ? route.query.end : ''
-const { presets, rangeValue, customRange, applyRange, setCustomRange } = useRangeDays(timeRange, [
-  { days: 1, labelKey: 'common.dateRange.preset.today' },
-  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
-  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
-  { days: 90, labelKey: 'dashboard.range.last90d' },
-])
-// URL 带入的自定义区间（board 下钻链接）⇒ 直接作为当前区间。
-if (urlStart && urlEnd) {
-  setCustomRange({ start: urlStart, end: urlEnd })
-}
+const rangeValue = ref<KxDateRange>(
+  urlStart && urlEnd
+    ? { start: urlStart, end: urlEnd }
+    : rangeFromSpanDays(Number(route.query.days) || 7),
+)
+const boardRange = computed(() => boardRangeFromKxRange(rangeValue.value))
+const timeRange = computed(() => boardRange.value.days)
 
 // 排序配置
 type SortKey = 'requests' | 'tokens' | 'cost_usd' | 'credits'
@@ -92,9 +96,9 @@ const pageTitle = computed(() => {
 })
 
 function onRangeApply(range: KxDateRange) {
-  applyRange(range)
+  rangeValue.value = range
   router.push({
-    query: { ...route.query, days: timeRange.value }
+    query: { ...route.query, days: boardRange.value.days }
   })
   void load()
 }
@@ -103,9 +107,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    boardData.value = await fetchDashboardBoard(customRange.value
-      ? { start: customRange.value.start, end: customRange.value.end }
-      : { days: timeRange.value })
+    boardData.value = await fetchDashboardBoard(toBoardTimeQuery(boardRange.value))
   } catch (e) {
     error.value = surfaceError(e)
   } finally {
@@ -169,10 +171,8 @@ onMounted(() => {
         </div>
       </div>
       <div class="list-header-actions">
-        <KxDateRangePicker
+        <StatsDateRangePicker
           :model-value="rangeValue"
-          :presets="presets"
-          :max-span-days="365"
           :disabled="loading"
           @apply="onRangeApply"
         />

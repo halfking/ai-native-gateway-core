@@ -44,6 +44,10 @@ const FRONTEND_FILES = [
   'web/src/views/DashboardViewV2.vue',
   'web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue',
   'web/src/components/shell/UserMenuDropdown.vue',
+  // ★ 2026-11-25：flow 18 的登录段用 `login-modal-title` 作**条件分流锚点**
+  //   ⇒ 它是 LoginModal.vue 里的 **HTML id**（不是 data-testid）
+  //   ⇒ 登录弹窗的**出现与否**＝「要不要走 UI 登录」的判据（见 flow 头注）。
+  'web/src/components/LoginModal.vue',
 ]
 
 const flowText = readFileSync(FLOW, 'utf8')
@@ -52,6 +56,16 @@ const flowText = readFileSync(FLOW, 'utf8')
 const sourceTestIds = new Set<string>()
 /** 动态模板归一后的**模式**（`${…}` → `*`）。 */
 const sourceTestIdPatterns: string[] = []
+/**
+ * 前端源码里的 **HTML id**（`<h2 id="login-modal-title">`）。
+ * ★ 为什么单列一栏（2026-11-25）：Maestro 的 `id:` 选择器**匹配 HTML id**
+ *   （`data-testid` 是它的**优先**命中项，但不是唯一来源）⇒ flow 里的
+ *   `id: "login-modal-title"` 指的是 HTML id ⇒ 本门若只扫 data-testid
+ *   ⇒ 会把**真实存在**的锚点误报成「前端不存在」（量具口径过窄 ⇒ 假红）。
+ *   ⇒ 判据口径：flow 的每个 `id:` 锚点，要么是 data-testid、要么是 HTML id，
+ *     **两者都算「存在」** ⇒ 反向漂移保护不被削弱（改名/删除仍会红）。
+ */
+const sourceHtmlIds = new Set<string>()
 for (const rel of FRONTEND_FILES) {
   const source = readFileSync(join(REPO, rel), 'utf8')
   // ① 静态字面量（前面不是 ':' ⇒ 不是绑定表达式）。
@@ -72,6 +86,10 @@ for (const rel of FRONTEND_FILES) {
     for (const lit of m[1].matchAll(/'([^']+)'|"([^"]+)"/g)) {
       sourceTestIds.add(lit[1] ?? lit[2])
     }
+  }
+  // ④ **HTML id**（★ 排除 `data-testid`（前缀是 `-`）与 `:id` 绑定（前缀是 `:`）★）。
+  for (const m of source.matchAll(/(?<![\w:-])id="([^"]+)"/g)) {
+    sourceHtmlIds.add(m[1])
   }
 }
 
@@ -103,6 +121,8 @@ const textSelectors = flowCodeOnly
 /** 判据：某个 flow id 是否在前端存在（静态命中或命中动态模式）。 */
 function existsInFrontend(id: string): boolean {
   if (sourceTestIds.has(id)) return true
+  // ★ HTML id 也算「存在」（Maestro 的 `id:` 选择器同样命中它）。
+  if (sourceHtmlIds.has(id)) return true
   return sourceTestIdPatterns.some((p) => {
     const rx = new RegExp(`^${p.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^ ]*')}$`)
     return rx.test(id)
@@ -113,7 +133,7 @@ describe('统一轮 · flow 18 判据收敛契约', () => {
   it('① flow 里出现的每个 id 选择器都必须在前端源码里存在', () => {
     // 反向漂移（前端改名/删除 testid）在这里变红，而不是在真机 E2E 上假红。
     const missing = [...flowIds].filter((id) => !existsInFrontend(id)).sort()
-    expect(missing, `flow 断言了前端不存在的 testid：${missing.join(', ')}`).toEqual([])
+    expect(missing, `flow 断言了前端不存在的锚点（data-testid 或 HTML id）：${missing.join(', ')}`).toEqual([])
     expect(flowIds.size).toBeGreaterThan(10) // 断言数量本身要有量，别悄悄退化
   })
 
@@ -132,28 +152,32 @@ describe('统一轮 · flow 18 判据收敛契约', () => {
     expect(textAssertions.length).toEqual(0)
   })
 
-  it('④ 四处消费方都必须引用**同一个**时间范围组件（防单边漂移）', () => {
-    // ★ 本轮的交付口径是「结构同构」⇒ 四处 import 的是**同一个文件**，
-    //   而不是「四处各写一份长得一样的」⇒ 这条判据把「结构同构」钉在源码层。
-    //   四处 = 看板页筛选条 / 会话统计面板 / 会话分析用户页 / **运营面板**
+  it('④ 五处消费方都必须引用**同一个**时间范围组件（防单边漂移）', () => {
+    // ★ 本轮的交付口径是「结构同构」⇒ 五处 import 的是**同一个文件**，
+    //   而不是「各处各写一份长得一样的」⇒ 这条判据把「结构同构」钉在源码层。
+    //   五处 = 看板页筛选条 / 会话统计面板 / 会话分析用户页 / **运营面板**
+    //        / **运营看板列表页**（★ 2026-11-25 并入统一轮）
     //   （★ 2026-11-25：运营面板并入共享组件 ⇒ 此前它是**第四套**预设
-    //     （今天/近7/近30/近90、跨度上限 365 天）⇒ 与其余三页形态不同）。
+    //     （今天/近7/近30/近90、跨度上限 365 天）⇒ 与其余三页形态不同；
+    //     同轮运营看板列表页（:dimension）也并入 ⇒ 此前它是**第四套**预设
+    //     （今天/近7/近30/近90、自定义上限 365 天）＋ **URL start/end 深链**）。
     const timeRangeConsumers = [
       'web/src/components/board/BoardFilterBar.vue',
       'web/src/components/SessionStatsPanel.vue',
       'web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue',
       'web/src/views/BoardOperationalView.vue',
+      'web/src/views/BoardOperationalListView.vue',
     ]
     for (const rel of timeRangeConsumers) {
       const source = readFileSync(join(REPO, rel), 'utf8')
       expect(source, `${rel} 没有引用共享组件 StatsDateRangePicker`).toMatch(
         /from\s+['"][^'"]*analytics\/StatsDateRangePicker\.vue['"]/,
       )
-      // ★ 反向判据：**不许**直接用裸 KxDateRangePicker（那会是第五套形态）。
+      // ★ 反向判据：**不许**直接用裸 KxDateRangePicker（那会是第六套形态）。
       //   （裸控件本身仍在共享组件内部使用 ⇒ 判据只查消费方，不查控件本体。）
       expect(
         source,
-        `${rel} 直接用了裸 KxDateRangePicker ⇒ 它自己有一套档位 ⇒ 与其余三页不同构`,
+        `${rel} 直接用了裸 KxDateRangePicker ⇒ 它自己有一套档位 ⇒ 与其余页不同构`,
       ).not.toMatch(/from\s+['"][^'"]*ui\/KxDateRangePicker\.vue['"]/)
     }
     // 提示符只挂在**有统计面板**的两个页面上（看板页签头部 + 会话分析用户页）
