@@ -70,10 +70,13 @@ mismatch=0
 
 # Build map: filename -> recorded sha256 from changelog table rows.
 # Changelog rows look like: `| 614 | `614_session_bodies_hot.sql` | `<sha>` | ...`
+# ★ 2026-11-24：★ 版本列放宽到支持**字母后缀**（`983b` / `983c` / `989b`）⇒
+#   ★ 此前「主号+字母后缀」的迁移**完全不在本门校验面内**（★ 正则只匹配纯数字）⇒
+#   ★ 它们的字节漂移不会被本门发现 ⇒ ⇒ 现在纳入。
 declare -A recorded
 while IFS= read -r line; do
   # Match: `| <num> | `<name>` | `<sha>` | <status> |`
-  if [[ "$line" =~ \|\ [0-9]+\ \|\ \`([0-9]+_[a-zA-Z0-9_]+\.sql)\`\ \|\ \`([0-9a-f]{64})\`\ \|\  ]]; then
+  if [[ "$line" =~ \|\ [0-9]+[a-z]?\ \|\ \`([0-9]+[a-z]?_[a-zA-Z0-9_]+\.sql)\`\ \|\ \`([0-9a-f]{64})\`\ \|\  ]]; then
     name="${BASH_REMATCH[1]}"
     sha="${BASH_REMATCH[2]}"
     # A file may legitimately appear more than once when its SHA was

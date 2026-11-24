@@ -2049,7 +2049,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"986_provider_attempt_media_usage.sql",
 			"987_provider_invoice_evidence.sql",
 			"988_provider_invoice_usage_buckets.sql",
-			"989_supplier_contract_rates.sql",
+			"989b_supplier_contract_rates.sql",
 			// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
 			//   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
 			//     撞号（迁移号唯一性门红），且**任何通道都没登记它**

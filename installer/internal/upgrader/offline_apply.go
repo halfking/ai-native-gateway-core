@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -315,7 +316,10 @@ func forwardMigrationFiles(migrationsDir string) ([]string, error) {
 // 四位编号出现后把 "1000_x.sql" 排到 "900_x.sql" 之前，导致跨千位
 // 升级包乱序执行（迁移依赖按编号递增设计）。无数字前缀的文件
 // （bootstrap 类，与 dbinit head-cluster 同语义）排在带前缀文件之前。
-// 前缀解析规则与 dbinit 的 migrationVersionOf 一致。
+// ★★ 2026-11-24 订正：★ 原注释写「前缀解析规则与 dbinit 的 migrationVersionOf 一致」是**错的**——
+// ★★ 二者语义**必须不同**：★ 本文件是**执行序**口径（字母后缀**折叠**回主号 ⇒ 同族件排在其主迁移之后），
+// ★★ 而 dbinit 的 migrationVersionOf 是**台账跳过**口径（字母后缀**不折叠** ⇒ 不参与版本键 ⇒ 永不被假跳过）。
+// ★★ 详见 versionPrefix 的函数注释。
 func migrationPathLess(a, b string) bool {
 	dirA, nameA := filepath.Split(a)
 	dirB, nameB := filepath.Split(b)
@@ -339,18 +343,57 @@ func migrationPathLess(a, b string) bool {
 	}
 }
 
+// MigrationPathLess 是 migrationPathLess 的**导出**形态。
+//
+// ★★ 用途：★ 让其它包的顺序门**直接复用生产排序口径**，而不是各自实现一份
+//   （★ 2026-11-24 实测教训：installer/internal/dbinit/migration_auto_enum_order_test.go
+//   自己实现了一份「剥掉尾部字母」的解析 ⇒ 与生产口径不一致 ⇒ **门绿而生产乱序**）。
+// ★★ ⇒ 任何要断言「迁移执行序」的门，都应当调用本函数，★ 不要自造比较器。
+func MigrationPathLess(a, b string) bool { return migrationPathLess(a, b) }
+
 // versionPrefix 解析迁移文件名的数字前缀（"978_x.sql" → 978）。
+//
+// ★★★ 字母后缀记法（"983b_x.sql" / "478p2_x.sql"）⇒ **折叠回主号**（983 / 478）。
+//
+// ★★★ 为什么必须折叠（★ 2026-11-24 12h 审计轮·第三轮实测坐实）：★
+//	· 本函数是**执行序**口径（migrationPathLess 用它排序）★
+//	· 而**折叠前**它是 strconv.Atoi(name[:idx]) ⇒ "983b" ⇒ Atoi 失败 ⇒ (0,false)
+//	  ⇒ ⇒ migrationPathLess 的「一方无数字前缀」分支把它判成 bootstrap 类
+//	  ⇒ ⇒ **字母后缀件被排到所有纯数字迁移之前**★
+//	  ⇒ ⇒ 实测位次：983b_add_raw_model_name.sql 排**第 14 位**，
+//	    而 983_request_metrics.sql 在**第 658 位**
+//	  ⇒ ⇒ 补列件（ALTER TABLE request_metrics ADD COLUMN）**先于**建表件执行
+//	  ⇒ ⇒ 表还不存在 ⇒ ALTER 落空 ⇒ executeSQLFile 的 ON_ERROR_STOP=1
+//	  ⇒ ⇒ ★★ **离线升级整体中止**★★
+//
+// ★★★ ★★ 而 dbinit 侧的 migrationVersionOf（**台账跳过**口径）**刻意不折叠**：★
+//	· 它判的是「这条迁移是否已应用」（查 public.schema_migrations.version）★
+//	· 折叠后 989b 会去查台本 '989' ⇒ 而 '989' 行是**别的迁移**写的
+//	  ⇒ ⇒ 989b 被**假跳过** ⇒ public.supplier_contract_rates 在新装实例上建不出来
+//	  ⇒ ★⇒ 两个函数的语义**必须不同**：本函数＝**排序**口径（折叠），
+//	    migrationVersionOf＝**台账跳过**口径（不折叠）。
+//	  ⇒ ★ 详见 installer/internal/dbinit/migration_version_identity_test.go
+//	  ⇒   与 installer/internal/upgrader/migration_order_suffix_test.go。
+//
+// ★★ 折叠口径与仓内既有约定一致（★ 与 tests/migration_version_prefix_unique_test.sh 的
+//    「主号+小写后缀 = 同族序篇」同一套正则）：
+//    ^[0-9]+([a-z]|[a-z]?p[0-9]+)?$   ⇒ 983b / 395c / 478p2 全部折叠回主号。
 func versionPrefix(name string) (int, bool) {
 	idx := strings.Index(name, "_")
 	if idx <= 0 {
 		return 0, false
 	}
-	v, err := strconv.Atoi(name[:idx])
-	if err != nil {
-		return 0, false
+	prefix := name[:idx]
+	if m := versionPrefixPattern.FindStringSubmatch(prefix); m != nil {
+		if v, err := strconv.Atoi(m[1]); err == nil {
+			return v, true
+		}
 	}
-	return v, true
+	return 0, false
 }
+
+// versionPrefixPattern 是仓内「同族后缀记法」的正则（★ 与迁移号唯一性门同款）。
+var versionPrefixPattern = regexp.MustCompile(`^([0-9]+)([a-z]|[a-z]?p[0-9]+)?$`)
 
 // executeSQLFile 执行单个 SQL 文件
 func (a *OfflineApplier) executeSQLFile(ctx context.Context, sqlPath string) error {

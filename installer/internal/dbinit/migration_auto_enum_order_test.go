@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/installer/internal/upgrader"
 )
 
 // ============================================================================
@@ -260,26 +262,28 @@ func autoEnumSortLexical(files []string) []string {
 	return out
 }
 
-// autoEnumSortNumericPrefix 复刻 installer/internal/upgrader/offline_apply.go 的
-// migrationPathLess：**数字前缀升序**；同号时**按文件名**先后。
+// autoEnumSortNumericPrefix **直接调用生产排序函数**
+// installer/internal/upgrader/offline_apply.go 的 migrationPathLess
+// （★ 通过其导出形态 upgrader.MigrationPathLess 暴露）：
+// **数字前缀升序**；同号时**按文件名**先后。
+//
+// ★★★ 2026-11-24 订正（★ 本轮实测坐实的「假绿」闭环）：★★★
+//	★ 原实现是**自造**的：用本文件的 autoEnumParseNumber（★ 它对字母后缀做
+//	  「剥掉尾部字母」折叠 ⇒ "983b" ⇒ (983,"b")）★
+//	★ 而**生产**的 versionPrefix 当时是 strconv.Atoi(name[:idx]) ⇒ "983b" ⇒ **Atoi 失败**
+//	  ⇒ ⇒ 生产把字母后缀件判成「无数字前缀」⇒ 排到所有纯数字迁移之前
+//	  ⇒ ⇒ 实测位次：983b_add_raw_model_name.sql **第 14 位**、
+//	    983_request_metrics.sql **第 658 位** ⇒ ⇒ 离线升级里补列件先于建表件执行
+//	  ⇒ ⇒ ALTER 落空 ⇒ ON_ERROR_STOP=1 ⇒ **离线升级整体中止**★★
+//	★ ⇒ 而本门（用自造口径）**一直是绿的** ⇒ ⇒ **门测的不是生产排序**。
+//	★ ⇒ 现改为**直接调用生产排序函数** ⇒ ★★ 口径合一 ⇒ ★★ 门与生产同序。
+//
+// ★★ autoEnumParseNumber 仍然保留（★ 它承担的是「解析主号+后缀」与
+//    「主迁移判定」两个职责，★ 与排序无关）★★。
 func autoEnumSortNumericPrefix(files []string) []string {
 	out := append([]string(nil), files...)
 	sort.SliceStable(out, func(i, j int) bool {
-		vi, _, oki := autoEnumParseNumber(out[i])
-		vj, _, okj := autoEnumParseNumber(out[j])
-		switch {
-		case oki && okj:
-			if vi != vj {
-				return vi < vj
-			}
-			return out[i] < out[j]
-		case oki:
-			return false
-		case okj:
-			return true
-		default:
-			return out[i] < out[j]
-		}
+		return upgrader.MigrationPathLess(out[i], out[j])
 	})
 	return out
 }
