@@ -841,16 +841,21 @@ describe('孤儿棘轮', () => {
     //     （⑥-3 会验这些面板**确实被挂载**）
     //   · nodeHealthTimeline —— api→api 委托（nodeHealth 转发）
     //   · transport —— api→api 委托
-    //   · featureCapabilities（2026-10-21 R72f）—— **经 store 引入**：
-    //     能力位的唯一消费者是 `stores/capabilities.ts`，再由
-    //     `hyper-wiring.ts`（路由守卫）与 `components/shell/AppDrawer.vue`
-    //     （抽屉）使用。⇒ 视图**不直接**引用它 ⇒ 但它**确实在运行时路径上**
-    //     （⑥-3 会验它的引用方 `stores/capabilities.ts` 确实被挂载）。
-    //     ⚠️ 若有人新接了「经由面板/委托」而没进这张表，这条会红 ——
-    //       那正是它该做的：例外必须被登记，不能悄悄存在。
+    //   · dailyReconciliation（2026-11-24 新增，cdd155fff，huangxt）—— **由共用面板引入**：
+    //     日对账证据的取数层（fetchDailyEvidence / listSupplierDayInvoices /
+    //     fetchSupplierDayInvoice）。运行时引用方只有
+    //     `components/common/DailyReconciliationEvidence.vue`（同目录另两个文件只取类型），
+    //     该面板由 `views/ReportRollupView.vue` 挂载 ⇒ 视图**不直接**引用它 ⇒
+    //     但它**确实在运行时路径上**（⑥-3 会验它的引用方确实被挂载）。
+    //   ⚠️ 若有人新接了「经由面板/委托」而没进这张表，这条会红 ——
+    //     那正是它该做的：例外必须被登记，不能悄悄存在。
+    //   ★ featureCapabilities（2026-10-21 R72f）已于 2026-11-24（同一提交 cdd155fff）
+    //     **移出本表**：`views/ReportRollupView.vue` 开始直接引用 fetchCapabilities
+    //     ⇒ 它不再属于「无 views 直接引用」⇒ 例外随事实消失（经 store 引入的那条链
+    //     仍在，只是已构不成例外）。
     const seen = reachableFromUi()
     const EXPECTED = [
-      'credentialWriteOps', 'featureCapabilities', 'mobileNode',
+      'credentialWriteOps', 'dailyReconciliation', 'mobileNode',
       'nodeAudit', 'nodeHealthTimeline', 'transport',
     ]
     const actual = apiModules()
