@@ -26,32 +26,53 @@ import (
 //	③ include 模式不落回分钟表（分钟表无探测行，落回 = 拿业务数冒充全量数）；
 //	④ handleDashboardBoard 解析 include_probes 且该模式绕过 Redis 缓存
 //	  （缓存键不含探测口径，混用会互相污染两种口径的载荷）。
+// ★★★ 2026-11-24 修订（★ 源文本门 → 行为门 + 结构门）：★★★
+//
+// ★★★ 起因：★ 英雄区的 WHERE 与 SQL 被抽到 boardFactsWhere / boardSummaryFactsSQL
+// ★★★ 之后，源文本门**误报**（函数体里不再有那两段文字）⇒ ★★ 第三例「量具量错了东西」。
+// ★★★ 现在这门问的是**实际生成给 PG 的语句**：
+// ★★★   ① 排除臂生成的 WHERE 里确实有 traffic_class='business'；
+// ★★★   ② 含探测臂生成的 WHERE 里**没有**它；
+// ★★★   ③ 生成的 SQL 确实读 usage_facts；
+// ★★★   ④ 结构层：queryBoardSummaryFacts 必须走共用构造器（否则它可能自己另写一套）。
 func TestBoardSummaryFactsUsesTrafficClassCaliber(t *testing.T) {
+	tr := boardTimeRange{}
+
+	// ① 排除臂：实测生成的 WHERE。
+	exWhere, _ := boardFactsWhere("", tr, false)
+	if !strings.Contains(exWhere, `traffic_class = 'business'`) {
+		t.Error("queryBoardSummaryFacts 的排除臂必须用 traffic_class='business'。\n" +
+			"对账快照（reportrollup.grainDaySQL 的 businessOnly 分支）按这一列分面；\n" +
+			"换回 bg.ProbeTrafficExclusionPredicateView（markers 口径）会在边缘行上\n" +
+			"与内部对账分叉——board 与对账要逐字相等就得用同一列。\n" +
+			"★ 实测生成的 WHERE: " + exWhere)
+	}
+	// ② 含探测臂：同一个构造器在 includeProbes=true 下**不得**追加 class 过滤。
+	incWhere, _ := boardFactsWhere("", tr, true)
+	if strings.Contains(incWhere, `traffic_class`) {
+		t.Error("traffic_class 过滤必须条件化在 !includeProbes 下：include 模式\n" +
+			"读的是供应商对账口径（usage_facts 全量），加 class 过滤会让两种\n" +
+			"切换状态返回同一组数字。\n" +
+			"★ 实测生成的 WHERE: " + incWhere)
+	}
+	// ③ 主源必须是 usage_facts。
+	heroSQL := boardSummaryFactsSQL(exWhere)
+	if !strings.Contains(heroSQL, "FROM usage_facts") {
+		t.Error("queryBoardSummaryFacts 必须读 usage_facts（对账真源）。\n★ SQL:\n" + heroSQL)
+	}
+	// ④ 结构层：必须走共用构造器，否则「同谓词」只是文本巧合。
 	raw, err := os.ReadFile("dashboard_board_queries.go")
 	if err != nil {
 		t.Fatalf("read dashboard_board_queries.go: %v", err)
 	}
 	code := stripGoCommentsKeepLines(string(raw))
-
 	facts := goFuncBodyStrict(code, "func (h *Handler) queryBoardSummaryFacts(")
 	if facts == "" {
 		t.Fatal("queryBoardSummaryFacts not found in dashboard_board_queries.go")
 	}
-	if !strings.Contains(facts, `traffic_class = 'business'`) {
-		t.Error("queryBoardSummaryFacts 的排除臂必须用 traffic_class='business'。\n" +
-			"对账快照（reportrollup.grainDaySQL 的 businessOnly 分支）按这一列分面；\n" +
-			"换回 bg.ProbeTrafficExclusionPredicateView（markers 口径）会在边缘行上\n" +
-			"与内部对账分叉——board 与对账要逐字相等就得用同一列。")
-	}
-	// exclude 臂必须挂在 !includeProbes 分支下：include 时同一个函数不追加
-	// class 过滤（否则 include 也变业务口径，供应商对账对不上）。
-	if !strings.Contains(facts, "if !includeProbes") {
-		t.Error("traffic_class 过滤必须条件化在 !includeProbes 下：include 模式\n" +
-			"读的是供应商对账口径（usage_facts 全量），加 class 过滤会让两种\n" +
-			"切换状态返回同一组数字。")
-	}
-	if !strings.Contains(facts, "FROM usage_facts") {
-		t.Error("queryBoardSummaryFacts 必须读 usage_facts（对账真源）。")
+	if !strings.Contains(facts, "boardFactsWhere(") {
+		t.Error("queryBoardSummaryFacts 必须调用共用的 boardFactsWhere ⇒ ★★ 否则它可能\n" +
+			"★★ 自己另写一套探测谓词，与趋势悄悄分叉。")
 	}
 }
 
