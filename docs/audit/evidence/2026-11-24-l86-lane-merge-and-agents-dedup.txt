@@ -1,0 +1,127 @@
+================================================================================
+★ 证据档：2026-11-24 合并轮二十二（L86）
+★ 主题：并行车补合 ＋ 合并后闸门 17 条红归因与修复 ＋ 「归档只做了一半」
+★ 工作区：/private/tmp/l30-unified（★ 分支 feat/l72-unified-tmp）
+★★ 零生产写 / 零 schema 变更 / 零在役切换 / 零部署 / 零迁移字节变更 / 未推 origin/main ★★
+================================================================================
+
+── ① 并行车补合（★ 「唯一候选」命题此前不成立）────────────────────────────
+
+★ 上次合成（候选 a4c4e5f7e）之后、并行车又前进 16 笔 ⇒ 我方候选不再是两车道超集。
+★ 补合命令：git merge --no-ff --no-commit a98dd6613
+★ 冲突文件数：42（★ 全部解完）｜git diff --diff-filter=U = 0
+★ 真实文件差集：9
+   ├─ 取入 3：scripts/lib/gate-evidence.sh
+   │           scripts/deploygate/deploy_gate_evidence_preservation_gate_test.go
+   │           docs/audit/evidence/2026-11-24-l38-final-candidate-audit.txt
+   └─ 不取 6：并行车的 973 族（★ 保守口径、★ owner 待决）
+
+── ② teams 族三边 sha（★ sha256、★ 逐字实测）──────────────────────────────
+
+文件                       合并前(我方)                                                        并行车                                                                本轮采用
+055_teams_table.sql         bffde5e937f26ed40b0bd207e30efabf354e1da936fab6fb77ea4bd006027d06  408724bb922a41dab9d3aa9cde6b94f5fa3d5794deb2b79240bdd1d78d9de564  我方
+056_user_teams.sql          75bc05aae05f04e9b2614fd33796d0d2d0dab55bd8b7daf49ba8ea43b35f2ef5  c801cf9662ebc10f93ee49f3c9d338bbab2ba4a77e678a30060fa61879963d10  我方
+057_api_keys_team_id.sql    399525282ac62d4a2f317fdb9bf9c64059e79c4316365adfcedee3ed2c98d542  （已改名为 973）                                                          我方
+058_team_budgets.sql        e1b4d054f8e12c5d258d21c59bb2daa3fe9de78857be6bf88a3a457f8c2564cb  9108754f752f16efe992b7a52b6dd88ba03bc3a228fe280de98a716aae10c752  我方
+973_api_keys_team_id.sql    （无）                                                              5ca42691d4df87ad02dcb8da4c8340c9e9ee9dbc981570ccd7901ae65ffc49e2  不取
+
+★ 取我方的理由：★ 211 已 applied ⇒ 改字节＝L23 分叉；★ 指纹与权威账一致 ⇒ 不触发生产重放。
+★ 并行车的 973 是上游 057 的加固版（★ 事务 ＋ lock_timeout/statement_timeout ＋ public. 限定）⇒ 功能对象相同。
+
+★ 211 侧只读取证（★ 仅 SELECT）：
+   - teams / user_teams / team_budgets 三表在位（to_regclass 有值）
+   - schema_migrations 无 55/56/57/58/973 行；llm_gateway_migration_checksums 仅 1 行
+   ⇒ ⇒ 211 的迁移账【不按版本号记账】⇒ 「改了字节会不会重放」要看部署通道台账的指纹比对，不看 schema_migrations。
+
+── ③ 合并后全量闸门：17 条红、逐条归因、全修 ─────────────────────────────
+
+类别            条数  测试名                                                                    根因                                              修法
+台账同键重复    2     TestDsnExclusiveRegistrySharedSpine                                   union 对「同键不同值」只留一侧                合并描述成一行
+                1     TestRealDBLegsUseDeclaredDSNEnvNames                                    （同上、另一道门）                              合并描述成一行
+                2     TestPGTestEnvRegistryCoversEveryGapName                                 pg_test_env_registry.tsv 同名两行            合并描述成一行
+                1     TestPGTestEnvRegistryClassesMatchFactsourceAndRunner                    （同上、另一道门）                              合并描述成一行
+                2     TestPostSurfaceLedgerCoversEveryRoute                                  post-surface 台账 732 ≠ 路由 730               摘 4 行 → 官方工具补回 2 条（730）
+冲突标记残留    1     TestNoMergeConflictMarkersInTree                                        报告 §七 表内残留 <<<<<<< / ======= / >>>>>>>   删整块（另一侧两行上文已有）
+台账过期        3     TestSection1972CandidateListRowCountBaseline                            pipefail 候选清单 113 ≠ 基线 111                官方生成器重跑 → 111
+                1     TestSection1975CandidateListRowCountBaseline                            （同上）                                       同上
+                1     TestSection1975CandidateListMatchesGeneratorByteForByte                （同上、逐字比对）                              同上
+                1     TestDbObjectProductionGapRatchet                                      census 台账与合并后树脱节                     官方生成器重算三份
+                1     TestDbObjectAuditDocQuotesTheLedger                                    审计档数字过期                                 随重算订正
+                1     TestInstallerReachabilityLedgerIsRecomputable                          可达性台账与重算不一致                         官方生成器重算
+                1     TestInstallerReachabilityAuditDocQuotesTheLedger                       审计档数字过期                                 随重算订正
+文档口径        1     TestRequestSurfaceDocEveryReferenceIsCovered                            设计页并存两套锚点                             取代码实测真值那套、删另一套
+体积棘轮        1     TestAgentsMdSizeRatchet                                                AGENTS.md 552,667 > 524,288                   去重（见 ④）
+
+★ 注：★ 上表 17 条为【首次合并后全量闸门】的实测红数；★ 修复后逐条复跑全绿。
+
+── ④ ★★「归档只做了一半」：主档与归档档逐字重复的完整图谱 ──────────────────
+
+★ 判据：★ 主档某一行起、★ 与归档档【连续】逐字相同的段 ≥4 行 ⇒ 算重复。
+★ 实测：**17 段、合计 263,063 字节**（★ 合并后 AGENTS.md 552,667 字节 ⇒ 近一半是重复副本）。
+
+AGENTS.md 行   归档档 行   字节      首行（截断）
+107-119        21047-21059   7,736   > **（已归档）**2026-11-23 L69（★ 合并轮八）…
+121-134        21060-21073  10,844   > **2026-11-24 12 小时内修订审计轮·第三轮（goal 会话 cron…
+137-140        21074-21077   1,889   > **2026-11-24 12 小时内修订审计轮·第二轮…
+142-145        21078-21081   2,944   > **2026-11-24 12 小时内修订审计轮（goal 会话 cron；窗口…
+147-153        21082-21088   1,988   > **2026-11-23 候选挡空 4xx 功能轮…
+156-163        21089-21096   8,680   > **2026-11-23 error-playbook 审计修正轮…
+169-180        21098-21109  11,627   > **2026-11-23 L32 轮·合并轮六…
+201-209        21120-21128   4,253   > **2026-11-23 L30 轮·补②…
+211-219        21129-21137   8,130   > **（已归档）**2026-11-23 L30 轮·补（L46）…
+223-230        21139-21146   6,800   > **2026-11-23 L30 轮——★★★ 新装链修法之争已了结…
+232-375        21147-21290 112,337   > **数据一致性轮（看板 / 会话统计 / 供应商对账）…
+378-397        21289-21308  10,367   > ★★ **⇒ 找门时先问「这条链上真的跑它吗」…
+400-411        21308-21319   5,906   > **（已归档）**2026-11-23 L14 复核轮…
+620-633        20310-20317   4,171   > **2026-11-23 会话与统计页紧凑轮…
+626-633        20223-20230   4,417   > **2026-11-23 会话分析整合·补充轮收口…
+695-716        20764-20785  13,084   > （空行起头的续轮段）
+719-737        20798-20816  12,783   > **2026-11-18 security 两死开关接活轮…
+818-843        20594-20619  21,372   > **2026-11-20/23 会话分析域收口轮（L9/L10/L12）…
+
+★ 处置：★ 主档侧全部摘除、★ 只留一行指针（★ 原文逐字仍在归档档）⇒ ★★ 内容零丢失。
+★ 复核：★ R 标记索引 23 条 → 23 条（★ 零丢失）｜★ AGENTS.md 552,667 → 296,530 → 加本轮 L86 块后 303,003 字节。
+★ 新门：scripts/ursmcheck/agents_md_archive_duplicate_gate_test.go（★ 判据＝连续 ≥4 行逐字重复段 ｜★ 含量具自证）
+
+── ⑤ L 号重号修正 ────────────────────────────────────────────────────────
+
+★ 并行车的三块与我方 L77/L78/L79 撞号 ⇒ 重编号：
+   并行 L77（2026-11-24 16:xx）→ L83   （最终闸门 9 绿 1 红、6 条红全修）
+   并行 L78（2026-11-24 17:xx）→ L84   （三层无删除审计 ＋ 057⇒973 超集证明 ＋ 待决项总表）
+   并行 L79（2026-11-24 17:5x）→ L85   （闸门量具机械面修复 ＋ 证据留存库 ＋ 新门）
+★ 我方 L77/L78/L79 保持不动；★ 交叉引用逐个核过（★ AGENTS.md 内仅一处「详见 L77」指向我方 L77）。
+★ 报告 §五 的 L 行重号（L16/L32/L38/L39/L40/L41/L72）：★ 两棵树逐条相同 ⇒ 既有 ⇒ 只登记、不代改。
+
+── ⑥ 待决项（★ owner 轴）────────────────────────────────────────────────
+
+① push 到 origin/main（★ 语义＝「团队层级管理要不要上生产」）：★ 候选已含并行车最新 ＋ 全量闸门绿 ＋ 双远端 dry-run 绿
+   ⇒ ★ **仍只差 owner 一句明确授权**（★ 问卷超时自动选中不构成授权）。
+② 生产 api_keys.team_id 缺列（★ 生产 P0 本体）：★ 仓侧接线齐备（★ 取上游 057）⇒ 需授权 ＋ 维护窗口。
+③ 并行车 973 加固版方案：★ 本轮按保守口径未采用（★ 保留上游 055-058 原字节）⇒ 需 owner 裁定。
+④ 252 断层 306 条与两台 3 对列序漂移：★ 保持沉睡（★ 本轮对 252 零变更）。
+
+── ⑦ 最终闸门读数（★ 修复后、★ 合并后树上）────────────────────────────────
+
+★ 主模块 7 包（★ MAIN_EXIT=0）★★
+  ok  admin                 94.036s
+  ok  internal/metricsstore   0.032s
+  ok  internal/sqlguard       9.601s   ← ★ 修复前红（台账 sha 与 973 行）★★
+  ok  scripts/deploygate      1.414s
+  ok  scripts/ursmcheck     337.985s   ← ★ 修复前 15 条红 ★★
+  ok  sql/migrations/startup 14.157s
+  ok  sql/schema              9.549s
+
+★ installer 3 包（★ INSTALLER_EXIT=0）★★
+  ok  cmd/llm-gw-installer   5.536s ｜ internal/dbinit 5.722s ｜ internal/dockerutil 47.059s
+
+★ shell 门族（★ SHELL_EXIT=0）★★
+  shell-vacuous-assertion PASS（★ 扫 881 脚本、命中 0）｜shell-mktemp-template PASS｜shell-backtick-substitution PASS
+
+★ 空库新装烟测（★ FRESH_EXIT=0、★ 四段全过）★★
+  第一段：★ 空库 → 安装器真实路径装完 → ✔ 586 表 / ✔ 会话分析物化视图 4 个
+          / ✔ session_summaries.total_credits_charged 在 / ✔ minimax-m3.1-flash featured=TRUE
+  第二段：★ 增量再装一次 → ✔ 台账行数未变（414）⇒ 没有迁移被重放 ★★
+  第三段：★ 部署通道真跑 → ✔ 失败模式属已知两类（台账盲区类）⇒ 与 §7.31 实测一致 ★★
+  第四段：★ 权威台账同内容指纹 ⇒ 484_request_logs_hot_add_status_code.sql 未被重放（F3 生效）★★
+
+★ **零红 ⇒ 唯一候选（含并行车最新）通过全量闸门。**
