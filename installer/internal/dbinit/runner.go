@@ -2328,7 +2328,7 @@ func (r *Runner) InitSchema(logger func(string)) error {
 
 		for _, f := range files {
 			logger(fmt.Sprintf("  ▶ 应用 %s (%s) ...", f.name, f.desc))
-			if err := r.applySQL(f.name); err != nil {
+			if _, err := r.applySQL(f.name); err != nil {
 				return fmt.Errorf("应用 %s 失败: %w", f.name, err)
 			}
 			logger(fmt.Sprintf("  ✅ %s 完成", f.name))
@@ -2347,33 +2347,197 @@ func (r *Runner) InitSchema(logger func(string)) error {
 			return fmt.Errorf("补种 models_canonical 基线行失败: %w", err)
 		}
 		logger("  ✅ models_canonical 基线行补种完成")
+		if err := r.execSQL(createFreshHandoffSQL); err != nil {
+			return fmt.Errorf("初始化安装器交接凭证: %w", err)
+		}
 	}
 
 	appliedCount := 0
 	skippedCount := 0
-	for _, name := range r.StartupFiles {
+	retiredLegacyLogs := false
+	if incremental && applied[890] {
+		retired, err := r.psqlQuery(requestLogsRetiredSQL)
+		if err != nil {
+			return fmt.Errorf("检查旧请求日志表族退役状态: %w", err)
+		}
+		retiredLegacyLogs = strings.TrimSpace(retired) == "t"
+	}
+	var plan []freshStartupStep
+	var receipts []installerMigrationReceipt
+	if incremental {
+		for _, name := range r.StartupFiles {
+			plan = append(plan, freshStartupStep{name: name})
+		}
+	} else {
+		plan = freshStartupPlan(r.StartupFiles)
+	}
+	for _, step := range plan {
+		name := step.name
 		if incremental {
 			if reason, skip := r.startupSkipReason(name, applied, deployApplied); skip {
 				logger(fmt.Sprintf("  ▶ 跳过 startup migration %s（%s）", name, reason))
 				skippedCount++
 				continue
 			}
+			if retiredLegacyLogs && retiredLegacyLogFiles[name] {
+				logger("  ▶ 跳过 startup migration " + name + "（890 已登记，旧请求日志表族已退役）")
+				skippedCount++
+				continue
+			}
+			if retiredLegacyLogs && name == "688_promote_default_retention_align_go_scheduler.sql" {
+				current, err := r.psqlQuery(promotionDefaultsPresentSQL)
+				if err != nil {
+					return fmt.Errorf("检查 688 的迁移产物: %w", err)
+				}
+				if strings.TrimSpace(current) != "t" {
+					return fmt.Errorf("688: 旧请求日志已退役，但当前晋升函数或保留期不齐全")
+				}
+				logger("  ▶ 跳过 startup migration " + name + "（当前晋升函数已存在，保留现用函数与保留期）")
+				skippedCount++
+				continue
+			}
+			if name == "568_credential_priority_flag.sql" {
+				current, err := r.psqlQuery(bindingPriorityPresentSQL)
+				if err != nil {
+					return fmt.Errorf("检查 568 的优先凭据产物: %w", err)
+				}
+				if strings.TrimSpace(current) == "t" {
+					logger("  ▶ 跳过 startup migration " + name + "（当前报价视图、写入触发器和路由失效链已支持 priority）")
+					skippedCount++
+					continue
+				}
+			}
+			if successor, ok := startupSupersessions[name]; ok {
+				_, recorded := r.startupSkipReason(successor.file, applied, deployApplied)
+				if recorded {
+					proven, err := r.psqlQuery(successor.check)
+					if err != nil {
+						return fmt.Errorf("检查 %s 的后继产物: %w", name, err)
+					}
+					if strings.TrimSpace(proven) == "t" {
+						logger(fmt.Sprintf("  ▶ 跳过 startup migration %s（%s 的产物已验证）", name, successor.file))
+						skippedCount++
+						continue
+					}
+				}
+			}
 		}
 		logger(fmt.Sprintf("  ▶ 应用 startup migration %s ...", name))
-		if err := r.applySQL(filepath.Join("startup", name)); err != nil {
+		if incremental {
+			_, err = r.applySQL(filepath.Join("startup", name))
+		} else {
+			var receipt installerMigrationReceipt
+			receipt, err = r.applyFreshStartup(step)
+			if err == nil {
+				receipts = append(receipts, receipt)
+			}
+		}
+		if err != nil {
 			return fmt.Errorf("应用 startup migration %s 失败: %w", name, err)
 		}
 		logger(fmt.Sprintf("  ✅ startup migration %s 完成", name))
-		// ★ F1：应用成功后把版本补记进人读台账（★ 自登记的文件 ⇒ 这里是空操作）。
-		if err := r.recordAppliedVersion(name); err != nil {
-			return fmt.Errorf("补记 %s 的台账行失败: %w", name, err)
+		if !step.supplemental {
+			if err := r.recordAppliedVersion(name); err != nil {
+				return fmt.Errorf("补记 %s 的台账行失败: %w", name, err)
+			}
 		}
 		appliedCount++
 	}
 	if incremental {
 		logger(fmt.Sprintf("  ✅ 增量迁移完成：本次应用 %d 个 startup 迁移（跳过 %d 个）", appliedCount, skippedCount))
+	} else {
+		if err := r.sealFreshHandoff(receipts); err != nil {
+			return fmt.Errorf("提交安装器交接凭证: %w", err)
+		}
+		logger(fmt.Sprintf("  ✅ 安装器交接凭证已登记 %d 个 startup 迁移", len(receipts)))
 	}
 	return nil
+}
+
+// These migrations only maintain the retired tables, their views or their
+// promotion routine. A surviving table or detached August child disables
+// the exception so it cannot hide an incomplete retirement.
+var retiredLegacyLogFiles = map[string]bool{
+	"562_fix_request_logs_bodies_partitions_heap.sql": true,
+	"573_drop_request_logs_body_columns.sql":          true,
+	"577_request_logs_view_customer_id.sql":           true,
+	"600_outbound_body_to_bodies_hot.sql":             true,
+	"601_request_logs_bodies_drop_metadata.sql":       true,
+	"602_request_logs_promote_atomic.sql":             true,
+	"603_repair_request_logs_schema_consistency.sql":  true,
+}
+
+const requestLogsRetiredSQL = `SELECT
+	to_regclass('public.request_logs') IS NULL
+	AND to_regclass('public._request_logs') IS NULL
+	AND to_regclass('public.request_logs_hot') IS NULL
+	AND to_regclass('public._request_logs_hot') IS NULL
+	AND to_regclass('public.request_logs_bodies') IS NULL
+	AND to_regclass('public._request_logs_bodies') IS NULL
+	AND to_regclass('public.request_logs_bodies_hot') IS NULL
+	AND to_regclass('public._request_logs_bodies_hot') IS NULL
+	AND to_regclass('public.request_logs_bodies_2026_08') IS NULL
+	AND to_regclass('public._request_logs_bodies_2026_08') IS NULL
+	AND NOT EXISTS (SELECT FROM pg_proc
+	    WHERE pronamespace='public'::regnamespace AND proname='ensure_request_logs_bodies_partition'
+	      AND pronargs=1 AND proargtypes[0]='timestamptz'::regtype)`
+
+const bindingPriorityPresentSQL = `SELECT
+	EXISTS (SELECT FROM pg_attribute WHERE attrelid=to_regclass('public.credential_model_bindings')
+		AND attname='priority' AND atttypid='boolean'::regtype AND attnotnull AND NOT attisdropped)
+	AND EXISTS (SELECT FROM pg_attribute WHERE attrelid=to_regclass('public.model_offers')
+		AND attname='priority' AND atttypid='boolean'::regtype AND NOT attisdropped)
+	AND EXISTS (SELECT FROM pg_trigger WHERE tgrelid=to_regclass('public.model_offers')
+		AND tgname='model_offers_update' AND tgenabled <> 'D'
+		AND tgfoid=to_regprocedure('public.model_offers_update_trigger()'))
+	AND EXISTS (SELECT FROM pg_trigger WHERE tgrelid=to_regclass('public.credential_model_bindings')
+		AND tgname='trg_notify_auto_route_cmb_update' AND tgenabled <> 'D'
+		AND strpos(pg_get_triggerdef(oid), 'old.priority IS DISTINCT FROM new.priority') > 0)
+	AND (SELECT count(*) FROM pg_proc WHERE oid IN (
+		to_regprocedure('public.model_offers_update_trigger()'),
+		to_regprocedure('public.bump_candidate_binding_scope_revision_insert()'),
+		to_regprocedure('public.bump_candidate_binding_scope_revision_delete()'),
+		to_regprocedure('public.bump_candidate_binding_scope_revision_update()')
+	) AND strpos(prosrc, 'priority') > 0) = 4`
+
+const sessionBodiesKindPresentSQL = `SELECT
+	EXISTS (SELECT FROM pg_class WHERE oid=to_regclass('public.session_bodies_hot') AND relrowsecurity)
+	AND (SELECT count(*) FROM pg_constraint WHERE conrelid=to_regclass('public.session_bodies_hot')
+		AND conname IN ('session_bodies_hot_pkey','session_bodies_hot_unique','session_bodies_with_current_month'))=3
+	AND to_regclass('public.uq_session_bodies_final_full') IS NOT NULL
+	AND to_regclass('public.uq_session_bodies_hot_final_full') IS NOT NULL
+	AND EXISTS (SELECT FROM pg_attribute WHERE attrelid=to_regclass('public.session_bodies_unified')
+		AND attname='kind' AND NOT attisdropped)`
+
+const sessionBodiesPromotePresentSQL = `SELECT EXISTS (
+	SELECT FROM pg_proc WHERE oid=to_regprocedure('public.promote_session_bodies_hot_to_partition(interval,integer)')
+	  AND strpos(prosrc, 'v_parent_shape IS DISTINCT FROM v_hot_shape') > 0
+	  AND strpos(prosrc, 'FOR UPDATE SKIP LOCKED') > 0)`
+
+const candidateFailurePromotePresentSQL = `SELECT EXISTS (
+	SELECT FROM pg_proc WHERE oid=to_regprocedure('public.promote_candidate_failure_logs_hot_to_partition(interval,integer)')
+	  AND strpos(prosrc, 'FOR UPDATE SKIP LOCKED') > 0
+	  AND strpos(prosrc, 'Asia/Shanghai') > 0)`
+
+const promotionDefaultsPresentSQL = `SELECT count(*)=8
+	FROM (VALUES ('usage_ledger'), ('request_wal'), ('routing_decision_log'), ('credential_model_index'),
+	             ('tool_usage_stats'), ('credit_ledger'), ('candidate_failure_logs'), ('session_turns')) AS f(family)
+	JOIN pg_proc p ON p.oid=to_regprocedure('public.promote_' || f.family || '_hot_to_partition(interval,integer)')
+	WHERE p.pronargdefaults=2
+	  AND (pg_get_function_arguments(p.oid) LIKE '%DEFAULT ''08:00:00''::interval%'
+	       OR (f.family='session_turns' AND pg_get_function_arguments(p.oid) LIKE '%DEFAULT ''7 days''::interval%'))`
+
+var startupSupersessions = map[string]struct{ file, check string }{
+	"535_candidate_failure_logs_atomic_promote.sql": {"628_candidate_failure_logs_promote_atomic_v3.sql", candidateFailurePromotePresentSQL},
+	"614_session_bodies_hot.sql":                    {"865_session_bodies_kind_reconcile.sql", sessionBodiesKindPresentSQL},
+	"615_session_bodies_hot_promote_function.sql":   {"899_session_bodies_promote_body_sink.sql", sessionBodiesPromotePresentSQL},
+	"625_session_bodies_unified_explicit.sql":       {"865_session_bodies_kind_reconcile.sql", sessionBodiesKindPresentSQL},
+	"626_session_bodies_hot_promote_reconcile.sql":  {"899_session_bodies_promote_body_sink.sql", sessionBodiesPromotePresentSQL},
+	"637_session_bodies_unified_today_visible.sql":  {"865_session_bodies_kind_reconcile.sql", sessionBodiesKindPresentSQL},
+	"638_session_bodies_promote_guard.sql":          {"899_session_bodies_promote_body_sink.sql", sessionBodiesPromotePresentSQL},
+	"649_routing_analytics_probe_filter.sql": {"907_routing_analytics_source_lateral.sql", `SELECT
+		to_regclass('public.routing_analytics_7d') IS NOT NULL AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+		AND COALESCE(strpos(pg_get_viewdef(to_regclass('public.routing_analytics_source')), 'LATERAL'),0)>0`},
 }
 
 // freshInstallOnlyAssets：**只在全新安装路径投递**的资产（★ 增量路径跳过）。
@@ -2574,9 +2738,11 @@ func (r *Runner) psqlQuery(query string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "exec", r.CitusContainer,
 		"psql", "-U", r.DBUser, "-d", r.DBName, "-X", "-t", "-A", "-v", "ON_ERROR_STOP=1",
 		"-c", query)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("%w\n%s", err, truncate(string(out), 300))
+		return "", fmt.Errorf("%w\n%s", err, truncate(stderr.String(), 300))
 	}
 	return string(out), nil
 }
@@ -2671,13 +2837,30 @@ func RequiresNoTransaction(content []byte) bool {
 }
 
 // applySQL 应用单个 SQL 文件（通过 docker exec + stdin）
-func (r *Runner) applySQL(filename string) error {
+func (r *Runner) applySQL(filename string) (installerMigrationReceipt, error) {
 	sqlPath := filepath.Join(r.SQLDir, filename)
 	content, err := readFile(sqlPath)
 	if err != nil {
-		return err
+		return installerMigrationReceipt{}, err
+	}
+	sourceHash := sha256.Sum256(content)
+	switch filename {
+	case "startup/565_cost_usd_pricing_backfill.sql":
+		content, err = adaptRetiredRequestCostBackfill(content)
+	case "startup/624_candidate_failure_logs_promote_atomic_v2.sql":
+		content, err = adaptCandidateFailurePromotion(content)
+	}
+	if err != nil {
+		return installerMigrationReceipt{}, err
 	}
 
+	if err := r.runSQL(content, !requiresNoTransaction(content)); err != nil {
+		return installerMigrationReceipt{}, err
+	}
+	return installerMigrationReceipt{filepath.Base(filename), sourceHash, sha256.Sum256(content)}, nil
+}
+
+func (r *Runner) runSQL(content []byte, singleTransaction bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -2689,9 +2872,10 @@ func (r *Runner) applySQL(filename string) error {
 		"-v", "ON_ERROR_STOP=1",
 	}
 	// 除非文件显式声明豁免，否则整文件原子。
-	if !requiresNoTransaction(content) {
+	if singleTransaction {
 		args = append(args, "--single-transaction")
 	}
+	args = append(args, "-X", "-f", "-")
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = bytes.NewReader(content)
 
@@ -2702,9 +2886,50 @@ func (r *Runner) applySQL(filename string) error {
 	return nil
 }
 
+// Keep 565's pricing catalog updates. Its last step can only target the
+// original v1 hot table, so omit it after the proven 890 retirement.
+func adaptRetiredRequestCostBackfill(content []byte) ([]byte, error) {
+	const section = "-- 4) recompute hot rows with priced offers + tokens\n"
+	const commit = "\nCOMMIT;"
+	sql := string(content)
+	if strings.Count(sql, section) != 1 || strings.Count(sql, commit) != 1 || strings.Index(sql, section) > strings.Index(sql, commit) {
+		return nil, fmt.Errorf("565: unexpected request cost backfill statement boundaries")
+	}
+	const condition = `SELECT NOT (
+	EXISTS (SELECT FROM public.schema_migrations WHERE version='890' AND description LIKE 'v1 _request_logs family retired%')
+	AND to_regclass('public.request_logs_hot') IS NULL
+	AND to_regclass('public._request_logs_hot') IS NULL
+) AS apply_legacy_hot_backfill
+\gset
+\if :apply_legacy_hot_backfill
+`
+	sql = strings.Replace(sql, section, condition+section, 1)
+	sql = strings.Replace(sql, commit, "\n\\endif"+commit, 1)
+	return []byte(sql), nil
+}
+
+// Apply 624's RLS policy while preserving a later, month-aware promotion
+// routine. The historical migration did not separate those two changes.
+func adaptCandidateFailurePromotion(content []byte) ([]byte, error) {
+	const start = "CREATE OR REPLACE FUNCTION public.promote_candidate_failure_logs_hot_to_partition("
+	const end = "\n$function$;\n"
+	sql := string(content)
+	if strings.Count(sql, start) != 1 || strings.Count(sql, end) != 1 || strings.Index(sql, start) > strings.Index(sql, end) {
+		return nil, fmt.Errorf("624: unexpected candidate failure promotion statement boundaries")
+	}
+	probe := candidateFailurePromotePresentSQL + ` AS keep_current_promotion
+\gset
+\if :keep_current_promotion
+\else
+`
+	sql = strings.Replace(sql, start, probe+start, 1)
+	sql = strings.Replace(sql, end, end+"\\endif\n", 1)
+	return []byte(sql), nil
+}
+
 // execSQL 在目标库执行一段内联 SQL。
 //
-// ★ 用途**仅限**安装器侧的最小基线补种（★ 见 modelsCanonicalSeedSQL）：
+// 用于安装器的基线补种和交接凭证。
 // ★ 迁移内容**一律**走 applySQL 的逐文件事务通道（★ 免得绕过
 // `dbinit:no-transaction` 的分流与逐文件失败定位）。
 func (r *Runner) execSQL(sql string) error {
