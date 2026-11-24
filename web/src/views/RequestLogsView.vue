@@ -104,6 +104,9 @@ const summaryDrawerOpen = ref(false)
 const LOGS_PROBE_SCOPE_KEY = 'llmgw_logs_probe_scope'
 const includeProbe = ref(false)
 const trafficLane = ref<'business' | 'all' | 'probe_history' | ''>('')
+// 2026-11-25 第 28 轮：含探测查询被服务端截窗时如实显示（认响应值，不按本地选择推算）。
+const windowClamped = ref(false)
+const windowClampHours = ref(12)
 try {
   includeProbe.value = localStorage.getItem(LOGS_PROBE_SCOPE_KEY) === 'included'
 } catch {
@@ -1182,11 +1185,19 @@ async function load() {
     // 服务端显式回传当前探测口径（2026-11-21 对齐轮）：徽标披露认响应值，
     // 不认本地开关状态（两者只在正常链路一致；降级/参数被吞时以响应为准）。
     trafficLane.value = resp.traffic_lane ?? ''
+    // 服务端截窗事实（window_clamped / window_clamp_hours）同样认响应值：所选范围
+    // 超过含探测窗口上限时，合计只覆盖最近 N 小时 ⇒ 徽标如实披露。
+    windowClamped.value = resp.window_clamped === true
+    if (typeof resp.window_clamp_hours === 'number' && resp.window_clamp_hours > 0) {
+      windowClampHours.value = resp.window_clamp_hours
+    }
     // ★ 2026-11-23 审计轮（P1-1）：**这里不再**用「items 空 && count>0」判扫描故障。
     //   后端该项判据还差第三项 scanErrCount>0（admin/logs.go:1133），而该项只在
     //   服务端可见 ⇒ 200 响应上这个组合**只说明页码越界**（已在上面处理）。
     //   ⇒ 真扫描故障由 catch 分支按服务端的 500 判定，不再在这里猜。
   } catch (e: unknown) {
+    // 本轮请求失败 ⇒ 截窗事实不再成立（避免上一次的徽标留在错误态上）。
+    windowClamped.value = false
     // ★ 服务端**明确**回 500「data scanning failed」⇒ 真正的行扫描故障
     //   （admin/logs.go:1133-1140）⇒ 用这一族专有文案，并带上服务端回传的
     //   命中记录数（从消息里取；取不到就退回通用错误文案，**不编数字**）。
@@ -1540,6 +1551,13 @@ onMounted(async () => {
               class="badge badge-blue"
               style="font-size:11px;padding:2px 4px;white-space:nowrap"
             >{{ t('requests.list.probeScope.badge') }}</span>
+            <span
+              v-if="windowClamped"
+              data-testid="logs-window-clamped-badge"
+              class="badge badge-orange"
+              style="font-size:11px;padding:2px 4px;white-space:nowrap"
+              :title="t('requests.list.probeScope.windowClampedHint', { hours: windowClampHours })"
+            >{{ t('requests.list.probeScope.windowClamped', { hours: windowClampHours }) }}</span>
           </span>
           <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap">{{ showOverviewStats ? '收拢 ▲' : '展开 ▼' }}</span>
         </div>

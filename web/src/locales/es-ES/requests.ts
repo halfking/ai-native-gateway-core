@@ -86,6 +86,8 @@ export default {
       label: 'Incluir sondeos',
       badge: 'con sondeos',
       hint: 'Al activarlo, la lista y los totales incluyen tráfico de sondeos (mismo criterio que la conciliación del proveedor); el coste de las filas de sondeo proviene de la tabla de hechos de conciliación y queda vacío hasta registrarse',
+      windowClamped: 'ventana limitada a las últimas {hours} h',
+      windowClampedHint: 'Las consultas con sondeos cuentan como máximo las últimas {hours} horas: si el rango de tiempo seleccionado supera las {hours} horas, solo se cuentan las últimas {hours} horas; reduzca el rango de tiempo para que coincida con la selección',
     },
   },
   errorKind: {

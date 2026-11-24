@@ -88,6 +88,8 @@ export default {
       label: 'Testabfragen einbeziehen',
       badge: 'mit Testabfragen',
       hint: 'Wenn aktiviert, enthalten Liste und Summen auch Testabfrage-Traffic (gleiche Abgrenzung wie die Lieferantenabstimmung); Kosten von Testabfrage-Zeilen stammen aus der Abstimmungsfaktentabelle und bleiben bis zur Erfassung leer',
+      windowClamped: 'auf letzte {hours} h begrenzt',
+      windowClampedHint: 'Abfragen mit Testabfragen zählen höchstens die letzten {hours} Stunden: Ist der gewählte Zeitbereich länger als {hours} Stunden, werden nur die letzten {hours} Stunden gezählt; verkleinern Sie den Zeitbereich, um der Auswahl zu entsprechen',
     },
   },
   errorKind: {

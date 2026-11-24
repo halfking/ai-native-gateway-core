@@ -211,6 +211,14 @@ export interface RequestLogsResponse {
    * 前端徽标披露与跨面对拍都认这个字段。
    */
   traffic_lane?: 'business' | 'all' | 'probe_history'
+  /**
+   * 2026-11-25 第 28 轮：含探测查询在服务端有窗口上限。所选时间范围超过上限时，
+   * 服务端只统计最近 `window_clamp_hours` 小时，并以 `window_clamped=true` 如实回传
+   * ⇒ 前端必须把「实际统计窗口 ≠ 所选时间范围」显示出来（此前没有任何调用方读
+   * 这两个字段：默认 24h 选择下会静默显示 12h 的合计）。
+   */
+  window_clamped?: boolean
+  window_clamp_hours?: number
 }
 
 export interface SessionSummaryMeta {

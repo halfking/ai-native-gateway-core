@@ -625,6 +625,27 @@ func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []
 // admin/logs_serial_plan_test.go 钉住本常量的字节形态（含 is_local=true）。
 const listLogsSerialPlanSQL = `SELECT set_config('max_parallel_workers_per_gather', '0', true)`
 
+// logsProbeWindowCap 是含探测 union 查询的窗口上限：所选范围超过它时只统计「最近 N 小时」，
+// 并以 window_clamped / window_clamp_hours 如实回传（前端徽标认这两个字段）。
+const logsProbeWindowCap = 12 * time.Hour
+
+// logsQueryScope 解析列表查询的 lane / include_probe 两个参数。
+//
+// includeProbe 只表示「调用方显式要含探测」（include_probe=1）——它与
+// resolveLogsTrafficLanePredicate 的第二参同义：置真 ⇒ 不加车道谓词。
+// unionScope 表示「行集走三源 union」（include_probe=1 或 lane=all）——只有这种
+// 查询才付 union 的代价，超时放宽与窗口上限只跟随它。
+// lane=probe / probe_history 是「仅业务表上的历史探测行」：既不置 includeProbe、
+// 也不置 unionScope。
+//
+// ★ 为什么拆成两个量（2026-11-25 第 28 轮订正）：af2bb4970 为了「提前选超时」写成
+// `include_probe || lane==all || lane==probe || lane==probe_history` ⇒ 而 includeProbe
+// 同时决定「摘掉车道谓词」与「换成 union 源」⇒ 历史探测视图退化成全量流量、窗口被
+// 截到 12h，响应却仍标 lane=probe_history（探测健康详情页受影响）。
+func logsQueryScope(lane string, includeProbeParam bool) (includeProbe, unionScope bool) {
+	return includeProbeParam, includeProbeParam || lane == "all"
+}
+
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -637,14 +658,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// 2026-11-25: 生产环境实测：24小时窗口+include_probe+2过滤器查询31K条仍超时
 	//             → 需要后续优化：索引分析、查询重构、或限制include_probe时的窗口
 	// 2026-11-25: 优化实施：探测流量查询超时120s，业务流量60s；自动限制探测流量窗口≤12h
-	
-	// 预先检查 include_probe 以确定超时和窗口限制
+
+	// 预先解析 lane / include_probe（两者语义不同、不可合并，见 logsQueryScope）。
 	lane := strings.ToLower(strings.TrimSpace(queryString(r, "lane")))
-	includeProbe := queryBool(r, "include_probe") || lane == "all" || lane == "probe" || lane == "probe_history"
-	
-	// 动态超时：探测流量查询需要更长时间（union 三个源表）
+	includeProbe, unionScope := logsQueryScope(lane, queryBool(r, "include_probe"))
+
+	// 动态超时：含探测的 union 查询（三个源表）需要更长时间
 	queryTimeout := 60 * time.Second
-	if includeProbe {
+	if unionScope {
 		queryTimeout = 120 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
@@ -654,11 +675,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
 	end := parseQueryTime(r, "to", now)
 	start, end = clampQueryWindowForTenant(start, end, GetTenantID(r))
-	
-	// 探测流量查询自动限制窗口：超过12小时自动截断（除非显式override=1）
+
+	// 含探测的 union 查询自动限制窗口：超过12小时自动截断（除非显式override=1）。
+	// 只跟随 unionScope ⇒ lane=probe|probe_history（业务表上的历史探测行）不被截窗。
+	overrideWindow := queryString(r, "override_window_limit") == "1"
 	var windowClamped bool
-	if includeProbe && queryString(r, "override_window_limit") != "1" {
-		maxProbeWindow := 12 * time.Hour
+	if unionScope && !overrideWindow {
+		maxProbeWindow := logsProbeWindowCap
 		actualWindow := end.Sub(start)
 		if actualWindow > maxProbeWindow {
 			// 保持end不变，向前推start（查询最近12小时）
@@ -838,7 +861,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// 2026-11-02 探测隔离：列表默认只业务（排除 origin_stage∈ProbeStages 等）。
 	// include_probe=1 / lane=all 显式全量；lane=probe|probe_history 仅业务表
 	// 历史探测（U4：与 /api/admin/probe/lane/requests 的「当前」语义分层）。
-	// 2026-11-25: lane 和 includeProbe 已在函数开始处声明以支持动态超时
+	// 2026-11-25: lane / includeProbe / unionScope 在函数开始处由 logsQueryScope 解析
 	if pred := resolveLogsTrafficLanePredicate(lane, includeProbe, "rl"); pred != "" {
 		clauses = append(clauses, pred)
 	}
@@ -1184,41 +1207,44 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, l)
 	}
-		if err := rows.Err(); err != nil {
-			// ★★ 2026-11-23 根修（211 生产实证）：游标中途死亡必须如实报错，
-			// 不得静默返回 200 + items=[]。当日实证链：页查询被 planner 选成
-			// Gather Merge（2 worker）⇒ acc-pg17 /dev/shm=64MB、水位 ~35MB ⇒
-			// worker DSM resize 8MB 撞 SQLSTATE 53100 ⇒ pgx 游标在 Next() 中途
-			// 死亡 ⇒ 旧代码这里只打 WARN 并照常 writeJSON ⇒ 前端拿到
-			// count=66235 + items=[]，把「存储侧并行查询资源受限（可重试）」
-			// 误报成「服务端数据格式问题，请联系管理员查日志」。
-			// 文案三要素（错误如实返回纪律）：事实（已拿到几行 / 总数）、
-			// 性质（存储侧故障）、处置（可重试）；驱动原文只进日志
-			// （internal_error_guard 纪律：err.Error() 不上 wire）。
-			slog.Error("admin listLogs rows iteration failed",
-				"err", err.Error(), "items_returned", len(items), "count", count)
-			
-			// 2026-11-25: 超时错误提供更具体的用户指导，使用实际超时值
-			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
-				timeoutSeconds := int(queryTimeout.Seconds())
-				windowHours := end.Sub(start).Hours()
-				var guidance string
-				if includeProbe && windowHours > 12 {
-					guidance = fmt.Sprintf("查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口至12小时以内，2) 减少过滤器，3) 或添加 override_window_limit=1 参数使用完整窗口(需更长等待)", 
-						timeoutSeconds, count)
-				} else if includeProbe {
-					guidance = fmt.Sprintf("探测流量查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或移除探测流量过滤(include_probe=0)", 
-						timeoutSeconds, count)
-				} else {
-					guidance = fmt.Sprintf("查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或尝试添加更具体的过滤器", 
-						timeoutSeconds, count)
-				}
-				writeError(w, http.StatusServiceUnavailable, guidance)
+	if err := rows.Err(); err != nil {
+		// ★★ 2026-11-23 根修（211 生产实证）：游标中途死亡必须如实报错，
+		// 不得静默返回 200 + items=[]。当日实证链：页查询被 planner 选成
+		// Gather Merge（2 worker）⇒ acc-pg17 /dev/shm=64MB、水位 ~35MB ⇒
+		// worker DSM resize 8MB 撞 SQLSTATE 53100 ⇒ pgx 游标在 Next() 中途
+		// 死亡 ⇒ 旧代码这里只打 WARN 并照常 writeJSON ⇒ 前端拿到
+		// count=66235 + items=[]，把「存储侧并行查询资源受限（可重试）」
+		// 误报成「服务端数据格式问题，请联系管理员查日志」。
+		// 文案三要素（错误如实返回纪律）：事实（已拿到几行 / 总数）、
+		// 性质（存储侧故障）、处置（可重试）；驱动原文只进日志
+		// （internal_error_guard 纪律：err.Error() 不上 wire）。
+		slog.Error("admin listLogs rows iteration failed",
+			"err", err.Error(), "items_returned", len(items), "count", count)
+
+		// 2026-11-25: 超时错误提供更具体的用户指导，使用实际超时值
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+			timeoutSeconds := int(queryTimeout.Seconds())
+			windowHours := end.Sub(start).Hours()
+			var guidance string
+			if includeProbe && windowHours > 12 {
+				// 走到这里 ⇒ 窗口没有被截（否则 start 已被推到 end-12h）⇒ 调用方已带
+				// override_window_limit=1 ⇒ 提示里不该再叫用户「添加」同一个参数
+				//（2026-11-25 第 28 轮订正）。
+				guidance = fmt.Sprintf("查询超时(%d秒，已扫描%d条记录)。当前已放开 12 小时窗口上限（override_window_limit=1）。建议：1) 移除该参数回到 12 小时上限，2) 缩小时间窗口，3) 减少过滤器",
+					timeoutSeconds, count)
+			} else if includeProbe {
+				guidance = fmt.Sprintf("探测流量查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或移除探测流量过滤(include_probe=0)",
+					timeoutSeconds, count)
 			} else {
-				writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
-					"request log list query interrupted before completion: received %d of %d counted rows; storage-side error, retrying may help", len(items), count))
+				guidance = fmt.Sprintf("查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或尝试添加更具体的过滤器",
+					timeoutSeconds, count)
 			}
-			return
+			writeError(w, http.StatusServiceUnavailable, guidance)
+		} else {
+			writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+				"request log list query interrupted before completion: received %d of %d counted rows; storage-side error, retrying may help", len(items), count))
+		}
+		return
 	} else if scanErrCount > 0 {
 		slog.Warn("admin listLogs completed with partial scan failures", "scan_err_count", scanErrCount, "items_returned", len(items), "count", count)
 	}
@@ -1295,15 +1321,16 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	default:
 		resp["traffic_lane"] = "business"
 	}
-	
+
 	// 2026-11-25: 在响应体中包含窗口信息，方便前端显示
 	if windowClamped {
 		resp["window_clamped"] = true
+		resp["window_clamp_hours"] = int(logsProbeWindowCap.Hours())
 		resp["window_clamp_message"] = "查询窗口已自动限制至12小时以提高性能"
 	}
 	resp["query_window_start"] = start
 	resp["query_window_end"] = end
-	
+
 	writeJSON(w, http.StatusOK, resp)
 }
 

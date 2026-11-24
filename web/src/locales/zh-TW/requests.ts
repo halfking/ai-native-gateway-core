@@ -89,6 +89,8 @@ export default {
       label: '包含探測',
       badge: '含探測',
       hint: '開啟後列表與統計包含探測流量（與供應商對帳同口徑）；探測行的費用取自對帳事實表，未落帳的行費用為空',
+      windowClamped: '視窗已截到近 {hours} 小時',
+      windowClampedHint: '含探測的查詢最多統計最近 {hours} 小時：所選時間範圍超過 {hours} 小時時，只計入最近 {hours} 小時；縮小時間範圍即可與所選一致',
     },
   },
   errorKind: {
