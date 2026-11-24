@@ -135,23 +135,42 @@ func NewDataQualitySource(inner ErrorSource, db *sql.DB, cfgFn func() DataQualit
 				// ① 未知模型行：<unknown>/unknown 字面量或空。
 				//    （2026-11-24 实测存量 1,332 行；写侧修法已落地，
 				//    增量 ⇒ 写侧修法未全覆盖的新丢失路径。）
+				//
+				// ★★ 2026-11-24 订正（★ 裸父表读法 ⇒ 漏最新那批 ★★）：
+				// ★ 本条原先只读 public.session_turns（分区父表）⇒
+				// ★ 会话族的写方只写 session_turns_hot，冷行才由 promote 搬进父表，
+				// ★ 两个面之间**没有固定边界**（本机实测父表落后 hot 约 8.7 小时）
+				// ★ ⇒ 只读父表**漏掉最近数小时的数据**，而漏掉的正是最新那批
+				// ★ ⇒ 对一个「找新增异常」的探测器来说，漏的恰好是它要找的东西。
+				// ★ ⇒ 改为 hot ∪ parent 两面合并读（admin/session_family_two_surface_test.go
+				// ★   的裸父表门也正是这么要求的第二种正确写法）。
 				anomalyType: AnomalyModelAttributionMissing,
 				countSQL: `
-					SELECT COUNT(*) FROM public.session_turns
-					WHERE ts > now() - INTERVAL '24 hours'
-					  AND (model IN ('<unknown>', 'unknown') OR model IS NULL OR model = '')`,
+					SELECT COUNT(*) FROM (
+						SELECT ts, model, cost_usd, credits_charged FROM public.session_turns_hot
+						UNION ALL
+						SELECT ts, model, cost_usd, credits_charged FROM public.session_turns
+					) s
+					WHERE s.ts > now() - INTERVAL '24 hours'
+					  AND (s.model IN ('<unknown>', 'unknown') OR s.model IS NULL OR s.model = '')`,
 				threshold: func(t DataQualityThresholds) int { return t.ModelAttribution },
 			},
 			{
 				// ② 计费口径缺口：有上游成本却零积分扣减。
 				//    （存量 113,444 行的豁免/漏计判定在手册条目里；
 				//    增量 ⇒ 计费链回归或新租户面。）
+				//
+				// ★ 同 ①：两面合并读（hot ∪ parent），否则漏掉最新那批计费缺口。
 				anomalyType: AnomalyBillingCreditGap,
 				countSQL: `
-					SELECT COUNT(*) FROM public.session_turns
-					WHERE ts > now() - INTERVAL '24 hours'
-					  AND COALESCE(cost_usd, 0) > 0
-					  AND COALESCE(credits_charged, 0) = 0`,
+					SELECT COUNT(*) FROM (
+						SELECT ts, model, cost_usd, credits_charged FROM public.session_turns_hot
+						UNION ALL
+						SELECT ts, model, cost_usd, credits_charged FROM public.session_turns
+					) s
+					WHERE s.ts > now() - INTERVAL '24 hours'
+					  AND COALESCE(s.cost_usd, 0) > 0
+					  AND COALESCE(s.credits_charged, 0) = 0`,
 				threshold: func(t DataQualityThresholds) int { return t.BillingCreditGap },
 			},
 			{
