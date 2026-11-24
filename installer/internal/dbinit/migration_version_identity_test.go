@@ -110,14 +110,8 @@ var selfRegistrationKnownExceptions = map[string]struct {
 	"665_provider_error_details_fingerprint_index_repair.sql": {"663", "已作废迁移（被 681 回退）"},
 	// ★ 台账回填迁移（★ 职责内：它给**别的**迁移补记账行）。
 	"923_schema_migrations_ledger_backfill.sql": {"900", "台账回填迁移（职责内）"},
-	// ★★ 错位一格（★ 真缺陷：★ 生产台本上这五行被前一条覆盖 ⇒ 运维读台本被误导。
-	//   ★★ 彻底修复需要**改这 5 条已 applied 迁移的字节** ⇒ 触 L23 字节冻结
-	//   ★★ ⇒ 属 owner 决策项（★ 主档 §4-L1 已登记，★ 本轮不擅自拍板）。
-	"985_request_reconciliation_links.sql":   {"984", "错位一格（L1，owner 决策项）"},
-	"986_provider_attempt_media_usage.sql":   {"985", "错位一格（L1，owner 决策项）"},
-	"987_provider_invoice_evidence.sql":      {"986", "错位一格（L1，owner 决策项）"},
-	"988_provider_invoice_usage_buckets.sql": {"987", "错位一格（L1，owner 决策项）"},
-	"925_supplier_contract_rates.sql":        {"988", "错位一格（L1，owner 决策项）"},
+	// ★★ 错位一格（★ 真缺陷已修正：这 5 条在上游已修正字节，自登记值现在等于文件名版本号）。
+	//   ★★ 2026-11-25 合并轮：上游已修正这 5 条迁移的字节 ⇒ 从豁免表删除。
 }
 
 var selfRegistrationInsertPattern = regexp.MustCompile(
