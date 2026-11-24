@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
@@ -156,6 +157,33 @@ func boardLogsWhereProbeScope(tr boardTimeRange, alias, tenantID string, include
 		where += " AND " + fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, alias, alias, alias)
 	}
 	return where, args
+}
+
+// boardAliasIdentPrefix 匹配 SQL 片段里的**标识符前缀**（`r.` 形式的表别名限定）。
+//
+// ★ 用词边界而不是裸字符串替换：★ 裸替换 `r.` → `p.` 会把 `error.kind` 这类
+// ★ **以 r 结尾的标识符**误改（`error.` 里也含 "r."）⇒ 故用 `\b` 要求那个 `r`
+// ★ 前面不是词字符 ⇒ 只有**独立的别名**才会被改写。
+var boardAliasIdentPrefix = regexp.MustCompile(`\br\.`)
+
+// boardRewriteAlias 把一段 SQL 里的表别名 `r.` 改写成另一个别名。
+//
+// ★★ 为什么需要它（2026-11-25 12h 修订审计轮 P0）：★★
+// ★★ 「含探测」时三条读链（英雄区 / 趋势 / 饼图）都改成 UNION ALL 探测车道表
+// ★★ （session_turns_probe_hot），探测臂的 FROM 别名是 `p`；★ 但**共用谓词**
+// ★★ boardLogsWhereTerminal 是用业务臂的别名 `r` 构造的 ⇒ ★★ 被原样塞进探测臂
+// ★★ ⇒ ★★ PostgreSQL 解析期就报 `42P01 missing FROM-clause entry for table "r"`
+// ★★ ⇒ ★★ **include_probes=1 时三条读链 100% 失败**（P0）。
+//
+// ★★ 本函数是这条链的**唯一别名改写入口**：探测臂的谓词由**业务臂的同一条谓词**
+// ★★ 逐字改写别名得到 ⇒ ⇒ 两条臂的谓词**结构上不可能漂移**（时间窗、租户、
+// ★★ 终态集、探测谓词、provider 过滤全部自动跟随）★★ ⇒ 这正是本仓「同一宇宙」
+// ★★ 不变量要求的实现方式。
+func boardRewriteAlias(sqlText, alias string) string {
+	if alias == "r" {
+		return sqlText
+	}
+	return boardAliasIdentPrefix.ReplaceAllString(sqlText, alias+".")
 }
 
 func daysToBoardTimeRange(days int) boardTimeRange {

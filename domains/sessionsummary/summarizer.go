@@ -971,16 +971,31 @@ func extractJSON(text string) string {
 	//   —— 原文里 <think> 前缀形态已由调用方 parseSummaryResponse 的 HasPrefix("{")
 	//   与剥离路径覆盖，正常 <think> 包裹场景不受影响。
 	stripped := stripThinkingTags(text)
-	// ★ 误剥回退判据（2026-11-24 2041 审计轮）：剥离把 JSON 骨架字符（{ 或 }）也
-	//   切掉了 ⇒ JSON 字符串值内含字面标签被误剥 ⇒ 回退原文（骨架计数下降是误剥的
-	//   精确信号；正常 <think> 包裹场景骨架计数不变）。
-	if strings.Count(stripped, "{") < strings.Count(text, "{") ||
-		strings.Count(stripped, "}") < strings.Count(text, "}") {
-		return extractJSONWithoutStripping(text)
+	// ★ 误剥回退判据（2026-11-25 12h 修订审计轮 P1 修正）：★★
+	// ★★ 判据必须是「候选**能不能**被解析成 JSON」，而不是「剥离前后大括号
+	// ★★ 计数有没有下降」。★★
+	// ★★ 旧判据（2026-11-24 2041 轮）用 `strings.Count(stripped,"{") <
+	// ★★ strings.Count(text,"{")` ⇒ ★★ **合法地移除整个 thinking 块**同样会让计数
+	// ★★ 下降（只要 thinking 正文里出现 {...}）⇒ ★★ 误判成「误剥」⇒ ★★ 回退到
+	// ★★ **未剥离**原文 ⇒ ★★ thinking 前缀留在结果里 ⇒ ★★ JSON 解析必失败。
+	// ★★ 实测：`<think>{"draft":"x"}</think>{"title":"t"}` ⇒ 旧判据回退 ⇒ 解析失败
+	// ★★ （★ 推理模型输出 thinking 里带 JSON 是**常见**形态 ⇒ 影响面不是边缘情况）。
+	// ★★
+	// ★★ 新判据：★ **两个候选各比一次，谁能被 json 解析就用谁**；★★
+	// ★★   ① 剥离后的候选（正常路径：thinking 包裹 / 包装标签）；
+	// ★★   ② 原文候选（误剥路径：JSON 字符串值内部含字面 <answer>/</output>，
+	// ★★      剥离会把骨架切坏 ⇒ 只有原文能解）。
+	// ★★ 两个都解不出来时，★ **返回剥离后的候选**（保持既有「剥离优先」语义，
+	// ★★ 例如未闭合 thinking 且内容本身不是 JSON 的形态）。
+	candStripped := extractJSONFrom(stripped)
+	if json.Valid([]byte(candStripped)) {
+		return candStripped
 	}
-	text = stripped
-
-	return extractJSONFrom(text)
+	candRaw := extractJSONWithoutStripping(text)
+	if json.Valid([]byte(candRaw)) {
+		return candRaw
+	}
+	return candStripped
 }
 
 // extractJSONFrom 是 extractJSON 的主体（不做 thinking 剥离）。

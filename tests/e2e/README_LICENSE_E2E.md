@@ -116,7 +116,7 @@ export DB_HOST=localhost        # PostgreSQL 主机
 export DB_PORT=5433             # PostgreSQL 端口
 export DB_NAME=llm_gateway_test # 数据库名
 export DB_USER=test             # 数据库用户
-export DB_PASSWORD=test123      # 数据库密码
+export DB_PASSWORD=testpass123 # 数据库密码（★ 与 docker-compose.e2e.yml 的 POSTGRES_PASSWORD 一致 ★）
 ```
 
 ## 测试数据

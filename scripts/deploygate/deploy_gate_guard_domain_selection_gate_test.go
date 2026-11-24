@@ -242,10 +242,11 @@ func TestGuardDomainTableHasNoDeadRules(t *testing.T) {
 // splitDomainRow —— 把映射表的一行拆成「正则 | 门包」。
 //
 // ★★ 必须按**最后一个** '|' 拆（★ 不是第一个）：★ 正则里**自带** '|' 是合法的
-//   （★ 如 `^installer/migrations/.*/(up|down)\.sql$`）⇒ 按第一个拆会把正则
-//   从中间劈开（★ 实测：★ 正则变成 `^installer/migrations/.*/(up` ⇒ 编译不过
-//   ⇒ ★ 那条规则**永远不生效**、★ 门包名也变成错的 ⇒ 会选中一个不存在的包）。
-//   ⇒ ★ 门包路径里不会出现 '|' ⇒ 按最后一个拆必然拆对。
+//
+//	（★ 如 `^installer/migrations/.*/(up|down)\.sql$`）⇒ 按第一个拆会把正则
+//	从中间劈开（★ 实测：★ 正则变成 `^installer/migrations/.*/(up` ⇒ 编译不过
+//	⇒ ★ 那条规则**永远不生效**、★ 门包名也变成错的 ⇒ 会选中一个不存在的包）。
+//	⇒ ★ 门包路径里不会出现 '|' ⇒ 按最后一个拆必然拆对。
 func splitDomainRow(row string) (re string, pkg string, ok bool) {
 	i := strings.LastIndex(row, "|")
 	if i <= 0 || i == len(row)-1 {
@@ -259,12 +260,16 @@ func gitTrackedFiles(t *testing.T) []string {
 	t.Helper()
 	// ★ 必须在**仓根**跑：★ git ls-files 默认只列【当前目录】下的文件
 	//   （★ 测试的 cwd 是包目录 scripts/deploygate ⇒ 不加 -C 会只列这一个小目录）。
-	out, err := exec.Command("git", "-C", "../..", "ls-files").Output()
+	// ★ -z 化（2026-11-25 12h 修订审计轮）：★ `--name-only` 形态默认受
+	// ★ core.quotePath 转义 ⇒ 非 ASCII 路径被转成八进制＋外层双引号 ⇒ ★
+	// ★ 而这里要把路径**逐字**与仓内真实路径比对（⇒ 门选中的包路径必须真实存在）
+	// ★ ⇒ 必须走 `-z` 拿原始 UTF-8 字节 ★
+	out, err := exec.Command("git", "-C", "../..", "ls-files", "-z").Output()
 	if err != nil {
 		t.Fatalf("git ls-files: %v", err)
 	}
 	var files []string
-	for _, ln := range strings.Split(string(out), "\n") {
+	for _, ln := range strings.Split(string(out), "\x00") {
 		ln = strings.TrimSpace(ln)
 		if ln != "" {
 			files = append(files, filepath.ToSlash(ln))

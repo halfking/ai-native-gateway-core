@@ -68,9 +68,9 @@ var (
 
 // multiStmtMigrationFacts 是一条启动迁移的「事实」。
 type multiStmtMigrationFacts struct {
-	File      string
+	File       string
 	Statements int
-	Wrapped   bool
+	Wrapped    bool
 }
 
 // multiStmtAnalyze 解析一段 SQL 文本 ⇒ 事实。
@@ -118,13 +118,16 @@ func multiStmtReadBaselinePin(t *testing.T, root string) string {
 // multiStmtBaselineFileSet 列基线 pin 时已存在的启动迁移文件。
 func multiStmtBaselineFileSet(t *testing.T, root, pin string) map[string]bool {
 	t.Helper()
-	out, err := exec.Command("git", "-C", root, "ls-tree", "-r", "--name-only", pin,
+	// ★ -z 化（2026-11-25 12h 修订审计轮）：★ `--name-only` 默认受 core.quotePath
+	// ★ 转义 ⇒ 非 ASCII 文件名被转成八进制＋外层双引号 ⇒ ★ 而这里取的是
+	// ★ **真实基名**（要与仓内启动迁移逐字比对）⇒ ★ 必须走 `-z` ★
+	out, err := exec.Command("git", "-C", root, "ls-tree", "-r", "--name-only", "-z", pin,
 		"--", multiStmtStartupDir).Output()
 	if err != nil {
 		t.Fatalf("★ 读基线 pin 失败（★ %s ★）：★ %v", pin, err)
 	}
 	set := map[string]bool{}
-	for _, p := range strings.Split(string(out), "\n") {
+	for _, p := range strings.Split(string(out), "\x00") {
 		base := filepath.Base(strings.TrimSpace(p))
 		if base == "" || !strings.HasSuffix(base, ".sql") || strings.HasSuffix(base, ".down.sql") {
 			continue

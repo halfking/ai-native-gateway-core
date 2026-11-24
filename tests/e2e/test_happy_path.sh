@@ -19,7 +19,10 @@ DB_HOST="localhost"
 DB_PORT="5433"
 DB_NAME="llm_gateway_test"
 DB_USER="test"
-DB_PASSWORD="test123"
+# ★★ 2026-11-25（12h 修订审计轮 P1 修正）：★ 须与 docker-compose.e2e.yml 的
+# ★★ POSTGRES_PASSWORD 一致（★ compose 侧已是 testpass123、★ 这里还留 test123
+# ★★ ⇒ ★★ 连 localhost:5433 认证失败、★ 后续 psql 调用全断 ★★）。
+DB_PASSWORD="testpass123"
 export PGPASSWORD="$DB_PASSWORD"
 
 # 临时文件目录
