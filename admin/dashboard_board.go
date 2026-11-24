@@ -105,7 +105,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	// trends 变 nil，页面把 nil 当空数组渲染，于是「这个维度没有客户端」
 	// 与「聚合视图没迁移、算不出来」产出同一张页面。现在两者的错误都
 	// 写进载荷的 degraded 字段（见 applyBoardDegradation）。
-	pies, piesDegraded, piesErr := h.resolveBoardPies(ctx, filterTenant, tr)
+	pies, piesDegraded, piesErr := h.resolveBoardPies(ctx, filterTenant, tr, includeProbes)
 	if piesErr != nil {
 		pies = emptyBoardPies()
 		piesDegraded = boardPieDegradation{
@@ -113,7 +113,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			MissingView: boardMissingViewName(piesErr),
 		}
 	}
-	trends, trendsErr := h.resolveBoardTrends(ctx, filterTenant, tr, providerID)
+	trends, trendsErr := h.resolveBoardTrends(ctx, filterTenant, tr, providerID, includeProbes)
 	if trendsErr != nil {
 		// 显式空数组而非 nil：前端 `?? []` 兜底仍生效，但载荷会带 degraded。
 		trends = []boardTrendPoint{}
@@ -132,9 +132,15 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		}(),
 	}
 	// 2026-11-20 口径对齐轮：显式披露本载荷的探测口径，前端据此给英雄区
-	// 打「含探测」标记。pies/trends 仍来自分钟表（业务口径），include 模式
-	// 下它们与英雄区不同口径——用 probe_scope 让前端能说明这个差异，
-	// 而不是让用户对着两个对不上的数字猜。
+	// 打「含探测」标记。
+	//
+	// ★★ 2026-11-24 真源统一轮订正：★ 原文写的是「pies/trends 仍来自分钟表
+	// ★★ （业务口径），include 模式下它们与英雄区不同口径」⇒ ★★ **这句已过期**：
+	// ★★ 现在英雄区与趋势都读 usage_facts（同一张表、同一探测谓词），
+	// ★★ 饼图读请求级日志（7 个维度的唯一请求级来源）⇒ ★★ 三者都随 include_probes
+	// ★★ 联动 ⇒ ★★ 同一页面里不再出现「卡片 189,008 笔、趋势图停在 75,878 笔」的分裂。
+	// ★★ 唯一残留的不一致在**降级路径**（维表/分钟表恒为排除探测）⇒ 那时载荷会带
+	// ★★ degraded 标记（degraded_pies / degraded_trends），不是静默降级。
 	if includeProbes {
 		resp["probe_scope"] = "included"
 	} else {

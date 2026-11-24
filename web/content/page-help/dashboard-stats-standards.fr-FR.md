@@ -43,8 +43,8 @@ Le trafic de sonde (health check / auto-vérification) figure à part dans la ta
 | Modèles / fournisseurs actifs | Comptage distinct de ceux qui ont reçu du trafic | Pas le « total disponible sur la plateforme » |
 | Clés actives | Nombre de clés actuellement activées | **Selon la configuration, indépendant de la fenêtre** |
 | Nombre d'erreurs | Somme par catégorie de la répartition des échecs ; à défaut, estimé par « requêtes totales × (1 − taux de réussite) » | L'estimation peut différer de quelques lignes |
-| Camemberts (modèle / fournisseur / locataire / client…) | Requêtes, tokens et coût regroupés par dimension | Issus de la table des statistiques à la minute, pas de la même source que les cartes ci-dessus |
-| Courbe d'usage | Requêtes, tokens, coût et crédits par tranche de temps | Également issue de la table des statistiques à la minute |
+| Camemberts (modèle / fournisseur / locataire / client…) | Requêtes, tokens et coût regroupés par dimension | Issus du journal au niveau requête, donc de la même source que les cartes ci-dessus (même périmètre de sonde) |
+| Courbe d'usage | Requêtes, tokens, coût et crédits par tranche de temps | **Même source que les cartes ci-dessus** : même table de faits au niveau requête `usage_facts` et même prédicat de sonde ⇒ les tranches s'additionnent à la carte |
 
 ### Comment la fenêtre temporelle est calculée
 
@@ -57,7 +57,7 @@ Le trafic de sonde (health check / auto-vérification) figure à part dans la ta
 La carte des crédits **ne montre pas** les crédits consommés dans la fenêtre choisie : la colonne des crédits de la table de faits au niveau requête vaut toujours 0 (mesuré : les 298 037 lignes valent 0). La valeur affichée est le **delta temps réel postérieur à la base en cache**. Donc :
 
 - Passer de « Aujourd'hui / 7 derniers jours / 30 derniers jours » laisse la carte des crédits **inchangée** (mesuré : 86 925 dans les trois cas).
-- La courbe d'usage de la même page porte une autre somme de crédits (table à la minute : 1 767 183 sur 7 jours), qui ne correspond pas à la carte.
+- La courbe d'usage et la carte de crédits de la même page proviennent maintenant de la **même source** (toutes deux lisent la table de faits au niveau requête `usage_facts`) ⇒ les crédits des tranches s'additionnent à la carte.
 
 Pour un registre de crédits fiable, utilisez les pages « Coûts d'usage » et « Rapprochement » ; la carte des crédits du tableau de bord ne convient pas aux comparaisons de séries temporelles.
 
@@ -153,7 +153,7 @@ Les lignes par fournisseur de la page de rapprochement (y compris « non attribu
 3. **Aligner ensuite la base de sonde** : le tableau de bord permet de passer à « inclure la sonde » ; les statistiques de session excluent selon les règles de l'univers de sessions ; **le rapprochement inclut toujours les sondes**. Si le nombre de requêtes diverge fortement alors que les coûts se ressemblent ⇒ regardez d'abord les sondes.
 4. **Aligner ensuite la maturité** : le rapprochement est un instantané T+1, **les données du jour en cours ont nécessairement du retard** ; avant de comparer, vérifiez jusqu'à quelle date l'instantané couvre.
 5. **Chercher les marqueurs de dégradation** : quand une carte affiche « dégradé / peu fiable / non calculé », ces zéros ne signifient pas « aucun trafic ».
-6. **Courbe d'usage du tableau de bord ≠ cartes du tableau de bord** : la courbe vient de la table des statistiques à la minute, donc d'une autre source que les cartes du dessus (table de faits au niveau requête) (mesuré : environ 13,8 % d'écart sur une fenêtre de 30 jours).
+6. **La courbe d'usage et les cartes du tableau de bord ont maintenant la même source** : les deux lisent la table de faits au niveau requête `usage_facts` avec le même prédicat de sonde ⇒ les tranches devraient s'additionner à la carte. Sinon : vérifier d'abord le drapeau `degraded` de la charge utile (le périmètre de sonde diffère en cas de repli sur les tables pré-agrégées), puis vérifier l'alignement des fenêtres temporelles.
 7. **« Aujourd'hui » peut échouer (corrigé le 2026-11-23)** : sur les statistiques de session, le préréglage « Aujourd'hui » atteignait de façon reproductible le délai de 30 secondes, faute d'index de jointure côté base de données (index ajouté le 2026-11-23 : la requête est passée de 121,8 s à 0,19 s). Si la page affiche de nouveau l'erreur, l'index a disparu : demander à l'astreinte de vérifier que `idx_session_dim_session_key` est bien en place.
 
 ## Limites connues (mesuré le 2026-11-23)
@@ -163,4 +163,4 @@ Les lignes par fournisseur de la page de rapprochement (y compris « non attribu
 3. **Appels sans session rattachée (F)** : 381 appels directs à l'API ou par script n'ont pas de session ; le tableau de bord les compte, les statistiques de session non.
 4. **Retard du jour même dans l'instantané de rapprochement** : le rapprochement est en base T+1, **les données du jour sont incomplètes** ; les soustraire directement des chiffres temps réel du tableau de bord fait toujours apparaître un écart.
 5. La carte des crédits du tableau de bord ne varie pas avec la fenêtre temporelle (voir plus haut).
-6. La courbe du tableau de bord (table à la minute) et les cartes (table de faits au niveau requête) diffèrent d'environ 13,8 % sur 30 jours (160 451 contre 140 969 requêtes).
+6. **Périmètre de sonde en état dégradé** : lorsque les camemberts et la courbe du tableau de bord basculent sur les tables pré-agrégées après l'échec du chemin principal, ces tables sont toujours « sans sondes » ⇒ en mode « sondes incluses » elles divergent du résumé héros (la charge utile porte alors un drapeau `degraded` — ce n'est pas une dégradation silencieuse).
