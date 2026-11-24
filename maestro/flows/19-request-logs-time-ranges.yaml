@@ -1,0 +1,226 @@
+# 19-request-logs-time-ranges.yaml —— 请求日志页「切换时间范围后数据正确 ＋ 查询不超时」
+#   真机验证（2026-11-25 request-logs「切换时间范围后无数据 / 超时」根修轮）
+#
+# 覆盖对象：web/src/views/RequestLogsView.vue（时间范围选择 / 加载态 / 过期请求防护）
+#           + admin/logs.go listLogs（窗口原样查询、分页各臂 top-K）
+#
+# ★ 报障原文（211，2026-11-25）：
+#   ① 「选择特定日期进行查询时，一定会出错：服务暂时不可用，请稍后重试
+#      （原因：query timeout after 60 seconds (29545 records found) …）」
+#   ② 「切换不同的时间范围后，发现选择近 7 天、近 14 天、今天没有数据」
+#
+# ★ 根因（两条，都有 211 实测证据）：
+#   ① 月分区统计信息陈旧 ⇒ 冷分区被估成 3 行 ⇒ details 连接退化成 1 亿次
+#      Join Filter 比较（单条语句 26~38s）⇒ 60s 预算内跑不完三条语句。
+#   ② 上一版为压住①加的「探测流量窗口自动截断到 12h」以 `end` 为锚，而日历型
+#      预设的 `end` 是**当天结束时刻（未来）** ⇒ 截出来的窗口落在未来 ⇒ 必然 0 行。
+#      （另：前端 load() 没有过期判定 ⇒ 连续切换时慢的旧请求会覆盖新结果。）
+#
+# ★ 本 flow 证明什么（第一层：真实浏览器能点到、点完之后页面处在正确状态）：
+#   ⓪ 八个档位逐个切换 ⇒ 每次都「加载收尾 + 有数据 + 无报错」；
+#   ① **连续快速切换**（近 14 天 → 近 7 天 → 今天，中间不等）⇒ 最终停在「今天」
+#      且无报错、有数据（过期请求不覆盖、不冒旧错）；
+#   ② 「包含探测」口径下重复 ⓪（报障①含探测时最慢）；
+#   ③ 「查询」按钮重查、翻页 ⇒ 同样收尾且无报错；
+#   ④ 切回业务口径 ⇒ 二次回归。
+#   第二层（语义对拍：请求窗口 == 所选档位、响应窗口 == 请求窗口、行时间落在窗口内、
+#   过期 fetch 被中止、加载态可见、多条件矩阵）在 maestro/tools/assert-request-logs-time-ranges.mjs。
+#
+# ★ 写法约束（沿 16 / 18 头注的实测边界）：不用 evalScript；结构锚点一律 `id:`
+#   （data-testid）；文案断言只用「两侧 `.*` 的正则、只锚稳定片段」（README §8.4）。
+# ★ 运行前提：**必须经 maestro/run-request-logs-time-ranges.sh 运行**（全新 Chrome、
+#   顺延端口、CDP 预置会话、视口 1440x2200——筛选条头部在桌面视口）。
+url: ${BASE_URL}
+---
+# ── 0. 起点：会话分流（CDP 预置会话 ⇄ 真实 UI 登录）────────────────────────
+# 与 18-stats-range-and-scope-hint.yaml 同款（captcha 死锁根治轮）：
+#   · 预置会话：登录弹窗不开 ⇒ 下面的 runFlow 记 SKIPPED，全程不碰 /api/auth/token；
+#   · 无预置：弹窗开着 ⇒ 走共享登录流。
+# ⓪ 先等「预置会话」落地（optional ⇒ 没预置时等满也不判红）
+- extendedWaitUntil:
+    visible:
+      id: "app-user-menu-name"
+    timeout: 20000
+    optional: true
+- openLink: ${BASE_URL}/?login=1
+- runFlow:
+    file: _shared/login.yaml
+    when:
+      visible:
+        id: "login-modal-title"
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── ① 请求日志页：默认档（近 24 小时）加载收尾 ─────────────────────────────
+- openLink: ${BASE_URL}/request-logs
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 30000
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+# 默认是业务口径（不含探测）⇒ 口径徽标不在场
+- assertNotVisible:
+    id: "logs-probe-scope-badge"
+
+# ── ② 业务口径：八个档位逐个切换 ───────────────────────────────────────────
+# 报障点名的三个（今天 / 近 7 天 / 近 14 天）排最前。
+# TODAY_PRESET_ID 由 runner 给：今天有数据就是 kx-dr-preset-today；
+# 凌晨整点后今天可能还没有请求 ⇒ runner 换成 kx-dr-preset-yesterday（否则是预期内的空集）。
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "${TODAY_PRESET_ID}"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last7d"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last14d"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-yesterday"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last24h"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last30d"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-thisMonth"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-lastMonth"
+
+# ── ③ 连续快速切换：近 14 天 → 近 7 天 → 今天（中间不等加载）────────────────
+# ★ 这正是报障②的操作方式。修前：先发出的慢请求后到 ⇒ 把列表覆盖成旧范围的数据、
+#   或把它的超时写进错误面 ⇒「切了范围后列表没数据 / 冒出旧报错」。
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- tapOn:
+    id: "kx-dr-preset-last14d"
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- tapOn:
+    id: "kx-dr-preset-last7d"
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+- tapOn:
+    id: "${TODAY_PRESET_ID}"
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+# 最终停在「今天」档：触发器上的预设名在场
+- assertVisible:
+    id: "kx-dr-trigger-preset"
+- assertNotVisible:
+    id: "logs-empty"
+- assertNotVisible:
+    text: ".*共 0 条.*"
+- assertNotVisible:
+    text: ".*查询失败，未取得数据.*"
+- assertNotVisible:
+    text: ".*服务暂时不可用.*"
+- assertNotVisible:
+    text: ".*查询超时.*"
+
+# ── ④ 「包含探测」口径：徽标出现 ⇒ 档位重走一遍（报障①在这个口径下最慢）──────
+- tapOn:
+    id: "logs-probe-scope-input"
+- extendedWaitUntil:
+    visible:
+      id: "logs-probe-scope-badge"
+    timeout: 30000
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-yesterday"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "${TODAY_PRESET_ID}"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last7d"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last14d"
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last30d"
+
+# ── ⑤ 「查询」按钮重查 + 翻页（含探测 · 近 30 天）───────────────────────────
+- tapOn:
+    id: "logs-query-button"
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+- assertNotVisible:
+    id: "logs-empty"
+- assertNotVisible:
+    text: ".*服务暂时不可用.*"
+- tapOn:
+    text: "下一页"
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+- assertNotVisible:
+    id: "logs-empty"
+- assertNotVisible:
+    text: ".*查询失败，未取得数据.*"
+- assertNotVisible:
+    text: ".*服务暂时不可用.*"
+- tapOn:
+    text: "上一页"
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+
+# ── ⑥ 切回业务口径 + 回到近 24 小时（二次回归）──────────────────────────────
+- tapOn:
+    id: "logs-probe-scope-input"
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-probe-scope-badge"
+    timeout: 30000
+- runFlow:
+    file: _shared/request-logs-range.yaml
+    env:
+      PRESET_ID: "kx-dr-preset-last24h"
+- assertNotVisible:
+    id: "logs-probe-scope-badge"
