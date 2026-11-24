@@ -1933,6 +1933,19 @@ var sessionSummaryLayers999 []byte
 //go:embed embeddata/startup/999_session_summary_layers.down.sql
 var sessionSummaryLayers999Down []byte
 
+// ★ 999a（2026-11-24 数据维护手册轮；★ 编号取字母后缀空号：sqlguard migrationNumPrefix 钉死 ^[0-9]{3}_ ⇒ 四位数对守卫隐形；983b/983c 先例）：运维/数据维护手册条目六条 ——
+//
+//	数据面异常（模型归因缺失/计费口径缺口/会话维度缺失/迁移双账本分叉/
+//	跨面视图列序漂移/归档残片）的标准处置路径。全部 prompt 型 +
+//	auto_execute=FALSE（fail-closed 同 995）。幂等（纯 INSERT +
+//	ON CONFLICT DO NOTHING，零 DDL）⇒ 内容指纹重放零冲突。
+//
+//go:embed embeddata/startup/999a_data_maintenance_playbook.sql
+var dataMaintenancePlaybook999a []byte
+
+//go:embed embeddata/startup/999a_data_maintenance_playbook.down.sql
+var dataMaintenancePlaybook999aDown []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2734,6 +2747,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/998_session_summaries_task_association.down.sql": sessionSummariesTaskAssociation998Down,
 	"startup/999_session_summary_layers.sql":                  sessionSummaryLayers999,
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
+	// ★ 999a（2026-11-24 数据维护手册轮；★ 编号取字母后缀空号：sqlguard migrationNumPrefix 钉死 ^[0-9]{3}_ ⇒ 四位数对守卫隐形；983b/983c 先例）：运维/数据维护手册条目六条。
+	"startup/999a_data_maintenance_playbook.sql":              dataMaintenancePlaybook999a,
+	"startup/999a_data_maintenance_playbook.down.sql":         dataMaintenancePlaybook999aDown,
 	"startup/983_request_metrics.sql":                         requestMetrics983,
 	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。

@@ -101,5 +101,53 @@ func ErrorPlaybookSpecs() []*Spec {
 			HotReload:       false,
 			DangerLevel:     Safe,
 		},
+		{
+			Key:         "error_playbook.data_quality_enabled",
+			EnvName:     "LLM_GATEWAY_ERROR_PLAYBOOK_DATA_QUALITY_ENABLED",
+			Type:        TypeBool,
+			Scope:       ScopePlatform,
+			Category:    CategorySecurity,
+			Default:     true,
+			Description: "数据面异常探测（模型归因缺失/计费口径缺口/会话维度缺失 → 手册留痕）",
+			DescriptionLong: "探测器（DataQualitySource）随摄取窗口运行只读 SQL 检查项：24h 窗口内新增的异常行数超过门槛 ⇒ 生成 data_maintenance:* 事件，" +
+				"命中迁移 999a 的数据维护手册条目（prompt 型、auto_execute=FALSE）⇒ 留痕进管理面待办。" +
+				"探测全部只读、零写入；防噪两级：增量门槛（存量不计——旧伤未愈是常态）＋ 24h 去重窗口。" +
+				"关闭后数据面异常不再自动进手册（条目仍在，运维可手动翻阅）。",
+			HotReload:   true,
+			DangerLevel: Safe,
+		},
+		{
+			Key:         "error_playbook.data_quality_threshold_model_attribution",
+			EnvName:     "LLM_GATEWAY_ERROR_PLAYBOOK_DQ_MODEL_ATTR_THRESHOLD",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategorySecurity,
+			Default:     20,
+			Description: "数据维护探测：24h 内新增未知模型行数门槛（默认 20）",
+			HotReload:   true,
+			DangerLevel: Safe,
+		},
+		{
+			Key:         "error_playbook.data_quality_threshold_billing_gap",
+			EnvName:     "LLM_GATEWAY_ERROR_PLAYBOOK_DQ_BILLING_GAP_THRESHOLD",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategorySecurity,
+			Default:     500,
+			Description: "数据维护探测：24h 内新增 cost>0 且 credits=0 行数门槛（默认 500）",
+			HotReload:   true,
+			DangerLevel: Safe,
+		},
+		{
+			Key:         "error_playbook.data_quality_threshold_session_dim",
+			EnvName:     "LLM_GATEWAY_ERROR_PLAYBOOK_DQ_SESSION_DIM_THRESHOLD",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategorySecurity,
+			Default:     100,
+			Description: "数据维护探测：24h 内新增维度缺失会话数门槛（默认 100）",
+			HotReload:   true,
+			DangerLevel: Safe,
+		},
 	}
 }
