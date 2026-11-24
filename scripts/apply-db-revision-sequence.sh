@@ -3741,14 +3741,6 @@ ledger_artifact_probe "998_session_summaries_task_association.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
 ledger_artifact_probe "999_session_summary_layers.sql" \
   "to_regclass('public.session_summary_layers') IS NOT NULL"
-# ★ 918/925/973/986 的产物 = 三张表 + 一列 + 各自主键/唯一约束与索引（★ 只点本组
-#   引入的对象；★ teams 的两个索引与 user_teams/team_budgets 的索引都在场）。
-#   ★ 列探针用 information_schema（★ api_keys.team_id 是普通列 ⇒ 口径正确，
-#     994 的 pg_catalog 教训只针对物化视图）。
-  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='teams' AND indexname IN ('idx_teams_owner_id','idx_teams_tenant_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='teams_tenant_name_key' AND conrelid='public.teams'::regclass) = 1"
-  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='user_teams' AND indexname IN ('idx_user_teams_user_id','idx_user_teams_team_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='user_teams_user_team_key' AND conrelid='public.user_teams'::regclass) = 1"
-  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
-  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
 # ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
 #   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**
 #   '981' 行已存在（两件事都成立才算记账修好了）。
@@ -3800,6 +3792,21 @@ ledger_artifact_probe "983b_add_raw_model_name.sql" \
 ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
   "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
+# ★★ 2026-11-24（第四轮）：本段此前带**四行孤儿判据**（★ teams / user_teams /
+#   api_keys.team_id / team_budgets 各一条「索引 ＋ 唯一约束」判据，★ 但**没有**
+#   ledger_artifact_probe 前缀 ⇒ shell 把它们当命令执行 ⇒ **exit 127** ⇒
+#   ★★ **DB 修订序列中止 ⇒ 211 部署中止**（★ 归属：**上游 origin/main 引入**，★
+#   ★ 本轮做**零语义阻断修复**：删掉这四行孤儿）。
+# ★★ 为什么**不**把它们 AND 进下面 055-058 的判据：
+#   ① 漂移门（apply-db-revision-sequence_test.sh「probe drifted from file」）
+#      要求探针行里**所有 ≥5 字符的引号字符串**在迁移文件里**逐字出现** ⇒
+#      而那几条判据用了 'public' / 'public.teams' 形态 ⇒ **过不了漂移门**
+#      ⇒ ★ 这正是它们当初写成了孤儿的原因（★ 写不出合规形式）；
+#   ② ★ 加上「索引 ＋ 约束」判据后，**判据可能在生产上永不满足**
+#      （★ 生产 teams 族的索引名与约束名未做只读核实）⇒ ⇒ **部署会失败**。
+# ⇒ ★★ **结论：判据缺口登记待 owner（★ 「teams 族索引/约束的产物判据缺失」）★★；
+#   ★★ 若将来要补，**必须**按漂移门口径写（★ 判据里的字符串字面量逐字取自
+#   ★★ 迁移文件，★ 不用 'public' 形态，★ 并先在 211 上只读核实索引/约束真名）★★。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
 ledger_artifact_probe "055_teams_table.sql" \
   "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
