@@ -119,7 +119,7 @@ var sessionTurnsWritePathRegistry = []sessionTurnsWritePath{
 	{
 		Column: "trace_events",
 		File:   "internal/trace/trace.go",
-		Line:   494,
+		Line:   495,
 		Note: "trace 落库：两面各一条 UPDATE；该列同时也在主写路径的 INSERT 清单里（turn_writer.go:552）" +
 			"⇒ 登记它是为了留痕「这条 UPDATE 是活的」，不是它靠登记才活。",
 	},
