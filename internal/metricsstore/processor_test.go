@@ -722,3 +722,24 @@ func TestConfigFromEnv_OverridesAndFallsBack(t *testing.T) {
 		t.Errorf("非法 MaxRoundsPerTick 应回落默认 %d，实际 %d", base.MaxRoundsPerTick, got.MaxRoundsPerTick)
 	}
 }
+
+// 2026-11-24 12h 审计轮：BATCH_SIZE / MAX_ROUNDS 上限钳制钉测。
+// 极端值必须被钳到 cap 而不是透传（透传=BATCH_SIZE 拉爆内存 / MAX_ROUNDS 拉长单 tick 成准死循环）。
+func TestConfigFromEnv_ClampsExcessiveValues(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_METRICS_BATCH_SIZE", "999999999")
+	t.Setenv("LLM_GATEWAY_METRICS_MAX_ROUNDS", "100000")
+	cfg := ConfigFromEnv(DefaultConfig())
+	if cfg.BatchSize != maxEnvBatchSizeCap {
+		t.Fatalf("BatchSize 未钳制: got=%d want=%d", cfg.BatchSize, maxEnvBatchSizeCap)
+	}
+	if cfg.MaxRoundsPerTick != maxEnvMaxRoundsCap {
+		t.Fatalf("MaxRoundsPerTick 未钳制: got=%d want=%d", cfg.MaxRoundsPerTick, maxEnvMaxRoundsCap)
+	}
+	// 合法值仍透传
+	t.Setenv("LLM_GATEWAY_METRICS_BATCH_SIZE", "800")
+	t.Setenv("LLM_GATEWAY_METRICS_MAX_ROUNDS", "50")
+	cfg = ConfigFromEnv(DefaultConfig())
+	if cfg.BatchSize != 800 || cfg.MaxRoundsPerTick != 50 {
+		t.Fatalf("合法值被误钳: batch=%d rounds=%d", cfg.BatchSize, cfg.MaxRoundsPerTick)
+	}
+}

@@ -772,8 +772,18 @@ func DefaultConfig() Config {
 //
 // ★ 解析失败的处置：**回落默认值并打日志**，不静默、不启动失败。
 //
-//	理由：后台 worker 的配置项写错不该让整个网关起不来
-//	（那会把「统计表延迟」升级成「网关不可用」）。
+// ★ 上限钳制（2026-11-24 12h 审计轮）：BATCH_SIZE / MAX_ROUNDS 除「非正数回落」外
+//
+//	另有上限钳制——极端值不会启动失败，但会拉爆内存（BATCH_SIZE）或把单 tick
+//	拉成准死循环（MAX_ROUNDS）⇒ 钳制到安全上限并打日志。SQL 侧另有
+//	writer.maxBatchInsertRows=500 硬分块，BATCH_SIZE 再大也不会撞 65535 参数硬顶。
+const (
+	maxEnvBatchSizeCap = 1_000_000 // 逻辑批上限：仅影响单批内存占用
+	maxEnvMaxRoundsCap = 200       // 单 tick 批数上限：200×1e6 已远超任何追平需求
+)
+
+// 理由：后台 worker 的配置项写错不该让整个网关起不来
+// （那会把「统计表延迟」升级成「网关不可用」）。
 func ConfigFromEnv(base Config) Config {
 	cfg := base
 
@@ -796,6 +806,9 @@ func ConfigFromEnv(base Config) Config {
 			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_BATCH_SIZE=%q 解析失败（%v）⇒ 回落默认值 %d", raw, err, cfg.BatchSize)
 		case n <= 0:
 			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_BATCH_SIZE=%q 非正数 ⇒ 回落默认值 %d", raw, cfg.BatchSize)
+		case n > maxEnvBatchSizeCap:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_BATCH_SIZE=%q 超上限 %d ⇒ 钳制（逻辑批仅影响内存占用与追平节奏，SQL 侧另有 maxBatchInsertRows=%d 硬分块）", raw, maxEnvBatchSizeCap, maxBatchInsertRows)
+			cfg.BatchSize = maxEnvBatchSizeCap
 		default:
 			cfg.BatchSize = n
 		}
@@ -808,6 +821,9 @@ func ConfigFromEnv(base Config) Config {
 			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_MAX_ROUNDS=%q 解析失败（%v）⇒ 回落默认值 %d", raw, err, cfg.MaxRoundsPerTick)
 		case n <= 0:
 			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_MAX_ROUNDS=%q 非正数 ⇒ 回落默认值 %d", raw, cfg.MaxRoundsPerTick)
+		case n > maxEnvMaxRoundsCap:
+			log.Printf("MetricsProcessor: LLM_GATEWAY_METRICS_MAX_ROUNDS=%q 超上限 %d ⇒ 钳制（单 tick 处理上限 = cap×BatchSize，超出只拉长单 tick 时长、无吞吐收益）", raw, maxEnvMaxRoundsCap)
+			cfg.MaxRoundsPerTick = maxEnvMaxRoundsCap
 		default:
 			cfg.MaxRoundsPerTick = n
 		}
