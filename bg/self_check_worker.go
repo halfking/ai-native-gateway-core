@@ -724,8 +724,9 @@ func selfCheckPingBody(model string) string {
 func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (result string, latencyMs int, errMsg string) {
 	var secretCiphertext []byte
 	var baseURL string
+	var credentialID, providerID int
 	err := w.db.QueryRow(ctx, `
-		SELECT c.secret_ciphertext, p.base_url
+		SELECT c.id, c.secret_ciphertext, p.base_url, p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
@@ -733,7 +734,7 @@ func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (re
 		WHERE pm.raw_model_name = $1
 		  AND c.status = 'active' AND c.lifecycle_status = 'active'
 		  AND cmb.available = TRUE
-		LIMIT 1`, model).Scan(&secretCiphertext, &baseURL)
+	LIMIT 1`, model).Scan(&credentialID, &secretCiphertext, &baseURL, &providerID)
 	if err != nil {
 		return "no_credential", 0, "no routable credential found"
 	}
@@ -757,7 +758,7 @@ func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (re
 	req.Header.Set("X-LLM-Origin-Actor", "self-check-worker")
 
 	start := time.Now()
-	resp, err := w.client.Do(req)
+	resp, err := platformProbeDo(withPlatformProbeProvider(ctx, providerID), w.client, req, credentialID, model, "self_check_isolate")
 	latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		if ctx.Err() != nil {

@@ -108,6 +108,7 @@ const (
 // 的同一条纪律）。
 type modalityVerifyTarget struct {
 	CredentialID   int
+	ProviderID     int
 	CanonicalID    int64
 	CanonicalName  string
 	Ciphertext     []byte
@@ -252,7 +253,8 @@ func NewModalityVerification(db *pgxpool.Pool, encKey []byte, keyring *secret.Ke
 			if modelField == "" {
 				modelField = t.RawModel
 			}
-			return ProbeVisionSemantics(ctx, t.BaseURL, apiKey, modelField, t.Protocol)
+			probeCtx := withPlatformProbeBinding(ctx, t.ProviderID, t.CredentialID, t.RawModel)
+			return ProbeVisionSemantics(probeCtx, t.BaseURL, apiKey, modelField, t.Protocol)
 		},
 	}
 }
@@ -708,7 +710,8 @@ const modalityVerifyAddressableSource = `
 		           COALESCE(c.manual_disabled, FALSE) AS credential_disabled,
 		           COALESCE(p.enabled, TRUE) AS provider_enabled,
 		           COALESCE(p.manual_disabled, FALSE) AS provider_disabled,
-		           COALESCE(cmb.available, TRUE) AS binding_available
+		           COALESCE(cmb.available, TRUE) AS binding_available,
+		           p.id AS provider_id
 		    FROM credential_model_bindings cmb
 		    JOIN credentials c ON c.id = cmb.credential_id
 		    JOIN providers p ON p.id = c.provider_id
@@ -747,7 +750,7 @@ func (m *ModalityVerification) dueTargets(ctx context.Context) ([]modalityVerify
 		       COALESCE(v.carry_level, 'unknown'),
 		       COALESCE(v.read_level, 'unknown'),
 		       COALESCE(v.read_pos_streak, 0),
-		       COALESCE(v.read_neg_streak, 0)
+		       COALESCE(v.read_neg_streak, 0), pp.provider_id
 FROM `+modalityVerifyAddressableSource+` pp
 		LEFT JOIN model_modality_verification v
 		       ON v.credential_id = pp.credential_id
@@ -774,7 +777,7 @@ FROM `+modalityVerifyAddressableSource+` pp
 			&t.Protocol, &t.CatalogCode, &t.StoredModality,
 			&t.CredentialStatus, &t.LifecycleStatus, &t.CredentialDisabled,
 			&t.ProviderEnabled, &t.ProviderDisabled, &t.BindingAvailable,
-			&t.ExistingCarry, &t.ExistingRead, &t.PosStreak, &t.NegStreak,
+			&t.ExistingCarry, &t.ExistingRead, &t.PosStreak, &t.NegStreak, &t.ProviderID,
 		); err != nil {
 			return nil, fmt.Errorf("modality_verification scan row: %w", err)
 		}

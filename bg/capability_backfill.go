@@ -294,6 +294,7 @@ func (b *CapabilityBackfill) Run(ctx context.Context) {
 type dueBinding struct {
 	BindingID     int64
 	CredentialID  int
+	ProviderID    int
 	Ciphertext    []byte
 	OutboundModel string
 	RawModel      string
@@ -612,7 +613,7 @@ func (b *CapabilityBackfill) dueBindings(ctx context.Context) ([]dueBinding, err
 		       COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(p.enabled, TRUE),
 		       COALESCE(p.manual_disabled, FALSE),
-		       COALESCE(cmb.available, TRUE)
+		       COALESCE(cmb.available, TRUE), p.id
 		FROM credential_model_bindings cmb
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -649,7 +650,7 @@ func (b *CapabilityBackfill) dueBindings(ctx context.Context) ([]dueBinding, err
 		if err := rows.Scan(&d.BindingID, &d.CredentialID, &d.Ciphertext, &d.OutboundModel,
 			&d.RawModel, &d.BaseURL, &d.Protocol, &d.CatalogCode,
 			&d.CredentialStatus, &d.LifecycleStatus, &d.CredentialDisabled,
-			&d.ProviderEnabled, &d.ProviderDisabled, &d.BindingAvailable); err != nil {
+			&d.ProviderEnabled, &d.ProviderDisabled, &d.BindingAvailable, &d.ProviderID); err != nil {
 			return nil, fmt.Errorf("capability_backfill scan row: %w", err)
 		}
 		out = append(out, d)
@@ -688,6 +689,7 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 	desc := providercap.Resolve(normed, row.CatalogCode)
 	target := probeTarget{
 		CredentialID:  row.CredentialID,
+		ProviderID:    row.ProviderID,
 		RawModel:      row.RawModel,
 		OutboundModel: row.OutboundModel,
 		BaseURL:       row.BaseURL,
@@ -700,6 +702,7 @@ func (b *CapabilityBackfill) probeAndPersist(ctx context.Context, row dueBinding
 
 	pCtx, cancel := context.WithTimeout(ctx, capabilityBackfillProbeTimeout)
 	defer cancel()
+	pCtx = withPlatformProbeBinding(pCtx, target.ProviderID, target.CredentialID, target.RawModel)
 	// 复用现有探测器。与 probeWithRetry 的差别是**单次尝试**：那条重试阶梯
 	// 只服务于「这一发失败要不要再试」的故障判定，而本任务要的判定只有
 	// 「拿到能力位证据没有」—— 网络错/5xx/429 都不产生证据，重试它们只是

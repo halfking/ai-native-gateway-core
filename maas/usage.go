@@ -140,8 +140,24 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 		return UsageSummary{}, err
 	}
 
+	// ★ 2026-11-24（模型归属审计）：本链此前是
+	// COALESCE(NULLIF(TRIM(outbound_model),''), NULLIF(TRIM(client_model),''), 'unknown')
+	// —— 与 my_usage.go / consumption_detail.go **不一致**（那两处多一层 canonical），
+	// 且**抓不到 "<unknown>" 占位符** ⇒ 失败行的占位符会当成一个真模型名出现在
+	// 按模型聚合的用量面板里。
+	// ⇒ 统一成 canonical → outbound → client → unknown，且把占位符与空串
+	// 一并归到 unknown 桶（与 admin 侧同款）。
+	//
+	// ⚠ 链写成**字面量**而非 Go 函数调用：admin/canonical_read_points_registry_test.go
+	// 的读点扫描器按「字符串字面量 + 拼接链」分析 SQL（见 canonicalInspectTextUnits），
+	// 函数调用会变成拼接洞 ⇒ 模型列从扫描视野里消失 ⇒ 登记门失明。
+	// 一致性由 internal/modelattr 的 TestSQLChainMatchesInlineLiterals 钉住。
 	modelSQL := `
-		SELECT COALESCE(NULLIF(TRIM(r.outbound_model), ''), NULLIF(TRIM(r.client_model), ''), 'unknown') AS model,
+		SELECT COALESCE(
+		         NULLIF(NULLIF(TRIM((SELECT mc.canonical_name FROM models_canonical mc WHERE mc.id = r.canonical_id)), ''), '<unknown>'),
+		         NULLIF(NULLIF(TRIM(r.outbound_model), ''), '<unknown>'),
+		         NULLIF(NULLIF(TRIM(r.client_model), ''), '<unknown>'),
+		         'unknown') AS model,
 		       COUNT(*)::bigint,
 		       COALESCE(SUM(COALESCE(r.credits_charged, 0)), 0)::bigint`
 	if includeCost {

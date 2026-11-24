@@ -14,13 +14,13 @@ var keystoreColumns = []string{
 	"key_hash", "id", "tenant_id", "application_id", "application_code",
 	"key_prefix", "default_client_profile", "owner_user", "rate_limit_rpm",
 	"rate_limit_concurrent", "rate_limit_tpm", "key_tier", "budget_usd",
-	"status", "key_alias", "customer_id", "expires_at",
+	"status", "key_alias", "customer_id", "expires_at", "is_system",
 }
 
 func keystoreRow(hash string, id int, expiresAt any) *pgxmock.Rows {
 	return pgxmock.NewRows(keystoreColumns).
 		AddRow(hash, id, "tenant-x", 1, "app1", "sk-1", nil, nil,
-			nil, nil, nil, "default", nil, "active", nil, nil, expiresAt)
+			nil, nil, nil, "default", nil, "active", nil, nil, expiresAt, true)
 }
 
 // TestKeyStore_FullLoadServesWithZeroDBIO pins the core availability
@@ -57,6 +57,9 @@ func TestKeyStore_FullLoadServesWithZeroDBIO(t *testing.T) {
 	}
 	if info.ID != 7 || info.TenantID != "tenant-x" {
 		t.Fatalf("info = %+v", info)
+	}
+	if !info.IsSystem {
+		t.Fatal("keystore snapshot must preserve api_keys.is_system")
 	}
 	if err := mp.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations (no DB call expected on store hit): %v", err)
@@ -98,7 +101,7 @@ func TestKeyStore_DeltaRevocationPropagation(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "application_id", "application_code", "key_prefix",
 			"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
-			"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias", "customer_id", "expires_at",
+			"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias", "customer_id", "expires_at", "is_system",
 		}))
 	_, err := kv.Verify(context.Background(), "sk-revoked-later")
 	var invalid *InvalidKeyError
@@ -123,7 +126,7 @@ func TestKeyStore_DeltaUpsertRefreshesRow(t *testing.T) {
 		WithArgs(int64(10)).
 		WillReturnRows(pgxmock.NewRows(keystoreColumns).
 			AddRow("hash-stale", 5, "t", 1, "app1", "sk-5", nil, nil,
-				nil, nil, nil, "production", nil, "active", nil, nil, nil))
+				nil, nil, nil, "production", nil, "active", nil, nil, nil, false))
 	mp.ExpectQuery(`ak.enabled = FALSE`).
 		WillReturnRows(pgxmock.NewRows([]string{"key_hash"}))
 
@@ -182,7 +185,7 @@ func TestKeyStore_HardDeleteReconcilesViaLazyPath(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "application_id", "application_code", "key_prefix",
 			"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
-			"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias", "customer_id", "expires_at",
+			"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias", "customer_id", "expires_at", "is_system",
 		}))
 
 	_, err := kv.Verify(context.Background(), "sk-deleted")
@@ -211,9 +214,9 @@ func TestKeyStore_LazySuccessUpserts(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "application_id", "application_code", "key_prefix",
 			"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
-			"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias", "customer_id", "expires_at",
+			"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias", "customer_id", "expires_at", "is_system",
 		}).AddRow(21, "t", 1, "app1", "sk-21", nil, nil, nil, nil, nil,
-			"default", nil, "active", nil, nil, nil))
+			"default", nil, "active", nil, nil, nil, false))
 	mp.ExpectExec(`UPDATE api_keys SET last_used_at`).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 

@@ -1,12 +1,27 @@
 <script setup lang="ts">
 // ReconciliationReport.vue — provider/internal reconciliation layout.
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElAlert, ElButton, ElCollapse, ElCollapseItem } from 'element-plus'
 import DistributionTable from '../../components/analytics/DistributionTable.vue'
 import FailureReasons from '../../components/reconciliation/FailureReasons.vue'
 import ReconciliationCharts from '../../components/reconciliation/ReconciliationCharts.vue'
 import ReconciliationKpiGrid from '../../components/reconciliation/ReconciliationKpiGrid.vue'
 import ReconciliationToolbar from '../../components/reconciliation/ReconciliationToolbar.vue'
-import { useReconciliationPage } from './useReconciliationPage'
+import DailyReconciliationPanel from '../../components/reconciliation/DailyReconciliationPanel.vue'
+import { readDailyReconciliationDefault, type DailyReconciliationCalendar } from '../../api/requestReconciliation'
+import { isSuperAdmin } from '../../store'
+import { snapshotQueryKeys, useReconciliationPage } from './useReconciliationPage'
+
+const route = useRoute()
+const platform = computed(isSuperAdmin)
+const snapshotLink = computed(() => snapshotQueryKeys.some(key => typeof route.query[key] === 'string' && route.query[key] !== ''))
+const mode = ref<'pending' | 'legacy' | 'daily'>(platform.value && !snapshotLink.value ? 'pending' : 'legacy')
+const showSnapshots = computed(() => mode.value === 'legacy')
+const primaryCalendar = ref<DailyReconciliationCalendar | null>(null)
+const policyRequest = new AbortController()
+let policyTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
 
 const {
   t, loading, dimsLoading, exporting, rerunning, errorText, metric, reasonFilter, daysOpen,
@@ -14,12 +29,45 @@ const {
   reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
   personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
   applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
-} = useReconciliationPage()
+} = useReconciliationPage(showSnapshots)
+
+watch(() => snapshotQueryKeys.map(key => route.query[key]), () => {
+  if (snapshotLink.value) mode.value = 'legacy'
+})
+onMounted(async () => {
+  if (!platform.value) return
+  policyTimer = setTimeout(() => {
+    policyRequest.abort()
+    if (mode.value === 'pending') mode.value = 'legacy'
+  }, 3500)
+  try {
+    const calendar = await readDailyReconciliationDefault({ signal: policyRequest.signal })
+    if (disposed || policyRequest.signal.aborted || !platform.value) return
+    primaryCalendar.value = calendar
+    if (calendar && mode.value === 'pending' && !snapshotLink.value) mode.value = 'daily'
+  } catch {
+    // An older or unavailable gateway keeps the snapshot view.
+  } finally {
+    clearTimeout(policyTimer)
+    if (!disposed && mode.value === 'pending') mode.value = 'legacy'
+  }
+})
+onBeforeUnmount(() => {
+  disposed = true
+  clearTimeout(policyTimer)
+  policyRequest.abort()
+})
 </script>
 
 <template>
   <div class="report-page">
+    <div v-if="primaryCalendar && platform" class="reconciliation-mode">
+      <button type="button" class="btn btn-secondary" data-testid="reconciliation-mode-daily" :aria-pressed="mode === 'daily'" @click="mode = 'daily'">{{ t('reports.daily.title') }}</button>
+      <button type="button" class="btn btn-secondary" data-testid="reconciliation-mode-legacy" :aria-pressed="mode === 'legacy'" @click="mode = 'legacy'">{{ t('reports.legacySnapshotView') }}</button>
+    </div>
+    <p v-if="mode === 'pending'" role="status">{{ t('reports.daily.loading') }}</p>
     <ReconciliationToolbar
+      v-if="showSnapshots"
       :view="view"
       :range="kxRange"
       :filters="filters"
@@ -38,6 +86,12 @@ const {
       @clear="clearExtra"
     />
 
+    <DailyReconciliationPanel
+      v-if="platform && (mode === 'daily' || (showSnapshots && !primaryCalendar))"
+      :primary-calendar="mode === 'daily' ? primaryCalendar ?? undefined : undefined"
+    />
+
+    <template v-if="showSnapshots">
     <el-alert v-if="errorText" :title="errorText" type="error" show-icon :closable="false" class="block" />
     <el-alert
       v-else-if="report && !hasData"
@@ -131,11 +185,14 @@ const {
         </el-collapse-item>
       </el-collapse>
     </template>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .report-page { padding: 16px; }
+.reconciliation-mode { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.reconciliation-mode [aria-pressed="true"] { font-weight: 700; }
 .block { margin-top: 16px; }
 .section-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 8px 0; }
 .section-head h2, .panel h3 { margin: 0 0 8px; font-size: 16px; }

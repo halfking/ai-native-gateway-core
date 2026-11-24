@@ -60,9 +60,9 @@ const manifestHeader = `# installed_startup_migrations.tsv — the installer's O
 # this file against StartupFiles entry by entry and fails on any difference, so a
 # hand edit here is a test failure, not a silent divergence.
 #
-# Why it exists: sql/migrations/startup/ holds 495 migration numbers but only 243
-# are registered, and the registered ORDER is not numeric order (bootstrap sits at
-# index 3, 715 at index 149, 704 after 713). A test that needs to replay "the state
+# Why it exists: sql/migrations/startup/ holds far more migration numbers than
+# are registered, and the registered ORDER is not numeric order (e.g. 713 is
+# registered before 704). A test that needs to replay "the state
 # just before migration N" cannot work that out from filenames.
 #
 # Why it is a separate artifact rather than the installer reading this file: the

@@ -197,11 +197,11 @@
 | `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。★ **必须经 `maestro/run-session-analytics.sh` 跑**（它负责喂动态段 owner、钉 zh-CN 界面语言、起全新 Chrome）—— 前置条件见 §4.4。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
-合计：**运行时路由 130 条**（§1.1 口径）。
+合计：**运行时路由 136 条**（§1.1 口径）。
 
 > ★ **2026-11-20 订正（会话分析前端交付轮）**：原记「**112 条路由 = 112 条在 11 个功能 flow 里**
 >   + 1 条 `/login` 在共享登录流里」——**已不成立**，两个原因：
->   ① 路由数随上游增长到 **130**（上游新增 8 条 + 本轮 5 条，见 §1.1 的重算表）；
+>   ① 路由数随上游增长到 **136**（上游新增 8 条 + 本轮 5 条，见 §1.1 的重算表）；
 >   ② `13-` / `14-` / `15-` 三个 flow **此前根本没登记进本表**（连同它们覆盖的路由）。
 > ⇒ 本轮**只承诺**「`16-session-analytics-system.yaml` 覆盖的 5 条被浏览器打开过」；
 >   其余路由的 flow 覆盖情况**未逐条复核**（登记为遗留项，见实施报告 §七）。
@@ -589,7 +589,7 @@ CI 上跑的必须是零依赖的这把。
 > 「门自己的误报比没门更坏」⇒ ★ **升级为红门之前必须先人工过一遍候选清单**）。
 >
 > ★★ **当前树的实测产出**（★ 全文见 `docs/audit/evidence/2026-11-23-session-analytics-l14-flow-assertion-sweep.txt`）：
-> 全仓 **29 条 flow / 128 条路由**扫完 ⇒ `not-found` 候选 **68**（★ **其中 17 条指向
+> 全仓 **30 条 flow / 128 条路由**扫完 ⇒ `not-found` 候选 **68**（★ **其中 17 条指向
 > `/admin/session-analytics/users`** ⇒ ★★ **L14 家族＝4 条 flow**：`13-session-analytics-users` /
 > `06-keys-requests` / `14-stats-consistency-test` / `14-user-analytics-enhancement`）、
 > `regex-mismatch` **2**、`undecidable` **46**、其它（无路由/无组件）**21**。

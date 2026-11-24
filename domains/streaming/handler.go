@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"io"
 	"log/slog"
@@ -60,6 +61,7 @@ import (
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -2509,6 +2511,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			TenantID:    "default", // enriched in _request_logs_hot; WAL just needs a row
 			SessionID:   provisionalSessionID,
 			Provisional: true,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}
 		if err := h.requestLogger.CreateInitial(r.Context(), earlyReq); err != nil {
 			// Non-fatal: the safety net + _request_logs_hot still record the
@@ -2541,7 +2544,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 					logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 				}
 				if logCtx.ClientModel == "" {
-					logCtx.SetClientModel("<unknown>")
+					logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 				}
 			}
 			logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, logCtx.ProviderID, logCtx.CredentialID)
@@ -2664,7 +2667,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 			}
 			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
+				logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 			}
 		}
 		logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
@@ -2686,7 +2689,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 		}
 		if logCtx.ClientModel == "" {
-			logCtx.SetClientModel("<unknown>")
+			logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 		}
 	}
 	logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
@@ -2806,6 +2809,25 @@ func (h *ChatHandler) enforceTenantMonthlyBudget(ctx context.Context, w http.Res
 	return applyTenantMonthlyBudgetGate(ctx, w, h.maasSvc, keyInfo, requestID, onReject, envelope)
 }
 
+// enrichAuthenticatedRequestWAL updates the existing provisional request row
+// with the authenticated tenant before early budget/rate gates can terminate
+// the request. Provisional=true tells the UPSERT to retain the server-created
+// session ID; this does not create a second ingress event or replace terminal
+// WAL status.
+func (h *ChatHandler) enrichAuthenticatedRequestWAL(ctx context.Context, requestID, tenantID, sessionID string) {
+	if h == nil || h.requestLogger == nil || requestID == "" || tenantID == "" || tenantID == "default" {
+		return
+	}
+	if err := h.requestLogger.CreateInitial(ctx, &telemetry.InitialRequest{
+		RequestID:   requestID,
+		TenantID:    tenantID,
+		SessionID:   sessionID,
+		Provisional: true,
+	}); err != nil {
+		slog.Warn("request_logger: authenticated WAL enrichment failed", "request_id", requestID, "tenant_id", tenantID, "error", err)
+	}
+}
+
 // serveWithExecutor is the main chat-completions / completions pipeline.
 // It receives pointers to the safety-net attempt state from ServeHTTP
 // so that any exit path can populate them and the deferred logger in
@@ -2871,7 +2893,7 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 			}
 			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
+				logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 			}
 		}
 		logCtx.EmitFailure(errCode, errMsg, providerID, credentialID)
@@ -2891,7 +2913,7 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 			}
 			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
+				logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 			}
 		}
 		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
@@ -2943,6 +2965,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		keyInfo = ki
 		logCtx.SetKey(ki)
+		h.enrichAuthenticatedRequestWAL(r.Context(), requestID, ki.TenantID, logCtx.ProvisionalSessionID)
 		bindRequestJourney(r, ki.TenantID, logCtx.ClientModel)
 		// SP-02: state machine — auth succeeded.
 		rt.Emit(state.EventAuthed)
@@ -3005,7 +3028,8 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// ── MaaS credits pre-check (non-default tenants) ─────────────────────
-	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
+	billingExempt := tenantBillingExempt(r.Context(), keyInfo)
+	if !billingExempt && keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		if err := h.maasSvc.PreCheckCredits(r.Context(), keyInfo.TenantID); err != nil {
 			if _, ok := err.(*maas.InsufficientCreditsError); ok {
 				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil, http.StatusPaymentRequired)
@@ -3019,7 +3043,7 @@ func (h *ChatHandler) serveWithExecutor(
 	//	★ 2026-11-22 审计轮修正（P0，见 enforceTenantMonthlyBudget）：
 	//	门原先只落在 chat 面 ⇒ /v1/messages、/v1/responses、音频三面绕过。
 	//	⇒ 抽成方法，三面共用。
-	if !h.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
+	if !billingExempt && !h.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 		captureAndEmitFailure(errCode, errMsg, nil, nil, clientStatus)
 	}, nil) {
 		return
@@ -4898,6 +4922,7 @@ func (h *ChatHandler) serveWithExecutor(
 			TenantID:    tenantID,
 			SessionID:   gwSessionID,
 			ClientModel: clientModel,
+			ReceivedAt:  middleware.ServerRequestReceivedAt(r.Context()),
 		}
 		if err := h.requestLogger.CreateInitial(r.Context(), initialReq); err != nil {
 			slog.Warn("request_logger: CreateInitial failed", "request_id", requestID, "error", err)
@@ -5223,6 +5248,8 @@ func (h *ChatHandler) serveWithExecutor(
 	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
+			PlatformOrigin:     platformOriginForKey(r.Context(), keyInfo),
+			AttemptBusinessKey: reconciliationBusinessKey(keyInfo),
 			W:                  streamWriter,
 			UpstreamAttempts:   upstreamAttempts,
 			AttachmentMetadata: attachmentsForOutbound(logCtx),
@@ -5905,6 +5932,8 @@ goalRetryLoopDone:
 					// 否则执行器里后续的候选再解析（探针后刷新 / dispatch 换模型）
 					// 会退回到无模态过滤的查询。
 					fallbackResult, fallbackErr := h.executor.Execute(&executors.ExecParams{
+						PlatformOrigin:     platformOriginForKey(r.Context(), keyInfo),
+						AttemptBusinessKey: reconciliationBusinessKey(keyInfo),
 						W:                  w,
 						R:                  r,
 						BodyBytes:          rewritten,
@@ -7809,20 +7838,23 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		platformOriginStage, platformOriginActor, _ = trustedPlatformOrigin(logCtx.Request.Context(), keyInfo)
 	}
 	if platformOriginStage != "" {
-		// Trusted system-key traffic is platform-owned supplier usage. Preserve
-		// the request fact and its platform origin, but never debit the caller's
-		// tenant wallet for gateway automation.
+		// Preserve trusted platform origin on the request fact regardless of
+		// billing mode; the separately gated exemption below controls whether
+		// this request is charged to the tenant wallet.
 		reqLog.OriginStage = &platformOriginStage
 		if platformOriginActor != "" {
 			reqLog.OriginActor = &platformOriginActor
 		}
-		zero := int64(0)
-		reqLog.CreditsCharged = &zero
 		if logCtx != nil && logCtx.OriginStage == "" {
 			logCtx.SetOriginStage(platformOriginStage)
 		}
 	}
-	if platformOriginStage == "" && h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
+	billingExempt := platformBillingExemptionEnabled() && platformOriginStage != ""
+	if billingExempt {
+		zero := int64(0)
+		reqLog.CreditsCharged = &zero
+	}
+	if !billingExempt && h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		pt, ct, crt, cwt := 0, 0, 0, 0
 		streamChunkCount := 0
 		if reqLog.PromptTokens != nil {
@@ -8572,7 +8604,7 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 	if attemptClientModel != nil && *attemptClientModel == "" {
 		*attemptClientModel = extractModelFromBody(body)
 		if *attemptClientModel == "" {
-			*attemptClientModel = "<unknown>"
+			*attemptClientModel = modelattr.UnknownPlaceholder
 		}
 	}
 }
@@ -10960,7 +10992,7 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 	// so _request_logs.client_model is never blank when body is set.
 	// This distinguishes "empty body" from "body present but no
 	// model field" — both look the same otherwise.
-	*modelOut = "<unknown>"
+	*modelOut = modelattr.UnknownPlaceholder
 }
 
 // emitTuningSignal computes the implicit feedback signal for an auto-route

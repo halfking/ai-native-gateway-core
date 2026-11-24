@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -108,7 +109,8 @@ type AudioService struct {
 	// failureLogger 把逐候选失败喂进共享 candidate_failure_logs 台账
 	// （与 embeddings 同款接线，R40 收口 R39 §七.3 移交项）。可选接线；
 	// nil 时跳过台账写入（默认），所有调用点 nil-safe。
-	failureLogger *executors.CandidateFailureWriter
+	failureLogger   *executors.CandidateFailureWriter
+	attemptRecorder reconciliation.AttemptStore
 	// maas 可选：成功转写后按时长扣租户积分（2026-10-08 Phase B）。
 	maas audioMaasCharger
 	// tenantBudgetGate 可选：租户月度预算闸（938 enforcement_mode，迁移 996）。
@@ -138,6 +140,8 @@ func (s *AudioService) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimi
 func (s *AudioService) SetFailureLogger(writer *executors.CandidateFailureWriter) {
 	s.failureLogger = writer
 }
+
+func (s *AudioService) SetAttemptRecorder(r reconciliation.AttemptStore) { s.attemptRecorder = r }
 
 // logCandidateFailure feeds one abandoned audio candidate into the shared
 // candidate-failure ledger. Kind 走自动分类（*upstream.Error 类型优先，消息
@@ -189,6 +193,7 @@ type TranscribeResult struct {
 	RelayBody       []byte
 	RelayIsSSE      bool
 	RelayIsTextOnly bool
+	relayOutcome    string
 	// IgnoredParams 列出客户端传了、但这条上游形态兑现不了的参数
 	// （chat-audio 桥接下 prompt/temperature 无处安放、language 归一后
 	// 落空）。handler 走 X-Gw-Audio-Ignored-Params 响应头回执，流式走
@@ -563,6 +568,7 @@ func (s *AudioService) transcribeViaMultipart(ctx context.Context, cand provider
 	upReq.Header.Set("Content-Type", mw.FormDataContentType())
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "audio_transcription")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, s.attemptRecorder, cand, req.TenantID, req.RequestID, "audio_transcription_multipart")
 	resp, upErr := s.upstream.Do(upReq)
 	if upErr != nil {
 		return nil, upErr
@@ -588,20 +594,37 @@ func (s *AudioService) transcribeViaMultipart(ctx context.Context, cand provider
 	}
 	if strings.Contains(ct, "text/event-stream") {
 		res.RelayIsSSE = true
-		// 透传形态的 SSE 交给 handler 原样转发；这里不做逐事件解析。
+		if _, observingIngress := ctx.Value(modalityIngressKey{}).(*modalityIngress); observingIngress || attemptObserver != nil {
+			var terminal []byte
+			res.relayOutcome, terminal = transcriptionStreamEvidence(ctx, body)
+			if attemptObserver != nil && terminal != nil {
+				attemptObserver.RecordResponse(terminal, transcriptionMediaUsage(terminal, "provider_transcription_final", false))
+			}
+			attemptObserver.Finish(res.relayOutcome)
+		}
+		// Preserve the upstream stream while recording its protocol outcome separately.
 		return res, nil
 	}
 	if req.ResponseFormat == "text" || req.ResponseFormat == "srt" || req.ResponseFormat == "vtt" {
 		res.RelayIsTextOnly = true
 		res.Text = string(body)
+		if len(body) > 0 {
+			attemptObserver.Finish("success")
+		}
 		return res, nil
 	}
 	var parsed struct {
-		Text  string `json:"text"`
-		Model string `json:"model"`
+		Text  *string `json:"text"`
+		Model string  `json:"model"`
 	}
 	if jerr := json.Unmarshal(body, &parsed); jerr == nil {
-		res.Text = parsed.Text
+		if parsed.Text != nil {
+			res.Text = *parsed.Text
+			if attemptObserver != nil {
+				attemptObserver.RecordResponse(body, transcriptionMediaUsage(body, "provider_transcription", false))
+			}
+			attemptObserver.Finish("success")
+		}
 		if parsed.Model != "" {
 			res.UpstreamModel = parsed.Model
 		}
@@ -728,6 +751,7 @@ func (s *AudioService) transcribeViaChatAudio(ctx context.Context, cand provider
 	upReq.Header.Set("Accept", "application/json")
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "audio_transcription")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, s.attemptRecorder, cand, req.TenantID, req.RequestID, "audio_transcription_chat_bridge")
 	resp, upErr := s.upstream.Do(upReq)
 	if upErr != nil {
 		return nil, upErr
@@ -743,7 +767,14 @@ func (s *AudioService) transcribeViaChatAudio(ctx context.Context, cand provider
 
 	res := &TranscribeResult{Transport: AudioTransportChatAudio, UpstreamModel: cand.RawModel, IgnoredParams: ignoredChatAudioASRParams(cand, req)}
 	if streaming {
-		text, seconds, serr := relayChatAudioSSE(ctx, resp.Body, emitDelta)
+		var observeTerminal func([]byte)
+		if attemptObserver != nil {
+			observeTerminal = func(payload []byte) {
+				attemptObserver.RecordResponse(payload, transcriptionMediaUsage(payload, "provider_chat_audio_final", true))
+				attemptObserver.Finish("success")
+			}
+		}
+		text, seconds, serr := relayChatAudioSSE(ctx, resp.Body, emitDelta, observeTerminal)
 		if serr != nil {
 			return nil, serr
 		}
@@ -771,6 +802,10 @@ func (s *AudioService) transcribeViaChatAudio(ctx context.Context, cand provider
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("chat-audio bridge response has no choices")
 	}
+	if attemptObserver != nil {
+		attemptObserver.RecordResponse(raw, transcriptionMediaUsage(raw, "provider_chat_audio_transcription", true))
+	}
+	attemptObserver.Finish("success")
 	res.Text = parsed.Choices[0].Message.Content
 	if parsed.Usage.Seconds > 0 {
 		res.DurationSeconds = &parsed.Usage.Seconds
@@ -864,6 +899,7 @@ func (s *AudioService) synthesizeViaSpeech(ctx context.Context, cand provider.Ca
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "audio_speech")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, s.attemptRecorder, cand, req.TenantID, req.RequestID, "audio_speech_native")
 	resp, upErr := s.upstream.Do(upReq)
 	if upErr != nil {
 		return nil, upErr
@@ -881,6 +917,12 @@ func (s *AudioService) synthesizeViaSpeech(ctx context.Context, cand provider.Ca
 		return nil, err
 	}
 	ct := resp.Header.Get("Content-Type")
+	if attemptObserver != nil {
+		attemptObserver.RecordResponse(nil, pcmWAVOutputUsage(audio))
+	}
+	if len(audio) > 0 && (strings.HasPrefix(ct, "audio/") || isWAVBytes(audio)) {
+		attemptObserver.Finish("success")
+	}
 	if ct == "" || strings.Contains(ct, "application/json") {
 		// 上游没标（或错标 JSON）时按请求格式推断；RIFF 魔数优先——
 		// 实际字节形态比客户端期望值可信（39 轮 P2-4 同款纠偏）。
@@ -1144,6 +1186,7 @@ func (s *AudioService) synthesizeViaChatAudio(ctx context.Context, cand provider
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "audio_speech")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, s.attemptRecorder, cand, req.TenantID, req.RequestID, "audio_speech_chat_bridge")
 	resp, upErr := s.upstream.Do(upReq)
 	if upErr != nil {
 		return nil, upErr
@@ -1169,6 +1212,7 @@ func (s *AudioService) synthesizeViaChatAudio(ctx context.Context, cand provider
 				} `json:"audio"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage boundedUsageJSON `json:"usage"`
 	}
 	if jerr := json.Unmarshal(raw, &parsed); jerr != nil {
 		return nil, fmt.Errorf("chat-audio TTS response is not JSON: %w", jerr)
@@ -1180,6 +1224,10 @@ func (s *AudioService) synthesizeViaChatAudio(ctx context.Context, cand provider
 	if derr != nil {
 		return nil, fmt.Errorf("chat-audio TTS audio payload is not base64: %w", derr)
 	}
+	if attemptObserver != nil {
+		attemptObserver.RecordResponse(parsed.Usage.envelope(), pcmWAVOutputUsage(audio))
+	}
+	attemptObserver.Finish("success")
 	// 39 轮（P2-4）：桥接实测固定回 24kHz16bit WAV；客户端请求的 format
 	// 若与实际字节不符（上游不认该格式仍回 WAV），Content-Type 按客户端
 	// 期望值标注会让下游按 audio/mp3 等解码失败。按 RIFF 魔数把 WAV 字节
@@ -1227,9 +1275,10 @@ func isWAVBytes(b []byte) bool {
 // 事件形状（OpenAI 转写流式口径，与智谱 glm-asr SSE 同名）由 handler 落盘：
 //
 //	event: transcript.text.delta  {"type":"transcript.text.delta","delta":...}
-func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(string)) (string, *float64, error) {
+func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(string), observeTerminal func([]byte)) (string, *float64, error) {
 	var aggregated strings.Builder
 	var seconds *float64
+	var usagePayload []byte
 	reader := newSSELineReader(ctx, body)
 	for reader.Next() {
 		event, data, ok := reader.Event()
@@ -1238,6 +1287,9 @@ func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(strin
 		}
 		_ = event
 		if data == "[DONE]" {
+			if observeTerminal != nil {
+				observeTerminal(usagePayload)
+			}
 			break
 		}
 		var chunk struct {
@@ -1251,7 +1303,7 @@ func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(strin
 					Content string `json:"content"`
 				} `json:"delta"`
 			} `json:"choices"`
-			Usage struct {
+			Usage *struct {
 				Seconds float64 `json:"seconds"`
 			} `json:"usage"`
 		}
@@ -1275,9 +1327,14 @@ func relayChatAudioSSE(ctx context.Context, body io.Reader, emitDelta func(strin
 			}
 			return aggregated.String(), seconds, fmt.Errorf("upstream stream error: %s", detail)
 		}
-		if chunk.Usage.Seconds > 0 {
-			v := chunk.Usage.Seconds
-			seconds = &v
+		if chunk.Usage != nil {
+			if chunk.Usage.Seconds > 0 {
+				v := chunk.Usage.Seconds
+				seconds = &v
+			}
+			if observeTerminal != nil && len(data) <= maxModalityEvidenceBody {
+				usagePayload = []byte(data)
+			}
 		}
 		for _, ch := range chunk.Choices {
 			if ch.Delta.Content != "" {
@@ -1309,7 +1366,9 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 		writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 		return nil, false
 	}
+	observeModalityIdentity(r, keyInfo)
 	if keyInfo.Status == "throttled" {
+		markModalityRateLimited(r, "key_throttled")
 		ratelimit.MarkGatewaySharedKeyRateLimit(w)
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
@@ -1317,6 +1376,7 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, s.rateLimiter, nil, 0); !outcome.Skipped {
 		writeRateLimitHeaders(w, outcome)
 		if outcome.Blocked {
+			markModalityRateLimited(r, "rate_limit_exceeded")
 			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return nil, false
@@ -1339,7 +1399,12 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 	//	（chargeTranscription → ChargeRequestMultimodalWithMultiplier）
 	//	⇒ 必须过租户级闸，否则 hard 模式的月预算上限可被音频面绕过。
 	//	⇒ 与 chat / messages / responses 共用同一判定体（四面同源）。
-	if !applyTenantMonthlyBudgetGate(r.Context(), w, s.tenantBudgetGate, keyInfo, requestID, nil, nil) {
+	onBudgetReject := func(code, _ string, status int) {
+		if status == http.StatusTooManyRequests {
+			markModalityRateLimited(r, code)
+		}
+	}
+	if !tenantBillingExempt(r.Context(), keyInfo) && !applyTenantMonthlyBudgetGate(r.Context(), w, s.tenantBudgetGate, keyInfo, requestID, onBudgetReject, nil) {
 		return nil, false
 	}
 	return keyInfo, true
@@ -1404,3 +1469,26 @@ func (r *sseLineReader) Event() (event, data string, ok bool) {
 
 // Err 返回底层读取错误。
 func (r *sseLineReader) Err() error { return r.err }
+
+func transcriptionStreamEvidence(ctx context.Context, body []byte) (string, []byte) {
+	reader := newSSELineReader(ctx, bytes.NewReader(body))
+	var terminal []byte
+	for reader.Next() {
+		event, data, _ := reader.Event()
+		var payload struct {
+			Type  string          `json:"type"`
+			Error json.RawMessage `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(data), &payload)
+		switch {
+		case event == "error" || payload.Type == "error" || (len(payload.Error) != 0 && string(payload.Error) != "null"):
+			return "failure", nil
+		case event == "transcript.text.done" || payload.Type == "transcript.text.done":
+			terminal = []byte(data)
+		}
+	}
+	if terminal != nil && reader.Err() == nil {
+		return "success", terminal
+	}
+	return "unknown", nil
+}

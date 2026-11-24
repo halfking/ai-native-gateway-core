@@ -1140,6 +1140,24 @@ func clientTokenForMetrics(params *ExecParams) string {
 	return clientTokenOf(userKey, clientType)
 }
 
+func providerAttemptClassification(params *ExecParams) (trafficClass, clientID, source, tenantID, requestID string) {
+	if params == nil {
+		return "unknown", "", "gateway_executor", "", ""
+	}
+	tenantID = strings.TrimSpace(params.TenantID)
+	if tenantID != "" {
+		requestID = strings.TrimSpace(params.RequestID)
+	}
+	switch params.PlatformOrigin {
+	case "health", "self_check", "admin_test", "probe":
+		return "platform", "platform-automation", "gateway_executor:" + params.PlatformOrigin, tenantID, requestID
+	}
+	if params.AttemptBusinessKey && requestID != "" {
+		return "business", params.ClientID.IdentityHash, "gateway_executor", tenantID, requestID
+	}
+	return "unknown", "", "gateway_executor", tenantID, requestID
+}
+
 func (e *Executor) beginUpstreamAttempt(params *ExecParams, cand provider.Candidate, protocol string, body []byte) error {
 	if err := e.checkCandidateContextBudget(params, cand, protocol, body); err != nil {
 		return err
@@ -1503,6 +1521,11 @@ type ExecParams struct {
 	// The handler passes the same value it uses for _request_logs insert;
 	// executor does not generate one itself.
 	RequestID string
+	// PlatformOrigin is assigned only by trusted server-side system-key
+	// classification. Caller headers must never populate this field.
+	PlatformOrigin string
+	// AttemptBusinessKey records a verified tenant key on the gateway ingress.
+	AttemptBusinessKey bool
 	// RequestJourney state is allocated by the protocol handler and shared with
 	// dispatch so handler and pipeline events remain one monotonic sequence.
 	JourneyGatewayInstanceID string

@@ -42,9 +42,11 @@
 // ★ 本页**不提供** xlsx 导出：那个端点返回 `…spreadsheetml.sheet` 二进制，
 //   不是 JSON（`api/reportRollup.ts` 明确声明「不提供 export 的解包器」），
 //   而在移动端 WebView 里落盘/分享 xlsx 需要原生能力 ⇒ 做了就是半成品。
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
+import DailyReconciliationEvidence from '@/components/common/DailyReconciliationEvidence.vue'
+import { fetchCapabilities, type DailyReconciliationCalendar } from '@/api/featureCapabilities'
 import {
   fetchReportRollupSummary,
   fetchReportRollupDimensions,
@@ -72,6 +74,32 @@ import {
 } from '@/api/reportRollup'
 
 useHyperPage({ title: () => t('rr.title') })
+
+const mode = ref<'pending' | 'legacy' | 'daily'>('pending')
+const primaryCalendar = ref<DailyReconciliationCalendar | null>(null)
+const policyRequest = new AbortController()
+let policyTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+
+onMounted(async () => {
+  policyTimer = setTimeout(() => {
+    policyRequest.abort()
+    if (mode.value === 'pending') mode.value = 'legacy'
+  }, 3500)
+  try {
+    const calendar = (await fetchCapabilities({ signal: policyRequest.signal }))?.daily_reconciliation_default
+    if (!disposed && !policyRequest.signal.aborted && calendar?.day && /^\d{4}-\d{2}-\d{2}$/.test(calendar.day)
+      && typeof calendar.timezone === 'string' && calendar.timezone) {
+      primaryCalendar.value = calendar
+      mode.value = 'daily'
+    }
+  } catch {
+    // An older or unavailable gateway keeps the snapshot view.
+  } finally {
+    clearTimeout(policyTimer)
+    if (!disposed && mode.value === 'pending') mode.value = 'legacy'
+  }
+})
 
 // ══ 查询条件 ════════════════════════════════════════════════════════════
 
@@ -266,6 +294,9 @@ function dimName(group: string, o: ReportDimensionOption): string {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
+  clearTimeout(policyTimer)
+  policyRequest.abort()
   summary.value = null
   dims.value = null
   summaryError.value = null
@@ -275,6 +306,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="rr">
+    <div v-if="primaryCalendar" class="rr__chips">
+      <button type="button" class="rr__chip-btn" :class="{ 'rr__chip-btn--on': mode === 'daily' }" data-testid="rr-mode-daily" :aria-pressed="mode === 'daily'" @click="mode = 'daily'">{{ t('rr.evidence.title') }}</button>
+      <button type="button" class="rr__chip-btn" :class="{ 'rr__chip-btn--on': mode === 'legacy' }" data-testid="rr-mode-legacy" :aria-pressed="mode === 'legacy'" @click="mode = 'legacy'">{{ t('rr.legacySnapshotView') }}</button>
+    </div>
+    <p v-if="mode === 'pending'" role="status">{{ t('common.loading') }}</p>
+    <DailyReconciliationEvidence
+      v-if="mode === 'daily' || (mode === 'legacy' && !primaryCalendar)"
+      :initial-day="range.end"
+      :primary-calendar="mode === 'daily' ? primaryCalendar ?? undefined : undefined"
+    />
+    <template v-if="mode === 'legacy'">
     <!-- ══ 查询条件 ══ -->
     <section class="rr__sec">
       <header class="rr__head">
@@ -517,6 +559,7 @@ onBeforeUnmount(() => {
         </div>
       </template>
     </section>
+    </template>
   </div>
 </template>
 

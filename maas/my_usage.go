@@ -139,7 +139,11 @@ func (s *Service) QueryMyRequests(ctx context.Context, tenantID, ownerUser strin
 	rowsQuery := `
 		SELECT ` + alias + `.request_id,
 		       ` + alias + `.ts::text,
-		       COALESCE(mc.canonical_name, NULLIF(` + alias + `.outbound_model, ''), NULLIF(` + alias + `.client_model, ''), 'unknown'),
+		       COALESCE(
+		         NULLIF(NULLIF(TRIM(mc.canonical_name), ''), '<unknown>'),
+		         NULLIF(NULLIF(TRIM(` + alias + `.outbound_model), ''), '<unknown>'),
+		         NULLIF(NULLIF(TRIM(` + alias + `.client_model), ''), '<unknown>'),
+		         'unknown'),
 		       ` + alias + `.provider_id,
 		       COALESCE(p.display_name, ''),
 		       ` + alias + `.credential_id,

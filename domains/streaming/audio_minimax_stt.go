@@ -80,6 +80,7 @@ func (s *AudioService) transcribeViaSpeechToText(ctx context.Context, cand provi
 	upReq.Header.Set("Content-Type", mw.FormDataContentType())
 	upReq.Header.Set("X-Gateway-Internal-Purpose", "audio_transcription")
 
+	upReq, attemptObserver := observeModalityRequest(upReq, s.attemptRecorder, cand, req.TenantID, req.RequestID, "audio_transcription_speech_to_text")
 	resp, upErr := s.upstream.Do(upReq)
 	if upErr != nil {
 		return nil, upErr
@@ -99,12 +100,16 @@ func (s *AudioService) transcribeViaSpeechToText(ctx context.Context, cand provi
 	}
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
-		text, dur, perr := parseMinimaxSTTSSE(resp.Body, emitDelta)
+		text, dur, terminal, perr := parseMinimaxSTTSSE(resp.Body, emitDelta)
 		if perr != nil {
 			return nil, perr
 		}
 		res.Text = text
 		res.DurationSeconds = dur
+		if attemptObserver != nil && terminal != nil {
+			attemptObserver.RecordResponse(terminal, transcriptionMediaUsage(terminal, "provider_minimax_transcription_final", false))
+			attemptObserver.Finish("success")
+		}
 		return res, nil
 	}
 
@@ -120,6 +125,12 @@ func (s *AudioService) transcribeViaSpeechToText(ctx context.Context, cand provi
 	if jerr := json.Unmarshal(body, &parsed); jerr != nil {
 		return nil, fmt.Errorf("speech_to_text response is not JSON: %w", jerr)
 	}
+	if attemptObserver != nil {
+		attemptObserver.RecordResponse(body, transcriptionMediaUsage(body, "provider_minimax_transcription", false))
+	}
+	if parsed.Text != "" || parsed.Duration != nil {
+		attemptObserver.Finish("success")
+	}
 	res.Text = parsed.Text
 	res.DurationSeconds = parsed.Duration
 	return res, nil
@@ -130,9 +141,10 @@ func (s *AudioService) transcribeViaSpeechToText(ctx context.Context, cand provi
 // delta 按**到达顺序**拼接（上游按 index 顺序发帧；乱序帧不做重排——
 // 实测从未出现，重排反而会掩盖上游契约变化）。
 // SSE 分帧复用 chat-audio 桥接的 sseLineReader（同一包内最小子集实现）。
-func parseMinimaxSTTSSE(body io.Reader, emitDelta func(string)) (string, *float64, error) {
+func parseMinimaxSTTSSE(body io.Reader, emitDelta func(string)) (string, *float64, []byte, error) {
 	var full strings.Builder
 	var dur *float64
+	var terminal []byte
 	lr := newSSELineReader(context.Background(), body)
 	for lr.Next() {
 		_, payload, ok := lr.Event()
@@ -156,11 +168,12 @@ func parseMinimaxSTTSSE(body io.Reader, emitDelta func(string)) (string, *float6
 			dur = &d
 		}
 		if frame.Finish {
+			terminal = []byte(payload)
 			break
 		}
 	}
 	if err := lr.Err(); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return full.String(), dur, nil
+	return full.String(), dur, terminal, nil
 }

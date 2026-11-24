@@ -189,9 +189,12 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 		var alreadyCharged int64
 		if err := tx.QueryRow(ctx, `
 			SELECT COALESCE(SUM(-amount), 0)::bigint
-			FROM credit_ledger_with_current_month
-			WHERE tenant_id = $1 AND ref_type = 'request' AND ref_id = $2
-			  AND entry_type = 'consume' AND amount < 0
+			FROM (
+				SELECT DISTINCT ON (id) amount FROM credit_ledger_with_current_month
+				WHERE tenant_id = $1 AND ref_type = 'request' AND ref_id = $2
+				  AND entry_type = 'consume' AND amount < 0
+				ORDER BY id, created_at DESC
+			) posted
 		`, tenantID, requestID).Scan(&alreadyCharged); err != nil {
 			return 0, err
 		}
@@ -276,27 +279,24 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 		return 0, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
-
-	// 2026-07-13: increment hourly consumption bucket so the admin
-	// dashboard's "总积分消耗" KPI can be served by an O(≤24-2160) btree
-	// scan instead of a N-row SUM over usage_ledger. The atomic
-	// INSERT … ON CONFLICT DO UPDATE is row-locked by PG, so concurrent
-	// ChargeRequest calls in different gateway instances accumulate
-	// safely without external locking. Backfill (cmd/gateway startup)
-	// reconciles from _request_logs.credits_charged for catch-up windows.
-	_, _ = s.pool.Exec(ctx, `
+	// Monthly bills read these counters. Post the increment in the same
+	// transaction as the debit, using the same transaction clock for both.
+	// Request replay returns above after finding the original postings.
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO maas_credit_consumption_buckets
 			(tenant_id, bucket_start, credits, request_count, updated_at)
 		VALUES
-			($1, date_trunc('hour', now()), $2, 1, now())
+			($1, date_trunc('hour', now(), 'UTC'), $2, 1, now())
 		ON CONFLICT (tenant_id, bucket_start) DO UPDATE
 			SET credits       = maas_credit_consumption_buckets.credits + EXCLUDED.credits,
 			    request_count = maas_credit_consumption_buckets.request_count + 1,
 			    updated_at    = now()
-	`, tenantID, amount)
+	`, tenantID, amount); err != nil {
+		return 0, fmt.Errorf("post request consumption bucket: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
 	return amount, nil
 }
 

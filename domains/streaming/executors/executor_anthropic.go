@@ -17,7 +17,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domain"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelname"
@@ -1184,6 +1185,8 @@ func (e *Executor) executeAnthropicOnce(
 	if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes); err != nil {
 		return nil, err
 	}
+	callAttempt := newProviderAttempt(params, cand, "executor_anthropic")
+	req, attemptBatch := e.observeProviderCalls(req, params, cand, callAttempt)
 
 	reqStart := time.Now()
 	// 2026-11-17（全链路日志审计轮）：对齐 executor_chat.go 的
@@ -1211,10 +1214,15 @@ func (e *Executor) executeAnthropicOnce(
 		}
 	} else {
 		var doErr error
-		resp, doErr = httpClient.Do(req)
+		resp, doErr = upstreampkg.DoObserved(req, httpClient)
 
 		if doErr != nil {
 			uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
+		}
+	}
+	if attemptBatch != nil {
+		if last := attemptBatch.latestAttempt(); last.ID != "" {
+			callAttempt = last
 		}
 	}
 	upstreamLatency := time.Since(reqStart)
@@ -1322,6 +1330,7 @@ func (e *Executor) executeAnthropicOnce(
 			slog.Warn("anthropic upstream error body read failed", "error", bodyReadErr)
 		}
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), body)
+		e.recordAttemptUsage(callAttempt, reconciliation.ParseUsageEvidence(body, cand.Protocol), body, reconciliation.ResponseEndpoint(resp))
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body)
 
 		// 2026-11-09: streaming 路径 400+ 错误专用日志，与 non-streaming 对齐
@@ -1488,6 +1497,7 @@ func (e *Executor) executeAnthropicOnce(
 		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 		outcome := ae.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
+		e.finishObservedStream(callAttempt, params.Capture, outcome, cand.Protocol)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
 				Response:    resp,
@@ -1572,6 +1582,7 @@ func (e *Executor) executeAnthropicOnce(
 		return nil, anthropicReadBodyError(err, resp)
 	}
 	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
+	e.recordAttemptUsage(callAttempt, reconciliation.ParseUsageEvidence(rawResponseBody, cand.Protocol), rawResponseBody, reconciliation.ResponseEndpoint(resp))
 	// 2026-08-27: non-stream empty-response failover, Anthropic parity with
 	// executor_chat.go's 2026-07-15 check. The raw body is Anthropic-shaped on
 	// every client protocol here (Q3 conversion happens inside
@@ -1607,6 +1618,11 @@ func (e *Executor) executeAnthropicOnce(
 	responseBody, err := ae.WriteNonStreamResponse(responseSink(params), resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
 	if err != nil {
 		return nil, err
+	}
+	if e.AttemptRecorder != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = e.AttemptRecorder.Finish(ctx, callAttempt.ID, "success")
+		cancel()
 	}
 	// R25-V (2026-09-30 round 30): LogClientResponse means "the bytes the
 	// client actually received". Under SuppressSuccessWrite (native

@@ -133,8 +133,8 @@ var registry = []entry{
 		Gaps: map[string]string{},
 	},
 	{
-		File: "../../admin/diagnostics_credential.go", Func: "handleForceRecoverSingle",
-		Route: "POST /api/admin/diagnostics/credential/force-recover",
+		File: "../../admin/diagnostics_credential.go", Func: "ForceRecoverCredential",
+		Route: "POST /api/admin/diagnostics/credential/force-recover + error-playbook call_admin_api",
 		Done: map[string]bool{
 			"dbCredentials": true, "dbBindings": true, "dbModelProbe": true, "dbNodeProbe": true,
 			"routingCache": true, "keyCache": true, "keyRotator": true,

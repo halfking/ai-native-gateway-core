@@ -1075,6 +1075,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 					"path", r.URL.Path,
 					"limit_bytes", mbErr.Limit)
 				writePayloadTooLarge(w, int(mbErr.Limit))
+				streaming.RecordGatewayAdmissionRejection(r, http.StatusRequestEntityTooLarge, "dispatch_body_too_large", streaming.VerifiedKeyInfoFromContext(ctx))
 				return
 			}
 			// Non-size parse error — continue with empty metadata;
@@ -1136,16 +1137,19 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			env.Metadata["preferred_credential"] = pref
 			env.Metadata["preferred_credential_source"] = "admin"
 		}
+		verifiedKey := streaming.VerifiedKeyInfoFromContext(ctx)
 		if deps.KeyVerifier != nil && deps.KeyVerifier.Enabled() {
 			if rawKey == "" {
 				if strings.TrimSpace(r.Header.Get("X-Tenant-ID")) != "" {
 					http.Error(w, "authentication required", http.StatusUnauthorized)
+					streaming.RecordGatewayAdmissionRejection(r, http.StatusUnauthorized, "dispatch_authentication_required", nil)
 					return
 				}
 			} else {
 				keyInfo, verifyErr := deps.KeyVerifier.Verify(ctx, rawKey)
 				if verifyErr != nil {
 					http.Error(w, "authentication failed", http.StatusUnauthorized)
+					streaming.RecordGatewayAdmissionRejection(r, http.StatusUnauthorized, "dispatch_authentication_failed", nil)
 					return
 				}
 				tenantID, tenantErr := validatePipelineTenantHeader(r.Header.Get("X-Tenant-ID"), keyInfo)
@@ -1155,8 +1159,10 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 						status = http.StatusForbidden
 					}
 					http.Error(w, tenantErr.Error(), status)
+					streaming.RecordGatewayAdmissionRejection(r, status, "dispatch_tenant_rejected", keyInfo)
 					return
 				}
+				verifiedKey = keyInfo
 				env.TenantID = tenantID
 				env.APIKey = &domain.PipelineAPIKey{
 					ID:       fmt.Sprintf("%d", keyInfo.ID),
@@ -1236,6 +1242,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			gateLogFields = append(gateLogFields,
 				interception.AttributionLogFields(interception.AttributeDecision(env))...)
 			slog.Info("v2 dispatch gate: short-circuit", gateLogFields...)
+			streaming.RecordGatewayAdmissionRejection(r, code, "governance_interception", verifiedKey)
 			return
 		}
 
@@ -1299,6 +1306,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				"status", code,
 				"verdict", env.Metadata["prompt_injection_verdict"],
 			)
+			streaming.RecordGatewayAdmissionRejection(r, code, "prompt_injection_blocked", verifiedKey)
 			return
 		}
 

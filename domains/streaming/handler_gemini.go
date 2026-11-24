@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
@@ -470,6 +471,7 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.requestLogger != nil {
 		if err := h.requestLogger.CreateInitial(r.Context(), &telemetry.InitialRequest{
 			RequestID: requestID, TenantID: "default", SessionID: provisionalSessionID, Provisional: true,
+			ReceivedAt: middleware.ServerRequestReceivedAt(r.Context()),
 		}); err != nil {
 			slog.Warn("gemini_handler: early WAL create failed", "request_id", requestID, "error", err)
 		}

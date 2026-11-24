@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
@@ -197,7 +196,16 @@ type chatStreamContinuation struct {
 	// and the candidate loop never re-runs it). The stream reader also keeps
 	// a local spent flag; the atomic here is the authoritative guard against
 	// any future second splice site.
-	used atomic.Bool
+	used            atomic.Bool
+	attemptID       string
+	parentAttemptID string
+}
+
+func sentEvidenceTime(nanos int64, dispatchAt time.Time) time.Time {
+	if nanos != 0 {
+		return time.Unix(0, nanos).UTC()
+	}
+	return dispatchAt.UTC()
 }
 
 // invoke implements StreamContinuationFn for chatStreamContinuation.
@@ -232,6 +240,13 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	if _, err := consumeUpstreamAttempt(s.params); err != nil {
 		return nil, err
 	}
+	if s.e.AttemptRecorder != nil && s.params.Capture != nil && s.parentAttemptID != "" {
+		u := s.params.Capture.CurrentAttemptUsage()
+		evidence := reconciliation.UsageEvidence{InputTokens: int64TokenPtr(u.PromptTokens), OutputTokens: int64TokenPtr(u.CompletionTokens), CacheReadTokens: int64TokenPtr(u.CacheReadTokens), CacheWriteTokens: int64TokenPtr(u.CacheWriteTokens), Source: "stream_capture_current_attempt:" + strings.ToLower(s.cand.Protocol)}
+		c, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = s.e.AttemptRecorder.RecordUsage(c, s.parentAttemptID, evidence)
+		cancel()
+	}
 	// Clone reuses the full header set of the original request (auth,
 	// egress meta, disguise, session, virtual client ids, transform
 	// injections). GetBody must be rebound to the continuation body:
@@ -258,23 +273,46 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	// 否则是隐性成本。放在 wire 调用前：成功、非 2xx、网络错误都是一次
 	// 真实上游调用，一律计量（放在 200 之后会让失败腿逃过计费）。
 	meterExtraUpstreamCall(s.params)
+	traffic, clientID, source, tenantID, requestID := providerAttemptClassification(s.params)
+	callAttempt := reconciliation.NewAttempt(reconciliation.Attempt{TenantID: tenantID, RequestID: requestID, JobID: s.params.GWTaskID, TrafficClass: traffic, ClientID: clientID, Source: source + ":stream_continuation", AttemptNo: s.params.AttemptNo, ProviderID: s.cand.ProviderID, CredentialID: s.cand.CredentialID, Model: candidateRawModel(s.cand), RateSnapshot: candidateRateSnapshot(s.cand)})
+	clone, attemptBatch := s.e.observeProviderCalls(clone, s.params, s.cand, callAttempt)
 	var resp *http.Response
 	if s.e.Upstream != nil {
 		var uErr *upstreampkg.Error
 		resp, uErr = s.e.Upstream.DoWithHTTPClient(clone, s.client)
+		if attemptBatch != nil {
+			if last := attemptBatch.latestAttempt(); last.ID != "" {
+				callAttempt = last
+			}
+		}
 		if uErr != nil {
+			if len(uErr.Body) > 0 {
+				u := reconciliation.ParseUsageEvidence(uErr.Body, s.cand.Protocol)
+				s.recordUsage(callAttempt, u)
+			}
 			return nil, fmt.Errorf("stream continuation upstream call: %s", uErr.Error())
 		}
 	} else {
 		var doErr error
-		resp, doErr = s.client.Do(clone)
+		resp, doErr = upstreampkg.DoObserved(clone, s.client)
+		if attemptBatch != nil {
+			if last := attemptBatch.latestAttempt(); last.ID != "" {
+				callAttempt = last
+			}
+		}
 		if doErr != nil {
 			return nil, fmt.Errorf("stream continuation http call: %w", doErr)
 		}
 	}
+	s.attemptID = callAttempt.ID
 	if resp.StatusCode != http.StatusOK {
 		preview := make([]byte, 256)
-		n, _ := resp.Body.Read(preview)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		n := copy(preview, body)
+		if s.e.AttemptRecorder != nil {
+			u := reconciliation.ParseUsageEvidence(body, s.cand.Protocol)
+			s.recordUsage(callAttempt, u)
+		}
 		//nolint:errcheck // best-effort close on the error path
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("stream continuation: upstream status %d (%s)",
@@ -290,6 +328,17 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 		"attempt", 1,
 	)
 	return resp.Body, nil
+}
+
+func (s *chatStreamContinuation) recordUsage(a reconciliation.Attempt, u reconciliation.UsageEvidence) {
+	if s.e.AttemptRecorder == nil {
+		return
+	}
+	c, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := s.e.AttemptRecorder.RecordUsage(c, a.ID, u); err != nil {
+		slog.Warn("continuation usage persistence failed", "attempt_id", a.ID, "error", err)
+	}
 }
 
 // chatContinuationMode admits only vendor endpoints and model families whose
@@ -544,7 +593,8 @@ func int64TokenPtr(v *int) *int64 {
 }
 
 func candidateRateSnapshot(c provider.Candidate) map[string]any {
-	values := map[string]any{"currency": c.Currency, "protocol": c.Protocol, "unit": "per_1m_tokens"}
+	values := map[string]any{"source": "routing_reference", "billing_mode": c.BillingMode,
+		"currency": c.Currency, "protocol": c.Protocol, "unit": "per_1m_tokens"}
 	if c.PriceInPer1M != nil {
 		values["input"] = *c.PriceInPer1M
 	}
@@ -1519,17 +1569,14 @@ func (e *Executor) executeOpenAI(
 			if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes); err != nil {
 				return nil, err
 			}
+			trafficClass, trafficClientID, attemptSource, attemptTenantID, attemptRequestID := providerAttemptClassification(params)
 			callAttempt := reconciliation.NewAttempt(reconciliation.Attempt{
-				TenantID: params.TenantID, RequestID: params.RequestID, TrafficClass: "business", ClientID: params.ClientID.IdentityHash,
-				Source: "gateway_executor", AttemptNo: params.AttemptNo, ProviderID: cand.ProviderID,
+				TenantID: attemptTenantID, RequestID: attemptRequestID, JobID: params.GWTaskID, TrafficClass: trafficClass, ClientID: trafficClientID,
+				Source: attemptSource, AttemptNo: params.AttemptNo, ProviderID: cand.ProviderID,
 				CredentialID: cand.CredentialID, Model: candidateRawModel(cand), RateSnapshot: candidateRateSnapshot(cand),
 			})
-			if e.AttemptRecorder != nil {
-				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-				if err := e.AttemptRecorder.Prepare(attemptCtx, callAttempt); err != nil {
-					slog.Warn("provider attempt intent persistence failed", "attempt_id", callAttempt.ID, "error", err)
-				}
-				cancel()
+			if continuation != nil {
+				continuation.parentAttemptID = callAttempt.ID
 			}
 
 			reqStart := time.Now()
@@ -1561,16 +1608,7 @@ func (e *Executor) executeOpenAI(
 			)
 			var resp *http.Response
 			var uErr *upstreampkg.Error
-			var sentNanos atomic.Int64
-			trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { sentNanos.CompareAndSwap(0, time.Now().UTC().UnixNano()) }}
-			req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
-			if e.AttemptRecorder != nil {
-				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-				if err := e.AttemptRecorder.MarkDispatched(attemptCtx, callAttempt.ID); err != nil {
-					slog.Warn("provider attempt dispatch persistence failed", "attempt_id", callAttempt.ID, "error", err)
-				}
-				cancel()
-			}
+			req, attemptBatch := e.observeProviderCalls(req, params, cand, callAttempt)
 			if e.Upstream != nil {
 				if reqPool != nil {
 					resp, uErr = e.Upstream.DoWithHTTPClient(req, httpClient)
@@ -1579,7 +1617,7 @@ func (e *Executor) executeOpenAI(
 				}
 			} else {
 				var doErr error
-				resp, doErr = httpClient.Do(req)
+				resp, doErr = upstreampkg.DoObserved(req, httpClient)
 
 				if doErr != nil {
 					kind := errorsx.ClassifyError(doErr, nil)
@@ -1597,25 +1635,22 @@ func (e *Executor) executeOpenAI(
 					uErr = &upstreampkg.Error{Kind: kind, Message: doErr.Error(), Err: doErr}
 				}
 			}
-			sentAt := time.Time{}
-			if n := sentNanos.Load(); n != 0 {
-				sentAt = time.Unix(0, n).UTC()
-			}
-			if e.AttemptRecorder != nil && resp == nil && !sentAt.IsZero() {
-				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-				if err := e.AttemptRecorder.MarkSent(attemptCtx, callAttempt.ID, sentAt); err != nil {
-					slog.Warn("provider attempt send evidence persistence failed", "attempt_id", callAttempt.ID, "error", err)
+			if attemptBatch != nil {
+				if last := attemptBatch.latestAttempt(); last.ID != "" {
+					callAttempt = last
+					if continuation != nil {
+						continuation.parentAttemptID = last.ID
+					}
 				}
-				cancel()
 			}
-			if e.AttemptRecorder != nil && resp != nil {
-				requestID := resp.Header.Get("x-request-id")
-				if requestID == "" {
-					requestID = resp.Header.Get("request-id")
+			if e.AttemptRecorder != nil && resp == nil && uErr != nil {
+				outcome := "unknown"
+				if uErr.StatusCode > 0 {
+					outcome = "failure"
 				}
 				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-				if err := e.AttemptRecorder.RecordHTTP(attemptCtx, callAttempt.ID, resp.StatusCode, requestID, sentAt); err != nil {
-					slog.Warn("provider attempt response persistence failed", "attempt_id", callAttempt.ID, "error", err)
+				if err := e.AttemptRecorder.Finish(attemptCtx, callAttempt.ID, outcome); err != nil {
+					slog.Warn("provider attempt transport outcome persistence failed", "attempt_id", callAttempt.ID, "error", err)
 				}
 				cancel()
 			}
@@ -1823,6 +1858,14 @@ func (e *Executor) executeOpenAI(
 				// the buffer is full or the body ends (ErrUnexpectedEOF on a
 				// partial fill is the expected stop).
 				n, _ := io.ReadFull(resp.Body, body)
+				if e.AttemptRecorder != nil && n > 0 {
+					evidence := reconciliation.ParseProviderResponseEvidence(body[:n], cand.Protocol, reconciliation.ResponseEndpoint(resp))
+					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					if err := e.AttemptRecorder.RecordUsage(attemptCtx, callAttempt.ID, evidence); err != nil {
+						slog.Warn("provider attempt http-error usage persistence failed", "attempt_id", callAttempt.ID, "error", err)
+					}
+					cancel()
+				}
 				e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), body[:n])
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
@@ -2385,6 +2428,9 @@ func (e *Executor) executeOpenAI(
 			}
 
 			if params.IsStream {
+				if e.AttemptRecorder != nil && resp != nil && resp.StatusCode < 400 {
+					e.observeOpenRouterCost(callAttempt, resp)
+				}
 				if params.OnStreamReady != nil {
 					params.OnStreamReady()
 					params.OnStreamReady = nil
@@ -2476,9 +2522,10 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 				if e.AttemptRecorder != nil {
-					if params.Capture != nil {
+					continuationUsed := continuation != nil && continuation.used.Load()
+					if params.Capture != nil && !continuationUsed {
 						u := params.Capture.CurrentAttemptUsage()
-						usage := reconciliation.UsageEvidence{InputTokens: int64TokenPtr(u.PromptTokens), OutputTokens: int64TokenPtr(u.CompletionTokens), CacheReadTokens: int64TokenPtr(u.CacheReadTokens), CacheWriteTokens: int64TokenPtr(u.CacheWriteTokens), Source: "stream_capture_current_attempt"}
+						usage := reconciliation.UsageEvidence{InputTokens: int64TokenPtr(u.PromptTokens), OutputTokens: int64TokenPtr(u.CompletionTokens), CacheReadTokens: int64TokenPtr(u.CacheReadTokens), CacheWriteTokens: int64TokenPtr(u.CacheWriteTokens), Source: "stream_capture_current_attempt:" + strings.ToLower(cand.Protocol)}
 						if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil {
 							attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 							if err := e.AttemptRecorder.RecordUsage(attemptCtx, callAttempt.ID, usage); err != nil {
@@ -2488,7 +2535,9 @@ func (e *Executor) executeOpenAI(
 						}
 					}
 					outcome := "unknown"
-					if streamOutcome.Interrupted {
+					if continuationUsed {
+						outcome = "failure"
+					} else if streamOutcome.Interrupted {
 						outcome = "failure"
 						if isClientStreamInterruption(streamOutcome.Kind, streamOutcome.Reason) {
 							outcome = "cancelled"
@@ -2503,6 +2552,33 @@ func (e *Executor) executeOpenAI(
 						slog.Warn("provider attempt outcome persistence failed", "attempt_id", callAttempt.ID, "error", err)
 					}
 					cancel()
+					if continuationUsed && continuation.attemptID != "" {
+						if params.Capture != nil {
+							u := params.Capture.CurrentAttemptUsage()
+							evidence := reconciliation.UsageEvidence{InputTokens: int64TokenPtr(u.PromptTokens), OutputTokens: int64TokenPtr(u.CompletionTokens), CacheReadTokens: int64TokenPtr(u.CacheReadTokens), CacheWriteTokens: int64TokenPtr(u.CacheWriteTokens), Source: "stream_capture_current_attempt:" + strings.ToLower(cand.Protocol)}
+							attemptCtx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
+							if err := e.AttemptRecorder.RecordUsage(attemptCtx, continuation.attemptID, evidence); err != nil {
+								slog.Warn("continuation stream usage persistence failed", "attempt_id", continuation.attemptID, "error", err)
+							}
+							cancel()
+						}
+						contOutcome := "unknown"
+						if streamOutcome.Interrupted {
+							contOutcome = "failure"
+							if isClientStreamInterruption(streamOutcome.Kind, streamOutcome.Reason) {
+								contOutcome = "cancelled"
+							}
+						} else if params.Capture != nil {
+							if done, ok := params.Capture.SummaryAsMap()["stream_done_received"].(bool); ok && done {
+								contOutcome = "success"
+							}
+						}
+						attemptCtx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
+						if err := e.AttemptRecorder.Finish(attemptCtx, continuation.attemptID, contOutcome); err != nil {
+							slog.Warn("continuation outcome persistence failed", "attempt_id", continuation.attemptID, "error", err)
+						}
+						cancel()
+					}
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
@@ -2676,7 +2752,12 @@ func (e *Executor) executeOpenAI(
 			}
 			e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), respBody)
 			if e.AttemptRecorder != nil {
-				usage := reconciliation.ParseUsageEvidence(respBody)
+				usage := reconciliation.ParseUsageEvidence(respBody, cand.Protocol)
+				if amount, currency, semantics, ok := reconciliation.ParseReportedCost(respBody, reconciliation.ResponseEndpoint(resp)); ok {
+					usage.ReportedAmount = &amount
+					usage.ReportedCurrency = currency
+					usage.ReportedSemantics = semantics
+				}
 				if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil {
 					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 					if err := e.AttemptRecorder.RecordUsage(attemptCtx, callAttempt.ID, usage); err != nil {
@@ -2686,7 +2767,7 @@ func (e *Executor) executeOpenAI(
 				}
 				if id := reconciliation.ProviderRequestID(resp.Header, respBody); id != "" {
 					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-					if err := e.AttemptRecorder.RecordHTTP(attemptCtx, callAttempt.ID, resp.StatusCode, id, sentAt); err != nil {
+					if err := e.AttemptRecorder.RecordHTTP(attemptCtx, callAttempt.ID, resp.StatusCode, id, time.Time{}); err != nil {
 						slog.Warn("provider attempt request-id persistence failed", "attempt_id", callAttempt.ID, "error", err)
 					}
 					cancel()

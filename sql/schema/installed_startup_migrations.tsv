@@ -5,9 +5,9 @@
 # this file against StartupFiles entry by entry and fails on any difference, so a
 # hand edit here is a test failure, not a silent divergence.
 #
-# Why it exists: sql/migrations/startup/ holds 495 migration numbers but only 243
-# are registered, and the registered ORDER is not numeric order (bootstrap sits at
-# index 3, 715 at index 149, 704 after 713). A test that needs to replay "the state
+# Why it exists: sql/migrations/startup/ holds far more migration numbers than
+# are registered, and the registered ORDER is not numeric order (e.g. 713 is
+# registered before 704). A test that needs to replay "the state
 # just before migration N" cannot work that out from filenames.
 #
 # Why it is a separate artifact rather than the installer reading this file: the
@@ -406,11 +406,18 @@
 388	997_tasks_dimension_table.sql
 389	998_session_summaries_task_association.sql
 390	999_session_summary_layers.sql
-391	1000_teams_table.sql
-392	1001_user_teams.sql
-393	1002_api_keys_team_id.sql
-394	1003_team_budgets.sql
-395	989_migration_ledger_session_analytics_981_repair.sql
-396	982_provider_call_attempts.sql
-397	983_request_metrics.sql
-398	984_session_universe_cost_aware_probe_scope.sql
+391	989_migration_ledger_session_analytics_981_repair.sql
+392	982_provider_call_attempts.sql
+393	983_request_metrics.sql
+394	984_session_universe_cost_aware_probe_scope.sql
+395	985_request_reconciliation_links.sql
+396	986_provider_attempt_media_usage.sql
+397	987_provider_invoice_evidence.sql
+398	988_provider_invoice_usage_buckets.sql
+399	925_supplier_contract_rates.sql
+400	983b_add_raw_model_name.sql
+401	055_teams_table.sql
+402	056_user_teams.sql
+403	057_api_keys_team_id.sql
+404	058_team_budgets.sql
+405	983c_add_occurred_cursor_index.sql

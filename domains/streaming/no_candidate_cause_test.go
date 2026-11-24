@@ -204,20 +204,31 @@ func TestWriteNoCandidateWithCause_Envelopes(t *testing.T) {
 		name string
 		path string
 		alts ModelAlternativesResult
+		// ★ 2026-11-24 12h 修订审计轮：本用例原先对**所有**臂都断言 503，
+		//   而 owner 的 4xx 契约（540a3f763）把「**没有替代模型可给**」这一支
+		//   改成了按归因派生状态码 ⇒ 断言必须**分臂**：
+		//   · 无替代 ⇒ 永久性挡空 ⇒ 4xx（本例主因=配额耗尽 ⇒ 429）
+		//   · 有替代 ⇒ 还能换模型重试 ⇒ 仍 503（并附 alternatives）
+		wantStatus int
+		wantType   string // Anthropic 面的 error.type
 	}
 	arms := []arm{
-		{"openai 无替代", "/v1/chat/completions", ModelAlternativesResult{}},
-		{"openai 带替代", "/v1/chat/completions", alts},
-		{"anthropic 无替代", "/v1/messages", ModelAlternativesResult{}},
-		{"anthropic 带替代", "/v1/messages", alts},
+		{"openai 无替代", "/v1/chat/completions", ModelAlternativesResult{},
+			http.StatusTooManyRequests, ""},
+		{"openai 带替代", "/v1/chat/completions", alts,
+			http.StatusServiceUnavailable, ""},
+		{"anthropic 无替代", "/v1/messages", ModelAlternativesResult{},
+			http.StatusTooManyRequests, "rate_limit_error"},
+		{"anthropic 带替代", "/v1/messages", alts,
+			http.StatusServiceUnavailable, "overloaded_error"},
 	}
 	for _, a := range arms {
 		t.Run(a.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, a.path, nil)
 			w := httptest.NewRecorder()
 			writeNoCandidateWithAlternatives(context.Background(), w, r, "req-c", "m", a.alts, cause)
-			if w.Code != http.StatusServiceUnavailable {
-				t.Fatalf("status = %d, want 503", w.Code)
+			if w.Code != a.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, a.wantStatus)
 			}
 			errObj := decodeErrorObject(t, w)
 			if errObj["message"] != "MSG-TRUTHFUL" {
@@ -233,8 +244,8 @@ func TestWriteNoCandidateWithCause_Envelopes(t *testing.T) {
 				t.Errorf("retryable = %v, want false", errObj["retryable"])
 			}
 			anthropic := a.path == "/v1/messages"
-			if anthropic && errObj["type"] != "overloaded_error" {
-				t.Errorf("anthropic error.type = %v（本轮不改类型契约）", errObj["type"])
+			if anthropic && errObj["type"] != a.wantType {
+				t.Errorf("anthropic error.type = %v, want %v", errObj["type"], a.wantType)
 			}
 			if !anthropic && (errObj["code"] != "no_candidate" || errObj["kind"] != "no_candidate") {
 				t.Errorf("openai code/kind = %v/%v", errObj["code"], errObj["kind"])
@@ -300,8 +311,15 @@ func TestNoCandidateCause_BehaviouralWiring(t *testing.T) {
 	}
 	assertTruthful := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
-		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status = %d, want 503\nbody: %s", w.Code, w.Body.String())
+		// ★ 2026-11-24 12h 修订审计轮修正：这条断言原先钉 503，
+		//   而 owner 要求的 4xx 行为（commit 540a3f763：候选被永久性原因挡空时
+		//   返回 4xx + 正确错误信息）已经把「上游配额耗尽」映射成 429。
+		//   ⇒ 提交自称改了「测试断言」，实际只改了一行文案 ⇒ **origin/main 上这条行为
+		//     守卫一直是红的**（三协议面全红）⇒ 本轮按**已定契约**订正断言。
+		//   ★ 本夹具的主因是配额耗尽（BlockedByCredentialQuota=8，命中数最高）
+		//     ⇒ 期望 429；「无归因 ⇒ 仍 503」由下面的阴性对照单独钉住。
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429（主因=上游配额耗尽 ⇒ 4xx 契约）\nbody: %s", w.Code, w.Body.String())
 		}
 		if !strings.Contains(w.Body.String(), "upstream account quota or balance exhausted") {
 			t.Errorf("响应没有说出真实原因\nbody: %s", w.Body.String())

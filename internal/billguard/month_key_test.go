@@ -186,9 +186,11 @@ var monthBucketSites = []monthBucketCallSite{
 		// 锚点历史同上（:110 → :114 → :118 → :128），每次都是同向下移。
 		// 2026-10-13（12h 审计轮）改键 :128 → :138：394f21982「费用对账三层
 		// 不可达」在 :123-133 插入了 11 行时区根因注释，把该 time.Parse
-		// 再下移 10 行 ⇒ 现为 :138。逐字核对仍是同一处
-		// `parsed, err := time.Parse("2006-01", v)`，同一处漂移。
-		where:      "admin/provider_cost_reconciliation.go:138",
+		// 再下移 10 行 ⇒ 现为 :138。
+		// 2026-11-20 时区对齐轮 L-TZ2 改键 :138 → :141：0e2516e6c 在 :138-140
+		// 插入 3 行注释（L-TZ2 理由说明），把该 time.Parse 再下移 3 行 ⇒
+		// 现为 :141。逐字核对仍是同一处 `parsed, err := time.Parse("2006-01", v)`。
+		where:      "admin/provider_cost_reconciliation.go:141",
 		origin:     "time.Parse(2006-01)",
 		normalized: true,
 	},
@@ -206,9 +208,11 @@ var monthBucketSites = []monthBucketCallSite{
 		// 留着会变成"假装生效的豁免"，与 rowsguard 那条 stale 同类。
 		// 2026-10-13（12h 审计轮）改键 :126 → :145：同上，394f21982 插入的
 		// 11 行时区注释把该 time.Date 构造下移；现 :145 逐字是
-		// `month = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)`，
-		// 仍是同一条缺省月键构造（且时区已由 +08 改 UTC，与写方一致）。
-		where:      "admin/provider_cost_reconciliation.go:145",
+		// `month = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)`。
+		// 2026-11-20 时区对齐轮 L-TZ2 改键 :145 → :148：0e2516e6c 在 :138-140
+		// 插入 3 行注释（L-TZ2 理由说明，位于 else 分支之前），把该缺省路径
+		// time.Date 再下移 3 行 ⇒ 现为 :148（逐字仍是同一条缺省月键构造）。
+		where:      "admin/provider_cost_reconciliation.go:148",
 		origin:     "time.Date(y, m, 1, ...)",
 		normalized: true,
 	},

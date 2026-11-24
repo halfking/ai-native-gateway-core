@@ -9,10 +9,22 @@ import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import { snapshotDatePresets, snapshotNotAfter } from '../../components/reconciliation/snapshotRange'
 import { systemTzDateStr } from '../../components/ui/kxDatePresets'
 import type { DimensionOptions, RangeReport } from '../../api/reportrollup'
+import { readDailyReconciliationDefault, readDailyReport, type DailyQuery } from '../../api/requestReconciliation'
+import { isSuperAdmin } from '../../store'
 
 const getReportSummaryMock = vi.fn()
 const getReportDimensionsMock = vi.fn()
 const pushMock = vi.fn()
+
+vi.mock('../../store', async importOriginal => ({
+  ...await importOriginal<typeof import('../../store')>(),
+  isSuperAdmin: vi.fn(),
+}))
+vi.mock('../../api/requestReconciliation', async importOriginal => ({
+  ...await importOriginal<typeof import('../../api/requestReconciliation')>(),
+  readDailyReconciliationDefault: vi.fn(),
+  readDailyReport: vi.fn(),
+}))
 
 vi.mock('../../api/reportrollup', async () => {
   const actual = await vi.importActual<typeof import('../../api/reportrollup')>('../../api/reportrollup')
@@ -139,11 +151,78 @@ async function clickRadio(wrapper: Awaited<ReturnType<typeof mountView>>, value:
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(isSuperAdmin).mockReturnValue(false)
+  vi.mocked(readDailyReconciliationDefault).mockReset().mockResolvedValue(null)
+  vi.mocked(readDailyReport).mockReset().mockImplementation(async (query: DailyQuery) => ({
+    ...query, version: 'request-reconciliation-v1', platform_scope: true, coverage: 'retained',
+    start: '2026-11-21T08:00:00Z', end: '2026-11-22T08:00:00Z', read_at: '2026-11-23T00:00:00Z',
+    summary: { received_requests: 12 }, rows: [],
+  }))
   routeState.query = {}
   getReportDimensionsMock.mockResolvedValue(emptyDims)
 })
 
 describe('ReconciliationReport', () => {
+  it('opens the platform day without requesting snapshots and allows a manual rollback', async () => {
+    vi.mocked(isSuperAdmin).mockReturnValue(true)
+    vi.mocked(readDailyReconciliationDefault).mockResolvedValue({ day: '2026-11-21', timezone: 'America/Los_Angeles' })
+    getReportSummaryMock.mockResolvedValue(providerReport())
+    const wrapper = await mountView()
+    expect(readDailyReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      day: '2026-11-21', timezone: 'America/Los_Angeles', section: 'coverage',
+    }), expect.anything())
+    expect(getReportSummaryMock).not.toHaveBeenCalled()
+    expect(getReportDimensionsMock).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="reconciliation-mode-daily"]').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('[data-testid="reconciliation-mode-legacy"]').trigger('click')
+    await flushPromises()
+    expect(getReportSummaryMock).toHaveBeenCalledTimes(1)
+    expect(getReportDimensionsMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="primary-dist"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps deep-linked snapshot filters and returns to snapshots if the default is unavailable', async () => {
+    vi.mocked(isSuperAdmin).mockReturnValue(true)
+    vi.mocked(readDailyReconciliationDefault).mockResolvedValue({ day: '2026-11-21', timezone: 'UTC' })
+    routeState.query = { view: 'provider', provider_id: '2', model: 'gpt-test' }
+    getReportSummaryMock.mockResolvedValue(providerReport())
+    const linked = await mountView()
+    expect(getReportSummaryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ provider_id: 2, model: 'gpt-test' }))
+    expect(readDailyReport).not.toHaveBeenCalled()
+    linked.unmount()
+
+    routeState.query = {}
+    getReportSummaryMock.mockClear()
+    vi.mocked(readDailyReconciliationDefault).mockRejectedValue(new Error('unavailable'))
+    const fallback = await mountView()
+    expect(getReportSummaryMock).toHaveBeenCalledTimes(1)
+    expect(fallback.find('[data-testid="reconciliation-mode-daily"]').exists()).toBe(false)
+    expect(fallback.get('details.daily-panel').attributes('open')).toBeUndefined()
+    fallback.unmount()
+  })
+
+  it('keeps the fallback when a timed-out default arrives late', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(isSuperAdmin).mockReturnValue(true)
+      let deliver: ((calendar: { day: string; timezone: string }) => void) | undefined
+      vi.mocked(readDailyReconciliationDefault).mockReturnValue(new Promise(resolve => { deliver = resolve }))
+      getReportSummaryMock.mockResolvedValue(providerReport())
+      const wrapper = mount(ReconciliationReport, { global: { plugins: [i18n] } })
+      await vi.advanceTimersByTimeAsync(3500)
+      expect(getReportSummaryMock).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(readDailyReconciliationDefault).mock.calls[0][0]?.signal?.aborted).toBe(true)
+      deliver?.({ day: '2026-11-21', timezone: 'UTC' })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(readDailyReport).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-testid="reconciliation-mode-daily"]').exists()).toBe(false)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders provider rows in a real table and keeps the day table collapsed', async () => {
     getReportSummaryMock.mockResolvedValue(providerReport())
     const wrapper = await mountView()
