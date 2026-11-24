@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: llm_gateway_test
       POSTGRES_USER: test
-      POSTGRES_PASSWORD: test123
+      POSTGRES_PASSWORD: testpass123
     ports:
       - "5433:5432"
     healthcheck:
@@ -32,7 +32,8 @@ services:
       context: ../../
       dockerfile: cmd/license-authority/Dockerfile
     environment:
-      DB_URL: postgresql://test:test123@postgres:5432/llm_gateway_test
+      LICENSE_AUTHORITY_DATABASE_URL: postgresql://test:testpass123@postgres:5432/llm_gateway_test
+      DB_URL: postgresql://test:testpass123@postgres:5432/llm_gateway_test
       REDIS_ADDR: redis:6379
       PORT: 8443
       LICENSE_AUTHORITY_LOG_LEVEL: info

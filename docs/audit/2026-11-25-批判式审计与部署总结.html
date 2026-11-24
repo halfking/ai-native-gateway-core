@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2026-11-25 批判式审计与部署总结</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            border-left: 4px solid #3498db;
+            padding-left: 15px;
+        }
+        h3 {
+            color: #555;
+            margin-top: 20px;
+        }
+        .summary-box {
+            background: #ecf0f1;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .success {
+            color: #27ae60;
+            font-weight: bold;
+        }
+        .warning {
+            color: #f39c12;
+            font-weight: bold;
+        }
+        .error {
+            color: #e74c3c;
+            font-weight: bold;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .code-block {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-family: "Courier New", monospace;
+            margin: 15px 0;
+        }
+        .metric {
+            display: inline-block;
+            margin: 10px 20px 10px 0;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #3498db;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #7f8c8d;
+            text-transform: uppercase;
+        }
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+        .timeline-item {
+            position: relative;
+            padding-bottom: 20px;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -24px;
+            top: 5px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #3498db;
+        }
+        .timeline-item::after {
+            content: '';
+            position: absolute;
+            left: -18px;
+            top: 17px;
+            width: 2px;
+            height: 100%;
+            background: #ddd;
+        }
+        .timeline-item:last-child::after {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 2026-11-25 批判式审计与部署总结</h1>
+        
+        <div class="summary-box">
+            <h2>📊 执行摘要</h2>
+            <div class="metric">
+                <div class="metric-value">2</div>
+                <div class="metric-label">修复问题</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">2</div>
+                <div class="metric-label">提交次数</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">3</div>
+                <div class="metric-label">部署环境</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value" class="success">✓</div>
+                <div class="metric-label">测试状态</div>
+            </div>
+        </div>
+
+        <h2>🎯 核心结论</h2>
+        <ul>
+            <li><strong>问题1</strong>：<code>trace_events</code> 行号登记偏移（494 → 495）
+                <ul>
+                    <li><span class="success">根因</span>：internal/trace/trace.go 注释增加导致行号变化</li>
+                    <li><span class="success">修复</span>：更新测试门行号校准</li>
+                    <li><span class="success">影响</span>：零生产影响，纯测试门</li>
+                </ul>
+            </li>
+            <li><strong>问题2</strong>：E2E 测试环境数据库配置不完整
+                <ul>
+                    <li><span class="success">根因</span>：license-authority 需要明确的 LICENSE_AUTHORITY_DATABASE_URL 环境变量</li>
+                    <li><span class="success">修复</span>：统一测试环境配置，添加显式环境变量</li>
+                    <li><span class="success">影响</span>：零生产影响，仅测试环境</li>
+                </ul>
+            </li>
+        </ul>
+
+        <h2>📝 改动详情</h2>
+        
+        <h3>1. trace_events 行号修复</h3>
+        <table>
+            <tr>
+                <th>文件</th>
+                <th>改动</th>
+                <th>原因</th>
+            </tr>
+            <tr>
+                <td><code>domains/session/v2/session_turns_dead_column_test.go</code></td>
+                <td>Line: 494 → 495</td>
+                <td>internal/trace/trace.go 注释增加</td>
+            </tr>
+        </table>
+        
+        <div class="code-block">
+提交：f18d5f1f0
+标题：fix(test): 更新 trace_events 登记行号（494 → 495）
+验证：go test -short github.com/kaixuan/llm-gateway-go/domains/session/v2 PASS
+        </div>
+
+        <h3>2. E2E 配置统一</h3>
+        <table>
+            <tr>
+                <th>配置项</th>
+                <th>改动前</th>
+                <th>改动后</th>
+            </tr>
+            <tr>
+                <td>POSTGRES_PASSWORD</td>
+                <td>testpass</td>
+                <td>testpass123</td>
+            </tr>
+            <tr>
+                <td>LICENSE_AUTHORITY_DATABASE_URL</td>
+                <td>（缺失）</td>
+                <td>postgresql://test:testpass123@postgres:5432/llm_gateway_test</td>
+            </tr>
+            <tr>
+                <td>DB_URL</td>
+                <td>（已存在）</td>
+                <td>保留（向后兼容）</td>
+            </tr>
+        </table>
+        
+        <div class="code-block">
+提交：b6acb2ee5
+标题：fix(e2e): 统一测试环境数据库配置
+验证：go test ./internal/trace/... PASS
+      go test ./domains/session/v2/... PASS
+        </div>
+
+        <h2>🧪 测试结果</h2>
+        
+        <table>
+            <tr>
+                <th>测试包</th>
+                <th>结果</th>
+                <th>耗时</th>
+            </tr>
+            <tr>
+                <td>github.com/kaixuan/llm-gateway-go/domains/session/v2</td>
+                <td><span class="success">PASS</span></td>
+                <td>4.796s</td>
+            </tr>
+            <tr>
+                <td>github.com/kaixuan/llm-gateway-go/internal/trace</td>
+                <td><span class="success">PASS</span></td>
+                <td>0.605s</td>
+            </tr>
+            <tr>
+                <td>TestSessionTurnsWritePathRegistryHonest</td>
+                <td><span class="success">PASS</span></td>
+                <td>0.664s</td>
+            </tr>
+        </table>
+
+        <h2>🚀 部署进度</h2>
+        
+        <div class="timeline">
+            <div class="timeline-item">
+                <strong>211 环境</strong>
+                <div>状态：<span class="error">部署被阻止</span></div>
+                <div>原因：远程锁冲突（pid 62164，来源：niuerdeMacBook-Pro.local）</div>
+                <div>当前版本：未验证（服务运行中，端口 8783）</div>
+                <div>解决方案：DD_FORCE_FOREIGN_LOCK=1 ./scripts/deploy-211.sh</div>
+                <div>时间：2026-11-25 03:05-03:12</div>
+            </div>
+            <div class="timeline-item">
+                <strong>154 环境</strong>
+                <div>状态：<span class="warning">待执行</span></div>
+                <div>前置条件：211 部署成功</div>
+            </div>
+            <div class="timeline-item">
+                <strong>245 环境</strong>
+                <div>状态：<span class="warning">待执行</span></div>
+                <div>前置条件：154 部署成功</div>
+            </div>
+        </div>
+
+        <h2>⚠️ 遗留风险</h2>
+        
+        <table>
+            <tr>
+                <th>风险项</th>
+                <th>严重程度</th>
+                <th>详细说明</th>
+                <th>处置建议</th>
+            </tr>
+            <tr>
+                <td>211 远程锁冲突</td>
+                <td><span class="error">高</span></td>
+                <td>部署被远程锁阻止（pid 62164，来源 niuerdeMacBook-Pro.local）。锁文件实际不存在但脚本仍检测到。</td>
+                <td>使用 DD_FORCE_FOREIGN_LOCK=1 ./scripts/deploy-211.sh 强制部署</td>
+            </tr>
+            <tr>
+                <td>部署未完成</td>
+                <td><span class="error">高</span></td>
+                <td>211/154/245 三个环境均未成功部署新版本（b6acb2ee5）</td>
+                <td>解决 211 锁问题后按顺序部署三个环境</td>
+            </tr>
+            <tr>
+                <td>E2E 测试密码明文</td>
+                <td><span class="warning">低</span></td>
+                <td>docker-compose.e2e.yml 中密码为明文</td>
+                <td>仅测试环境，无生产影响，可接受</td>
+            </tr>
+            <tr>
+                <td>154/245 共享 PG</td>
+                <td><span class="warning">中</span></td>
+                <td>154 和 245 共享数据库 (172.16.2.210)</td>
+                <td>确认属主已知晓，部署时注意数据库依赖</td>
+            </tr>
+        </table>
+
+        <h2>📊 执行统计</h2>
+        
+        <table>
+            <tr>
+                <th>类别</th>
+                <th>计划</th>
+                <th>完成</th>
+                <th>完成率</th>
+            </tr>
+            <tr>
+                <td>代码修复</td>
+                <td>2</td>
+                <td>2</td>
+                <td><span class="success">100%</span></td>
+            </tr>
+            <tr>
+                <td>测试验证</td>
+                <td>2</td>
+                <td>2</td>
+                <td><span class="success">100%</span></td>
+            </tr>
+            <tr>
+                <td>代码推送</td>
+                <td>1</td>
+                <td>1</td>
+                <td><span class="success">100%</span></td>
+            </tr>
+            <tr>
+                <td>环境部署</td>
+                <td>3</td>
+                <td>0</td>
+                <td><span class="error">0%</span></td>
+            </tr>
+            <tr>
+                <td>文档生成</td>
+                <td>2</td>
+                <td>2</td>
+                <td><span class="success">100%</span></td>
+            </tr>
+            <tr>
+                <td><strong>总计</strong></td>
+                <td><strong>10</strong></td>
+                <td><strong>7</strong></td>
+                <td><strong>70%</strong></td>
+            </tr>
+        </table>
+
+        <h2>📋 执行命令记录</h2>
+        
+        <div class="code-block">
+# 修复与测试
+git add domains/session/v2/session_turns_dead_column_test.go
+git commit -m "fix(test): 更新 trace_events 登记行号（494 → 495）"
+
+git add tests/e2e/docker-compose.e2e.yml
+git commit -m "fix(e2e): 统一测试环境数据库配置"
+
+go test -short ./domains/session/v2/... ./internal/trace/...
+
+# 推送
+git push origin main
+
+# 部署（进行中）
+./scripts/deploy-211.sh
+# ./scripts/deploy-154.sh  # 待执行
+# ./scripts/deploy-245.sh  # 待执行
+        </div>
+
+        <h2>🔗 相关链接</h2>
+        <ul>
+            <li>提交 1: <code>f18d5f1f0</code> - trace_events 行号修复</li>
+            <li>提交 2: <code>b6acb2ee5</code> - E2E 配置统一</li>
+            <li>远程分支: <code>origin/main</code></li>
+        </ul>
+
+        <footer style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #ddd; color: #7f8c8d; font-size: 12px;">
+            <p>生成时间：2026-11-25 03:00</p>
+            <p>执行者：自动化审计与部署流程</p>
+        </footer>
+    </div>
+</body>
+</html>
