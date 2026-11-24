@@ -26,6 +26,6 @@ CREATE POLICY supplier_contract_rates_platform ON public.supplier_contract_rates
     WITH CHECK (current_setting('app.bypass_rls', true) = 'true');
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('988', 'effective supplier contract rate evidence')
+VALUES ('925', 'effective supplier contract rate evidence')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 COMMIT;

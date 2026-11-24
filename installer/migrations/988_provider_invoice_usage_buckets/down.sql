@@ -14,5 +14,5 @@ ALTER TABLE public.provider_invoice_lines
     DROP COLUMN IF EXISTS bucket_generated_images,
     DROP COLUMN IF EXISTS bucket_video_output_duration_us;
 DROP INDEX IF EXISTS public.idx_provider_invoices_window;
-DELETE FROM public.schema_migrations WHERE version = '987';
+DELETE FROM public.schema_migrations WHERE version = '988';
 COMMIT;

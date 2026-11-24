@@ -4,5 +4,5 @@ SET lock_timeout = '5s';
 SET statement_timeout = '10min';
 
 DROP TABLE IF EXISTS public.request_reconciliation_links;
-DELETE FROM public.schema_migrations WHERE version = '984';
+DELETE FROM public.schema_migrations WHERE version = '985';
 COMMIT;

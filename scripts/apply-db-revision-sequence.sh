@@ -3782,7 +3782,7 @@ ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
 # ★ ★★ 【2026-11-24 第四轮 L11 收口】★★ 985 这条**已零字节精确化** ⇒ ★★ **不用改任何迁移字节** ★★：
 #   ★ ★★ 上一轮登记的「984/985 抢同一行 ⇒ 两条 probe 只能保持 version 判据」**只对 984 成立** ★★
 #   ★ ★★ 对 985 **不成立** ⇒ ★★ 因为 985 写的正是**它抢到的那一行** ⇒ ★★
-#   ★ ★★ ⇒ 985 的判据可以写成「version = '984' AND description LIKE 'client and internal…%'」
+#   ★ ★★ ⇒ 985 的判据已改回查「version = '985' AND description LIKE 'client and internal…%'」
 #   ★ ★★ ⇒ ★★ 生产只读实测（211 / acc-pg17，2026-11-24）：★★ 该判据 = **t**（绿）★★
 #   ★ ★★ 而 984 那条**在 L1 台本订正前不能**精确化：★ 它的描述**从未在账上出现**（★ 被 985 覆盖）⇒ ★★
 #   ★ ★★ 生产只读实测：★ 984 的精确判据 = **f**（红）★★ ⇒ ★★ **归位只等 L1 的台本订正**（★ 改字节不重放 984 件 ⇒ '984' 行不会自己归位；★ 订正后 984 判据可加 description 精确化、★ 985 判据须同步改回查 '985' ⇒ 主档 §C.17 ⑬a2）★★
@@ -3791,13 +3791,13 @@ ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
 #   ★ ★★ 995/985 的纪律先例（★ 同款）：★ 旧判据是**假阳性** ⇒ 本件即使没跑过探针也绿
 #   ★ ★★ ⇒ 现在的判据断言的是**本件真正写下的那行** ⇒ ★★ 探针恢复鉴别力（跑没跑过一眼可辨）★★。
 ledger_artifact_probe "985_request_reconciliation_links.sql" \
-  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984' AND description LIKE 'client and internal request reconciliation links%') = 1"
+  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985' AND description LIKE 'client and internal request reconciliation links%') = 1"
 ledger_artifact_probe "986_provider_attempt_media_usage.sql" \
-  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_call_attempts' AND column_name IN ('audio_input_duration_us','audio_billed_duration_us','audio_output_duration_us','generated_images','video_output_duration_us','media_usage_source')) = 6 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985' AND description LIKE 'measured supplier attempt media usage%') = 1"
+  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_call_attempts' AND column_name IN ('audio_input_duration_us','audio_billed_duration_us','audio_output_duration_us','generated_images','video_output_duration_us','media_usage_source')) = 6 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '986' AND description LIKE 'measured supplier attempt media usage%') = 1"
 ledger_artifact_probe "987_provider_invoice_evidence.sql" \
-  "to_regclass('public.provider_invoices') IS NOT NULL AND to_regclass('public.provider_invoice_lines') IS NOT NULL AND to_regclass('public.idx_provider_invoices_provider_month') IS NOT NULL AND to_regclass('public.idx_provider_invoice_lines_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_provider_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_account_time') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '986' AND description LIKE 'normalized supplier invoice evidence%') = 1"
+  "to_regclass('public.provider_invoices') IS NOT NULL AND to_regclass('public.provider_invoice_lines') IS NOT NULL AND to_regclass('public.idx_provider_invoices_provider_month') IS NOT NULL AND to_regclass('public.idx_provider_invoice_lines_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_provider_request') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_account_time') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '987' AND description LIKE 'normalized supplier invoice evidence%') = 1"
 ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
-  "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '987' AND description LIKE 'structured supplier invoice usage buckets%') = 1"
+  "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988' AND description LIKE 'structured supplier invoice usage buckets%') = 1"
 # ★★ 供应商合同费率件（2026-11-24 还号到 925，原名 989_…）：★ 探针的台账行判据
 #   从 '989' **改成 '988'** —— ★ 因为**本件自己的自登记就是 '988'**
 #   （文件尾部 INSERT INTO public.schema_migrations VALUES ('988', …)，
@@ -3807,7 +3807,7 @@ ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
 #     ⇒ 本件即使没跑过，探针也会绿 ⇒ 探针失去鉴别力。
 #   ★ 现在断言的是**本件真正写下的那行** ⇒ 探针恢复鉴别力（跑没跑过一眼可辨）。
 ledger_artifact_probe "925_supplier_contract_rates.sql" \
-  "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988' AND description LIKE 'effective supplier contract rate evidence%') = 1"
+  "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '925' AND description LIKE 'effective supplier contract rate evidence%') = 1"
 # ★ 983b 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
 #   ★ 这条 probe 是本轮新增迁移的**唯一**到位证据：
 #     该列原先没有任何通道投递 ⇒ 生产上不存在 ⇒ writer.go 写它必然 42703。

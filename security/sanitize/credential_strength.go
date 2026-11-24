@@ -55,6 +55,11 @@ var strongCredentialPrefixes = []string{
 // 判据族与 detector.go 的 credibleBearerCandidate / credibleSecretCandidate
 // 同源（都是「整串属性」判据，RE2 无法用前瞻断言表达），但**更窄**——
 // 因为这里的结果会决定「拒整个请求」，误判成本是会话砖化。
+//
+// 作用域（r1059）：只对 secret（口令/密钥/令牌/JWT）调用；account/email 等
+// PII 类型由 classifySignedThinkingFragments 在入口处排除——形状判据
+// （长度/含数字/点分）本为不透明令牌设计，套在结构化 PII 上必然误伤
+// （长用户名、多点邮箱、18 位身份证、16-19 位银行卡）。
 func strongCredentialCandidate(value string) bool {
 	v := strings.TrimSpace(value)
 	if v == "" {
@@ -87,8 +92,38 @@ func strongCredentialCandidate(value string) bool {
 
 // classifySignedThinkingFragments 把签名 thinking 的检出片段分成
 // 「强凭据」（必须拒）与「散文级弱命中」（放行但记 ERROR）。
+//
+// r1059（2026-11-25，211 ZCode 会话砖化轮，request 180d27c2…，8.9MB
+// /v1/messages → 400 "Invalid request body"；同一会话 16:07/16:20/16:31/16:37
+// 四连挡）：强拒闸此前对**所有检出类型**跑「不透明令牌」形状判据
+// （≥24 且含数字 / JWT 三段点），于是——
+//
+//	· account：长用户名 / 带点账号名被判成强凭据（生产实证 types=account）；
+//	· email：多点分邮箱被判成 JWT 形态（钉测复现 types=email）；
+//	· id_card / credit_card / passport：18 位身份证、16-19 位银行卡本就含
+//	  数字，凡长度过线即「强凭据」。
+//
+// 每一种都是同一颗雷：拒整请求 ⇒ 客户端重发同一会话 ⇒ 砖化。逐一按类型
+// 豁免是打地鼠（account 豁了 email 顶上），所以作用域**反向收紧**：
+//
+//	· **只有 secret（口令/密钥/令牌/JWT）参与强拒**——强拒的正当性是
+//	  「凭据外泄」，签名可伪造 ⇒ 对不验签上游等于明文出网，这条风险只对
+//	  凭据成立；
+//	· 其余类型（account/email/phone/id_card/credit_card/name/custom…）
+//	  一律降 weak：签名 thinking 携带 PII 出网是「脱敏旁路」（ERROR 观测
+//	  可见），不是凭据泄露；形状判据本为不透明令牌设计，套在结构化 PII
+//	  上必然误伤（r1024「身份不是机密」、r1043 D3 同一判据族的延伸）。
+//
+// secret 面的形状判据（strongCredentialCandidate）不动：sk-/ghp_/AKIA 等
+// 厂商前缀照旧强拒，散文级弱值照旧放行（r1058/D1 契约不变）。
 func classifySignedThinkingFragments(fragments []SensitiveFragment) (strong []SensitiveFragment, weak []SensitiveFragment) {
 	for _, f := range fragments {
+		if f.Type != TypeSecret {
+			// 非凭据类永不触发整请求拒绝。仍进 weak 面记 ERROR 观测，
+			// 保持「被放行的敏感内容在观测面上可见」。
+			weak = append(weak, f)
+			continue
+		}
 		if strongCredentialCandidate(f.Value) {
 			strong = append(strong, f)
 			continue

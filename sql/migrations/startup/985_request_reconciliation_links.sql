@@ -32,6 +32,6 @@ CREATE POLICY request_reconciliation_links_read ON public.request_reconciliation
     USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '') AND child_request_id IS NOT NULL);
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('984', 'client and internal request reconciliation links')
+VALUES ('985', 'client and internal request reconciliation links')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 COMMIT;

@@ -242,10 +242,15 @@ check(
 )
 
 // ══════════════════════════════════════════════════════════════════════
-// D. 会话分析·用户页
+// D. 会话统计整合页（/admin/session-analytics/users/overview）
 // ══════════════════════════════════════════════════════════════════════
-console.log('\n──── D. /admin/session-analytics/users ────')
-await goto(`${BASE}/admin/session-analytics/users`, `document.querySelectorAll('.kx-dr-trigger').length > 0`)
+// ★ 2026-11-25：**URL 已更新**（别的会话 28957fe55 把 `/session-analytics/users`
+//   改指向用户画像列表页，会话统计整合页搬到 `/users/overview`）⇒ 本组必须打
+//   整合页，否则量具过期会伪装成「页面坏了」。
+// ★ 已知例外（不在统一口径）：用户画像列表页（`/session-analytics/users`）用的是
+//   **datetime 精度**预设（8 档，含「近 24 小时」）⇒ 时刻窗 ≠ 另外四处的日历日窗。
+console.log('\n──── D. /admin/session-analytics/users/overview ────')
+await goto(`${BASE}/admin/session-analytics/users/overview`, `document.querySelectorAll('.kx-dr-trigger').length > 0`)
 const saTriggers = (await js(PROBE_TRIGGERS)) || []
 check(
   'D1 会话分析用户页存在日期范围选择器',
@@ -355,8 +360,94 @@ async function probeHint(label) {
 
 await goto(`${BASE}/dashboard?tab=stats`, `document.querySelector('.stats-scope-hint')`)
 await probeHint('E-stats ')
-await goto(`${BASE}/admin/session-analytics/users`, `document.querySelector('.stats-scope-hint')`)
+await goto(`${BASE}/admin/session-analytics/users/overview`, `document.querySelector('.stats-scope-hint')`)
 await probeHint('E-sa ')
+
+// ══════════════════════════════════════════════════════════════════════
+// F. 运营面板（/admin/board-operational）—— 第四处并入共享组件（2026-11-25）
+// ══════════════════════════════════════════════════════════════════════
+// ★ 本组守两件事：
+//   ① **第四处也是同一个组件** ⇒ 档位与其他三页**逐字同序相等**（此前它是第四套
+//     预设：今天/近7/近30/近90、跨度上限 365 天 ⇒ 形态不同）；
+//   ② ★★ **网络层**判据：页面**真的把窗口发给了接口** ⇒ 「界面显示的区间 =
+//     数据窗口」不是靠文案自证，而是看真实请求 URL 里的窗口参数。
+//     ★ 为什么单列一条：这一轮的核心交付就是「显示 = 数据」⇒ 必须有**独立于
+//       界面文本**的证据（请求 URL）⇒ 否则文案与请求各说各话时没人发现。
+console.log('\n──── F. /admin/board-operational ────')
+// ★ 等「可交互」的触发器（加载期控件是 disabled ⇒ 点击无效 ⇒ 量具假红）。
+await goto(
+  `${BASE}/admin/board-operational`,
+  `(() => { const b = document.querySelector('.kx-dr-trigger'); return !!b && !b.disabled })()`,
+)
+const boTriggers = (await js(PROBE_TRIGGERS)) || []
+check(
+  'F1 运营面板存在日期范围选择器',
+  boTriggers.length > 0,
+  `找到 ${boTriggers.length} 个 .kx-dr-trigger`,
+)
+let boPanel = null
+if (boTriggers.length > 0) {
+  boPanel = await js(PROBE_PANEL)
+  await js(CLOSE_PANEL)
+}
+check(
+  'F2 运营面板日期范围有**固定档位**',
+  !!boPanel && boPanel.hasPresetsBlock && (boPanel.presets || []).length >= 5,
+  boPanel ? `档位 ${(boPanel.presets || []).length} 项：${(boPanel.presets || []).join(' / ')}` : '未取到面板',
+)
+check(
+  'F3 运营面板日期范围**保留自定义起止**',
+  !!boPanel && boPanel.hasInputsBlock && (boPanel.inputs || []).length === 2,
+  boPanel ? `自定义输入 ${(boPanel.inputs || []).length} 个` : '未取到面板',
+)
+const boPresets = (boPanel && boPanel.presets) || []
+check(
+  'F4 运营面板的档位与 stats 页**逐字同序相等**（⇒ 四处同一组件/同一预设工厂）',
+  boPresets.length > 0 &&
+    boPresets.length === statsPresets.length &&
+    boPresets.every((p, i) => p === statsPresets[i]),
+  `bo=[${boPresets.join('|')}]  stats=[${statsPresets.join('|')}]`,
+)
+
+// ★★ F5：网络层判据 —— 真实请求 URL 里的窗口参数 = 控件显示的区间。
+/** 从控件显示的区间文本（"11/19 – 11/25"）推出请求应当携带的窗口参数。 */
+function expectedWindowFromRangeText(text) {
+  const m = /(\d{1,2})\/(\d{1,2})\s*[–—\-~]\s*(\d{1,2})\/(\d{1,2})/.exec(text || '')
+  if (!m) return null
+  const y = new Date().getFullYear()
+  const start = new Date(y, Number(m[1]) - 1, Number(m[2]))
+  let end = new Date(y, Number(m[3]) - 1, Number(m[4]))
+  if (end < start) end = new Date(y + 1, Number(m[3]) - 1, Number(m[4])) // 跨年
+  const fmt = (dt) =>
+    `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+  return { start: fmt(start), end: fmt(end), days: Math.round((end - start) / 86400000) + 1 }
+}
+const boReqUrls =
+  (await js(`(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`)) || []
+const boReqUrl = boReqUrls[boReqUrls.length - 1] || ''
+let boQs = {}
+try {
+  boQs = Object.fromEntries(new URL(boReqUrl).searchParams.entries())
+} catch {
+  boQs = {}
+}
+const boExpected = expectedWindowFromRangeText(boTriggers[0] ? boTriggers[0].range : '')
+let boWindowOk = false
+let boWindowDetail = ''
+if (boExpected && boQs.start && boQs.end) {
+  boWindowOk = boQs.start === boExpected.start && boQs.end === boExpected.end
+  boWindowDetail = `请求=[${boQs.start}..${boQs.end}]  控件=[${boExpected.start}..${boExpected.end}]`
+} else if (boExpected && boQs.days !== undefined) {
+  boWindowOk = Number(boQs.days) === boExpected.days
+  boWindowDetail = `请求 days=${boQs.days}  控件跨度=${boExpected.days} 天`
+} else {
+  boWindowDetail = `请求=${boReqUrl ? boReqUrl.split('?')[1] : '(没抓到请求)'}  控件显示=${boTriggers[0] ? boTriggers[0].range : '?'}`
+}
+check(
+  'F5 ★ 运营面板把**控件显示的区间**发给了看板接口（⇒ 显示 = 数据窗口，网络层证据）',
+  boWindowOk,
+  boWindowDetail,
+)
 
 // ══════════════════════════════════════════════════════════════════════
 // 汇总（口径走 result.mjs）

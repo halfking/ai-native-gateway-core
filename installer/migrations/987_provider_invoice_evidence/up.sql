@@ -60,7 +60,7 @@ CREATE POLICY provider_invoice_lines_gateway ON public.provider_invoice_lines
     WITH CHECK (current_setting('app.bypass_rls', true) = 'true');
 
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('986', 'normalized supplier invoice evidence')
+VALUES ('987', 'normalized supplier invoice evidence')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;
