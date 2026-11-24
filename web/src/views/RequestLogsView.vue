@@ -119,6 +119,24 @@ watch(includeProbe, v => {
   resetPageAndLoad()
 })
 
+// 2026-11-25: 探测流量查询可能需要较长时间（最多120秒）
+const isLongQuery = computed(() => {
+  if (!includeProbe.value) return false
+  const range = timeRange()
+  const start = new Date(range.from)
+  const end = new Date(range.to)
+  const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60)
+  return hours > 6 // 探测流量 + 超过6小时窗口视为长查询
+})
+
+// 2026-11-25: 动态加载提示信息
+const loadingMessage = computed(() => {
+  if (isLongQuery.value) {
+    return '正在查询探测流量数据，可能需要1-2分钟，请耐心等待...'
+  }
+  return '正在加载数据...'
+})
+
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
@@ -1888,6 +1906,15 @@ onMounted(async () => {
     />
 
     <div class="card">
+      <!-- 2026-11-25: 醒目的加载覆盖层 -->
+      <div v-if="loading" class="loading-overlay">
+        <div class="loading-content">
+          <div class="loading-spinner"></div>
+          <p class="loading-message">{{ loadingMessage }}</p>
+          <p v-if="isLongQuery" class="loading-hint">查询窗口较大，预计需要更长时间</p>
+        </div>
+      </div>
+      
       <DataTable min-width="960px">
       <table class="data-table request-log-table" style="width:100%;font-size:12px">
         <thead>
@@ -1908,7 +1935,7 @@ onMounted(async () => {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="listColCount">加载中…</td></tr>
+          <tr v-if="loading"><td :colspan="listColCount" style="visibility:hidden">加载中…</td></tr>
           <tr v-else-if="!rows.length"><td :colspan="listColCount">无记录</td></tr>
           <tr
             v-for="r in rows"
@@ -2397,4 +2424,65 @@ onMounted(async () => {
 
 /* 2026-08-10: 折叠筛选头部栏按钮去除按住拖拽文本选择 */
 .filter-section .filter-bar .btn { user-select: none; }
+
+/* 2026-11-25: 醒目的加载覆盖层样式 */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  backdrop-filter: blur(2px);
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.loading-spinner {
+  width: 64px;
+  height: 64px;
+  border: 6px solid rgba(59, 130, 246, 0.2);
+  border-top-color: var(--accent, #3b82f6);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loading-message {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary, #1f2937);
+  text-align: center;
+  max-width: 400px;
+}
+
+.loading-hint {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary, #6b7280);
+  text-align: center;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* 确保 card 元素有相对定位以支持绝对定位的覆盖层 */
+.card {
+  position: relative;
+}
 </style>
