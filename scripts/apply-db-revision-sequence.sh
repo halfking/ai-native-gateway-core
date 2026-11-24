@@ -3778,11 +3778,20 @@ ledger_artifact_probe "983_request_metrics.sql" \
 ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('idx_user_session_agg_pk','idx_user_session_agg_date','idx_user_session_agg_tenant','idx_user_session_agg_owner','idx_project_task_agg_pk','idx_project_task_agg_owner','idx_project_task_agg_project','idx_project_task_agg_tenant','idx_agent_usage_agg_pk','idx_agent_usage_agg_agent','idx_agent_usage_agg_tenant','idx_model_usage_agg_pk','idx_model_usage_agg_model','idx_model_usage_agg_provider','idx_model_usage_agg_tenant')) = 15 AND (SELECT count(*) FROM pg_matviews WHERE schemaname='public' AND matviewname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates') AND definition LIKE '%cost_usd%') = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984') = 1"
 # ★★ 984 与 985 **共用台账号 984**（★ 985 的自登记写的是 '984' ⇒ 错位一格，★ 主档 §4-L1）
-#   ⇒ ⇒ 「984」这一行的归属取决于执行顺序 ⇒ ★★ **这两条 probe 只能保持 version 判据**
-#   ⇒ 若两边都加 description 条件 ⇒ **必然有一边红** ⇒ ⇒ 彻底修需要**改 985 的字节**（触 L23 ⇒ owner 决策）。
-# ★★ 而 986/987/988/925 各自的台账号**归属唯一** ⇒ 它们的 probe 已改成「version + description」双条件。
+#   ⇒ ⇒ 「984」这一行的归属取决于执行顺序。
+# ★ ★★ 【2026-11-24 第四轮 L11 收口】★★ 985 这条**已零字节精确化** ⇒ ★★ **不用改任何迁移字节** ★★：
+#   ★ ★★ 上一轮登记的「984/985 抢同一行 ⇒ 两条 probe 只能保持 version 判据」**只对 984 成立** ★★
+#   ★ ★★ 对 985 **不成立** ⇒ ★★ 因为 985 写的正是**它抢到的那一行** ⇒ ★★
+#   ★ ★★ ⇒ 985 的判据可以写成「version = '984' AND description LIKE 'client and internal…%'」
+#   ★ ★★ ⇒ ★★ 生产只读实测（211 / acc-pg17，2026-11-24）：★★ 该判据 = **t**（绿）★★
+#   ★ ★★ 而 984 那条**不能**精确化：★ 它的描述**从未在账上出现**（★ 被 985 覆盖）⇒ ★★
+#   ★ ★★ 生产只读实测：★ 984 的精确判据 = **f**（红）★★ ⇒ ★★ **984 那条仍待 L1 字节修法** ★★
+#   ★ ★★ 本地隔离 PG 17 复现（★ 按生产顺序插入两行）：★ 984_精确 = f、985_精确 = t
+#   ★ ★★ ⇒ ★★ **与生产逐字一致 ⇒ ★★ 是机制必然、★ 不是生产巧合** ★★。
+#   ★ ★★ 995/985 的纪律先例（★ 同款）：★ 旧判据是**假阳性** ⇒ 本件即使没跑过探针也绿
+#   ★ ★★ ⇒ 现在的判据断言的是**本件真正写下的那行** ⇒ ★★ 探针恢复鉴别力（跑没跑过一眼可辨）★★。
 ledger_artifact_probe "985_request_reconciliation_links.sql" \
-  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985') = 1"
+  "to_regclass('public.request_reconciliation_links') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_child') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_parent') IS NOT NULL AND to_regclass('public.idx_reconciliation_links_registered') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984' AND description LIKE 'client and internal request reconciliation links%') = 1"
 ledger_artifact_probe "986_provider_attempt_media_usage.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_call_attempts' AND column_name IN ('audio_input_duration_us','audio_billed_duration_us','audio_output_duration_us','generated_images','video_output_duration_us','media_usage_source')) = 6 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '985' AND description LIKE 'measured supplier attempt media usage%') = 1"
 ledger_artifact_probe "987_provider_invoice_evidence.sql" \
