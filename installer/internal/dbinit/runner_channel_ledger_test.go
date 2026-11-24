@@ -257,8 +257,11 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     ★ 两条都同时落【部署通道 files=()】与【安装器 StartupFiles】
 		//     ⇒ ⇒ **交集 +1**（★ 342 → 343 ★★）★★
 		//       （★ 改号 973→983b 是**同一个文件换名** ⇒ 交集数不变 ★）
+		//   ★ 2026-11-24（数据维护手册轮）：999a 同时落两条通道（files=() +
+		//     StartupFiles 末尾）⇒ **交集 +1**（★ 343 → 344 ★★）；
+		//     两通道独有清单不变（25 / 63）。
 		//
-		wantBoth          = 343
+		wantBoth          = 344
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)

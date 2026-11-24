@@ -2138,6 +2138,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
 			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
 			"983c_add_occurred_cursor_index.sql",
+			// ★ 999a（2026-11-24 数据维护手册轮；编号取字母后缀空号——三位数惯例 983b/983c 先例）：运维/数据维护手册条目六条
+			//   —— 数据面异常（模型归因缺失/计费口径缺口/会话维度缺失/
+			//     迁移双账本分叉/跨面视图列序漂移/归档残片）的标准处置路径。
+			//   ★ 全部 prompt 型 + auto_execute=FALSE（fail-closed 同 995）；
+			//     探测器（DataQualitySource）在 Go 侧随批接线。
+			//   ★ 幂等（纯 INSERT + ON CONFLICT DO NOTHING，零 DDL）⇒
+			//     内容指纹重放零冲突；零外部依赖 ⇒ 位置只受清单序约束。
+			"999a_data_maintenance_playbook.sql",
 		},
 	}
 }

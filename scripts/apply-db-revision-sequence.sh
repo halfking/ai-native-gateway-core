@@ -2851,6 +2851,15 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/997_tasks_dimension_table.sql"
   "$ROOT_DIR/sql/migrations/startup/998_session_summaries_task_association.sql"
   "$ROOT_DIR/sql/migrations/startup/999_session_summary_layers.sql"
+  # ★ 999a（2026-11-24 数据维护手册轮）：运维/数据维护手册条目六条 ——
+  #   数据面异常（模型归因缺失/计费口径缺口/会话维度缺失/迁移双账本分叉/
+  #   跨面视图列序漂移/归档残片）的标准处置路径。
+  #   ★ 全部 prompt 型 + auto_execute=FALSE（fail-closed 同 995）。
+  #   ★ 幂等（纯 INSERT + ON CONFLICT DO NOTHING，零 DDL）⇒ 重放零冲突。
+  #   ★ 零外部依赖 ⇒ 位置只受编号序约束（排在 999 之后）。
+  #   ★ 编号取字母后缀空号 999a（三位数惯例：sqlguard migrationNumPrefix
+  #     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；983b/983c 先例）。
+  "$ROOT_DIR/sql/migrations/startup/999a_data_maintenance_playbook.sql"
   # ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件
   #   **缺 schema_migrations 自登记行** ⇒ 211 的记账链在 980 与 990 之间
   #   **断一格**（实测：211 的 public.schema_migrations 有 '980' 与 '990'、
@@ -3803,6 +3812,11 @@ ledger_artifact_probe "983b_add_raw_model_name.sql" \
 #   ★ ⇒ 用 to_regclass 判父表索引更直接）。
 ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
   "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
+# ★ 999a 的产物 = 手册条目行（纯种子迁移：不建对象，只 INSERT 六条
+#   data_maintenance: 前缀的 prompt 条目）⇒ 探针 = 六条全在。
+#   ★ 999a_data_maintenance_playbook.sql
+ledger_artifact_probe "999a_data_maintenance_playbook.sql" \
+  "(SELECT count(*) FROM public.error_playbook_entries WHERE created_by='seed:999a' AND error_type LIKE 'data_maintenance:%') = 6"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
 # ★★ 2026-11-24（第四轮 L15）：★ 本段四条判据**加严**为「表在 ＋ 台账行 ＋ 索引 ＋ 唯一约束」。

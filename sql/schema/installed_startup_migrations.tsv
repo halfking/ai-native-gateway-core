@@ -421,3 +421,4 @@
 403	057_api_keys_team_id.sql
 404	058_team_budgets.sql
 405	983c_add_occurred_cursor_index.sql
+406	999a_data_maintenance_playbook.sql

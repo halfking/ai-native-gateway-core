@@ -86,6 +86,22 @@ func loadErrorPlaybookConfig() errorplaybook.Config {
 	return cfg
 }
 
+// loadDataQualityConfig 从 settings 读数据面探测配置（热加载）。
+func loadDataQualityConfig() errorplaybook.DataQualityConfig {
+	cfg := errorplaybook.DefaultDataQualityConfig()
+	cfg.Enabled = settings.GetPlatformBool("error_playbook.data_quality_enabled", true)
+	if v := settings.GetPlatformInt("error_playbook.data_quality_threshold_model_attribution", 20); v > 0 {
+		cfg.Thresholds.ModelAttribution = v
+	}
+	if v := settings.GetPlatformInt("error_playbook.data_quality_threshold_billing_gap", 500); v > 0 {
+		cfg.Thresholds.BillingCreditGap = v
+	}
+	if v := settings.GetPlatformInt("error_playbook.data_quality_threshold_session_dim", 100); v > 0 {
+		cfg.Thresholds.SessionSummaryDim = v
+	}
+	return cfg
+}
+
 // playbookInterval 返回 worker 轮询间隔（spec error_playbook.analyze_interval_seconds）。
 func playbookInterval() time.Duration {
 	sec := settings.GetPlatformInt("error_playbook.analyze_interval_seconds", 300)
@@ -142,7 +158,15 @@ func initErrorPlaybook(ctx context.Context, sqlDB *sql.DB, deps PlaybookDeps) (
 			"(LLM_GATEWAY_ANALYSIS_BASE_URL / LLM_GATEWAY_ANALYSIS_API_KEY)")
 	}
 
-	worker := errorplaybook.NewWorker(engine, errorplaybook.NewSQLSource(sqlDB), loadErrorPlaybookConfig, playbookInterval())
+	// ★ 2026-11-24（数据维护手册轮）：摄取源包一层 DataQualitySource ——
+	//   数据面异常（模型归因缺失/计费口径缺口/会话维度缺失）随同一窗口
+	//   进手册（条目 = 迁移 999a 六条 data_maintenance:*）。探测器只读、
+	//   零写入、失败不阻断主链路（包装器语义：inner 失败原样上抛）。
+	source := errorplaybook.ErrorSource(errorplaybook.NewSQLSource(sqlDB))
+	if dq := errorplaybook.NewDataQualitySource(source, sqlDB, loadDataQualityConfig); dq != nil {
+		source = dq
+	}
+	worker := errorplaybook.NewWorker(engine, source, loadErrorPlaybookConfig, playbookInterval())
 	worker.Start(ctx)
 
 	slog.Info("error_playbook: components constructed",
