@@ -15,11 +15,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // RequestLogEntry struct lives here; aliased to avoid clash with /telemetry extractor package
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/internal/ir"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/middleware"                                        //nolint:depguard // origin trust-list resolved IP context
-	"github.com/kaixuan/llm-gateway-go/pkg/georesolve"                                    //nolint:depguard // IP→country/region/city classifier
-	"github.com/kaixuan/llm-gateway-go/settings"                                          //nolint:depguard // hot-reloadable prompt budget
-	"github.com/kaixuan/llm-gateway-go/telemetry"                                         //nolint:depguard // canonical IP / agent / protocol extractors
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/middleware"         //nolint:depguard // origin trust-list resolved IP context
+	"github.com/kaixuan/llm-gateway-go/pkg/georesolve"     //nolint:depguard // IP→country/region/city classifier
+	"github.com/kaixuan/llm-gateway-go/settings"           //nolint:depguard // hot-reloadable prompt budget
+	"github.com/kaixuan/llm-gateway-go/telemetry"          //nolint:depguard // canonical IP / agent / protocol extractors
 )
 
 var errBodyTooLarge = errors.New("request body too large")
@@ -267,7 +268,7 @@ func ensureRequestBodyBuffered(r *http.Request, bodyOut *[]byte, modelOut *strin
 		// "model" field in JSON), mark as <unknown> so the row is
 		// unambiguous in the operator's filter queries.
 		if *modelOut == "" {
-			*modelOut = "<unknown>"
+			*modelOut = modelattr.UnknownPlaceholder
 		}
 	}
 	if len(buf) > maxBodySize {

@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -162,7 +163,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 			}
 			if attemptClientModel == "" {
-				attemptClientModel = "<unknown>"
+				attemptClientModel = modelattr.UnknownPlaceholder
 			}
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
@@ -192,7 +193,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		// inner function returns.
 		captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 		if attemptClientModel == "" {
-			attemptClientModel = "<unknown>"
+			attemptClientModel = modelattr.UnknownPlaceholder
 		}
 		writeAnthropicError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
 		return
@@ -310,7 +311,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
 		}
 		if logCtx.ClientModel == "" {
-			logCtx.SetClientModel("<unknown>")
+			logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 		}
 	}
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
@@ -336,7 +337,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
 		}
 		if attemptClientModel == "" {
-			attemptClientModel = "<unknown>"
+			attemptClientModel = modelattr.UnknownPlaceholder
 		}
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body exceeds 100 MB limit")
 		return
@@ -351,6 +352,14 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
 		attemptErrCode = "prompt_too_large"
 		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
+		// ★ 2026-11-24（模型归属审计）：body 已在手上 ⇒ 摘出 model，
+		// 避免这一行在模型榜上不可归因。与 chat 面同款。
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes)
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = modelattr.UnknownPlaceholder
+		}
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request",
 			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()))
 		return
@@ -365,7 +374,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			attemptClientModel = extractModelFromBody(bodyBytes)
 		}
 		if attemptClientModel == "" {
-			attemptClientModel = "<unknown>"
+			attemptClientModel = modelattr.UnknownPlaceholder
 		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON in request body")
 		return
@@ -373,7 +382,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	if reqBody.Model == "" {
 		attemptErrCode = "missing_model"
 		attemptErrMsg = "model is required"
-		attemptClientModel = "<unknown>"
+		attemptClientModel = modelattr.UnknownPlaceholder
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}

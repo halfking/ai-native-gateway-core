@@ -70,7 +70,28 @@ SET statement_timeout = '10min';
 CREATE INDEX IF NOT EXISTS idx_request_metrics_occurred_cursor
     ON public.request_metrics (occurred_at DESC, request_id DESC);
 
-COMMENT ON INDEX public.request_metrics.idx_request_metrics_occurred_cursor IS
+-- ★★★ COMMENT ON INDEX 的**名字只写 schema.index**（★ **三分名是错的**）★★
+--
+-- ★ 本迁移首次投递（2026-11-24 12:03，211 / acc-pg17）**当场失败**：
+--
+--	ERROR: cross-database references are not implemented:
+--	       "public.request_metrics.idx_request_metrics_occurred_cursor"
+--
+--   ★ 根因：PostgreSQL 的 `COMMENT ON INDEX <name>` 的 <name> 是
+--     **schema-qualified 的索引名**（`public.idx_xxx`），
+--     **不是**「表名.索引名」⇒ 写成三分名（schema.table.index）时，
+--     PG 把它当作「跨库引用」（catalog.schema.object）⇒ 直接报错。
+--     ⇒ 三分名只在 `COMMENT ON TABLE schema.table` / `COMMENT ON COLUMN schema.table.col`
+--       这类**对象路径**上成立，而索引是**独立命名空间**的对象 ⇒ 没有 table.index 这种写法。
+--
+--   ★ 正确写法：`COMMENT ON INDEX public.idx_request_metrics_occurred_cursor`。
+--     ★ 已在生产只读复现验证（事务回滚，不留痕）：
+--       两分名 → OK；三分名 → 报同款 cross-database 错误。
+--
+--   ★ 失败是**原子**的：983c 走单事务 ⇒ CREATE INDEX 与台账自登记一起回滚
+--     ⇒ 生产上「索引不存在 + 台账无 983c 行」⇒ 零半截状态、零字节冻结问题
+--     （★ 改字节前已核生产账本：983c **从未 applied** ⇒ 改字节零风险）。
+COMMENT ON INDEX public.idx_request_metrics_occurred_cursor IS
     '复合游标索引：(occurred_at DESC, request_id DESC) —— 与 internal/metricsstore/processor.go 的 watermarkSQL 的 ORDER BY 逐字一致 ⇒ 避免每批次全表排序（2026-11-24 生产实测：无此索引时 340,904 行全表扫描 + top-N 排序 = 117ms/批）';
 
 -- ============================================================

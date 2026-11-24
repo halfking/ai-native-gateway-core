@@ -171,7 +171,10 @@ func usageAggregatesByOwner(ctx context.Context, db usageQuerier, startTime, end
 			COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0) AS internal_cost_usd,
 			COALESCE(SUM(rl.cost_usd), 0) AS external_cost_usd,
 			COUNT(DISTINCT rl.gw_session_id) AS session_count,
-			COUNT(DISTINCT COALESCE(rl.outbound_model, rl.client_model, 'unknown')) AS model_count
+			COUNT(DISTINCT COALESCE(
+				NULLIF(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>'),
+				NULLIF(NULLIF(TRIM(rl.client_model), ''), '<unknown>'),
+				'unknown')) AS model_count
 		FROM request_logs_with_current_month rl
 		WHERE %s
 		GROUP BY COALESCE(rl.owner_user, rl.api_key_owner_user)
@@ -982,7 +985,10 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 	// prompt_tokens + completion_tokens = total_tokens
 	sql := fmt.Sprintf(`
 		SELECT 
-			COALESCE(rl.outbound_model, rl.client_model, 'unknown') as model_name,
+			COALESCE(
+				NULLIF(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>'),
+				NULLIF(NULLIF(TRIM(rl.client_model), ''), '<unknown>'),
+				'unknown') as model_name,
 			COALESCE(p.display_name, rl.provider_id::text, 'unknown') as provider,
 			COUNT(*) as request_count,
 			COALESCE(SUM(rl.prompt_tokens), 0) as input_tokens,
@@ -1175,7 +1181,10 @@ func queryUserUsageMatrix(ctx context.Context, db usageQuerier, p usageMatrixPar
 	querySQL := fmt.Sprintf(`
 		SELECT
 			COALESCE(rl.owner_user, rl.api_key_owner_user) as owner_user,
-			COALESCE(rl.outbound_model, rl.client_model, 'unknown') as model_name,
+			COALESCE(
+				NULLIF(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>'),
+				NULLIF(NULLIF(TRIM(rl.client_model), ''), '<unknown>'),
+				'unknown') as model_name,
 			COALESCE(p.display_name, rl.provider_id::text, 'unknown') as provider,
 			COUNT(*) as request_count,
 			COALESCE(SUM(rl.prompt_tokens), 0) as input_tokens,

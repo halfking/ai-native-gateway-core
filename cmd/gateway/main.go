@@ -4462,12 +4462,24 @@ func main() {
 		//   ⇒ 优雅停机后它仍在跑，而此时连接池已关
 		//   ⇒ 每 5 分钟刷一批「连接已关闭」错误，且批次里的维度永远补不回来。
 		metricsProcessorCtx, metricsProcessorCancel := context.WithCancel(context.Background())
-		go metricsProcessor.Run(metricsProcessorCtx, 5*time.Minute, 100)
+		// ★ 2026-11-24 吞吐优化轮：参数**可配**（环境变量），不再硬编码。
+		//
+		//   旧形态（硬编码 5m/100）：「每 5 分钟 100 条」是**占位常量**，不是容量测算。
+		//   生产实测写入速率约 1,100 条/小时（近 1 小时均值 18.1 条/分钟，
+		//   峰值 63 条/分钟），而「5 分钟 100 条」的上限只有 **1,200 条/小时**
+		//   ⇒ 余量仅 7% ⇒ 实测 61/61 个批次全部处理满 100 条
+		//   ⇒ 处理器**长期贴着天花板跑** ⇒ 流量一涨就变成数据滞后。
+		//
+		//   新形态：间隔/批量/追平轮数三项可配，且每轮**自适应追平**
+		//   （持续处理直到本批不满）⇒ 积压时自动加速，空闲时自动降频。
+		metricsCfg := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
+		go metricsProcessor.Run(metricsProcessorCtx, metricsCfg)
 		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
-			"interval", "5m",
-			"batch_size", 100)
+			"interval", metricsCfg.Interval.String(),
+			"batch_size", metricsCfg.BatchSize,
+			"max_rounds_per_tick", metricsCfg.MaxRoundsPerTick)
 	}
 
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
