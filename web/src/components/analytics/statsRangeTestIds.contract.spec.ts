@@ -132,21 +132,31 @@ describe('统一轮 · flow 18 判据收敛契约', () => {
     expect(textAssertions.length).toEqual(0)
   })
 
-  it('④ 三处消费方都必须引用**同一个**时间范围组件（防单边漂移）', () => {
-    // ★ 本轮的交付口径是「结构同构」⇒ 三处 import 的是**同一个文件**，
-    //   而不是「三处各写一份长得一样的」⇒ 这条判据把「结构同构」钉在源码层。
+  it('④ 四处消费方都必须引用**同一个**时间范围组件（防单边漂移）', () => {
+    // ★ 本轮的交付口径是「结构同构」⇒ 四处 import 的是**同一个文件**，
+    //   而不是「四处各写一份长得一样的」⇒ 这条判据把「结构同构」钉在源码层。
+    //   四处 = 看板页筛选条 / 会话统计面板 / 会话分析用户页 / **运营面板**
+    //   （★ 2026-11-25：运营面板并入共享组件 ⇒ 此前它是**第四套**预设
+    //     （今天/近7/近30/近90、跨度上限 365 天）⇒ 与其余三页形态不同）。
     const timeRangeConsumers = [
       'web/src/components/board/BoardFilterBar.vue',
       'web/src/components/SessionStatsPanel.vue',
       'web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue',
+      'web/src/views/BoardOperationalView.vue',
     ]
     for (const rel of timeRangeConsumers) {
       const source = readFileSync(join(REPO, rel), 'utf8')
       expect(source, `${rel} 没有引用共享组件 StatsDateRangePicker`).toMatch(
         /from\s+['"][^'"]*analytics\/StatsDateRangePicker\.vue['"]/,
       )
+      // ★ 反向判据：**不许**直接用裸 KxDateRangePicker（那会是第五套形态）。
+      //   （裸控件本身仍在共享组件内部使用 ⇒ 判据只查消费方，不查控件本体。）
+      expect(
+        source,
+        `${rel} 直接用了裸 KxDateRangePicker ⇒ 它自己有一套档位 ⇒ 与其余三页不同构`,
+      ).not.toMatch(/from\s+['"][^'"]*ui\/KxDateRangePicker\.vue['"]/)
     }
-    // ★ 提示符只挂在**有统计面板**的两个页面上（看板页签头部 + 会话分析用户页）
+    // 提示符只挂在**有统计面板**的两个页面上（看板页签头部 + 会话分析用户页）
     //   ⇒ 不要求看板筛选条也挂它（那块条子没有自己的「统计说明」可讲）。
     const scopeHintConsumers = [
       'web/src/views/DashboardViewV2.vue',

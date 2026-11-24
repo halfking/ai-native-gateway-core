@@ -18,37 +18,53 @@ import {
   type BoardOperationalPayload,
   type BoardPayload,
 } from '../api/board'
-import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useRangeDays } from '../composables/useSpanDaysRange'
+import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
+import { useI18n } from 'vue-i18n'
+import { boardRangeFromKxRange, toBoardTimeQuery, type BoardTimeRange } from '../utils/boardTimeRange'
+import { rangeFromSpanDays } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
 const router = useRouter()
+const { t } = useI18n()
 const loading = ref(false)
 const error = ref('')
 const operationalData = ref<BoardOperationalPayload | null>(null)
 const boardData = ref<BoardPayload | null>(null)
-const timeRange = ref(7)
 const trendChartRef = ref<HTMLDivElement>()
 let trendChartInstance: echarts.ECharts | null = null
 
-// 统一时间范围选择器（2026-11-19）
-//
-// ★ 2026-11-23 批判式审计轮：改用 useRangeDays（此前用 useSpanDaysRange，
-//   把用户选的自定义区间压成「跨度天数」）。
-//   board 后端本就支持真实区间（boardTimeRangeFromRequest 收 start/end，
-//   api/board.ts 也早就有 start/end 参数）⇒ 前端压成 days 等于把后端已有的
-//   能力扔掉：界面显示 2026-09-01~2026-09-10，数据却是「最近 10 天」。
-const { presets, rangeValue, customRange, applyRange } = useRangeDays(timeRange, [
-  { days: 1, labelKey: 'common.dateRange.preset.today' },
-  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
-  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
-  { days: 90, labelKey: 'dashboard.range.last90d' },
-])
+// ★★★ 2026-11-25 统一轮：时间范围控件改用**全站统一封装**
+//   components/analytics/StatsDateRangePicker.vue —— 与「看板页」「会话与统计」页
+//   「会话分析·用户」页**同一个组件文件** ⇒ 四处的档位、跨度上限、交互形态
+//   **结构同构**（改一处 ⇒ 四处同步；不会再有第五套各写各的预设）。
+//   ★ 本页此前是**第四套预设**（今天/近7/近30/近90，跨度上限 365 天）⇒ 与其余三页
+//     形态不同（缺 昨天/近14/本月/上月）；统一后档位集合**逐字同序相等**。
+//   ★ 窗口与数据同尺：控件给的是**日历日区间**（含首尾）⇒ 用看板页同一把尺
+//     boardRangeFromKxRange 归位（今天/近7/近30 走 days，其余走 start/end），
+//     查询参数由 toBoardTimeQuery 产出 ⇒ 界面显示的区间 = 数据窗口。
+//   ★ 「近 90 天」档位随统一而消失（共享组件的 7 个档位里没有它）⇒
+//     但自定义区间的上限是 92 天 ⇒ 同等窗口仍可通过自定义到达（不是能力回退）。
+const rangeValue = ref<KxDateRange>(rangeFromSpanDays(7))
+const boardRange = computed<BoardTimeRange>(() => boardRangeFromKxRange(rangeValue.value))
+/** 天数 = 当前生效窗口的**真实跨度**（含首尾）——文案用它，不再另编一个数。 */
+const timeRange = computed(() => boardRange.value.days)
+
+// ★ 文案不许说假话：预设档位说「最近 N 天」；**自定义区间说起止日期**
+//   （「最近 N 天」对一个历史区间是**假的**——用户选 09-01~09-10，
+//   看到的却写着「最近 10 天」⇒ 同一个「日期范围」在两处指的不是同一段区间）。
+//   ⇒ 复用看板页既有的 rangeCustom 键（8 语种齐备 ⇒ 零新增文案、零 CJK 增量）。
+const rangeHint = computed(() => {
+  const r = boardRange.value
+  if (r.preset === 'custom' && r.start && r.end) {
+    return t('dashboard.board.rangeCustom', { start: r.start, end: r.end })
+  }
+  return t('dashboard.operational.dataTimeRange', { days: r.days })
+})
 
 function onRangeApply(range: KxDateRange) {
-  applyRange(range)
+  rangeValue.value = range
   void load()
 }
 
@@ -58,10 +74,8 @@ async function load() {
   try {
     const [opData, bdData] = await Promise.all([
       fetchBoardOperational(),
-      // 自定义区间 ⇒ 原样透传 start/end（后端 boardTimeRangeFromRequest 支持）。
-      fetchDashboardBoard(customRange.value
-        ? { start: customRange.value.start, end: customRange.value.end }
-        : { days: timeRange.value }),
+      // ★ 窗口与界面显示同尺：预设走 days、自定义走 start/end（看板页同一把尺）。
+      fetchDashboardBoard(toBoardTimeQuery(boardRange.value)),
     ])
     operationalData.value = opData
     boardData.value = bdData
@@ -293,10 +307,11 @@ function topItems(items: any[] | undefined, n: number = 5) {
 // ★ 2026-11-23：自定义区间下钻时把 start/end 一起带过去（下游列表页已支持
 //   读取），否则「看板选的历史区间 → 下钻页变回最近 N 天」，同一页两个口径。
 function rangeQuery(): Record<string, string> {
-  if (customRange.value) {
-    return { start: customRange.value.start, end: customRange.value.end }
+  const r = boardRange.value
+  if (r.preset === 'custom' && r.start && r.end) {
+    return { start: r.start, end: r.end }
   }
-  return { days: String(timeRange.value) }
+  return { days: String(r.days) }
 }
 
 function navigateToList(dimension: 'model' | 'provider' | 'client' | 'tenant') {
@@ -340,10 +355,8 @@ onBeforeUnmount(() => {
         <p class="bo-subtitle">{{ $t('dashboard.operational.subtitle') }}</p>
       </div>
       <div class="bo-header-actions">
-        <KxDateRangePicker
+        <StatsDateRangePicker
           :model-value="rangeValue"
-          :presets="presets"
-          :max-span-days="365"
           :disabled="loading"
           @apply="onRangeApply"
         />
@@ -363,7 +376,7 @@ onBeforeUnmount(() => {
       <!-- 1. 运营概览 - 关键指标 -->
       <section v-if="boardData?.summary" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.overviewDays', { days: timeRange }) }}</h2>
-        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
+        <p class="bo-time-range-hint">{{ rangeHint }}</p>
         
         <div class="bo-metrics-grid">
           <div class="bo-metric-card">
@@ -422,7 +435,7 @@ onBeforeUnmount(() => {
       <!-- 2. 分布分析 -->
       <section v-if="hasDistributionData" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.distributionTitle') }}</h2>
-        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
+        <p class="bo-time-range-hint">{{ rangeHint }}</p>
         
         <div class="bo-pies-grid">
           <!-- 模型分布 -->
@@ -534,7 +547,7 @@ onBeforeUnmount(() => {
       <!-- 3. 错误分析 -->
       <section v-if="boardData?.pies?.errors && boardData.pies.errors.length > 0" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.errorAnalysisTitle') }}</h2>
-        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
+        <p class="bo-time-range-hint">{{ rangeHint }}</p>
         
         <div class="bo-error-list">
           <div v-for="item in topItems(boardData.pies.errors, 10)" :key="item.key" class="bo-error-item">
@@ -547,7 +560,7 @@ onBeforeUnmount(() => {
       <!-- 4. 趋势分析 -->
       <section v-if="boardData?.trends && boardData.trends.length > 0" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.trendAnalysisTitle') }}</h2>
-        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
+        <p class="bo-time-range-hint">{{ rangeHint }}</p>
         
         <div class="bo-trend-summary">
           <p>{{ $t('dashboard.operational.trendDataPoints', { count: boardData.trends.length }) }}</p>
@@ -561,7 +574,7 @@ onBeforeUnmount(() => {
 
       <footer class="bo-footer">
         <p>{{ $t('dashboard.operational.footerHint') }}</p>
-        <p>{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
+        <p>{{ rangeHint }}</p>
       </footer>
     </template>
   </div>
