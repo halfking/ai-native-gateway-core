@@ -126,6 +126,38 @@ func boardLogsWhere(tr boardTimeRange, alias, tenantID string) (where string, ar
 	return where, args
 }
 
+// boardLogsWhereProbeScope 是 boardLogsWhere 的「探测口径可选」变体。
+//
+// ★★ 为什么需要它（2026-11-24 真源统一轮）：★ 看板的 include_probes 开关过去
+// ★★ **只喂给英雄区汇总**（dashboard_board.go 的 queryBoardSummary 调用），
+// ★★ 而 pies/trends 读的是**预聚合表**——那两张表在**写入时**就剔除了探测
+// ★★ （bg/stats_minute_rollup.go：rollup 表没有 origin_stage / quality_flags 列，
+// ★★ 「到行被汇总时请求级探测标记已经没了」）⇒ ★★ **结构上无法表达「含探测」**。
+// ★★ ⇒ 后果：看板切到「含探测」时，卡片变 189,008 笔，趋势图与饼图却纹丝不动
+// ★★ 停在 75,878 笔 ⇒ ★★ **同一个页面里两个数字对不上**（生产实测，7 天窗口）。
+//
+// ★★ 本函数让**请求级**读面（饼图的 7 维聚合）能按开关决定是否加探测排除谓词：
+// ★★   includeProbes=true  ⇒ 不加排除谓词 ⇒ 探测流量进入饼图；
+// ★★   includeProbes=false ⇒ 加排除谓词 ⇒ 与英雄区口径一致。
+// ★★ ★★ 谓词本身与 boardLogsWhere **逐字同源**（bg.ProbeTrafficExclusionPredicateView），
+// ★★ 只差「要不要加」这一位 ⇒ ⇒ 排除模式下两条读面口径必然一致。
+//
+// ★★ 降级链（fallbackBoardSummary / fallbackBoardTrends / fallbackBoardPies）
+// ★★ 继续用 boardLogsWhere（恒排除探测）⇒ 它们的「含探测」语义仍不可表达 ⇒
+// ★★ 但那三条只在**主路径整体失败**时才走到 ⇒ 属于既有降级语义，本轮不改。
+func boardLogsWhereProbeScope(tr boardTimeRange, alias, tenantID string, includeProbes bool) (where string, args []any) {
+	args = []any{tr.Start, tr.End}
+	where = alias + ".ts >= $1 AND " + alias + ".ts < $2"
+	if tenantID != "" {
+		where += " AND " + alias + ".tenant_id = $3"
+		args = append(args, tenantID)
+	}
+	if !includeProbes {
+		where += " AND " + fmt.Sprintf(bg.ProbeTrafficExclusionPredicateView, alias, alias, alias)
+	}
+	return where, args
+}
+
 func daysToBoardTimeRange(days int) boardTimeRange {
 	return boardPresetTimeRange(days, time.Now())
 }

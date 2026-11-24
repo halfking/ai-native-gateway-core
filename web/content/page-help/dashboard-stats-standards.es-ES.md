@@ -43,8 +43,8 @@ El tráfico de sondeo (health check / autocomprobación) figura por separado en 
 | Modelos / proveedores activos | Recuento distinto de los que realmente recibieron tráfico | No el «total disponible en la plataforma» |
 | Claves activas | Número de claves actualmente habilitadas | **Según configuración, independiente de la ventana** |
 | Recuento de errores | Suma por categoría de la distribución de fallos; si no existe, se estima con «solicitudes totales × (1 − tasa de éxito)» | La estimación puede diferir en unas pocas filas |
-| Gráficos circulares (modelo / proveedor / inquilino / cliente…) | Solicitudes, tokens y coste agrupados por dimensión | Provienen de la tabla de estadísticas por minuto, no de la misma fuente que las tarjetas |
-| Tendencia de uso | Solicitudes, tokens, coste y créditos por tramo de tiempo | También de la tabla de estadísticas por minuto |
+| Gráficos circulares (modelo / proveedor / inquilino / cliente…) | Solicitudes, tokens y coste agrupados por dimensión | Provienen del registro a nivel de solicitud, la misma fuente que las tarjetas (mismo alcance de sonda) |
+| Tendencia de uso | Solicitudes, tokens, coste y créditos por tramo de tiempo | **Misma fuente que las tarjetas**: la misma tabla de hechos a nivel de solicitud `usage_facts` y el mismo predicado de sonda ⇒ los tramos suman la tarjeta |
 
 ### Cómo se calcula la ventana temporal
 
@@ -57,7 +57,7 @@ El tráfico de sondeo (health check / autocomprobación) figura por separado en 
 La tarjeta de créditos **no** muestra los créditos consumidos dentro de la ventana elegida: la columna de créditos de la tabla de hechos a nivel de solicitud está siempre a 0 (medido: las 298.037 filas valen 0), de modo que lo que aparece es el **delta en vivo posterior a la línea base en caché**. Por tanto:
 
 - Cambiar entre «Hoy / últimos 7 días / últimos 30 días» deja la tarjeta de créditos **exactamente igual** (medido: las tres muestran 86.925).
-- La tendencia de uso de la misma página lleva otra suma de créditos (tabla por minuto: 1.767.183 en 7 días) que no coincide con la tarjeta.
+- La tendencia de uso y la tarjeta de créditos de la misma página provienen ahora de la **misma fuente** (ambas leen la tabla de hechos a nivel de solicitud `usage_facts`) ⇒ los créditos de los tramos suman la tarjeta.
 
 Para un libro de créditos fiable use las páginas «Uso y coste» y «Conciliación»; la tarjeta de créditos del panel no sirve para comparar series temporales.
 
@@ -153,7 +153,7 @@ Las filas de proveedor de la página de conciliación (incluido «sin asignar»)
 3. **Alinee después la base de sondeo**: el panel permite conmutar a «incluir sondeo»; las estadísticas de sesión excluyen según las reglas del universo de sesiones; **la conciliación siempre incluye el sondeo**. Si el número de solicitudes difiere mucho y el coste es parecido ⇒ revise primero el sondeo.
 4. **Alinee después la madurez**: la conciliación es una instantánea T+1, **los datos del día en curso van necesariamente con retraso**; antes de comparar, confirme hasta qué día llega la instantánea.
 5. **Busque marcas de degradación**: cuando una tarjeta muestra «degradado / no fiable / no calculado», esos ceros no significan «sin tráfico».
-6. **La tendencia del panel ≠ las tarjetas del panel**: la tendencia viene de la tabla de estadísticas por minuto, no de la misma fuente que las tarjetas de arriba (tabla de hechos a nivel de solicitud) (medido, alrededor de un 13,8 % de diferencia en la ventana de 30 días).
+6. **La tendencia y las tarjetas del panel tienen ahora la misma fuente**: ambas leen la tabla de hechos a nivel de solicitud `usage_facts` con el mismo predicado de sonda ⇒ los tramos deberían sumar la tarjeta. Si no: comprueba primero la marca `degraded` de la carga útil (el alcance de sonda difiere al recurrir a las tablas preagregadas) y después que las ventanas temporales coincidan.
 7. **«Hoy» puede fallar (corregido el 2026-11-23)**: el preajuste «Hoy» de las estadísticas de sesión agotaba de forma reproducible el tiempo de espera de 30 segundos porque faltaba el índice de la unión en la base de datos (índice añadido el 2026-11-23: la consulta pasó de 121,8 s a 0,19 s). Si la página vuelve a mostrar el error, el índice ha vuelto a desaparecer: pida al equipo de guardia que compruebe que `idx_session_dim_session_key` está en su sitio.
 
 ## Limitaciones conocidas (medido 2026-11-23)
@@ -163,4 +163,4 @@ Las filas de proveedor de la página de conciliación (incluido «sin asignar»)
 3. **Llamadas sin sesión asociada (F)**: 381 llamadas directas a la API o desde scripts no tienen sesión; el panel las cuenta, las estadísticas de sesión no.
 4. **Retraso del mismo día en la instantánea de conciliación**: la conciliación es de base T+1, **los datos de hoy están incompletos**; restarlos directamente de las cifras en vivo del panel produce siempre una diferencia.
 5. La tarjeta de créditos del panel no cambia con la ventana temporal (véase arriba).
-6. La tendencia del panel (tabla por minuto) y las tarjetas (tabla de hechos a nivel de solicitud) difieren en torno al 13,8 % en la ventana de 30 días (160.451 frente a 140.969 solicitudes).
+6. **Alcance de sonda en estado degradado**: cuando los gráficos circulares y la tendencia del panel recurren a las tablas preagregadas tras fallar la ruta principal, esas tablas son siempre «sin sondas» ⇒ en modo «con sondas» discrepan del resumen principal (la carga útil lleva entonces una marca `degraded`: no es una degradación silenciosa).
