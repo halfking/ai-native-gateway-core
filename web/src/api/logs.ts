@@ -297,6 +297,11 @@ export function getRequestLogs(params: {
    */
   lane?: 'business' | 'probe' | 'probe_history' | 'all'
   include_probe?: boolean
+} = {}, opts: {
+  // 2026-11-25：可选的中止信号。连续切换时间范围时，调用方用它中止**已被新的
+  // 选择取代**的旧请求——服务端随之取消查询（r.Context() 取消），不再白占
+  // 数据库资源；被中止的请求在调用方按序号丢弃，不进错误面。
+  signal?: AbortSignal
 } = {}) {
   const qs = new URLSearchParams()
   if (params.api_key_id != null) qs.set('api_key_id', String(params.api_key_id))
@@ -327,7 +332,7 @@ export function getRequestLogs(params: {
   if (params.lane) qs.set('lane', params.lane)
   if (params.include_probe) qs.set('include_probe', '1')
   const s = qs.toString()
-  return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
+  return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`, undefined, { signal: opts?.signal })
 }
 
 /** 请求详情。omitBody=true 时跳过后端 body 抓取，用于抽屉分阶段首包。 */

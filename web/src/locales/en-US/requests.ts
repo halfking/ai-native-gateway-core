@@ -9,6 +9,15 @@ export default {
     error: {
       scanningFailed: "Data load anomaly: {count} records were returned but cannot be displayed. This is usually a server-side data format issue; ask an administrator to check the backend logs.",
     },
+    loading: {
+      title: 'Loading request logs…',
+      slow: 'Querying — the dataset is large, please wait…',
+      still: 'Still querying, please wait…',
+      elapsed: 'Waiting {n}s',
+      hint: 'This is taking longer: try a narrower time range or fewer filters{probe}, then retry',
+      probeSuffix: ', or turn off "Include probe traffic"',
+    },
+    queryFailedRow: 'Query failed — no data retrieved (see the message above)',
     filter: {
       keyAll: 'All keys',
       providerAll: 'All providers',

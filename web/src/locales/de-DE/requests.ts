@@ -10,6 +10,15 @@ export default {
     error: {
       scanningFailed: "Ladefehler: {count} Datensätze wurden abgerufen, können aber nicht angezeigt werden. Ursache ist meist ein serverseitiges Datenformatproblem; bitte einen Administrator, die Backend-Logs zu prüfen.",
     },
+    loading: {
+      title: 'Anfragelogs werden geladen…',
+      slow: 'Abfrage läuft – die Datenmenge ist groß, bitte warten…',
+      still: 'Abfrage läuft noch, bitte warten…',
+      elapsed: 'Wartet seit {n} s',
+      hint: 'Die Abfrage dauert länger: Zeitbereich verengen oder Filter reduzieren{probe} und erneut versuchen',
+      probeSuffix: ' oder „Probe-Traffic einbeziehen“ ausschalten',
+    },
+    queryFailedRow: 'Abfrage fehlgeschlagen – keine Daten erhalten (siehe Hinweis oben)',
     filter: {
       keyAll: 'Alle Schlüssel',
       providerAll: 'Alle Anbieter',
