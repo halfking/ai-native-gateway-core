@@ -947,6 +947,17 @@ dl_write_env() {
     # ⇒ `Global.Spec(key)` 返回 nil ⇒ `GetPlatformBool` 直接回退 false
     # ⇒ ⇒ 补这一行是让 env 那条路可达的**最小修法**（未设时写空行，行为不变）。
     dl_emit_env_line LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED "${LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED:-}"
+    # ★★ 2026-11-24（合并轮二十一 · 上游新增对账腿引入的两个 flag）：
+    #   ① LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED
+    #      （admin/capabilities.go:61 读它：★ h.db != nil 且该 env == "true" 时
+    #      ★ 走「日结对账默认开启」那条路）
+    #   ② LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED
+    #      （domains/streaming/request_log_pipeline.go:1875 读它）
+    # ★ 白名单是**白名单式**的 ⇒ 白名单之外的一切**静默失效**（不报错、不警告）
+    #   ⇒ ⇒ 容器形态下这两个开关**永远 off** ⇒ ⇒ 与上面 provider_cost 同款问题。
+    # ★ 修法＝同款一行（★ 默认值必须为空 ⇒ 未设时行为不变）。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED "${LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED:-}"
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED "${LLM_GATEWAY_RECONCILIATION_PLATFORM_BILLING_ENABLED:-}"
     # 2026-10-21 R72f（属主决策项 #9 = ★「逐个补进白名单」）：把「代码用 env 读、
     # 但白名单漏掉」的那 23 个 feature flag 一次性补齐。
     #

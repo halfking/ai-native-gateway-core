@@ -418,6 +418,6 @@
 400	983b_add_raw_model_name.sql
 401	055_teams_table.sql
 402	056_user_teams.sql
-403	973_api_keys_team_id.sql
+403	057_api_keys_team_id.sql
 404	058_team_budgets.sql
 405	983c_add_occurred_cursor_index.sql

@@ -4,13 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-24T08:04:29+00:00
+# ★ generated_at=2026-11-24T10:00:21+00:00
 # stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 983, "indexes_created": 1035, "indexes_dropped_somewhere": 93, "migration_files": 675, "non_numeric_prefix_files": 15, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
--1	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
--1	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
--1	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
--1	idx_request_metrics_occurred_cursor	request_metrics	983c_add_occurred_cursor_index.sql	occurred_at,request_id	
--1	idx_request_metrics_raw_model	request_metrics	983b_add_raw_model_name.sql	raw_model_name,occurred_date	
 0	idx_request_logs_session	request_logs	000_base_tables.sql	session_id,ts	
 1	idx_users_tenant	users	001_users_table.sql	tenant_id	
 1	idx_users_username	users	001_users_table.sql	username	
@@ -110,6 +105,8 @@
 55	idx_teams_tenant_id	teams	055_teams_table.sql	tenant_id	
 56	idx_user_teams_team_id	user_teams	056_user_teams.sql	team_id	
 56	idx_user_teams_user_id	user_teams	056_user_teams.sql	user_id	
+57	idx_api_keys_team_id	api_keys	057_api_keys_team_id.sql	team_id	
+57	idx_api_keys_tenant_team	api_keys	057_api_keys_team_id.sql	tenant_id,team_id	
 58	idx_team_budgets_team_id	team_budgets	058_team_budgets.sql	team_id	
 120	idx_approval_queue_expires	approval_queue	120_session_audit.sql	expires_at	
 120	idx_approval_queue_session	approval_queue	120_session_audit.sql	session_id,created_at	
@@ -325,6 +322,7 @@
 394	idx_rsedm_error_bucket	request_stats_error_drill_minute	394_request_stats_minute.sql	error_kind,bucket	
 394	idx_rsm_bucket	request_stats_minute	394_request_stats_minute.sql	bucket	
 394	idx_rsm_tenant_bucket	request_stats_minute	394_request_stats_minute.sql	tenant_id,bucket	
+395b	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
 399	idx_license_trial_consents_accepted_at	license_trial_consents	399_license_trial_consents.sql	accepted_at	
 400	idx_donations_email	donations	400_distribution.sql		
 400	idx_donations_status	donations	400_distribution.sql	status,created_at	
@@ -454,6 +452,8 @@
 478	idx_tma_last_sampled	task_model_affinity	478_auto_route_affinity.sql	last_sampled_at	
 478	idx_tma_lookup	task_model_affinity	478_auto_route_affinity.sql	task_type,profile,tenant_id,affinity	
 478	uq_ars_request	auto_route_selections	478_auto_route_affinity.sql	request_id,partition_date	
+478p2	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
+478p2	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
 489	idx_credential_probe_queue_claim	credential_probe_queue	489_credential_probe_queue_startup_backfill.sql	priority,next_run_at,id	
 489	idx_credential_probe_queue_expiry	credential_probe_queue	489_credential_probe_queue_startup_backfill.sql	expires_at	
 489	uq_credential_probe_queue_dedup_active	credential_probe_queue	489_credential_probe_queue_startup_backfill.sql	dedup_key	
@@ -925,8 +925,6 @@
 971	idx_error_analysis_results_false_positive	error_analysis_results	971_pi_error_analysis_system.sql	is_false_positive,created_at	
 971	idx_error_analysis_results_queue	error_analysis_results	971_pi_error_analysis_system.sql	queue_id	
 971	idx_error_analysis_results_severity	error_analysis_results	971_pi_error_analysis_system.sql	severity_level,created_at	
-973	idx_api_keys_team_id	api_keys	973_api_keys_team_id.sql	team_id	
-973	idx_api_keys_tenant_team	api_keys	973_api_keys_team_id.sql	tenant_id,team_id	
 974	idx_mppq_canon	market_price_platform_quotes	974_market_price_identity_and_tier.sql	canonical_name,dimension	
 974	idx_mppq_platform	market_price_platform_quotes	974_market_price_identity_and_tier.sql	platform_id,run_date	
 975	idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975_pricing_suggestion_audit.sql	created_at	
@@ -949,6 +947,8 @@
 983	idx_request_metrics_tenant_billing_date	request_metrics	983_request_metrics.sql	tenant_id,billing_date	
 983	idx_request_metrics_tenant_time	request_metrics	983_request_metrics.sql	tenant_id,occurred_at	
 983	idx_request_metrics_traffic_time	request_metrics	983_request_metrics.sql	traffic_class,occurred_at	
+983b	idx_request_metrics_raw_model	request_metrics	983b_add_raw_model_name.sql	raw_model_name,occurred_date	
+983c	idx_request_metrics_occurred_cursor	request_metrics	983c_add_occurred_cursor_index.sql	occurred_at,request_id	
 985	idx_reconciliation_links_child	request_reconciliation_links	985_request_reconciliation_links.sql	tenant_id,child_request_id	
 985	idx_reconciliation_links_parent	request_reconciliation_links	985_request_reconciliation_links.sql	tenant_id,parent_request_id	
 985	idx_reconciliation_links_registered	request_reconciliation_links	985_request_reconciliation_links.sql	registered_at	

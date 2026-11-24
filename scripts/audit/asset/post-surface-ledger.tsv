@@ -30,6 +30,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 10 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 717 行逐字保留，含人工改判）
 #gen_append	2026-11-23 L32 轮·合并轮六/七 —— 补 1 条新增路由（/api/admin/usage/request-reconciliation，★ 上游 reconciliation 轮注册于 admin/handler.go:1557）；★ 用【官方生成器】重算（★ R87 轮同款做法：★ 静态分级现算 ＋ 从现有台账反推探测产物 ⇒ 台账头 provenance 逐字不变）⇒ ★ 新行 class/bucket/verdict **机器推导**（★ class=read、★ body_check=400-guard、★ 无探测观测 ⇒ verdict=not-probed-not-reached）；★ ★ 既有 727 行**逐字保留**（★ 其中 16 处是人工改判、★ 静态分级器对它们会判漂移 ⇒ **不整表重生成**、★ 只按生成器顺序插入新行）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 728 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 728 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

@@ -1,0 +1,106 @@
+# L77 合并轮二十一·teams 族归位回上游 055-058
+# 2026-11-24 15:30 Asia/Shanghai
+# 工作区：/private/tmp/l30-unified
+
+## § ① 起因：上游新推 22 笔
+
+origin/main: 54030ac22 → cd288ad0c（领先 147 / 落后 22）
+含 b6de8aa33 之后的：e6f86379c（989 撞号还号到 925）、a5ef63879f、987aabf7a 等
+合并冲突 9 处（AGENTS.md / canonical 登记簿 / db-changelog / installer main.go /
+runner_channel_ledger_test / metricsstore processor / db-object-expect.tsv /
+migration_version_unique_test / installed_startup_migrations.tsv）
+
+## § ② 关键发现：上游已把 teams 族完整登记为 055-058
+
+上游 origin/main 里 teams 族全部面：
+- sql/migrations/startup/055-058.sql ✔（4 个）
+- installer/cmd/llm-gw-installer/embeddata/startup/055-058.sql ✔（4 个，与 canonical 逐字节一致）
+- installer/cmd/llm-gw-installer/main.go：go:embed ×8 ＋ embeddedSQLFiles map ×8 ✔
+- installer/internal/dbinit/runner.go：StartupFiles ×4 ✔
+- scripts/apply-db-revision-sequence.sh：files=() ×4 ＋ ledger_artifact_probe ×4 ✔
+- sql/schema/installed_startup_migrations.tsv：位置 401-404 ✔
+- docs/db-changelog.md：登记行 ✔
+上游**缺**的两面：down 脚本（0 个）＋ installer/migrations 离线副本（0 个）
+
+## § ③ 三条硬证据 ⇒ §7.51 的「三避 1000-1003」方案被推翻
+
+### 证据①：四位数对全部守卫隐形
+internal/sqlguard/migration_registry_continuity_test.go:69
+    var migrationNumPrefix = regexp.MustCompile(`^[0-9]{3}_`)
+同理：scripts/apply-db-revision-sequence_test.sh:120、
+       scripts/deploy-lib.legacy/db-changelog.sh:289、
+       installer/cmd/llm-gw-installer/migration_nonplain_delivery_gate_test.go:336
+⇒ 1000-1003 永不投递（我方那套是死文件）
+⇒ 上游 12h 修订审计第三轮已写过同一条（「迁移号必须三位数」）
+
+### 证据②：生产已 applied ⇒ 改字节即 L23 分叉
+$ ssh 211 "docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tA -q"
+ledger_055_058: 057,058,055,056
+teams_table_exists: teams
+user_teams_exists: user_teams
+team_budgets_exists: team_budgets
+api_keys_team_id_col: 在
+max_version: 999
+
+### 证据③：对象集合逐件完全一致 ⇒ 退役零功能损失
+055 vs 1000：✔ 对象集合完全一致
+056 vs 1001：✔ 对象集合完全一致
+057 vs 1002：✔ 对象集合完全一致
+058 vs 1003：✔ 对象集合完全一致
+
+### 结论
+采纳上游 055-058；我方 918 → 1000-1003 那条线整体退役。
+
+## § ④ 新发现：第四类归因＝「rename detection 吃掉上游新增文件」
+
+现象：合并后上游的 sql/migrations/startup/055-058 与 embeddata/055-058 在工作树里消失。
+
+根因（实测）：
+1. git ls-tree $(git merge-base HEAD origin/main) sql/migrations/startup/ → 无 055-058
+   ⇒ 它们是上游在 base 之后【新增】的
+2. 但 git 的 rename detection 把上游【新增】的 055_teams_table.sql 误判成
+   「我方 1000_teams_table.sql 的改名」
+3. ⇒ 上游那四个文件的内容被【合并进】我方那四个文件，而不是作为新文件落地
+4. ⇒ 随后 git rm 掉 1000-1003（判定为退役）⇒ 上游的 055-058 随合并一起消失
+
+⇒ 通用式：「合并后清理某一族文件」这个动作本身可能是【合并引入的删除】
+⇒ 清理后必须逐个 ls 确认【上游那棵树】里那族还在
+
+## § ⑤ 本轮修法（逐条）
+
+① 恢复上游 055-058（canonical 4 + embeddata 4）：git checkout origin/main -- …（零字节改动）
+② 补齐上游缺的两面（新增文件，不构成 L23 分叉）：
+   - down 脚本 4 个：sql/migrations/startup/055-058_*.down.sql
+     （057 退列不退表，与原判定同款）
+   - 离线升级副本 4 组：installer/migrations/055-058/{up,down}.sql（逐字节等于 canonical）
+③ 门测试改写：internal/sqlguard/migration_918_925_973_986_delivery_test.go
+   → internal/sqlguard/migration_055_058_team_foundation_delivery_test.go
+   - 编号 918/925/973/986 → 055/056/057/058
+   - 台账下标 391-394 → 401-404
+   - 变量名对齐上游：apiKeysTeamID057（大写 ID）
+   - ★ RLS 判据加 helper teamEnableRLS（public. 前缀可有可无）
+     ⇒ 因上游 canonical 不带 public. 限定、我方原版带 ⇒ 裸判据会对上游那套假红
+④ census 台账归属：db-object-expect.tsv ＋ installer-reachability.tsv
+   teams 七条索引归属 918/925/973/986 → 055/056/057/058
+⑤ 台账：installed_startup_migrations.tsv 采用上游 401-404
+⑥ changelog：删我方已退役的 918/925/973/986 登记段（文件已不存在 ⇒ checksum 门会 fatal）
+   ＋ 保留上游 055-058 登记行 ＋ 删重复标题
+⑦ AGENTS.md 体积：合并后实测 555,207 字节（超上限 524,288 共 30,919）
+   ⇒ 搬「2026-11-23 N4 乙路线收口轮·附」块（31,523 字节）进
+     AGENTS-archive-20261031.md ＋ 主档留一行指针 ⇒ 落地后 524,141 字节
+   （★ 内容零改动、★ 按仓内既有做法、★ 不抬上限）
+
+## § ⑥ 通用式（本轮两条）
+
+① 「重编号」这个动作本身要过【编号位数约束】
+   ⇒ migrationNumPrefix=^[0-9]{3}_ 把「什么算一个编号迁移」钉死三位数
+   ⇒ 四位数不是「新编号」、是【对全部守卫隐形】⇒ 等于没登记
+   ⇒ 取号前必须先问「这个位数的号对门可见吗」
+   ★ 这不是新知识：上游 12h 修订审计第三轮已写过同一条 ⇒ 是我方没读那一段就动手
+
+② 「合并期清理某一族」要先确认【上游同族还在不在】
+   ⇒ rename detection 会把上游新增的同名族吞进我方那族
+   ⇒ 清理后必须逐个 ls 确认上游那棵树里那族还在，且用上游那棵树做对照
+
+---
+证据档终止

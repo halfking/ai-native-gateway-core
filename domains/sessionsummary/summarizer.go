@@ -886,8 +886,46 @@ func (s *Summarizer) extractTitleFromFirstMessage(message string) string {
 
 // 辅助函数
 
-// extractJSON 从可能包含 markdown 的文本中提取 JSON
+// stripThinkingTags removes <think>...</think> tags and other XML-like wrapper
+// tags that extended thinking models may output before the actual JSON response.
+func stripThinkingTags(text string) string {
+	// Remove all <think>...</think> blocks (may appear multiple times)
+	for {
+		start := strings.Index(text, "<think>")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(text[start:], "</think>")
+		if end == -1 {
+			// Unclosed tag, remove just the <think> marker itself and let
+			// extractJSON find the JSON in what remains
+			text = text[:start] + text[start+7:]
+			break
+		}
+		text = text[:start] + text[start+end+8:]
+	}
+	
+	// Remove other common XML-like wrapper tags
+	for _, tag := range []string{"<response>", "<output>", "<answer>"} {
+		if idx := strings.Index(text, tag); idx != -1 {
+			text = text[idx+len(tag):]
+		}
+	}
+	for _, tag := range []string{"</response>", "</output>", "</answer>"} {
+		if idx := strings.LastIndex(text, tag); idx != -1 {
+			text = text[:idx]
+		}
+	}
+	
+	return strings.TrimSpace(text)
+}
+
+// extractJSON 从可能包含 markdown 或 thinking tags 的文本中提取 JSON
 func extractJSON(text string) string {
+	// First strip thinking tags and XML wrappers
+	text = stripThinkingTags(text)
+	
+	// Try markdown JSON blocks first
 	start := strings.Index(text, "```json")
 	if start != -1 {
 		start += 7
@@ -897,6 +935,7 @@ func extractJSON(text string) string {
 		}
 	}
 
+	// Find the first { and last } to extract JSON object
 	start = strings.Index(text, "{")
 	end := strings.LastIndex(text, "}")
 	if start != -1 && end != -1 && end > start {

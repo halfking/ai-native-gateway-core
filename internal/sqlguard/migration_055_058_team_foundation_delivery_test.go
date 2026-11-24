@@ -1,6 +1,6 @@
 package sqlguard
 
-// 918/925/973/986（2026-11-23 团队功能底座轮，★ 原 055-058 重编号）投递门：
+// 055/056/057/058（2026-11-24 合并轮二十·teams 族归位回上游编号）投递门：
 // teams / user_teams / api_keys.team_id / team_budgets 四件套必须真的在
 // **每一条**交付通道上齐备。
 //
@@ -24,9 +24,11 @@ package sqlguard
 //	  环境里都会被记成**真缺口**（★ 每档 +2）⇒ ★ 棘轮门会红 ⇒ ★ 而抬基线是
 //	  仓内明令禁止的（★ 那等于把报警器拆了）⇒ ⇒ ★ **唯一能同时满足
 //	  「可投递」与「不计真缺口」的编号区间是 > 914**。
-//	★ 编号取 918/925/973/986 而不是 1001：★ `migrationNumPrefix=^[0-9]{3}_` 把编号
-//	  钉死三位数（★ 996 行同款注记）⇒ ★ 四位数对 registry continuity /
-//	  delivery channel / lock guard 全部隐形 ⇒ ★ 等于没登记。
+//	★ 编号取 055/056/057/058（★ **归位回上游编号**、★ 不再重编号）：★ 上游已把本族
+//	  **完整登记进三条通道**（★ deploy files=() / installer embeddata＋StartupFiles /
+//	  installed_startup_migrations.tsv）⇒ ★★ 而 `migrationNumPrefix=^[0-9]{3}_`
+//	  把编号**钉死三位数**（★ 996 行同款注记）⇒ ★ **四位数（★ 我方曾试 1000-1003）
+//	  对 registry continuity / delivery channel / lock guard 全部隐形 ⇒ ★ 等于没登记**。
 //
 // ★ 这道门覆盖的交付面（★ 与 995/996/997-999 同款十二面）：
 //
@@ -64,11 +66,11 @@ func teamSHA256(t *testing.T, path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// teamBase055 等四个迁移的**文件基名**（★ 2026-11-24 弃用轮：★ 原用重编号 918/925/973/986 ⇒ ★★ 上游已把该号段复用于别的迁移 ⇒ ★★ 本门改指上游恢复的原号 055/056/057/058）（★ 不含扩展名）。
+// teamBase055 等四个迁移的**文件基名**（★ 不含扩展名）。
 const (
 	teamBase055 = "055_teams_table"
 	teamBase056 = "056_user_teams"
-	teamBase057 = "973_api_keys_team_id"
+	teamBase057 = "057_api_keys_team_id"
 	teamBase058 = "058_team_budgets"
 )
 
@@ -100,6 +102,24 @@ func teamStripFullLineComments(src string, marker string, keepGoEmbed bool) stri
 	return strings.Join(out, "\n")
 }
 
+// teamEnableRLS 判「有没有 ALTER TABLE <表> ENABLE ROW LEVEL SECURITY」。
+//
+// ★ 为什么不用裸词匹配（★ 两个实测坑）：
+//  ① 迁移头的注释里就写着这句话 ⇒ 裸词匹配会把**注释**当成语句 ⇒ 假红；
+//  ② `public.` 前缀**可有可无** ⇒ ★ 上游 055-058 的 canonical **不带** public.
+//     限定、★ 而我方原版带 ⇒ ★ 判据必须**两种形态都认** ⇒ 否则会对上游那套假红。
+func teamEnableRLS(exec string, table string) bool {
+	for _, form := range []string{
+		"ALTER TABLE public." + table + " ENABLE ROW LEVEL SECURITY",
+		"ALTER TABLE " + table + " ENABLE ROW LEVEL SECURITY",
+	} {
+		if strings.Contains(exec, form) {
+			return true
+		}
+	}
+	return false
+}
+
 // teamStartupFilesBlock 取出 runner.go 里 `StartupFiles: []string{ … }` 的**列表体**。
 //
 // ★ 为什么不能「全文包含」：★ 登记可能在**别处**出现（★ 注释、别的变量）⇒
@@ -118,8 +138,8 @@ func teamStartupFilesBlock(src string) string {
 	return rest[:j]
 }
 
-// teamMigs918 是本组四条迁移的登记面清单。
-var teamMigs918 = []struct {
+// teamMigs055 是本组四条迁移的登记面清单。
+var teamMigs055 = []struct {
 	base    string
 	num     string
 	tsvIdx  string
@@ -128,7 +148,7 @@ var teamMigs918 = []struct {
 }{
 	{teamBase055, "055", "401", "teamsTable055", "teams"},
 	{teamBase056, "056", "402", "userTeams056", "user_teams"},
-	{teamBase057, "973", "403", "apiKeysTeamID973", "api_keys"},
+	{teamBase057, "057", "403", "apiKeysTeamID057", "api_keys"},
 	{teamBase058, "058", "404", "teamBudgets058", "team_budgets"},
 }
 
@@ -136,7 +156,7 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
 
 	// ── ① canonical 存在 ＋ ② 幂等 DDL ＋ ③ RLS ＋ ④ 台账自登记 ──────────
-	for _, m := range teamMigs918 {
+	for _, m := range teamMigs055 {
 		canonPath := filepath.Join(repoRoot, "sql", "migrations", "startup", m.base+".sql")
 		body, err := os.ReadFile(canonPath)
 		if err != nil {
@@ -170,11 +190,11 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 			t.Errorf("%s 缺 CREATE POLICY（★ 只开 RLS 不建策略 ⇒ 表对所有人不可见）", m.base)
 		}
 		if m.base == teamBase057 {
-			if strings.Contains(exec, "ALTER TABLE public."+m.table+" ENABLE ROW LEVEL SECURITY") {
-				t.Errorf("%s 不得 ALTER TABLE public.%s ENABLE ROW LEVEL SECURITY（★ api_keys 是基线表、★ 它是否开 RLS 是 owner 裁决项 ⇒ 迁移只备策略、不替 owner 决定）", m.base, m.table)
+			if teamEnableRLS(exec, m.table) {
+				t.Errorf("%s 不得 ALTER TABLE %s ENABLE ROW LEVEL SECURITY（★ api_keys 是基线表、★ 它是否开 RLS 是 owner 裁决项 ⇒ 迁移只备策略、不替 owner 决定）", m.base, m.table)
 			}
-		} else if !strings.Contains(exec, "ALTER TABLE public."+m.table+" ENABLE ROW LEVEL SECURITY") {
-			t.Errorf("%s 缺 ALTER TABLE public.%s ENABLE ROW LEVEL SECURITY（★ 新表必须开 RLS ⇒ 否则租户隔离完全靠应用层）", m.base, m.table)
+		} else if !teamEnableRLS(exec, m.table) {
+			t.Errorf("%s 缺 ALTER TABLE %s ENABLE ROW LEVEL SECURITY（★ 新表必须开 RLS ⇒ 否则租户隔离完全靠应用层）", m.base, m.table)
 		}
 
 		// ⑤ down 脚本：★ 只退自己引入的部分 ＋ 台账对偶。
@@ -258,7 +278,7 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 	}
 	// ★ 剥整行 Go 注释（★ 保留 `//go:embed` 指令本身 —— 它在 Go 里就是注释）。
 	main := collapseSpaces(teamStripFullLineComments(string(mainSrc), "//", true))
-	for _, m := range teamMigs918 {
+	for _, m := range teamMigs055 {
 		for _, frag := range []string{
 			"//go:embed embeddata/startup/" + m.base + ".sql",
 			"//go:embed embeddata/startup/" + m.base + ".down.sql",
@@ -278,7 +298,7 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 	}
 	// ★ 剥整行注释 ＋ 只取 StartupFiles 的**列表体**（★ 注释掉的登记不算登记）。
 	runner := teamStartupFilesBlock(teamStripFullLineComments(string(runnerSrc), "//", false))
-	for _, m := range teamMigs918 {
+	for _, m := range teamMigs055 {
 		if !strings.Contains(runner, `"`+m.base+`.sql",`) {
 			t.Errorf("dbinit runner.go 的 StartupFiles 缺 %q（★ 全新安装的库里这三张表与这一列不存在）", m.base+".sql")
 		}
@@ -291,7 +311,7 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 		t.Fatalf("读 installed_startup_migrations.tsv 失败: %v", err)
 	}
 	tsv := string(tsvBody)
-	for _, m := range teamMigs918 {
+	for _, m := range teamMigs055 {
 		if !strings.Contains(tsv, m.tsvIdx+"\t"+m.base+".sql") {
 			t.Errorf("tsv 缺 %s 的登记行（%s\\t%s.sql）", m.base, m.tsvIdx, m.base)
 		}
@@ -304,7 +324,7 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 	}
 	// ★ 剥整行 shell 注释（★ 被 `#` 注掉的登记不算登记）。
 	deploy := teamStripFullLineComments(string(deploySrc), "#", false)
-	for _, m := range teamMigs918 {
+	for _, m := range teamMigs055 {
 		for _, frag := range []string{
 			`"$ROOT_DIR/sql/migrations/startup/` + m.base + `.sql"`,
 			`ledger_artifact_probe "` + m.base + `.sql"`,
@@ -319,6 +339,6 @@ func TestMigration055_058_TeamFoundationDelivered(t *testing.T) {
 	//   一个**未登记**的同族文件名不该出现在 runner 的 StartupFiles 里。
 	if strings.Contains(runner, `"990_stats_consistency_fixes.sql",`) &&
 		!strings.Contains(runner, `"055_teams_table.sql",`) {
-		t.Errorf("★ 负控失效：★ runner 里没有 918 却有 990 ⇒ 本门的查找口径过宽")
+		t.Errorf("★ 负控失效：★ runner 里没有 055 却有 990 ⇒ 本门的查找口径过宽")
 	}
 }

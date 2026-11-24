@@ -2128,7 +2128,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
 			"055_teams_table.sql",
 			"056_user_teams.sql",
-			"973_api_keys_team_id.sql",
+			"057_api_keys_team_id.sql",
 			"058_team_budgets.sql",
 			// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
 			//   ★ processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，

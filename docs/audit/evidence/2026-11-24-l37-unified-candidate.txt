@@ -148,3 +148,39 @@
 ★ ★★ ⇒ 「push 前先并一次上游」必须成为放行前的固定一步（★ 本轮收口期间上游已连推 3 笔）。
 
 ━━━━━━━━━━━━━━ §⑧ 唯一候选树的全量闸门读数（★ 见追加段）━━━━━━━━━━━━━━
+
+★ 唯一候选树 `a4c4e5f7e` 的全量闸门读数（★ 工作区 `/private/tmp/l30-unified`、★ 树干净）★
+
+  === 主模块 7 包 ===
+  ok  	github.com/kaixuan/llm-gateway-go/admin	232.010s
+  ok  	github.com/kaixuan/llm-gateway-go/internal/metricsstore	0.023s
+  ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	14.202s
+  ok  	github.com/kaixuan/llm-gateway-go/scripts/deploygate	3.052s
+  ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	823.087s
+  ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	33.363s
+  ok  	github.com/kaixuan/llm-gateway-go/sql/schema	135.453s
+  MAIN_RC=0
+  === installer 三包 ===
+  ok  	github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer	7.507s
+  ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	6.017s
+  ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil	47.073s
+  INSTALLER_RC=0
+  === shell 门族 ===
+  shell-mktemp-template: PASS（★ 扫描面含未跟踪文件）
+  shell-backtick-substitution: 扫 880 个脚本，命中 0 条
+  自探针 ✔（★ 检测逻辑能咬住已知违规样本 ★）
+  反向对照 ✔（★ 合法写法未被误报 ★）
+  shell-backtick-substitution: PASS
+  ✓ 无「$变量紧跟非 ASCII 字节」隐患（探针与反向对照均已通过）
+  SHELL_RC=0
+
+★ 活库腿（★ 最终候选树上复跑、★ 纯只读）★：
+  LLM_GATEWAY_LEGACY_ALIGN_PSQL_CMD='ssh 211 "docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tA -q"' \
+  LLM_GATEWAY_LEGACY_ALIGN_ENV=211 LLM_GATEWAY_LEGACY_ALIGN_CHANNELS=deploy,install \
+  go test -count=1 -run 'TestLegacyCrossSurfaceLiveAlignment$' -v ./sql/migrations/startup/
+  → --- PASS: TestLegacyCrossSurfaceLiveAlignment (1.82s) ｜ PASS ｜ ok 1.872s
+  ⇒ ★★ **211 绿、★ 结论不变**（★ 330/344 错位但不在任何通道的投递面里 ⇒ 绿；★ 392 按同一指纹跳过 ⇒ 绿）★★
+
+★ ★★ **两条必须写下来的环境事实（★ 如实登记、★ 免得下一个人误判）★★**：
+★ ① **本轮出现过一次磁盘满（★ `no space left on device`）**：★ 并行车道那一轮闸门在基线阶段整体 `build failed` ⇒ ★★ **他们那轮读数已作废**（★ 环境红、★ 非代码红）★★｜★ 我方这一轮**未撞上 ENOSPC**（★ admin/ursmcheck/… 全部正常完成）⇒ ★★ **我方读数有效** ★★ ｜★ 磁盘已由并行车道腾出空间（★ 17Gi 可用）。
+★ ② **本轮机器负载峰值 132–213**（★ 两条车道同时跑闸门）⇒ ★★ **ursmcheck 实测 823s**（★ 历史读数 376–442s）★★ ⇒ ★★ **它【没有超时】（★ 900s 预算内跑完）★ 但耗时翻倍 ⇒ ⇒ 「闸门红了」的第一嫌疑仍是【环境】、★ 而不是代码** ★★。

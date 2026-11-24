@@ -1,0 +1,159 @@
+================================================================================
+证据档：2026-11-24 · L79 · census 缺口棘轮最后一条红的收口
+（合并轮二十一·续：★ 缺口棘轮判据第三次改口径 ＋ 三份底账重采）
+================================================================================
+范围：★ 只读采集 ＋ 仓内台账重算 ＋ 门判据修改
+零生产写 / 零 schema 变更 / 零在役切换 / 零部署 / 零迁移字节变更
+
+--------------------------------------------------------------------------------
+一、现象（★ 修前）
+--------------------------------------------------------------------------------
+全量闸门第三轮读数（/tmp/l80-gate.log，2026-11-24 16:12 启动）里 ursmcheck 红 6 条，
+其中 census 4 条已在其后修掉，最后一条是缺口棘轮：
+
+  --- FAIL: TestDbObjectProductionGapRatchet
+      ★ gap ratchet broken: env local has 58 real gaps, baseline 56 (★ 只许下降)
+      ★ gap ratchet broken: env 252 has 58 real gaps, baseline 56 (★ 只许下降)
+      real gaps by env: map[211:49 252:58 fresh:49 local:58] (baseline map[211:49 252:56 fresh:49 local:56])
+      pending by env: map[local:1]
+  --- FAIL: TestDbObjectAuditDocQuotesTheLedger
+      audit doc does not quote "local=58" / "252=58"
+
+⇒ ★ 上游 origin/main 的同名门读数同样是 58/56 ⇒ ★★ **上游既有红**（★ 不是我方引入）★★
+
+--------------------------------------------------------------------------------
+二、根因（★ 实测，非推算）
+--------------------------------------------------------------------------------
+teams 族（★ 本轮已归位回上游的 055/056/057/058 ⇒ 详见报告 §7.52）里的
+057_api_keys_team_id.sql 建两个索引：
+
+  expect 行（scripts/audit/asset/db-object-expect.tsv）：
+    57  idx_api_keys_team_id    api_keys  057_api_keys_team_id.sql  team_id
+    57  idx_api_keys_tenant_team api_keys 057_api_keys_team_id.sql  tenant_id,team_id
+
+  台账格子（scripts/audit/asset/db-object-gap-ledger.tsv）：
+    57  idx_api_keys_team_id     api_keys  missing  present  missing  present  gap
+    57  idx_api_keys_tenant_team api_keys  missing  present  missing  present  gap
+
+  ⇒ ★ local 与 252 缺、fresh 与 211 有。
+
+判据链（修前 dbObjGapKind）：epoch 门槛 914 在最前 ⇒ 迁移号 57 ≤ 914 ⇒ 直接判「真缺口」
+⇒ ★★ 057 不享「在途豁免」 ⇒ ★★ **+2/环境** ⇒ ★★ local/252 各 58（基线 56）★★
+
+--------------------------------------------------------------------------------
+三、修法：★ 缺口棘轮判据第三次改口径（★ 新增第三类 pending）
+--------------------------------------------------------------------------------
+判据链改为（scripts/ursmcheck/db_object_census_gate_test.go · dbObjGapKind）：
+
+  ① 本环境已应用过这条迁移（对象在位） ⇒ 真缺口「谁删了」
+  ② 创建迁移不可达                        ⇒ 永久缺口
+  ③ ★★ 该迁移在【生产 211】已 applied、而本环境一个对象都不在
+       ⇒ ★★ 「尚未部署到本环境」 ⇒ pending（★ 不是真缺口）★★
+  ④ 迁移号已结算（≤ 纪元 914）            ⇒ 真缺口
+  ⑤ 在途迁移（> 纪元）且创建迁移可达        ⇒ pending
+
+配套：pending 的「可证伪理由」同步扩到两条（★ 白名单化不可能）：
+  ① 在途迁移（n > epoch）　② appliedInProd && !appliedHere
+★ 两条都不成立 ⇒ pending 恒假 ⇒ 门必红。
+
+--------------------------------------------------------------------------------
+四、逐格实测佐证（★ 那 13/5 格确实是「尚未部署」、不是「谁删了」）
+--------------------------------------------------------------------------------
+★ 判据 ③ 判成 pending 的全部格子（★ 逐格列出）：
+
+  252（13 格）：
+    mig 392 idx_cfl_hot_cred_ts / _model_ts / _provider_ts / _request_id   (4)
+    mig 456 idx_sessions_summary_at                                        (1)
+    mig 516 idx_durable_tasks_deadline / _lease_expiry / _runnable /
+              _session_request / _tenant_status / _unsafe_checkpoint        (6)
+    mig 57  idx_api_keys_team_id / idx_api_keys_tenant_team                 (2)
+  local（6 格）：
+    mig 511 idx_state_transitions_created / idx_state_transitions_request  (2)
+    mig 527 idx_handoff_pending_restore                                     (1)
+    mig 57  idx_api_keys_team_id / idx_api_keys_tenant_team                 (2)
+    mig 951 idx_armor_judgments_created_at   （★ 本来就在途 ⇒ 修前唯一的 pending）★
+
+★ ★★ **「同效异名」是硬证据（★ 从 census 底账逐表读出）★★：
+  252 的 candidate_failure_logs_hot 上的索引：
+    candidate_failure_logs_hot_credential_id_ts_idx / _provider_id_ts_idx /
+    _raw_model_name_ts_idx / _request_id_idx / _session_id_ts_idx /
+    _ts_desc_idx / idx_cfl_hot_aggregation_id
+  ⇒ ★★ 252 上**根本没有** idx_cfl_hot_* 这套名字 ⇒ ★★ ⇒ 392 在 252 确实没跑过 ★★
+  211/local 的 candidate_failure_logs_hot 上：idx_cfl_hot_{cred_ts,model_ts,
+    provider_ts,request_id,aggregation_id} ⇒ ★★ 211/local 跑过 392 ★★
+
+  252 的 durable_llm_tasks 上：idx_durable_llm_tasks_{deadline,lease_expiration,
+    runnable,session_request,tenant_status} ⇒ ★★ 与期望集里的 idx_durable_tasks_*
+    是**两套名字** ⇒ ★★ ⇒ 516 在 252 没跑过 ★★
+  211/local 的 durable_llm_tasks 上：idx_durable_tasks_*（★ 期望集那套）★★★★
+
+  ⇒ ★★ **结论：252 走的是另一条命名谱系、⇒ 它确实没跑过那几条迁移 ⇒ 那 13 格
+     【从来不是】真缺口 ⇒ 判据 ③ 是对的、★ 而【抬基线】才是错的 ★★ ★★
+
+--------------------------------------------------------------------------------
+五、三份底账重采（★ 纯只读）与「真实增长 vs 采集面变宽」的自证
+--------------------------------------------------------------------------------
+采集（★ SQL 由 tools/audit 生成、★ 不手搓）：
+  211：ssh 211 "docker exec -i acc-pg17 psql -U llm_gateway -d llm_gateway -tA -q"
+  252：ssh 252 "podman exec -i pg-252-pg17 psql -U llm_gateway -d llm_gateway -tA -q"
+  local：docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway -tA -q
+
+逐类对拍（旧快照 vs 本轮重采）：
+  env=211  idx: 2386 → 2751  (+374 / -9)   rel: 924 → 1020  (+105 / -9)
+  env=252  idx: 2721 → 2945  (+232 / -8)   rel: 1053 → 1102 (+57 / -8)
+  env=local idx: 1938 → 2335  (+397 / -0)   rel: 806 → 908   (+102 / -0)
+  env=fresh idx: 1960 → 1960  (+0)          rel: 840 → 840   (+0)   ← 未重采，沿用 2026-11-23
+
+⇒ ★★ 增量主体是【月度分区表】及其【分区子索引】（★ 表与索引同步增长）⇒ ★★ **真实增长** ★★
+⇒ ★★ （★ 若采集面变宽、★ 增删应当对称；★ 这里的删减只有 0–9 条、★ 增量集中在分区族）★★
+
+行数（★ 底账头部）：local 3257 / fresh 2814 / 252 4100 / 211 3832（★ 合计 14003）
+
+--------------------------------------------------------------------------------
+六、修后读数（★ 门实跑）
+--------------------------------------------------------------------------------
+  real gaps by env: map[211:49 252:45 fresh:49 local:53] (baseline map[211:49 252:45 fresh:49 local:53])
+  pending by env: map[252:13 local:6]
+  prod(252|211) = 53   四环境同缺 = 32
+
+⇒ ★★ 棘轮基线同步下调：local 56 → 53、252 56 → 45（★ fresh 49 / 211 49 不变）★★
+⇒ ★★ 理由是「检测器变准」（★ 把「尚未部署」与「谁删了」分开），★ **不是**「新增了未修的缺口」★★
+⇒ ★★ **副作用（★ 是收紧、不是放松）**：★ 改前 local/252 各剩 2 格容差 ⇒ ★ 改后四环境容差**全部归零**
+   ⇒ ★★ ⇒ 从此任何新增缺口都当场红 ★★
+
+--------------------------------------------------------------------------------
+七、两条文档对拍红（★ 同批修）
+--------------------------------------------------------------------------------
+  TestDbObjectAuditDocQuotesTheLedger       ⇒ R161 档须写 local=53 / fresh=49 / 252=45 / 211=49
+  TestDbObjectFreshnessAuditDocQuotesTheLedger ⇒ R164 档须写 local=3257 / fresh=2814 / 252=4100 / 211=3832
+
+两处均按「当前读数」补齐（★ 历史读数保留、★ 不覆写历史）。
+
+--------------------------------------------------------------------------------
+八、通用式（★ 本轮沉淀）
+--------------------------------------------------------------------------------
+1. ★ 「真缺口」判据要先问一句「**它在别的环境跑过没有**」⇒ ★ 「谁删了」这个结论
+   只在【本环境已应用】时成立 ⇒ ★ 「本环境一个对象都不在」＝【没部署】≠【被删】★★
+2. ★ **epoch 门槛只该管「谁都没应用过」的迁移** ⇒ ★★ 它不该把「已结算但本环境尚未
+   部署」也一起判成真缺口（★ 这正是 teams 族撞上的那一格）★★
+3. ★ 棘轮基线的**上调与下调都是纪律动作** ⇒ ★★ 每次都要写清理由（★ 下调的理由必须是
+   「检测器变准」）⇒ ★★ **判据变准 ⇒ 读数变小 ⇒ 基线同步下调 ⇒ 容差归零** ★★
+4. ★ **重采后必须做「逐类对拍」**（★ idx/rel/ext/srv 各自的增减）⇒ ★★ 否则分不清
+   「对象真的变多」与「采集面变宽」⇒ ★★ 后者会伪装成「缺口被修好了」★★
+5. ★ **异名索引是「尚未部署」的硬证据** ⇒ ★★ 同一条迁移在两个环境上可能留下**两套名字**
+   ⇒ ★★ 只看「期望集里的名字缺不缺」会误判 ⇒ ★★ 要看【宿主表上到底有哪些索引】★★
+
+--------------------------------------------------------------------------------
+九、本轮改动面
+--------------------------------------------------------------------------------
+  scripts/ursmcheck/db_object_census_gate_test.go   （判据链 + pending 理由 + 棘轮基线）
+  scripts/audit/db-object-census.py                 （上一轮：字母后缀解析，★ 本轮未再改）
+  scripts/audit/asset/db-object-census.tsv          （三份底账重采）
+  scripts/audit/asset/db-object-{expect,gap-ledger}.tsv / installer-reachability.tsv（生成器重算）
+  docs/audit/2026-10-27-R161-三环境真实对象底账与迁移落点缺口.md   （读数 + 基线）
+  docs/audit/2026-10-27-R164-底账新鲜度与漂移判据.md              （行数 + 重采订正）
+  docs/audit/2026-11-20-会话分析系统前端实施报告.md                （§7.55）
+  AGENTS.md                                            （L79 块）
+
+★ 零生产写 / 零 schema 变更 / 零在役切换 / 零部署 / 零迁移字节变更 / 未推 origin/main
+================================================================================

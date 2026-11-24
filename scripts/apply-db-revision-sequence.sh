@@ -2907,7 +2907,7 @@ files=(
   #     ⇒ 必须排在 055 之后（已满足）。
   "$ROOT_DIR/sql/migrations/startup/055_teams_table.sql"
   "$ROOT_DIR/sql/migrations/startup/056_user_teams.sql"
-  "$ROOT_DIR/sql/migrations/startup/973_api_keys_team_id.sql"
+  "$ROOT_DIR/sql/migrations/startup/057_api_keys_team_id.sql"
   "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
 )
 
@@ -3805,7 +3805,7 @@ ledger_artifact_probe "055_teams_table.sql" \
   "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
 ledger_artifact_probe "056_user_teams.sql" \
   "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
-ledger_artifact_probe "973_api_keys_team_id.sql" \
+ledger_artifact_probe "057_api_keys_team_id.sql" \
   "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
 ledger_artifact_probe "058_team_budgets.sql" \
   "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
