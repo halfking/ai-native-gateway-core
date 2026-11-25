@@ -16,7 +16,7 @@ import (
 const claimDailySummarySQL = `
 	SELECT day::text FROM public.request_metrics_daily_state
 	WHERE dirty AND day < (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
-	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
+	  AND (SELECT backfill_complete FROM public.request_metrics_repair_state WHERE singleton)
 	ORDER BY day DESC LIMIT 1 FOR UPDATE SKIP LOCKED`
 
 // RefreshDailySummary rebuilds and publishes at most one closed day. Projection
@@ -37,7 +37,7 @@ func (p *ProjectionProcessor) RefreshDailySummary(ctx context.Context) (bool, er
 const claimDailyBoardSQL = `
 	SELECT s.day::text FROM public.request_metrics_daily_state s
 	WHERE NOT s.dirty
-	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
+	  AND (SELECT backfill_complete FROM public.request_metrics_repair_state WHERE singleton)
 	  AND NOT EXISTS (SELECT 1 FROM public.request_metrics_board_days b WHERE b.day=s.day)
 	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
 
@@ -82,7 +82,7 @@ func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, er
 	claim := `
 	SELECT s.day::text FROM public.request_metrics_daily_state s
 	WHERE NOT s.dirty
-	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
+	  AND (SELECT backfill_complete FROM public.request_metrics_repair_state WHERE singleton)
 	  AND (` + strings.Join(missing, " OR ") + `)
 	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
 	return p.refreshDay(ctx, claim, func(ctx context.Context, tx *sql.Tx, day string) error {
@@ -116,7 +116,7 @@ func (p *ProjectionProcessor) refreshDay(ctx context.Context, claim string, rebu
 	defer tx.Rollback()
 
 	// Match TRUNCATE's lock order: projection table, then day state.
-	if _, err := tx.ExecContext(ctx, "LOCK TABLE public.request_metrics_projection IN ACCESS SHARE MODE"); err != nil {
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE public.request_metrics IN ACCESS SHARE MODE"); err != nil {
 		return false, err
 	}
 	var day string

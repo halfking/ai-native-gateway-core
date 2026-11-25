@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2146,12 +2147,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 幂等（纯 INSERT + ON CONFLICT DO NOTHING，零 DDL）⇒
 			//     内容指纹重放零冲突；零外部依赖 ⇒ 位置只受清单序约束。
 			"999a_data_maintenance_playbook.sql",
-			"983d_request_metrics_projection.sql",
-			"983e_request_metrics_daily_summary.sql",
-			"983f_request_metrics_daily_board.sql",
-			"983g_request_metrics_daily_history.sql",
-			"983h_request_metrics_daily_tenant_history.sql",
-			"983i_request_metrics_daily_history_details.sql",
+			"973_request_metrics_projection.sql",
+			"983j_request_metrics_973_repair.sql",
+			"983k_request_metrics_daily_summary.sql",
+			"983l_request_metrics_daily_board.sql",
+			"983m_request_metrics_daily_history.sql",
+			"983n_request_metrics_daily_tenant_history.sql",
+			"983o_request_metrics_daily_history_details.sql",
 		},
 	}
 }
@@ -2317,6 +2319,9 @@ func (r *Runner) InitSchema(logger func(string)) error {
 		}
 		if len(deployApplied) > 0 {
 			logger(fmt.Sprintf("  ▶ 部署通道权威台账 gateway_db_revision_sequences 命中 %d 条已应用文件（★ 只读咨询，★ 不写）", len(deployApplied)))
+		}
+		if err := r.verifyReleasedProjectionFingerprint(applied, deployApplied); err != nil {
+			return err
 		}
 	}
 
@@ -2618,6 +2623,39 @@ func (r *Runner) startupSkipReason(name string, applied map[int]bool, deployAppl
 		return "部署通道已按同一内容指纹应用", true
 	}
 	return "", false
+}
+
+// verifyReleasedProjectionFingerprint runs before applying the 973 repair.
+// The version row alone cannot distinguish the released 973 from other builds.
+func (r *Runner) verifyReleasedProjectionFingerprint(applied map[int]bool, deployApplied map[string]string) error {
+	const file = "973_request_metrics_projection.sql"
+	deployedSHA := deployApplied[file]
+	if !slices.Contains(r.StartupFiles, file) || (!applied[973] && deployedSHA == "") {
+		return nil
+	}
+	packagedSHA, err := r.fileSHA256(filepath.Join("startup", file))
+	if err != nil {
+		return fmt.Errorf("read released 973 fingerprint: %w", err)
+	}
+	if deployedSHA != "" && deployedSHA != packagedSHA {
+		return fmt.Errorf("released 973 deployment fingerprint differs from %s", file)
+	}
+	hasInstallerReceipts, err := r.psqlQuery(`SELECT to_regclass('public.gateway_db_installer_migration_receipts') IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("check installer receipts for 973: %w", err)
+	}
+	if strings.TrimSpace(hasInstallerReceipts) != "t" {
+		return nil
+	}
+	installedSHA, err := r.psqlQuery(`SELECT content_sha256 FROM public.gateway_db_installer_migration_receipts
+		WHERE file_name='973_request_metrics_projection.sql'`)
+	if err != nil {
+		return fmt.Errorf("read installer fingerprint for 973: %w", err)
+	}
+	if installedSHA = strings.TrimSpace(installedSHA); installedSHA != "" && installedSHA != packagedSHA {
+		return fmt.Errorf("released 973 installer fingerprint differs from %s", file)
+	}
+	return nil
 }
 
 // recordAppliedVersion 把「这条 startup 文件已被应用」补记进人读台账

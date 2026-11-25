@@ -16,9 +16,9 @@ type SessionRequestRankingQuery struct {
 const sessionRequestRankingBase = `
 WITH projection AS (
 	SELECT backfill_complete, updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), observable AS (
 	SELECT tenant_id, owner_user, occurred_at, status, total_tokens, cached_tokens, latency_ms, credits_charged,
 		nullif(session_id,'') AS session_id, nullif(agent_name,'') AS agent_name,

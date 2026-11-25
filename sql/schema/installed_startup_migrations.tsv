@@ -422,9 +422,10 @@
 404	058_team_budgets.sql
 405	983c_add_occurred_cursor_index.sql
 406	999a_data_maintenance_playbook.sql
-407	983d_request_metrics_projection.sql
-408	983e_request_metrics_daily_summary.sql
-409	983f_request_metrics_daily_board.sql
-410	983g_request_metrics_daily_history.sql
-411	983h_request_metrics_daily_tenant_history.sql
-412	983i_request_metrics_daily_history_details.sql
+407	973_request_metrics_projection.sql
+408	983j_request_metrics_973_repair.sql
+409	983k_request_metrics_daily_summary.sql
+410	983l_request_metrics_daily_board.sql
+411	983m_request_metrics_daily_history.sql
+412	983n_request_metrics_daily_tenant_history.sql
+413	983o_request_metrics_daily_history_details.sql

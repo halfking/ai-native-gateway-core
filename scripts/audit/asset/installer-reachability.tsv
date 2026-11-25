@@ -1,28 +1,27 @@
 # installer-reachability.tsv —— ★★「新装环境可达性」台账（★ 每条期望索引一行）
 # ★ 生成器：scripts/audit/db-object-census.py reachability
-# 983d、983e 和 983h 尚未进入该次采集快照。七条新增索引的 retired 表示采集时缺少其源表，候选中的索引由迁移创建。
+# 采集早于 973 上线与 983j–983o。候选索引的实物由独立升级和新装验证。
 # ★ 列：index_name	table	creator_migration_no	creator_file	creator_reachable	present_envs	missing_envs	verdict	severity	note
 # ★ verdict：reachable-and-present | reachable-and-legitimately-retired | baseline-dependent | unreachable-and-missing | reachable-but-missing-in-fresh
 # ★ severity：none | baseline-dependent | new-install-gap | prod-gap | installer-bug
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-25T17:47:43+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=413 package_up=413 rows=990
+# ★ generated_at=2026-11-25T18:48:52+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=414 package_up=414 rows=992
 # ★ ★★ census_bundled_at=2026-11-24T08:31:58+00:00 census_env_sha256=local:559365e9e5901efec87e929de2efaa4a02b84a129399f0abe6da83e5152f5764,fresh:acb523930e2b29be2d53c9eb307a25ecadedf328e59e859b3a82f3e76b9c3f84,252:994d74cd168c2f19b914a86b71baca3ded4bcfdc804b01646d0551f38a8f0430,211:1f53201fd6928b0bf6dad190420876401d8c669b73e64f84d4b5406c7ac764a5
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 105, "reachable-and-present": 494, "unreachable-and-missing": 49}
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 107, "reachable-and-present": 494, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	395b	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	478p2	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
-idx_request_metrics_daily_dirty	request_metrics_daily_state	983e	983e_request_metrics_daily_summary.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_daily_dirty	request_metrics_daily_state	983k	983k_request_metrics_daily_summary.sql	yes			reachable-and-legitimately-retired	none	
 idx_request_metrics_occurred_cursor	request_metrics	983c	983c_add_occurred_cursor_index.sql	yes	211		reachable-and-legitimately-retired	none	
-idx_request_metrics_pending_age	request_metrics_pending	983d	983d_request_metrics_projection.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_pending_time	request_metrics_pending	983d	983d_request_metrics_projection.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_projection_person_history	request_metrics_projection	983h	983h_request_metrics_daily_tenant_history.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_projection_provider	request_metrics_projection	983d	983d_request_metrics_projection.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_projection_session	request_metrics_projection	983d	983d_request_metrics_projection.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_projection_time	request_metrics_projection	983d	983d_request_metrics_projection.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_projection_person_history	request_metrics	983n	983n_request_metrics_daily_tenant_history.sql	yes		211	reachable-and-legitimately-retired	none	
+idx_request_metrics_projection_provider	request_metrics	983j	983j_request_metrics_973_repair.sql	yes		211	reachable-and-legitimately-retired	none	
+idx_request_metrics_projection_session	request_metrics	983j	983j_request_metrics_973_repair.sql	yes		211	reachable-and-legitimately-retired	none	
 idx_request_metrics_raw_model	request_metrics	983b	983b_add_raw_model_name.sql	yes	211		reachable-and-legitimately-retired	none	
+idx_request_metrics_refresh_pending_age	request_metrics_refresh_pending	983j	983j_request_metrics_973_repair.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_refresh_pending_time	request_metrics_refresh_pending	983j	983j_request_metrics_973_repair.sql	yes			reachable-and-legitimately-retired	none	
 idx_request_logs_session	request_logs	0	000_base_tables.sql	no			reachable-and-legitimately-retired	none	
 idx_users_tenant	users	1	001_users_table.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_users_username	users	1	001_users_table.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
@@ -939,6 +938,9 @@ idx_error_analysis_results_category	error_analysis_results	971	971_pi_error_anal
 idx_error_analysis_results_false_positive	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_error_analysis_results_queue	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_error_analysis_results_severity	error_analysis_results	971	971_pi_error_analysis_system.sql	yes	local,fresh,252,211		reachable-and-present	none	
+idx_request_metrics_fact_request	request_metrics	973	973_request_metrics_projection.sql	yes		211	reachable-and-legitimately-retired	none	
+idx_request_metrics_pending_enqueued	request_metrics_pending	973	973_request_metrics_projection.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_projected_time	request_metrics	973	973_request_metrics_projection.sql	yes		211	reachable-and-legitimately-retired	none	
 idx_mppq_canon	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes	fresh,252,211		reachable-and-present	none	
 idx_mppq_platform	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes	fresh,252,211		reachable-and-present	none	
 idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975	975_pricing_suggestion_audit.sql	yes	fresh,252,211		reachable-and-present	none	

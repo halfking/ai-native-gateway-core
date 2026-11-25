@@ -326,6 +326,14 @@ func migrationPathLess(a, b string) bool {
 	if dirA != dirB {
 		return dirA < dirB
 	}
+	// The delivered 973 SQL depends on 983. Move its sort key without
+	// changing the filename or fingerprint used by the migration ledgers.
+	if nameA == "973_request_metrics_projection.sql" {
+		nameA = "983cp1_request_metrics_projection.sql"
+	}
+	if nameB == "973_request_metrics_projection.sql" {
+		nameB = "983cp1_request_metrics_projection.sql"
+	}
 	va, okA := versionPrefix(nameA)
 	vb, okB := versionPrefix(nameB)
 	switch {
@@ -346,8 +354,10 @@ func migrationPathLess(a, b string) bool {
 // MigrationPathLess 是 migrationPathLess 的**导出**形态。
 //
 // ★★ 用途：★ 让其它包的顺序门**直接复用生产排序口径**，而不是各自实现一份
-//   （★ 2026-11-24 实测教训：installer/internal/dbinit/migration_auto_enum_order_test.go
-//   自己实现了一份「剥掉尾部字母」的解析 ⇒ 与生产口径不一致 ⇒ **门绿而生产乱序**）。
+//
+//	（★ 2026-11-24 实测教训：installer/internal/dbinit/migration_auto_enum_order_test.go
+//	自己实现了一份「剥掉尾部字母」的解析 ⇒ 与生产口径不一致 ⇒ **门绿而生产乱序**）。
+//
 // ★★ ⇒ 任何要断言「迁移执行序」的门，都应当调用本函数，★ 不要自造比较器。
 func MigrationPathLess(a, b string) bool { return migrationPathLess(a, b) }
 
@@ -356,6 +366,7 @@ func MigrationPathLess(a, b string) bool { return migrationPathLess(a, b) }
 // ★★★ 字母后缀记法（"983b_x.sql" / "478p2_x.sql"）⇒ **折叠回主号**（983 / 478）。
 //
 // ★★★ 为什么必须折叠（★ 2026-11-24 12h 审计轮·第三轮实测坐实）：★
+//
 //	· 本函数是**执行序**口径（migrationPathLess 用它排序）★
 //	· 而**折叠前**它是 strconv.Atoi(name[:idx]) ⇒ "983b" ⇒ Atoi 失败 ⇒ (0,false)
 //	  ⇒ ⇒ migrationPathLess 的「一方无数字前缀」分支把它判成 bootstrap 类
@@ -367,6 +378,7 @@ func MigrationPathLess(a, b string) bool { return migrationPathLess(a, b) }
 //	  ⇒ ⇒ ★★ **离线升级整体中止**★★
 //
 // ★★★ ★★ 而 dbinit 侧的 migrationVersionOf（**台账跳过**口径）**刻意不折叠**：★
+//
 //	· 它判的是「这条迁移是否已应用」（查 public.schema_migrations.version）★
 //	· 折叠后 983b 会去查台本 '983' ⇒ 而 '983' 行是**request_metrics 建表件**写的
 //	  ⇒ ⇒ 983b 被**假跳过** ⇒ raw_model_name 列永不落地 ⇒ 落库必 42703
@@ -378,8 +390,9 @@ func MigrationPathLess(a, b string) bool { return migrationPathLess(a, b) }
 //	  ⇒   与 installer/internal/upgrader/migration_order_suffix_test.go。
 //
 // ★★ 折叠口径与仓内既有约定一致（★ 与 tests/migration_version_prefix_unique_test.sh 的
-//    「主号+小写后缀 = 同族序篇」同一套正则）：
-//    ^[0-9]+([a-z]|[a-z]?p[0-9]+)?$   ⇒ 983b / 395c / 478p2 全部折叠回主号。
+//
+//	「主号+小写后缀 = 同族序篇」同一套正则）：
+//	^[0-9]+([a-z]|[a-z]?p[0-9]+)?$   ⇒ 983b / 395c / 478p2 全部折叠回主号。
 func versionPrefix(name string) (int, bool) {
 	idx := strings.Index(name, "_")
 	if idx <= 0 {

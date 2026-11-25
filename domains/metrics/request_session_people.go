@@ -26,10 +26,10 @@ WITH params AS (
 		$8::integer AS page_size,$9::integer AS page_offset,$10::boolean AS rank_peers
 ), projection AS (
 	SELECT s.backfill_complete,s.updated_at,
-		(SELECT min(q.enqueued_at) FROM public.request_metrics_pending q
+		(SELECT min(q.enqueued_at) FROM public.request_metrics_pending_events q
 		 WHERE q.occurred_at >= p.start_at AND q.occurred_at < p.end_at
 		   AND (p.tenant='' OR q.tenant_id=p.tenant)) AS pending_since
-	FROM public.request_metrics_projection_state s CROSS JOIN params p WHERE s.singleton
+	FROM public.request_metrics_repair_state s CROSS JOIN params p WHERE s.singleton
 ), owners AS MATERIALIZED (
 	SELECT tenant FROM params WHERE owner<>'' AND tenant<>''
 	UNION

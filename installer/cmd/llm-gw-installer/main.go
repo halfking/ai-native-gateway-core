@@ -1981,41 +1981,47 @@ var addOccurredCursorIndex983c []byte
 //go:embed embeddata/startup/983c_add_occurred_cursor_index.down.sql
 var addOccurredCursorIndex983cDown []byte
 
-//go:embed embeddata/startup/983d_request_metrics_projection.sql
-var requestMetricsProjection983d []byte
+//go:embed embeddata/startup/973_request_metrics_projection.sql
+var requestMetricsProjection973 []byte
 
-//go:embed embeddata/startup/983d_request_metrics_projection.down.sql
-var requestMetricsProjection983dDown []byte
+//go:embed embeddata/startup/973_request_metrics_projection.down.sql
+var requestMetricsProjection973Down []byte
 
-//go:embed embeddata/startup/983e_request_metrics_daily_summary.sql
-var requestMetricsDailySummary983e []byte
+//go:embed embeddata/startup/983j_request_metrics_973_repair.sql
+var requestMetricsRepair983j []byte
 
-//go:embed embeddata/startup/983e_request_metrics_daily_summary.down.sql
-var requestMetricsDailySummary983eDown []byte
+//go:embed embeddata/startup/983j_request_metrics_973_repair.down.sql
+var requestMetricsRepair983jDown []byte
 
-//go:embed embeddata/startup/983f_request_metrics_daily_board.sql
-var requestMetricsDailyBoard983f []byte
+//go:embed embeddata/startup/983k_request_metrics_daily_summary.sql
+var requestMetricsDailySummary983k []byte
 
-//go:embed embeddata/startup/983f_request_metrics_daily_board.down.sql
-var requestMetricsDailyBoard983fDown []byte
+//go:embed embeddata/startup/983k_request_metrics_daily_summary.down.sql
+var requestMetricsDailySummary983kDown []byte
 
-//go:embed embeddata/startup/983g_request_metrics_daily_history.sql
-var requestMetricsDailyHistory983g []byte
+//go:embed embeddata/startup/983l_request_metrics_daily_board.sql
+var requestMetricsDailyBoard983l []byte
 
-//go:embed embeddata/startup/983g_request_metrics_daily_history.down.sql
-var requestMetricsDailyHistory983gDown []byte
+//go:embed embeddata/startup/983l_request_metrics_daily_board.down.sql
+var requestMetricsDailyBoard983lDown []byte
 
-//go:embed embeddata/startup/983h_request_metrics_daily_tenant_history.sql
-var requestMetricsDailyTenantHistory983h []byte
+//go:embed embeddata/startup/983m_request_metrics_daily_history.sql
+var requestMetricsDailyHistory983m []byte
 
-//go:embed embeddata/startup/983h_request_metrics_daily_tenant_history.down.sql
-var requestMetricsDailyTenantHistory983hDown []byte
+//go:embed embeddata/startup/983m_request_metrics_daily_history.down.sql
+var requestMetricsDailyHistory983mDown []byte
 
-//go:embed embeddata/startup/983i_request_metrics_daily_history_details.sql
-var requestMetricsDailyHistoryDetails983i []byte
+//go:embed embeddata/startup/983n_request_metrics_daily_tenant_history.sql
+var requestMetricsDailyTenantHistory983n []byte
 
-//go:embed embeddata/startup/983i_request_metrics_daily_history_details.down.sql
-var requestMetricsDailyHistoryDetails983iDown []byte
+//go:embed embeddata/startup/983n_request_metrics_daily_tenant_history.down.sql
+var requestMetricsDailyTenantHistory983nDown []byte
+
+//go:embed embeddata/startup/983o_request_metrics_daily_history_details.sql
+var requestMetricsDailyHistoryDetails983o []byte
+
+//go:embed embeddata/startup/983o_request_metrics_daily_history_details.down.sql
+var requestMetricsDailyHistoryDetails983oDown []byte
 
 // ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 //
@@ -2794,19 +2800,21 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
 	"startup/983c_add_occurred_cursor_index.sql":          addOccurredCursorIndex983c,
 	"startup/983c_add_occurred_cursor_index.down.sql":     addOccurredCursorIndex983cDown,
-	"startup/983d_request_metrics_projection.sql":         requestMetricsProjection983d,
-	"startup/983d_request_metrics_projection.down.sql":    requestMetricsProjection983dDown,
-	"startup/983e_request_metrics_daily_summary.sql":      requestMetricsDailySummary983e,
-	"startup/983e_request_metrics_daily_summary.down.sql": requestMetricsDailySummary983eDown,
-	"startup/983f_request_metrics_daily_board.sql":        requestMetricsDailyBoard983f,
-	"startup/983f_request_metrics_daily_board.down.sql":   requestMetricsDailyBoard983fDown,
-	"startup/983g_request_metrics_daily_history.sql":      requestMetricsDailyHistory983g,
-	"startup/983g_request_metrics_daily_history.down.sql": requestMetricsDailyHistory983gDown,
+	"startup/973_request_metrics_projection.sql":          requestMetricsProjection973,
+	"startup/973_request_metrics_projection.down.sql":     requestMetricsProjection973Down,
+	"startup/983j_request_metrics_973_repair.sql":         requestMetricsRepair983j,
+	"startup/983j_request_metrics_973_repair.down.sql":    requestMetricsRepair983jDown,
+	"startup/983k_request_metrics_daily_summary.sql":      requestMetricsDailySummary983k,
+	"startup/983k_request_metrics_daily_summary.down.sql": requestMetricsDailySummary983kDown,
+	"startup/983l_request_metrics_daily_board.sql":        requestMetricsDailyBoard983l,
+	"startup/983l_request_metrics_daily_board.down.sql":   requestMetricsDailyBoard983lDown,
+	"startup/983m_request_metrics_daily_history.sql":      requestMetricsDailyHistory983m,
+	"startup/983m_request_metrics_daily_history.down.sql": requestMetricsDailyHistory983mDown,
 
-	"startup/983h_request_metrics_daily_tenant_history.sql":       requestMetricsDailyTenantHistory983h,
-	"startup/983h_request_metrics_daily_tenant_history.down.sql":  requestMetricsDailyTenantHistory983hDown,
-	"startup/983i_request_metrics_daily_history_details.sql":      requestMetricsDailyHistoryDetails983i,
-	"startup/983i_request_metrics_daily_history_details.down.sql": requestMetricsDailyHistoryDetails983iDown,
+	"startup/983n_request_metrics_daily_tenant_history.sql":       requestMetricsDailyTenantHistory983n,
+	"startup/983n_request_metrics_daily_tenant_history.down.sql":  requestMetricsDailyTenantHistory983nDown,
+	"startup/983o_request_metrics_daily_history_details.sql":      requestMetricsDailyHistoryDetails983o,
+	"startup/983o_request_metrics_daily_history_details.down.sql": requestMetricsDailyHistoryDetails983oDown,
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。

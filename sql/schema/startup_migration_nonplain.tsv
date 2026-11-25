@@ -110,15 +110,15 @@ embeddata/999a_data_maintenance_playbook.sql	installer	-	★ embeddata 宇宙里
 # ★★ `680b` / `682b` / `683b` / `706b` / `707b` / `983b` / `983c` / `341b` ★★）
 # ★★ ⇒ ★★ **⇒ 「没有空号」的准确表述是「【没有纯数字三位数空号】、★ 但【号段＋字母后缀】
 # ★★ 仍可开」★★ ⇒ ★★ ⇒ ★★ **⇒ 而 `999a` 正是上游把【999 号段】的后缀位开出来的第一个 ★★★**
-canonical/983d_request_metrics_projection.sql	both	-	终态请求投影及刷新队列，由部署序列和安装器 StartupFiles 交付。
-embeddata/983d_request_metrics_projection.sql	installer	-	983d 的安装器内嵌副本。
-canonical/983e_request_metrics_daily_summary.sql	both	-	从 983d 派生的可重算日汇总，由部署序列和安装器 StartupFiles 交付。
-embeddata/983e_request_metrics_daily_summary.sql	installer	-	983e 的安装器内嵌副本，顺序在 983d 之后。
-canonical/983f_request_metrics_daily_board.sql	both	-	看板每日分布与趋势，由部署序列和安装器 StartupFiles 交付。
-embeddata/983f_request_metrics_daily_board.sql	installer	-	983f 的安装器内嵌副本，顺序在 983e 之后。
-canonical/983g_request_metrics_daily_history.sql	both	-	历史报表日汇总和精确延迟样本，由部署序列和安装器交付。
-embeddata/983g_request_metrics_daily_history.sql	installer	-	983g 的安装器内嵌副本，依赖 983e 日状态表。
-canonical/983h_request_metrics_daily_tenant_history.sql	both	-	租户日汇总和独立发布状态，由部署序列和安装器交付。
-embeddata/983h_request_metrics_daily_tenant_history.sql	installer	-	983h 的安装器内嵌副本，依赖 983g 历史日汇总结构。
-canonical/983i_request_metrics_daily_history_details.sql	both	-	按日发布可重算的租户模型汇总与人员排名计数，由部署序列和安装器交付。
-embeddata/983i_request_metrics_daily_history_details.sql	installer	-	983i 的安装器内嵌副本，沿用日状态锁与失效机制。
+canonical/983j_request_metrics_973_repair.sql	both	-	终态请求投影及刷新队列，由部署序列和安装器 StartupFiles 交付。
+embeddata/983j_request_metrics_973_repair.sql	installer	-	983j 的安装器内嵌副本。
+canonical/983k_request_metrics_daily_summary.sql	both	-	从 983j 派生的可重算日汇总，由部署序列和安装器 StartupFiles 交付。
+embeddata/983k_request_metrics_daily_summary.sql	installer	-	983k 的安装器内嵌副本，顺序在 983j 之后。
+canonical/983l_request_metrics_daily_board.sql	both	-	看板每日分布与趋势，由部署序列和安装器 StartupFiles 交付。
+embeddata/983l_request_metrics_daily_board.sql	installer	-	983l 的安装器内嵌副本，顺序在 983k 之后。
+canonical/983m_request_metrics_daily_history.sql	both	-	历史报表日汇总和精确延迟样本，由部署序列和安装器交付。
+embeddata/983m_request_metrics_daily_history.sql	installer	-	983m 的安装器内嵌副本，依赖 983k 日状态表。
+canonical/983n_request_metrics_daily_tenant_history.sql	both	-	租户日汇总和独立发布状态，由部署序列和安装器交付。
+embeddata/983n_request_metrics_daily_tenant_history.sql	installer	-	983n 的安装器内嵌副本，依赖 983m 历史日汇总结构。
+canonical/983o_request_metrics_daily_history_details.sql	both	-	按日发布可重算的租户模型汇总与人员排名计数，由部署序列和安装器交付。
+embeddata/983o_request_metrics_daily_history_details.sql	installer	-	983o 的安装器内嵌副本，沿用日状态锁与失效机制。

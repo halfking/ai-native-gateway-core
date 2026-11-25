@@ -36,9 +36,9 @@ func readTerminalProjection(ctx context.Context, tx pgx.Tx, tenant string) (*Rep
 	p := &ReportProjection{Source: "request_metrics"}
 	var ready bool
 	err := tx.QueryRow(ctx, `SELECT backfill_complete, updated_at,
-		CASE WHEN backfill_complete THEN (SELECT min(enqueued_at) FROM public.request_metrics_pending
+		CASE WHEN backfill_complete THEN (SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 			WHERE $1='' OR tenant_id=$1) END
-		FROM public.request_metrics_projection_state WHERE singleton`, tenant).Scan(&ready, &p.UpdatedAt, &p.PendingSince)
+		FROM public.request_metrics_repair_state WHERE singleton`, tenant).Scan(&ready, &p.UpdatedAt, &p.PendingSince)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !ready) {
 		return nil, ErrTerminalProjectionBackfill
 	}

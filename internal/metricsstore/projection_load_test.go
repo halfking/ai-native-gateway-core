@@ -36,7 +36,7 @@ func requestMetricsFixtureConfig(t *testing.T, dsn string) *pgxpool.Config {
 }
 
 // The opt-in load check runs against a local disposable restore after its
-// migration channel has applied through 983i. It writes only derived statistics.
+// migration channel has applied through 983o. It writes only derived statistics.
 func TestRequestMetricsProjectionLoad(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_LOAD_DSN")
 	if dsn == "" {
@@ -226,7 +226,7 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 	worker := NewProjectionProcessor(db)
 	var previous time.Time
 	if err := pool.QueryRow(ctx, `SELECT coalesce(updated_at,now()-interval '1 day')
-		FROM public.request_metrics_projection_state WHERE singleton`).Scan(&previous); err != nil {
+		FROM public.request_metrics_repair_state WHERE singleton`).Scan(&previous); err != nil {
 		t.Fatal(err)
 	}
 	projectionDone, dailyDone, boardDone, historyDone := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -341,7 +341,7 @@ func waitForProjectionPoll(ctx context.Context, pool *pgxpool.Pool, previous tim
 	for {
 		var updated time.Time
 		err := pool.QueryRow(ctx, `SELECT coalesce(updated_at,now()-interval '1 day')
-			FROM public.request_metrics_projection_state WHERE singleton`).Scan(&updated)
+			FROM public.request_metrics_repair_state WHERE singleton`).Scan(&updated)
 		if err != nil || updated.After(previous) {
 			return err
 		}

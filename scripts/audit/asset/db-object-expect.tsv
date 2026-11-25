@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-25T17:47:43+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 990, "indexes_created": 1042, "indexes_dropped_somewhere": 93, "migration_files": 682, "non_numeric_prefix_files": 22, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-25T18:48:52+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 992, "indexes_created": 1044, "indexes_dropped_somewhere": 93, "migration_files": 683, "non_numeric_prefix_files": 22, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 0	idx_request_logs_session	request_logs	000_base_tables.sql	session_id,ts	
 1	idx_users_tenant	users	001_users_table.sql	tenant_id	
 1	idx_users_username	users	001_users_table.sql	username	
@@ -925,6 +925,9 @@
 971	idx_error_analysis_results_false_positive	error_analysis_results	971_pi_error_analysis_system.sql	is_false_positive,created_at	
 971	idx_error_analysis_results_queue	error_analysis_results	971_pi_error_analysis_system.sql	queue_id	
 971	idx_error_analysis_results_severity	error_analysis_results	971_pi_error_analysis_system.sql	severity_level,created_at	
+973	idx_request_metrics_fact_request	request_metrics	973_request_metrics_projection.sql	tenant_id,fact_request_id,occurred_at	
+973	idx_request_metrics_pending_enqueued	request_metrics_pending	973_request_metrics_projection.sql	enqueued_at	
+973	idx_request_metrics_projected_time	request_metrics	973_request_metrics_projection.sql	occurred_at	
 974	idx_mppq_canon	market_price_platform_quotes	974_market_price_identity_and_tier.sql	canonical_name,dimension	
 974	idx_mppq_platform	market_price_platform_quotes	974_market_price_identity_and_tier.sql	platform_id,run_date	
 975	idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975_pricing_suggestion_audit.sql	created_at	
@@ -949,13 +952,12 @@
 983	idx_request_metrics_traffic_time	request_metrics	983_request_metrics.sql	traffic_class,occurred_at	
 983b	idx_request_metrics_raw_model	request_metrics	983b_add_raw_model_name.sql	raw_model_name,occurred_date	
 983c	idx_request_metrics_occurred_cursor	request_metrics	983c_add_occurred_cursor_index.sql	occurred_at,request_id	
-983d	idx_request_metrics_pending_age	request_metrics_pending	983d_request_metrics_projection.sql	enqueued_at,kind,tenant_id,request_id,occurred_at	
-983d	idx_request_metrics_pending_time	request_metrics_pending	983d_request_metrics_projection.sql	occurred_at,tenant_id	
-983d	idx_request_metrics_projection_provider	request_metrics_projection	983d_request_metrics_projection.sql	provider_id,occurred_at	
-983d	idx_request_metrics_projection_session	request_metrics_projection	983d_request_metrics_projection.sql	tenant_id,session_id,occurred_at	
-983d	idx_request_metrics_projection_time	request_metrics_projection	983d_request_metrics_projection.sql	occurred_at	
-983e	idx_request_metrics_daily_dirty	request_metrics_daily_state	983e_request_metrics_daily_summary.sql	day	
-983h	idx_request_metrics_projection_person_history	request_metrics_projection	983h_request_metrics_daily_tenant_history.sql	tenant_id,occurred_at	
+983j	idx_request_metrics_projection_provider	request_metrics	983j_request_metrics_973_repair.sql	provider_id,occurred_at	
+983j	idx_request_metrics_projection_session	request_metrics	983j_request_metrics_973_repair.sql	tenant_id,session_id,occurred_at	
+983j	idx_request_metrics_refresh_pending_age	request_metrics_refresh_pending	983j_request_metrics_973_repair.sql	enqueued_at,kind,tenant_id,request_id,occurred_at	
+983j	idx_request_metrics_refresh_pending_time	request_metrics_refresh_pending	983j_request_metrics_973_repair.sql	occurred_at,tenant_id	
+983k	idx_request_metrics_daily_dirty	request_metrics_daily_state	983k_request_metrics_daily_summary.sql	day	
+983n	idx_request_metrics_projection_person_history	request_metrics	983n_request_metrics_daily_tenant_history.sql	tenant_id,occurred_at	
 985	idx_reconciliation_links_child	request_reconciliation_links	985_request_reconciliation_links.sql	tenant_id,child_request_id	
 985	idx_reconciliation_links_parent	request_reconciliation_links	985_request_reconciliation_links.sql	tenant_id,parent_request_id	
 985	idx_reconciliation_links_registered	request_reconciliation_links	985_request_reconciliation_links.sql	registered_at	

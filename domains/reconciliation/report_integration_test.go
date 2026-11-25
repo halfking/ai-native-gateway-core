@@ -203,7 +203,7 @@ INSERT INTO usage_facts (tenant_id,request_id,status,prompt_tokens,completion_to
  ('projected-a','same-request','success',900,100,'llm',99,'2026-11-23 02:00Z',9001,12,'business','2026-11-22 16:00Z');
 INSERT INTO credit_ledger_with_current_month VALUES ('projected-a',9002,'request','same-request','consume','paid','fixture-user',-2,'2026-11-23 03:00Z');`)
 	exec(`CREATE TABLE public.session_turns_hot (request_id text, tenant_id text, ts timestamptz)`)
-	for _, filename := range []string{"983_request_metrics.sql", "983b_add_raw_model_name.sql", "983d_request_metrics_projection.sql"} {
+	for _, filename := range []string{"983_request_metrics.sql", "983b_add_raw_model_name.sql", "973_request_metrics_projection.sql", "983j_request_metrics_973_repair.sql"} {
 		ddl, err := os.ReadFile("../../sql/migrations/startup/" + filename)
 		if err != nil {
 			t.Fatal(err)
@@ -240,9 +240,10 @@ INSERT INTO credit_ledger_with_current_month VALUES ('projected-a',9002,'request
 	}
 	assertReportFields(t, postings.Summary, map[string]string{"postings": "1", "net_credits": "2", "internal_amount": "null"})
 	exec(`
-INSERT INTO request_metrics_projection (tenant_id,request_id,status,prompt_tokens,completion_tokens,total_tokens,usage_source,source_revision,
+INSERT INTO request_metrics (tenant_id,request_id,fact_request_id,status,prompt_tokens,completion_tokens,total_tokens,usage_source,source_revision,
  source_finalized_at,source_fact_id,api_key_id,traffic_class,occurred_at,occurred_date,billing_date)
-SELECT tenant,id,status,input_tokens,output_tokens,total_tokens,source,revision,
+SELECT tenant, CASE WHEN fact_id IS NULL THEN id ELSE chr(1)||jsonb_build_array(tenant,id)::text END,
+ CASE WHEN fact_id IS NOT NULL THEN id END, status,input_tokens,output_tokens,total_tokens,source,revision,
  finalized_at::timestamptz,fact_id,key_id,traffic_class,occurred_at::timestamptz,occurred_date::date,billing_date::date
 FROM (VALUES
  ('projected-a','same-request','success',7,13,20,'llm',1,'2026-11-22 16:10Z',9010,12,'business','2026-11-22 16:00Z','2026-11-22','2026-11-22'),
@@ -255,7 +256,7 @@ FROM (VALUES
  ('projected-b','same-request','success',1234,567,1801,'llm',7,'2026-11-22 16:01Z',9018,12,'business','2026-11-22 16:00Z','2026-11-22','2026-11-22')
 ) rows(tenant,id,status,input_tokens,output_tokens,total_tokens,source,revision,
  finalized_at,fact_id,key_id,traffic_class,occurred_at,occurred_date,billing_date);
-UPDATE request_metrics_projection_state SET backfill_complete=true,updated_at='2026-11-24 00:01Z';
+UPDATE request_metrics_repair_state SET backfill_complete=true,updated_at='2026-11-24 00:01Z';
 INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
  ('projected-b','not-synced','success','2026-11-23 17:00Z',9019);`)
 	requests := read(ReportScope{TenantID: tenantID}, "requests")

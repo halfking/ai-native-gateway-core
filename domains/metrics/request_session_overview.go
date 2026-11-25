@@ -14,9 +14,9 @@ type SessionAnalyticsOverviewQuery struct {
 const sessionAnalyticsOverviewSQL = `
 WITH projection AS (
 	SELECT backfill_complete,updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $3 AND occurred_at < $2 AND ($4='' OR tenant_id=$4)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), periods AS (
 	SELECT true AS current,$1::timestamptz AS lo,$2::timestamptz AS hi
 	UNION ALL SELECT false,$3::timestamptz,$1::timestamptz

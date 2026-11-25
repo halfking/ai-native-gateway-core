@@ -47,9 +47,9 @@ func ProjectionReadinessHandler(db *sql.DB) http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
 			err := db.QueryRowContext(ctx, `SELECT backfill_complete, statement_timestamp(), updated_at,
-				(SELECT enqueued_at FROM public.request_metrics_pending ORDER BY enqueued_at LIMIT 1),
-				(SELECT count(*) FROM public.request_metrics_pending)
-				FROM public.request_metrics_projection_state WHERE singleton`).
+				(SELECT enqueued_at FROM public.request_metrics_pending_events ORDER BY enqueued_at LIMIT 1),
+				(SELECT count(*) FROM public.request_metrics_pending_events)
+				FROM public.request_metrics_repair_state WHERE singleton`).
 				Scan(&state.BackfillComplete, &state.CheckedAt, &state.UpdatedAt, &state.PendingSince, &state.PendingCount)
 			if err != nil {
 				state = projectionReadiness{Source: state.Source}

@@ -54,8 +54,8 @@ func ReadProjectionCoverage(ctx context.Context, q Querier, start, end, now time
 	p := ProjectionCoverage{From: from.UTC(), Through: through.UTC(), Timezone: loc.String()}
 	var ready bool
 	err := q.QueryRow(ctx, `SELECT backfill_complete, updated_at,
-		CASE WHEN backfill_complete THEN (SELECT min(enqueued_at) FROM public.request_metrics_pending WHERE occurred_at >= $1 AND occurred_at < $2) END
-		FROM public.request_metrics_projection_state WHERE singleton`, p.From, p.Through).
+		CASE WHEN backfill_complete THEN (SELECT min(enqueued_at) FROM public.request_metrics_pending_events WHERE occurred_at >= $1 AND occurred_at < $2) END
+		FROM public.request_metrics_repair_state WHERE singleton`, p.From, p.Through).
 		Scan(&ready, &p.UpdatedAt, &p.PendingSince)
 	if err != nil {
 		return p, fmt.Errorf("read request metrics coverage: %w", err)

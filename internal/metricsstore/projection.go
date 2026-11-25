@@ -54,7 +54,7 @@ const lockProjectionSQL = `
 const projectBatchSQL = `
 WITH state AS (
 	SELECT cursor_fact_id, cursor_occurred_at
-	FROM public.request_metrics_projection_state
+	FROM public.request_metrics_repair_state
 	WHERE singleton AND NOT backfill_complete
 ), history AS MATERIALIZED (
 	SELECT f.fact_id, f.tenant_id, f.request_id, f.occurred_at
@@ -65,11 +65,17 @@ WITH state AS (
 	ORDER BY f.fact_id, f.occurred_at LIMIT $1
 ), pending AS MATERIALIZED (
     SELECT kind, tenant_id, request_id, occurred_at, enqueued_at
-    FROM public.request_metrics_pending
+    FROM public.request_metrics_refresh_pending
     ORDER BY enqueued_at, kind, tenant_id, request_id, occurred_at
     LIMIT $1 FOR UPDATE
+), released_pending AS MATERIALIZED (
+    SELECT fact_id, occurred_at FROM public.request_metrics_pending
+    ORDER BY enqueued_at, fact_id, occurred_at LIMIT $1 FOR UPDATE
 ), keys AS MATERIALIZED (
     SELECT tenant_id, request_id, occurred_at FROM history
+    UNION
+    SELECT f.tenant_id, f.request_id, f.occurred_at FROM released_pending p
+    JOIN public.usage_facts f USING (fact_id, occurred_at)
     UNION
     SELECT tenant_id, request_id, occurred_at FROM pending WHERE kind='fact'
     UNION
@@ -86,9 +92,18 @@ WITH state AS (
         WHERE f.tenant_id=k.tenant_id AND f.request_id=k.request_id AND f.occurred_at=k.occurred_at
         ORDER BY f.revision DESC, f.finalized_at DESC, f.fact_id DESC LIMIT 1
     ) f ON true
+), normalized AS (
+	SELECT f.*, coalesce(nullif(upper(btrim(f.cost_currency)),''), CASE
+		-- The terminal inbox writer copies Event.CostUSD into cost_amount.
+		-- That writer emits revision 1 and a stable terminal event key.
+		-- An old zero without a currency may be an absent CostUSD pointer.
+		WHEN f.source='stats_event_inbox' AND f.revision=1
+		 AND f.event_id=f.request_id||':request_terminal:0' AND f.request_id<>''
+		 AND f.cost_amount<>0 THEN 'USD' END) AS normalized_cost_currency
+	FROM latest f
 ), published AS (
-	INSERT INTO public.request_metrics_projection AS rm (
-		request_id, tenant_id, occurred_at, occurred_date, billing_date,
+	INSERT INTO public.request_metrics AS rm (
+		request_id, fact_request_id, tenant_id, occurred_at, occurred_date, billing_date,
 		provider_id, credential_id, credential_label, provider_code, provider_name, outbound_model, canonical_id, raw_model_name,
 		user_id, person_key, client_id, client_model, agent_name, client_ip, identity_hash, task_type, owner_user,
 		session_id, task_id, api_key_id, api_key_prefix, api_key_owner_user, application_id, application_code, work_type, session_intent, compression_applied, client_cancelled,
@@ -97,7 +112,7 @@ WITH state AS (
 		reasoning_tokens, total_tokens, image_tokens, audio_tokens, video_tokens,
 		cost_cents, cost_amount, cost_currency, credits_charged, status, traffic_class,
 		error_kind, latency_ms, ttft_ms, usage_source, source_revision, source_finalized_at, source_fact_id, source)
-	SELECT f.request_id,
+	SELECT chr(1)||jsonb_build_array(f.tenant_id,f.request_id)::text, f.request_id,
 		f.tenant_id, f.occurred_at, (f.occurred_at AT TIME ZONE 'UTC')::date,
 		(f.occurred_at AT TIME ZONE 'UTC')::date,
 		f.provider_id, f.credential_id, NULLIF(cred.label,''), p.code, COALESCE(NULLIF(p.display_name,''),p.code),
@@ -130,10 +145,10 @@ WITH state AS (
 		          AND f.cache_write_tokens=0 AND f.cache_read_tokens<=f.prompt_tokens THEN f.prompt_tokens
 		     ELSE NULL END,
 		f.reasoning_tokens, f.total_tokens, f.image_tokens, f.audio_tokens, f.video_tokens,
-		CASE WHEN upper(f.cost_currency)='USD' THEN round(f.cost_amount*100)::bigint ELSE 0 END,
-		f.cost_amount, NULLIF(upper(btrim(f.cost_currency)),''), f.credits_charged, f.status, f.traffic_class,
+		CASE WHEN f.normalized_cost_currency='USD' THEN round(f.cost_amount*100)::bigint ELSE 0 END,
+		f.cost_amount, f.normalized_cost_currency, f.credits_charged, f.status, f.traffic_class,
 		f.error_kind, NULLIF(f.latency_ms,0), NULLIF(f.ttft_ms,0), NULLIF(f.usage_source,''), f.revision, f.finalized_at, f.fact_id, 'async_processor'
-	FROM latest f
+	FROM normalized f
 	LEFT JOIN public.providers p ON p.id=f.provider_id
 	LEFT JOIN public.credentials cred ON cred.id=f.credential_id AND cred.provider_id=f.provider_id
 	LEFT JOIN public.api_keys k ON k.id=f.api_key_id AND k.tenant_id=f.tenant_id
@@ -157,7 +172,7 @@ WITH state AS (
 	) l ON true
 	LEFT JOIN public.session_summaries s ON s.tenant_id=f.tenant_id
 		AND s.session_key=COALESCE(NULLIF(c.gw_session_id,''),NULLIF(l.gw_session_id,''))
-	ON CONFLICT (tenant_id, request_id, occurred_at) DO UPDATE SET
+	ON CONFLICT (request_id, occurred_at) DO UPDATE SET
 		provider_id=EXCLUDED.provider_id, credential_id=EXCLUDED.credential_id, credential_label=EXCLUDED.credential_label,
 		provider_code=EXCLUDED.provider_code, provider_name=EXCLUDED.provider_name,
 		outbound_model=EXCLUDED.outbound_model, canonical_id=EXCLUDED.canonical_id,
@@ -182,27 +197,40 @@ WITH state AS (
 		source=EXCLUDED.source, updated_at=clock_timestamp()
     RETURNING 1
 ), removed AS (
-    DELETE FROM public.request_metrics_projection m USING keys k
-    WHERE (m.tenant_id,m.request_id,m.occurred_at)=(k.tenant_id,k.request_id,k.occurred_at)
+    DELETE FROM public.request_metrics m USING keys k
+    WHERE (m.tenant_id,m.fact_request_id,m.occurred_at)=(k.tenant_id,k.request_id,k.occurred_at) AND m.source_fact_id IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM latest f
           WHERE (f.tenant_id,f.request_id,f.occurred_at)=(k.tenant_id,k.request_id,k.occurred_at))
 ), acknowledged AS (
-    DELETE FROM public.request_metrics_pending q USING pending p
+    DELETE FROM public.request_metrics_refresh_pending q USING pending p
     WHERE (q.kind,q.tenant_id,q.request_id,q.occurred_at)=(p.kind,p.tenant_id,p.request_id,p.occurred_at)
+    RETURNING GREATEST(0, extract(epoch FROM clock_timestamp()-q.enqueued_at))::double precision AS waiting_seconds
+), acknowledged_released AS (
+    DELETE FROM public.request_metrics_pending q USING released_pending p
+    WHERE (q.fact_id,q.occurred_at)=(p.fact_id,p.occurred_at)
     RETURNING GREATEST(0, extract(epoch FROM clock_timestamp()-q.enqueued_at))::double precision AS waiting_seconds
 ), head AS (
 	SELECT fact_id, occurred_at FROM history ORDER BY fact_id DESC, occurred_at DESC LIMIT 1
 ), advanced AS (
-	UPDATE public.request_metrics_projection_state s
+	UPDATE public.request_metrics_repair_state s
 	SET cursor_fact_id=COALESCE((SELECT fact_id FROM head),s.cursor_fact_id),
 	    cursor_occurred_at=COALESCE((SELECT occurred_at FROM head),s.cursor_occurred_at),
 	    backfill_complete=s.backfill_complete OR (SELECT count(*) FROM history)<$1,
 	    updated_at=clock_timestamp()
 	WHERE singleton
-	RETURNING 1
+	RETURNING cursor_fact_id, cursor_occurred_at, backfill_complete, updated_at
+), advanced_released AS (
+	UPDATE public.request_metrics_projection_state s
+	SET cursor_fact_id = CASE WHEN (a.cursor_fact_id, a.cursor_occurred_at) > (s.cursor_fact_id, s.cursor_occurred_at)
+		THEN a.cursor_fact_id ELSE s.cursor_fact_id END,
+	    cursor_occurred_at = CASE WHEN (a.cursor_fact_id, a.cursor_occurred_at) > (s.cursor_fact_id, s.cursor_occurred_at)
+		THEN a.cursor_occurred_at ELSE s.cursor_occurred_at END,
+	    backfill_complete = s.backfill_complete OR a.backfill_complete,
+	    updated_at = a.updated_at
+	FROM advanced a WHERE s.singleton
 )
-SELECT GREATEST((SELECT count(*) FROM history),(SELECT count(*) FROM acknowledged)),
-       ARRAY(SELECT waiting_seconds FROM acknowledged)
+SELECT GREATEST((SELECT count(*) FROM history),(SELECT count(*) FROM acknowledged),(SELECT count(*) FROM acknowledged_released)),
+       ARRAY(SELECT waiting_seconds FROM acknowledged UNION ALL SELECT waiting_seconds FROM acknowledged_released)
 `
 
 func (p *ProjectionProcessor) ProcessBatch(ctx context.Context, batchSize int) (int, error) {

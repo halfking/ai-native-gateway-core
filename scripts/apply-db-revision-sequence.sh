@@ -2909,12 +2909,13 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/056_user_teams.sql"
   "$ROOT_DIR/sql/migrations/startup/057_api_keys_team_id.sql"
   "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
-  "$ROOT_DIR/sql/migrations/startup/983d_request_metrics_projection.sql"
-  "$ROOT_DIR/sql/migrations/startup/983e_request_metrics_daily_summary.sql"
-  "$ROOT_DIR/sql/migrations/startup/983f_request_metrics_daily_board.sql"
-  "$ROOT_DIR/sql/migrations/startup/983g_request_metrics_daily_history.sql"
-  "$ROOT_DIR/sql/migrations/startup/983h_request_metrics_daily_tenant_history.sql"
-  "$ROOT_DIR/sql/migrations/startup/983i_request_metrics_daily_history_details.sql"
+  "$ROOT_DIR/sql/migrations/startup/973_request_metrics_projection.sql"
+  "$ROOT_DIR/sql/migrations/startup/983j_request_metrics_973_repair.sql"
+  "$ROOT_DIR/sql/migrations/startup/983k_request_metrics_daily_summary.sql"
+  "$ROOT_DIR/sql/migrations/startup/983l_request_metrics_daily_board.sql"
+  "$ROOT_DIR/sql/migrations/startup/983m_request_metrics_daily_history.sql"
+  "$ROOT_DIR/sql/migrations/startup/983n_request_metrics_daily_tenant_history.sql"
+  "$ROOT_DIR/sql/migrations/startup/983o_request_metrics_daily_history_details.sql"
 )
 
 
@@ -3875,18 +3876,20 @@ ledger_artifact_probe "983b_add_raw_model_name.sql" \
 #   ★ ⇒ 用 to_regclass 判父表索引更直接）。
 ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
   "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
-ledger_artifact_probe "983d_request_metrics_projection.sql" \
-  "to_regclass('public.request_metrics_projection') IS NOT NULL AND to_regclass('public.request_metrics_pending') IS NOT NULL AND to_regclass('public.request_metrics_projection_state') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND ((tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact') OR (tgrelid='public.request_context_attrs'::regclass AND tgname='enqueue_request_metrics_context') OR (tgrelid='public.session_turns_hot'::regclass AND tgname='enqueue_request_metrics_turn'))) = 3 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983d') = 1"
-ledger_artifact_probe "983e_request_metrics_daily_summary.sql" \
-  "to_regclass('public.request_metrics_daily_state') IS NOT NULL AND to_regclass('public.request_metrics_daily_summary') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_codes') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_masks') IS NOT NULL AND to_regclass('public.idx_request_metrics_daily_dirty') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_projection'::regclass AND tgname IN ('invalidate_request_metrics_daily_insert','invalidate_request_metrics_daily_update','invalidate_request_metrics_daily_delete','invalidate_request_metrics_daily_truncate') AND tgenabled IN ('O','A')) = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983e') = 1"
-ledger_artifact_probe "983f_request_metrics_daily_board.sql" \
-  "to_regclass('public.request_metrics_board_days') IS NOT NULL AND to_regclass('public.request_metrics_board_pies') IS NOT NULL AND to_regclass('public.request_metrics_board_providers') IS NOT NULL AND to_regclass('public.request_metrics_board_keys') IS NOT NULL AND to_regclass('public.request_metrics_board_series') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983f') = 1"
-ledger_artifact_probe "983g_request_metrics_daily_history.sql" \
-  "to_regclass('public.request_metrics_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983g') = 1"
-ledger_artifact_probe "983h_request_metrics_daily_tenant_history.sql" \
-  "to_regclass('public.request_metrics_tenant_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_tenant_history') IS NOT NULL AND to_regclass('public.idx_request_metrics_projection_person_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_tenant_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983h') = 1"
-ledger_artifact_probe "983i_request_metrics_daily_history_details.sql" \
-  "to_regclass('public.request_metrics_history_detail_days') IS NOT NULL AND to_regclass('public.request_metrics_person_rank_codes') IS NOT NULL AND to_regclass('public.request_metrics_person_rank_packs') IS NOT NULL AND to_regclass('public.request_metrics_daily_tenant_model_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_detail_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983i') = 1"
+ledger_artifact_probe "973_request_metrics_projection.sql" \
+  "to_regclass('public.request_metrics_pending') IS NOT NULL AND to_regclass('public.request_metrics_projection_state') IS NOT NULL AND to_regclass('public.idx_request_metrics_fact_request') IS NOT NULL AND to_regclass('public.idx_request_metrics_projected_time') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND conname='request_metrics_fact_identity' AND convalidated) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='973') = 1 AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact' AND tgenabled IN ('O','A')) = 1"
+ledger_artifact_probe "983j_request_metrics_973_repair.sql" \
+  "to_regclass('public.request_metrics_projection') IS NOT NULL AND to_regclass('public.request_metrics_refresh_pending') IS NOT NULL AND to_regclass('public.request_metrics_repair_state') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND ((tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_refresh_fact') OR (tgrelid='public.request_context_attrs'::regclass AND tgname='enqueue_request_metrics_context') OR (tgrelid='public.session_turns_hot'::regclass AND tgname='enqueue_request_metrics_turn'))) = 3 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983j') = 1"
+ledger_artifact_probe "983k_request_metrics_daily_summary.sql" \
+  "to_regclass('public.request_metrics_daily_state') IS NOT NULL AND to_regclass('public.request_metrics_daily_summary') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_codes') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_masks') IS NOT NULL AND to_regclass('public.idx_request_metrics_daily_dirty') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics'::regclass AND tgname IN ('invalidate_request_metrics_daily_insert','invalidate_request_metrics_daily_update','invalidate_request_metrics_daily_delete','invalidate_request_metrics_daily_truncate') AND tgenabled IN ('O','A')) = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983k') = 1"
+ledger_artifact_probe "983l_request_metrics_daily_board.sql" \
+  "to_regclass('public.request_metrics_board_days') IS NOT NULL AND to_regclass('public.request_metrics_board_pies') IS NOT NULL AND to_regclass('public.request_metrics_board_providers') IS NOT NULL AND to_regclass('public.request_metrics_board_keys') IS NOT NULL AND to_regclass('public.request_metrics_board_series') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983l') = 1"
+ledger_artifact_probe "983m_request_metrics_daily_history.sql" \
+  "to_regclass('public.request_metrics_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983m') = 1"
+ledger_artifact_probe "983n_request_metrics_daily_tenant_history.sql" \
+  "to_regclass('public.request_metrics_tenant_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_tenant_history') IS NOT NULL AND to_regclass('public.idx_request_metrics_projection_person_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_tenant_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983n') = 1"
+ledger_artifact_probe "983o_request_metrics_daily_history_details.sql" \
+  "to_regclass('public.request_metrics_history_detail_days') IS NOT NULL AND to_regclass('public.request_metrics_person_rank_codes') IS NOT NULL AND to_regclass('public.request_metrics_person_rank_packs') IS NOT NULL AND to_regclass('public.request_metrics_daily_tenant_model_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_detail_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983o') = 1"
 # ★ 999a 的产物 = 手册条目行（纯种子迁移：不建对象，只 INSERT 六条
 #   data_maintenance: 前缀的 prompt 条目）⇒ 探针 = 六条全在。
 #   ★ 999a_data_maintenance_playbook.sql

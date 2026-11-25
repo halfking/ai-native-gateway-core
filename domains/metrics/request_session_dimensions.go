@@ -18,9 +18,9 @@ type SessionDimensionQuery struct {
 const sessionDimensionBase = `
 WITH projection AS (
 	SELECT backfill_complete,updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), observed AS MATERIALIZED (
 	SELECT m.tenant_id,nullif(m.session_id,'') AS session_id,m.occurred_at,
 		(m.occurred_at AT TIME ZONE $4)::date AS day,

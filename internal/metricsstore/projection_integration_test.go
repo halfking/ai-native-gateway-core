@@ -126,14 +126,15 @@ VALUES
  ('e1','r1',1,'2026-11-23 00:10Z','tenant-a','success',9,7,'raw-test',10,10,0.003,'USD',2),
  ('e2','r1',1,'2026-11-23 00:10Z','tenant-b','success',9,7,'raw-test',4,4,0.9,'CNY',3),
  ('end','at-end',1,'2026-11-24 00:00Z','tenant-a','success',9,7,'raw-test',99,99,1,'USD',99);`)
-	apply("983d_request_metrics_projection.sql")
-	apply("983d_request_metrics_projection.sql")
-	apply("983e_request_metrics_daily_summary.sql")
-	apply("983e_request_metrics_daily_summary.sql")
-	apply("983f_request_metrics_daily_board.sql")
-	apply("983f_request_metrics_daily_board.sql")
-	apply("983g_request_metrics_daily_history.sql")
-	apply("983g_request_metrics_daily_history.sql")
+	apply("973_request_metrics_projection.sql")
+	apply("983j_request_metrics_973_repair.sql")
+	apply("983j_request_metrics_973_repair.sql")
+	apply("983k_request_metrics_daily_summary.sql")
+	apply("983k_request_metrics_daily_summary.sql")
+	apply("983l_request_metrics_daily_board.sql")
+	apply("983l_request_metrics_daily_board.sql")
+	apply("983m_request_metrics_daily_history.sql")
+	apply("983m_request_metrics_daily_history.sql")
 
 	t.Run("legacy_watermark_ignores_973_projected_identity", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
@@ -142,8 +143,8 @@ VALUES
 		}
 		defer tx.Rollback(ctx)
 		if _, err := tx.Exec(ctx, `INSERT INTO public.request_metrics
-			(request_id,tenant_id,occurred_at,occurred_date,billing_date,status)
-			VALUES (chr(1)||jsonb_build_array('tenant-a','newest')::text, 'tenant-a',
+			(request_id,fact_request_id,source_fact_id,tenant_id,occurred_at,occurred_date,billing_date,status)
+			VALUES (chr(1)||jsonb_build_array('tenant-a','newest')::text, 'newest', 999999, 'tenant-a',
 			'2026-11-26 00:00Z','2026-11-26','2026-11-26','success')`); err != nil {
 			t.Fatal(err)
 		}
@@ -156,6 +157,26 @@ VALUES
 			t.Fatalf("legacy cursor moved to %q at %v", requestID, at)
 		}
 	})
+
+	// Seed published report cases through the real partitioned table so its
+	// day invalidation triggers run. The read view has no production writer.
+	exec(`
+CREATE FUNCTION public.insert_projection_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    values_json jsonb;
+    columns text;
+BEGIN
+    values_json := jsonb_strip_nulls(to_jsonb(NEW)) ||
+        jsonb_build_object('request_id', chr(1)||jsonb_build_array(NEW.tenant_id, NEW.request_id)::text,
+                           'fact_request_id', NEW.request_id);
+    SELECT string_agg(quote_ident(key), ', ' ORDER BY key) INTO columns
+    FROM jsonb_object_keys(values_json) AS keys(key);
+    EXECUTE format('INSERT INTO public.request_metrics (%s) SELECT %s FROM jsonb_populate_record(NULL::public.request_metrics, $1)',
+                   columns, columns) USING values_json;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER insert_projection_fixture INSTEAD OF INSERT ON public.request_metrics_projection
+FOR EACH ROW EXECUTE FUNCTION public.insert_projection_fixture();`)
 
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
@@ -241,10 +262,10 @@ VALUES
 		exec(`INSERT INTO public.usage_facts
 			(event_id,request_id,occurred_at,tenant_id,status,total_tokens)
 			VALUES ('retry-1','must-retry','2026-11-22 22:00Z','tenant-recovery','success',3000000000);
-			ALTER TABLE public.request_metrics_projection ADD CONSTRAINT fixture_reject_publish
-			CHECK (request_id <> 'must-retry');`)
+			ALTER TABLE public.request_metrics ADD CONSTRAINT fixture_reject_publish
+			CHECK (fact_request_id <> 'must-retry');`)
 		var before time.Time
-		if err := pool.QueryRow(ctx, `SELECT updated_at FROM public.request_metrics_projection_state WHERE singleton`).Scan(&before); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT updated_at FROM public.request_metrics_repair_state WHERE singleton`).Scan(&before); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := processor.ProcessBatch(ctx, 20); err == nil {
@@ -253,12 +274,12 @@ VALUES
 		var after time.Time
 		var pending, projected int
 		if err := pool.QueryRow(ctx, `SELECT updated_at,
-			(SELECT count(*) FROM public.request_metrics_pending WHERE request_id='must-retry'),
+			(SELECT count(*) FROM public.request_metrics_refresh_pending WHERE request_id='must-retry'),
 			(SELECT count(*) FROM public.request_metrics_projection WHERE request_id='must-retry')
-			FROM public.request_metrics_projection_state WHERE singleton`).Scan(&after, &pending, &projected); err != nil || !after.Equal(before) || pending != 1 || projected != 0 {
+			FROM public.request_metrics_repair_state WHERE singleton`).Scan(&after, &pending, &projected); err != nil || !after.Equal(before) || pending != 1 || projected != 0 {
 			t.Fatalf("partial batch commit: before=%v after=%v pending=%d projected=%d err=%v", before, after, pending, projected, err)
 		}
-		exec(`ALTER TABLE public.request_metrics_projection DROP CONSTRAINT fixture_reject_publish`)
+		exec(`ALTER TABLE public.request_metrics DROP CONSTRAINT fixture_reject_publish`)
 		firstSlot, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -763,7 +784,7 @@ INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,traffi
 		if err != nil || len(bytes) < 2 || string(bytes[:2]) != "PK" {
 			t.Fatalf("could not export projected report: %v", err)
 		}
-		exec(`INSERT INTO request_metrics_pending (kind,tenant_id,request_id,occurred_at) VALUES
+		exec(`INSERT INTO request_metrics_refresh_pending (kind,tenant_id,request_id,occurred_at) VALUES
  ('fact','tenant-report','pending-in-window','2026-11-25 05:04Z'), ('fact','tenant-report','pending-next-day','2026-11-25 16:00Z');`)
 		pending, err := reportrollup.ReadProjectionCoverage(ctx, pool, start, today, today.Add(time.Hour))
 		if err != nil || pending.PendingSince == nil {
@@ -1131,8 +1152,8 @@ UPDATE public.usage_facts SET canonical_id=NULL,raw_model_name='bob-model'
 			`"total_active":1`, `"pages":1`, `"session_id":"same-id"`)
 		api(http.MethodGet, metrics.SessionDashboardOverview, "&tenant_id=session-b", http.StatusForbidden, `"code":"FORBIDDEN"`)
 		api(http.MethodPost, metrics.SessionDashboardOverview, "", http.StatusMethodNotAllowed)
-		exec(`UPDATE request_metrics_projection_state SET backfill_complete=false WHERE singleton`)
-		t.Cleanup(func() { exec(`UPDATE request_metrics_projection_state SET backfill_complete=true WHERE singleton`) })
+		exec(`UPDATE request_metrics_repair_state SET backfill_complete=false WHERE singleton`)
+		t.Cleanup(func() { exec(`UPDATE request_metrics_repair_state SET backfill_complete=true WHERE singleton`) })
 		api(http.MethodGet, metrics.SessionDashboardOverview, "", http.StatusServiceUnavailable, `"code":"DATA_NOT_READY"`)
 	})
 	t.Run("daily_summary_rebuild_keeps_exact_membership_and_measures", func(t *testing.T) {
@@ -1541,8 +1562,8 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", "", reportrollup.GrainFilter{})
 		assertParity("", "", reportrollup.GrainFilter{TenantID: "history-a"})
-		apply("983h_request_metrics_daily_tenant_history.sql")
-		apply("983h_request_metrics_daily_tenant_history.sql")
+		apply("983n_request_metrics_daily_tenant_history.sql")
+		apply("983n_request_metrics_daily_tenant_history.sql")
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", "published", reportrollup.GrainFilter{})
 		assertParity("published", "published", reportrollup.GrainFilter{BusinessOnly: true})
@@ -1711,8 +1732,8 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 			return reports
 		}
 		before := assertPages(false, "")
-		apply("983i_request_metrics_daily_history_details.sql")
-		apply("983i_request_metrics_daily_history_details.sql")
+		apply("983o_request_metrics_daily_history_details.sql")
+		apply("983o_request_metrics_daily_history_details.sql")
 		drain(processor.RefreshDailyHistory)
 		if got := assertPages(true, "published"); !reflect.DeepEqual(got, before) {
 			t.Fatal("publishing details changed the report")
@@ -1868,19 +1889,19 @@ FROM (VALUES
 			coverage.Fraction == nil || *coverage.Fraction != 1 {
 			t.Fatalf("coverage should match the latest facts in the window: %+v %v", coverage, err)
 		}
-		exec(`UPDATE public.request_metrics_projection_state SET backfill_complete=true, updated_at=now();
-			INSERT INTO public.request_metrics_pending (kind,tenant_id,request_id,occurred_at,enqueued_at)
+		exec(`UPDATE public.request_metrics_repair_state SET backfill_complete=true, updated_at=now();
+			INSERT INTO public.request_metrics_refresh_pending (kind,tenant_id,request_id,occurred_at,enqueued_at)
 			VALUES ('fact','tenant-recovery','readiness-sample',now(),now()-interval '6 minutes');`)
 		if state := readProjectionWatermark(http.StatusServiceUnavailable); state.Ready ||
 			state.PendingCount == 0 || state.OldestWaitSeconds < 300 {
 			t.Fatalf("stale backlog should block readiness: %+v", state)
 		}
-		apply("983i_request_metrics_daily_history_details.down.sql")
-		apply("983i_request_metrics_daily_history_details.down.sql")
-		apply("983h_request_metrics_daily_tenant_history.down.sql")
-		apply("983h_request_metrics_daily_tenant_history.down.sql")
+		apply("983o_request_metrics_daily_history_details.down.sql")
+		apply("983o_request_metrics_daily_history_details.down.sql")
+		apply("983n_request_metrics_daily_tenant_history.down.sql")
+		apply("983n_request_metrics_daily_tenant_history.down.sql")
 		if _, err := processor.RefreshDailyHistory(ctx); err != nil {
-			t.Fatalf("old history worker path should remain available after 983h rollback: %v", err)
+			t.Fatalf("old history worker path should remain available after 983n rollback: %v", err)
 		}
 		loc, err := time.LoadLocation("Asia/Shanghai")
 		if err != nil {
@@ -1895,22 +1916,30 @@ FROM (VALUES
 		internal, err := reportrollup.BuildProjectedSummary(ctx, tenantProbe, day, day, reportrollup.ViewInternal,
 			reportrollup.GrainFilter{}, reportrollup.Names{}, historyCoverage, reportrollup.ProjectedSummaryDistribution)
 		if err != nil || tenantProbe.mode != "published" || tenantProbe.tenantMode != "" || len(internal.Tenants) == 0 {
-			t.Fatalf("internal history should fall back only for tenants after 983h rollback: %+v %v", internal, err)
+			t.Fatalf("internal history should fall back only for tenants after 983n rollback: %+v %v", internal, err)
 		}
-		apply("983g_request_metrics_daily_history.down.sql")
-		apply("983g_request_metrics_daily_history.down.sql")
+		apply("983m_request_metrics_daily_history.down.sql")
+		apply("983m_request_metrics_daily_history.down.sql")
 		probe := &historyQueryProbe{Querier: pool}
 		history, err := reportrollup.BuildProjectedSummary(ctx, probe, day, day, reportrollup.ViewInternal,
 			reportrollup.GrainFilter{}, reportrollup.Names{}, historyCoverage, reportrollup.ProjectedSummaryTotals)
 		if err != nil || probe.mode != "" || history.Totals.RequestCount != 3 {
 			t.Fatalf("history should continue from the projection after schema rollback: %+v %v", history, err)
 		}
-		apply("983f_request_metrics_daily_board.down.sql")
-		apply("983f_request_metrics_daily_board.down.sql")
-		apply("983e_request_metrics_daily_summary.down.sql")
-		apply("983e_request_metrics_daily_summary.down.sql")
-		apply("983d_request_metrics_projection.down.sql")
-		apply("983d_request_metrics_projection.down.sql")
+		apply("983l_request_metrics_daily_board.down.sql")
+		apply("983l_request_metrics_daily_board.down.sql")
+		apply("983k_request_metrics_daily_summary.down.sql")
+		apply("983k_request_metrics_daily_summary.down.sql")
+		apply("983j_request_metrics_973_repair.down.sql")
+		apply("983j_request_metrics_973_repair.down.sql")
+		var releasedProjectionIntact bool
+		if err := pool.QueryRow(ctx, `SELECT
+			to_regclass('public.request_metrics_pending') IS NOT NULL
+			AND EXISTS (SELECT FROM public.schema_migrations WHERE version='973')
+			AND EXISTS (SELECT FROM public.request_metrics WHERE fact_request_id='must-retry'
+				AND total_tokens=13 AND pg_typeof(total_tokens)='bigint'::regtype AND source_fact_id IS NOT NULL)`).Scan(&releasedProjectionIntact); err != nil || !releasedProjectionIntact {
+			t.Fatalf("repair rollback must preserve the released projection and widened measurements: %t %v", releasedProjectionIntact, err)
+		}
 		var requestID string
 		var head time.Time
 		if err := db.QueryRowContext(ctx, watermarkSQL).Scan(&head, &requestID); err != nil ||

@@ -28,8 +28,8 @@ WITH periods (ordinal, start_at, end_at) AS (
     VALUES (0, $1::timestamptz, $2::timestamptz), (1, $3::timestamptz, $4::timestamptz)
 ), projection AS (
     SELECT backfill_complete, updated_at,
-           (SELECT enqueued_at FROM public.request_metrics_pending ORDER BY enqueued_at LIMIT 1) AS pending_since
-    FROM public.request_metrics_projection_state WHERE singleton
+           (SELECT enqueued_at FROM public.request_metrics_pending_events ORDER BY enqueued_at LIMIT 1) AS pending_since
+    FROM public.request_metrics_repair_state WHERE singleton
 )
 SELECT backfill_complete, updated_at, pending_since,
     CASE WHEN backfill_complete THEN (

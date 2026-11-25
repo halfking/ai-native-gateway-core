@@ -1,25 +1,24 @@
 # db-object-gap-ledger.tsv —— ★ 「期望索引集 × 三环境真实底账」缺口台账
 # ★ 生成器：scripts/audit/db-object-census.py reconcile
-# 983d、983e 和 983h 尚未进入该次采集快照。七条新增索引的 retired 表示采集时缺少其源表，候选中的索引由迁移创建。
+# 采集早于 973 上线与 983j–983o。棘轮按原在途判据区分缺口与待部署。
 # ★ 列：migration_no	index_name	table	local	fresh	252	211	verdict	severity
 # ★ 状态词：present | present-via-child | missing | retired | retired-by-column-drop
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-25T17:21:07+00:00
-# ★ expected=990 envs=local,fresh,252,211 gaps_by_env={"211": 49, "252": 58, "fresh": 49, "local": 59} production_gaps=66
+# ★ generated_at=2026-11-25T18:51:25+00:00
+# ★ expected=992 envs=local,fresh,252,211 gaps_by_env={"211": 54, "252": 58, "fresh": 49, "local": 59} production_gaps=71
 395b	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 478p2	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 478p2	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
-983e	idx_request_metrics_daily_dirty	request_metrics_daily_state	retired	retired	retired	retired	complete	none
+983k	idx_request_metrics_daily_dirty	request_metrics_daily_state	retired	retired	retired	retired	complete	none
 983c	idx_request_metrics_occurred_cursor	request_metrics	retired	retired	retired	present	complete	none
-983d	idx_request_metrics_pending_age	request_metrics_pending	retired	retired	retired	retired	complete	none
-983d	idx_request_metrics_pending_time	request_metrics_pending	retired	retired	retired	retired	complete	none
-983h	idx_request_metrics_projection_person_history	request_metrics_projection	retired	retired	retired	retired	complete	none
-983d	idx_request_metrics_projection_provider	request_metrics_projection	retired	retired	retired	retired	complete	none
-983d	idx_request_metrics_projection_session	request_metrics_projection	retired	retired	retired	retired	complete	none
-983d	idx_request_metrics_projection_time	request_metrics_projection	retired	retired	retired	retired	complete	none
+983n	idx_request_metrics_projection_person_history	request_metrics	retired	retired	retired	missing	gap	prod-partial-gap
+983j	idx_request_metrics_projection_provider	request_metrics	retired	retired	retired	missing	gap	prod-partial-gap
+983j	idx_request_metrics_projection_session	request_metrics	retired	retired	retired	missing	gap	prod-partial-gap
 983b	idx_request_metrics_raw_model	request_metrics	retired	retired	retired	present	complete	none
+983j	idx_request_metrics_refresh_pending_age	request_metrics_refresh_pending	retired	retired	retired	retired	complete	none
+983j	idx_request_metrics_refresh_pending_time	request_metrics_refresh_pending	retired	retired	retired	retired	complete	none
 0	idx_request_logs_session	request_logs	retired	retired	retired	retired	complete	none
 1	idx_users_tenant	users	present	present	present	present	complete	none
 1	idx_users_username	users	present	present	present	present	complete	none
@@ -936,6 +935,9 @@
 971	idx_error_analysis_results_false_positive	error_analysis_results	present	present	present	present	complete	none
 971	idx_error_analysis_results_queue	error_analysis_results	present	present	present	present	complete	none
 971	idx_error_analysis_results_severity	error_analysis_results	present	present	present	present	complete	none
+973	idx_request_metrics_fact_request	request_metrics	retired	retired	retired	missing	gap	prod-partial-gap
+973	idx_request_metrics_pending_enqueued	request_metrics_pending	retired	retired	retired	retired	complete	none
+973	idx_request_metrics_projected_time	request_metrics	retired	retired	retired	missing	gap	prod-partial-gap
 974	idx_mppq_canon	market_price_platform_quotes	retired	present	present	present	complete	none
 974	idx_mppq_platform	market_price_platform_quotes	retired	present	present	present	complete	none
 975	idx_pricing_suggestion_batches_created	pricing_suggestion_batches	retired	present	present	present	complete	none
