@@ -18,6 +18,8 @@ CASDOOR_ENDPOINT	component	Casdoor 插件的 OIDC endpoint（cmd/gateway/plugin_
 CASDOOR_ORGANIZATION	component	Casdoor 插件的 OIDC organization（cmd/gateway/plugin_init.go 读它作外部依赖接线）⇒ ★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
 CASDOOR_TEST_PASSWORD	component	Casdoor 集成腿的测试账号口令（仅 pkg/authplugin/casdoor/integration_test.go 读）⇒ ★ 是**夹具参数**，★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
 CASDOOR_TEST_USERNAME	component	Casdoor 集成腿的测试账号名（仅 pkg/authplugin/casdoor/integration_test.go 读）⇒ ★ 是**夹具参数**，★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-23 §9.24 轮补登记）
+COOLDOWN_FAULT	component	上游冷却插件故障注入腿的**父子进程约定**（cmd/gateway/upstream_cooldown_test.go:557 父进程把它 export 进包装脚本、:562 子进程 TestUpstreamCooldownFaultProcess 读它选故障模式）⇒ ★ 只有 _test.go 读、★ 生产代码不读 ⇒ ★ 是夹具参数，★ 不选择 PG 目标、★ 不取消任何保护 ⇒ 故不进事实源（2026-11-25 本会话系列第 29 轮代上游登记，上游 29727b3ba 带进来时没登记）
+COOLDOWN_MARKER	component	上游冷却插件故障注入腿的**父子进程约定**（同文件 :557 父进程给出临时文件路径、:597 子进程把故障证据写到这个路径）⇒ ★ 只有 _test.go 读 ⇒ ★ 是夹具参数（文件路径），不是 DSN、不取消连库保护 ⇒ 故不进事实源（2026-11-25 本会话系列第 29 轮代上游登记，上游 29727b3ba 带进来时没登记）
 FREEDISCOVERY_DEFINITELY_UNSET_VAR_2	component	哨兵变量：用来断言某变量「确实未被设置」
 GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive	canonical fixture 的专用 DSN：除主库外还必须连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值（否则把「连本地库」的前提给了一个通用库 ⇒ 产品守卫正确拒绝 ⇒ 门禁得到假红）
 GATEWAY_CANONICAL_TEST_LOCAL_ONLY	dangerous	授权开关：=yes 才允许 canonical fixture 连本地库（不给则 t.Fatal 而非 SKIP）；打开即授予「连本地库」的权限
@@ -106,6 +108,7 @@ TEST_SESSION_INGEST_RECONCILE_SQL	component	对账 SQL 文件路径（夹具覆�
 TEST_SESSION_INGEST_REVISION_SCRIPT	component	修订脚本路径（夹具覆盖）
 TEST_SESSION_SETTINGS_DATABASE_URL	dsn_exclusive	session-settings 夹具的专用 DSN：守卫要求库名以 _test 结尾且配 TEST_SESSION_INGEST_ISOLATED=1，随后 DROP SCHEMA public CASCADE ⇒ 通用 DSN 必被拒绝（假红）⇒ 不能与通用 DSN 同值（R86 轮移出事实源）
 TEST_TENANT_DATABASE_URL	dsn_exclusive	租户隔离腿专用 DSN：必须指向不可绕过 RLS 的独立角色，不能与通用 DSN 同值
+TEST_UPSTREAM_COOLDOWN_DSN	dsn_exclusive	上游冷却插件真库腿（cmd/gateway/upstream_cooldown_test.go:304 setupCooldownDatabase）的专用 DSN：★ 跳过消息自证「set TEST_UPSTREAM_COOLDOWN_DSN to an isolated PostgreSQL database」⇒ 每跑 CREATE SCHEMA cooldown_<纳秒>、清理时 DROP SCHEMA … CASCADE ⇒ 必须指向隔离库、不能与通用 DSN 同值；★ 腿内没有库名守卫（只靠自建 schema 隔离）⇒ 建议特性车道补一条隔离守卫，与 NODE_PROBE_AUDIT_TEST_DSN 等先例对齐（2026-11-25 本会话系列第 29 轮代上游登记，上游 29727b3ba 带进来时没登记；共享 dsn_exclusive 台账同步补一行）
 TOOL_REGISTRY_TEST_DB	dsn_exclusive	PG DSN（带凭据），属工具注册表专用实例，不能与通用 DSN 同值
 TRACE_RETIREMENT_LOCAL_SCHEMA	dangerous	允许在本地 schema 上改结构（还限端口 54318）；打开即取消「只读」的约束
 TRACE_RETIREMENT_TEST_DSN	dsn_exclusive	trace-retirement 真库腿的专用 DSN：必须指向名为 trace_retirement* 的隔离库（或显式授权的本地 54318 schema）；与通用 DSN 同值 = 让破坏性清理打到共享库上 ⇒ 必须专用值，不能与通用 DSN 同值

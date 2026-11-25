@@ -1,0 +1,3 @@
+schema_version: 1
+cooldown_429_seconds: 300
+cooldown_502_seconds: 120

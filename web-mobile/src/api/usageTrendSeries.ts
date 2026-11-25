@@ -238,7 +238,7 @@ export function trendCustomRange(
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
- * admin/usage_trend_series.go:155-164 `usageTrendSource` 的三个返回值。
+ * admin/usage_trend_series.go:204-218 `usageTrendSource` 的三个返回值。
  * ★ 注意第三个对外叫 `request_logs_with_current_month`，
  *   而真实读的是 `request_logs_with_current_month_without_customer_id`（`:407`）
  *   ⇒ **少 `_without_customer_id` 后缀**（见 `trendSourceRealTable`）。
@@ -263,7 +263,7 @@ export function trendSourceValid(v: string): v is TrendSource {
 }
 
 /**
- * admin/usage_trend_series.go:410 / :591 —— 对外 `source` 名对应的**真实读面**。
+ * admin/usage_trend_series.go:243 / :319 —— 对外 `source` 名对应的**真实读面**（switch source 分派）。
  *
  * ★ 对外少 `_without_customer_id` 后缀（见文件头第 (7) 条）
  *   ⇒ 想拿真实表名必须走这个映射，**不能**直接拿 `source` 当表名用。
@@ -279,7 +279,7 @@ export function trendSourceRealTable(source: string): string | null {
 }
 
 /**
- * admin/usage_trend_series.go:155-164 `usageTrendSource` 的客户端镜像。
+ * admin/usage_trend_series.go:204-218 `usageTrendSource` 的客户端镜像。
  *
  * ★★ 只在**正整数** ID 下才生效 —— 后端判的是 `> 0`，非法值会静默回落 0
  *   并换档（见文件头第 (6) 条）。所以本函数对非正数也返回 default 档，

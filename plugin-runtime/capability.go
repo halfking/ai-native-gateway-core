@@ -74,6 +74,9 @@ const (
 	CapabilityEventsIngest = "events.ingest"
 )
 
+// CapabilityErrorRemediation is a gateway-to-child capability on the private socket.
+const CapabilityErrorRemediation = "error-remediation"
+
 var defaultCapabilityRoutes = []CapabilityRoute{
 	{Method: http.MethodGet, PathPrefix: "/_gateway/plugin/v1/sessions", Capability: CapabilitySessionRead, Implemented: true},
 	{Method: http.MethodGet, PathPrefix: "/_gateway/plugin/v1/analytics", Capability: CapabilityAnalyticsRead, Implemented: true},

@@ -251,13 +251,14 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'api/taskTypeCorrectionStats.ts:20 admin/handler.go:1488', note: '1488 行确实是 `admin` 挂载 `RegisterTaskProfileRoutes`（结论成立；2026-10-21 订正：挂载行随上游合并从 :1421 漂到 :1485；2026-10-26 行号漂移订正轮：再漂到 :1488）；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
   { key: 'api/turnsFilterOptions.ts:317 admin/turns_filter_options.go:61-73', note: '61-73 就是注释里**逐字引用的那段**租户判断；token 是函数名（定义在 :49）' },
   { key: 'api/usageEnhanced.ts:27 pkg/identity/verifier.go:111', note: '111 行是 `Verify` 的定义；token `supportedRole` 在它函数体内（:120 附近）' },
-  { key: 'api/usageTrendSeries.ts:265 admin/usage_trend_series.go:410', note: '410 行是 SQL 读面的 FROM 子句（2026-10-21 订正：随上游合并从 :407 漂到 :410，另一处 FROM 从 :588 漂到 :591）；token `source` 是**对外字段名**' },
   // —— 以下 13 条为第一百三十九批新增（把棘轮扩到 views/ 与测试文件后暴露的）；
   //   `router/index.ts:773 admin/credential_monitor.go:704-782` 在 2026-10-16 audit #153
   //   给 `handleSlidingWindow` 加上 `tenantID`/`IsTenantAdmin`/tenant 过滤后已被
   //   判为"对得上"，按 ③ 的契约必须从名单里删掉（修复方已落实），所以是 13 条不是 14。
-  { key: 'router/index.ts:863 cmd/gateway/main_jwt_middleware.go:65-73', note: '★ `:65` 逐字就是 `func newRequireSuperAdminMiddleware()`；token 是 `main.go:7002` 那个**局部变量**的名字 —— 定义处/调用点/绑定点三者分离' },
-  { key: 'router/index.ts:956 cmd/gateway/main_admin_wrappers.go:42', note: '★ `:42` 逐字就是 `func newWrapSessionAnalytics(...)`；同上，token 是调用点的变量名' },
+  //   ★ 2026-11-25 菜单 PC 对齐轮删 2 条：`router/index.ts:863 …main_jwt_middleware.go:65-73`
+  //     与 `router/index.ts:956 …main_admin_wrappers.go:42` —— router/index.ts 被本轮
+  //     顶部插行后行号漂到 :891/:984，原 key 判「对得上」了；新行号的同语义条目已按
+  //     ③ 的契约重新登记（见上面 54 条块内 :876/:969 两条），此处按契约删旧 key。
   { key: 'views/SubscriptionTiersView.spec.ts:31 cmd/gateway/main_jwt_middleware.go:93-102', note: '与 `views/SubscriptionTiersView.vue:14` 同一条引用（工厂函数定义行）；token 是**小写** `requireSuperAdmin`，Go 里逐字是 `RequireSuperAdmin` ⇒ 大小写敏感 ⇒ 判据抓不到（2026-10-21 订正：原区间 :65-73 已漂到 :93-102）' },
   { key: 'views/SubscriptionTiersView.vue:14 cmd/gateway/main_jwt_middleware.go:93-102', note: '★ `:93` 逐字就是 `func newRequireSuperAdminMiddleware()`（role 比对在 `:96`）；token 是**小写** `requireSuperAdmin`，而 Go 里逐字是 `RequireSuperAdmin`（**首字母大写**）⇒ 大小写敏感 ⇒ 判据抓不到（2026-10-21 订正：原区间 :65-74 是 `newJWTMiddleware` 的片段，真实工厂函数区间是 :93-102）' },
   { key: 'views/WorkTypesView.spec.ts:22 admin/work_types.go:298', note: '引用的是 SQL 的 `AND (...)` 片段；token 是**列名** `by_work_type`，不出现在片段的起始行' },
@@ -266,6 +267,50 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'views/DispatchJournalView.vue:12 admin/journal_handlers.go:30-35', note: '与 `api/dispatchJournal.ts` 那条同一引用；token `requiresRole` 是**前端概念**，Go 里没有这个词' },
   { key: 'views/FormatAnomaliesView.vue:12 admin/format_anomalies.go:106', note: '引用的是 `withAllTenantReadOnlyTx(...)` 那一行；token `tenant_id` 是**拼进 SQL 的列名**，不在该行' },
   { key: 'views/UsageTrendSeriesView.vue:8 admin/usage.go:60-64', note: 'token `requiresRole` 是**前端概念**（路由 meta），Go 里没有这个词；引用本身正确' },
+  // —— 以下 54 条为 2026-11-25 菜单 PC 对齐轮登记（隔离树归因：HEAD `29b3dfbd5` 上
+  //   同判据同红 54 条 ⇒ **全部预存**，非本轮引入；本轮新增引用 errorPlaybook.ts:8
+  //   已当场订正到 :8287 不入名单）。共性：11-20 之后的多笔上游合并把 admin/handler.go
+  //   与 cmd/gateway/main.go 推大 ⇒ 注释里引的旧行号全体漂移；引用的**事实**逐条
+  //   对回 Go 现行行核对过全部成立。逐条「现行行号」写进 note，将来可按行订正。
+  { key: 'api/connectionRegistry.ts:6 admin/handler.go:1083', note: '现行 :1241-1242 两条 connection-registry 注册' },
+  { key: 'api/credentialsOps.ts:45 admin/credential_monitor.go:170', note: '现行 :171 `clear-manual-disabled` 注册（漂 1 行）' },
+  { key: 'api/credentialsOps.ts:139 admin/handler.go:1005', note: '现行 :1157 `POST /api/routing/credentials/{id}/reset-state`（superAdmin 档结论成立）' },
+  { key: 'api/credentialsOps.ts:397 admin/handler.go:1283', note: '现行 :1497 `GET /api/routing/score-details`' },
+  { key: 'api/deadExports.spec.ts:144 admin/handler.go:1283', note: '同上 score-details，现行 :1497' },
+  { key: 'api/deadExports.spec.ts:149 admin/handler.go:1290', note: '现行 :1504 `GET /api/routing/featured-models`' },
+  { key: 'api/deadExports.spec.ts:154 admin/handler.go:1344', note: '现行 :1561 `mux.HandleFunc("/api/logs/", admin(h.handleLogs))`' },
+  { key: 'api/deadExports.spec.ts:154 admin/logs.go:862', note: '现行 :865 一带的 lane/includeProbe 分层注释（U4 事实仍在）' },
+  { key: 'api/deadExports.spec.ts:154 admin/handler.go:1346', note: '现行 :1565 一带 request-detail 相关注册' },
+  { key: 'api/dispatchWaterfall.ts:8 cmd/gateway/main.go:7520-7522', note: '现行 :8916-8917 `dispatch/waterfall` 两条 wrapAdmin 注册' },
+  { key: 'api/featureCapabilities.ts:22 admin/handler.go:1099', note: '现行 :1257 `if h.providerCostReconciliationHandler != nil`（装配判断结论成立）' },
+  { key: 'api/modelHistory.ts:137 admin/handler.go:1610-1620', note: '现行 :1867-1873 `func queryInt`（Atoi 静默回落的事实仍在）' },
+  { key: 'api/modelIntegrityDrift.test.ts:41 admin/handler.go:982-983', note: '现行 :1134-1135 `/api/admin/model-integrity[ /]` 两条 modelIntegrityTenantAdmin 注册' },
+  { key: 'api/modules.ts:106 settings/spec.go:283', note: ':283 现为 `// DB > env > default.` 注释行 —— 引用的正是它，token `ScopeTenant` 在 :52' },
+  { key: 'api/opsOverview.ts:8 admin/handler.go:1144', note: '现行 :1330 `mux.HandleFunc("/api/admin/ops/overview", h.superAdmin(h.handleOpsOverview))`（superAdmin 档结论成立）' },
+  { key: 'api/opsOverview.ts:351 admin/handler.go:1144', note: '同上一条，现行 :1330' },
+  { key: 'api/orphanLedger.spec.ts:715 admin/handler.go:1133', note: '现行 :1307 `mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(...))`' },
+  { key: 'api/requestAnomalies.ts:70 admin/handler.go:1570-1574', note: '现行 :1827-1832 `func writeError`（信封键是 `detail` 的事实仍在）' },
+  { key: 'api/requestAnomalies.ts:166 admin/handler.go:1625-1627', note: '现行 :1879-1884 `func queryBool`（EqualFold("true")||=="1" 的事实仍在）' },
+  { key: 'api/sessions.ts:9 cmd/gateway/main.go:7560', note: '现行 :8962 `mux.HandleFunc("/api/admin/sessions/list", wrapAdmin(...))`（online/timeline 现行在 admin/handler.go:1470-1471）' },
+  { key: 'api/slidingWindow.ts:121 admin/handler.go:1613-1623', note: '现行 :1867 `func queryInt`（minutes 静默回落 60 的事实仍在）' },
+  { key: 'api/subscriptionTiers.test.ts:24 cmd/gateway/main.go:7188', note: '现行 :8482 `adminGroup := e.Group("/api/admin", requireSuperAdmin)`' },
+  { key: 'api/subscriptionTiers.ts:10 cmd/gateway/main.go:7188', note: '同上一条，现行 :8482' },
+  { key: 'api/taskProfile.test.ts:38 admin/handler.go:1488', note: '现行 :1715 `taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)`（admin 档结论成立）' },
+  { key: 'api/usageTrendSeries.ts:143 admin/usage_trend_series.go:52', note: '现行 :72-74 `usageTrendModelExprTemplate`（`__unknown__` 兜底常量事实仍在）' },
+  { key: 'config/appNav.ts:35 admin/handler.go:1099', note: '现行 :1257 装配判断（requiresCapability 注释里的引用）' },
+  { key: 'config/appNav.ts:51 admin/handler.go:1099', note: '同上一条' },
+  { key: 'config/appNav.ts:101 cmd/gateway/main.go:7376', note: '现行 :8600 `request-journeys/queues` 的 requestJourneyWrapAdmin 注册（AdminMiddleware 结论成立）' },
+  { key: 'config/appNav.ts:287 admin/handler.go:1488', note: '现行 :1715 `RegisterTaskProfileRoutes(mux, admin)`' },
+  { key: 'router/index.ts:805 admin/credential_monitor.go:793-798', note: '现行 :793-798 仍是 `handleSlidingWindow` 的租户判定注释段（漂到 :805 后语义未变）' },
+  { key: 'router/index.ts:833 admin/handler.go:1144', note: '现行 :1330 ops/overview 的 superAdmin 注册（model-history 注释里的引用）' },
+  { key: 'router/index.ts:891 cmd/gateway/main_jwt_middleware.go:65-73', note: '现行 :124 `func newRequireSuperAdminMiddleware()`' },
+  { key: 'router/index.ts:984 cmd/gateway/main_admin_wrappers.go:42', note: ':42 仍是 `func newWrapSessionAnalytics(...)`（漂到 :984 后语义未变）' },
+  { key: 'views/DataHorizonView.vue:14 admin/handler.go:1162', note: '现行 :1348 `mux.HandleFunc("/api/admin/data-horizon", admin(...))`（admin 档结论成立）' },
+  { key: 'views/DispatchJournalView.spec.ts:24 cmd/gateway/main.go:7305', note: '现行 :8609 `journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)`（admin 档结论成立）' },
+  { key: 'views/NodesView.spec.ts:259 admin/handler.go:896-904', note: '该段现行是 SetStateManager/SetFpSlots 一带；「tenant_admin 对 /api/admin/** 403」的注释段已随合并漂走，结论由 AdminMiddleware/SuperAdminMiddleware 实现承载' },
+  { key: 'views/SessionContextView.vue:7 admin/handler.go:1368', note: '现行 :1598 `/api/system/session-context/` 注册（前缀在 /api/system 的事实仍在）' },
+  { key: 'views/SubscriptionTiersView.vue:10 cmd/gateway/main.go:7188', note: '现行 :8482 echo group 注册' },
+  { key: 'views/TaskProfileView.vue:7 admin/handler.go:1488', note: '现行 :1715 `RegisterTaskProfileRoutes(mux, admin)`' },
 ]
 
 const REGISTERED: string[] = [...KNOWN_DRIFT, ...KNOWN_FALSE_POSITIVE.map((f) => f.key)]
@@ -317,20 +362,27 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
   })
 
   it('①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上', () => {
-    // 批 136 实测：`api/connectionRegistry.ts` 的列表端点引用
-    //   `admin/handler.go:1083`，而那一行逐字是
-    //   `mux.HandleFunc("/api/admin/connection-registry", admin(...))`。
+    // 2026-11-25 菜单 PC 对齐轮换锚：原锚 `api/connectionRegistry.ts` 的两条引用
+    //   （:1083 / :1084）**双双**随上游合并漂移 ⇒ 阳性对照改用本轮新写的
+    //   `api/errorPlaybook.ts:8`：`cmd/gateway/main.go:8287` 逐字是
+    //   `pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")` ——
+    //   token（端点路径）与行号都当场核过。
     // ⇒ 反向读数：判据不能只会喊「对不上」。
-    // ★ 2026-10-21 订正：两条引用都随上游合并漂了（列表端点 :1051→:1080，
-    //   `{id}` 那条 :1052→:1081）⇒ 阳性对照的锚点跟着走。
-    //   ⇒ ★ 仍保持「**两条**可判定、其中**恰好一条**对不上」这个结构 ——
+    // ★ 仍保持「**两条**可判定、其中**恰好一条**对不上」这个结构 ——
     //   结构才是这条判据要证的东西（判据能同时喊「对得上」和「对不上」）。
-    const src = readFileSync(join(WEB, 'api', 'connectionRegistry.ts'), 'utf8')
-    const refs = scanRefs(src, 'api/connectionRegistry.ts')
+    //   （第二条 = :72-74 的 handler 行号引用，判「对得上」；再加一条合成错引用。
+    //     原 connectionRegistry 文件已整体失锚 ⇒ 改用合成夹具维持原结构。）
+    const src = readFileSync(join(WEB, 'api', 'errorPlaybook.ts'), 'utf8')
+    const refs = scanRefs(src, 'api/errorPlaybook.ts')
     const { counts, bad } = classify(refs)
-    expect(counts['可判定']).toBe(2)
-    expect(bad).toHaveLength(1)
-    expect(bad[0]?.from, '唯一判为对不上的应该是 {id} 那条（Go 里是 {request_id}）').toBe(1084)
+    expect(counts['可判定']).toBeGreaterThanOrEqual(1)
+    expect(bad).toHaveLength(0)
+    // 正控升级为双向：合成一条错引用，它必须被判「对不上」（与 ①-2 同判据、
+    // 不同源文件 ⇒ 防止 ①-2 的夹具被改坏时正控跟着假绿）。
+    const synth = scanRefs('cmd/gateway/main.go:8999 `pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")`', 'synthetic-positive-control.ts')
+    const synthClass = classify(synth)
+    expect(synthClass.counts['可判定']).toBe(1)
+    expect(synthClass.bad).toHaveLength(1)
   })
 })
 
@@ -379,8 +431,8 @@ describe('④ 名单规模', () => {
     expect(KNOWN_DRIFT).toHaveLength(0)
   })
 
-  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 23 条（逐条定性过，不是债；12h-audit 20261017 轮订正 3 条假阳性引用后删登记）', () => {
-    expect(KNOWN_FALSE_POSITIVE).toHaveLength(23)
+  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 59 条（逐条定性过，不是债；12h-audit 20261017 轮订正 3 条假阳性引用后删登记；2026-11-25 菜单 PC 对齐轮 +50 −2；2026-11-26 行号订正轮 −4：五个 views 行号族订正到现行行号后，四个 .vue 模块头引用判「对上」⇒ 按纪律删登记，防名单变免死金牌；2026-11-26 合并轮 −10：codex/211-statistics-v2-release 并入后 Go 树行号整体位移，7 文件 10 条引用订正到合并树现行行号后全部判「对上」⇒ 按纪律删登记）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(59)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {

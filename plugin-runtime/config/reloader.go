@@ -2,8 +2,11 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -62,6 +65,25 @@ func MetricsOf(reloader ConfigReloader) map[string]int64 {
 // therefore be idempotent and support applying either configuration.
 type ReloadHandler func(ctx context.Context, oldConfig, newConfig *Config) error
 
+// Rejection identifies a completed failed reload while the rejected bytes
+// still match the file on disk. ID is for local audit deduplication.
+type Rejection struct {
+	ID      [32]byte
+	Invalid bool
+}
+
+type rejectedConfig struct {
+	rejection Rejection
+	fileHash  [32]byte
+}
+
+func RejectionOf(reloader ConfigReloader) (Rejection, bool) {
+	if source, ok := reloader.(interface{ rejection() (Rejection, bool) }); ok {
+		return source.rejection()
+	}
+	return Rejection{}, false
+}
+
 type configReloader struct {
 	holder     *ConfigHolder
 	validator  Validator
@@ -69,8 +91,19 @@ type configReloader struct {
 	watcher    *fsnotify.Watcher
 	configPath string
 
+	// rejectMu protects `rejected` **on its own**.
+	//
+	// ★ 2026-11-26 12h 审计轮：★ 原来 `rejected` 挂在 `reloadMu` 下，而读侧
+	// `rejection()` 用的是 **`TryLock`** ⇒ **只要有一轮 reload 在飞，读侧就
+	// 直接返回「没有拒收」** ⇒ 拒收状态**整轮漏报**（配置漂移检测不可靠，
+	// 且对外可见性不确定）★★。
+	//   ⇒ 现在读写各用 `rejectMu`（**独立的叶子锁**）⇒ ★ 读侧不再被
+	//     「reload 进行中」挡住 ★；★ 读侧**先取路径、再取锁**⇒ 锁序只有
+	//     「reloadMu → rejectMu」与「rejectMu」两条 ⇒ 无环 ★。
+	rejectMu sync.Mutex
 	mu       sync.RWMutex
 	reloadMu sync.Mutex
+	rejected *rejectedConfig // protected by reloadMu
 	wg       sync.WaitGroup
 	watching bool
 	stopCh   chan struct{}
@@ -299,14 +332,21 @@ func (r *configReloader) Reload(ctx context.Context) error {
 	// Load old config
 	oldConfig := r.holder.Get()
 
-	// Read and parse new config
-	newConfig, err := r.loadConfig(configPath)
+	r.rejectMu.Lock()
+	r.rejected = nil
+	r.rejectMu.Unlock()
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-
-	// Validate new config
+	var next Config
+	newConfig := &next
+	if err := yaml.Unmarshal(data, newConfig); err != nil {
+		r.rememberRejection(oldConfig, nil, data, true)
+		return fmt.Errorf("load config: parse yaml: %w", err)
+	}
 	if err := r.validator.Validate(newConfig); err != nil {
+		r.rememberRejection(oldConfig, newConfig, data, true)
 		return fmt.Errorf("validate config: %w", err)
 	}
 
@@ -322,6 +362,9 @@ func (r *configReloader) Reload(ctx context.Context) error {
 					failures = append(failures, fmt.Errorf("rollback handler %d: %w", j, rollbackErr))
 				}
 			}
+			if ctx.Err() == nil {
+				r.rememberRejection(oldConfig, newConfig, data, false)
+			}
 			return errors.Join(failures...)
 		}
 	}
@@ -330,19 +373,58 @@ func (r *configReloader) Reload(ctx context.Context) error {
 	return nil
 }
 
-// loadConfig loads and parses the configuration file.
-func (r *configReloader) loadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+const maxDriftConfigBytes = 1 << 20
+
+func (r *configReloader) rememberRejection(old, desired *Config, data []byte, invalid bool) {
+	if len(data) > maxDriftConfigBytes {
+		return
+	}
+	actualBytes, _ := json.Marshal(old) // Config contains only JSON-native values.
+	actualHash := sha256.Sum256(actualBytes)
+	fileHash := sha256.Sum256(data)
+	desiredHash := fileHash
+	if desired != nil {
+		proposed, _ := json.Marshal(desired)
+		desiredHash = sha256.Sum256(proposed)
+	}
+	pair := [64]byte{}
+	copy(pair[:32], actualHash[:])
+	copy(pair[32:], desiredHash[:])
+	r.rejectMu.Lock()
+	r.rejected = &rejectedConfig{
+		rejection: Rejection{ID: sha256.Sum256(pair[:]), Invalid: invalid},
+		fileHash:  fileHash,
+	}
+	r.rejectMu.Unlock()
+}
+
+func (r *configReloader) rejection() (Rejection, bool) {
+	// ★ 2026-11-26 12h 审计轮：★ **不再用 TryLock 表达「没有拒收」** ★
+	// （★ TryLock 在「reload 在飞」时返回 false ⇒ **拒收被静默吞掉** ★）。
+	// ⇒ 现在：★ 先取路径（独立读锁）⇒ 再取 `rejectMu`（叶子锁）⇒
+	//   **拒收状态不会因为一轮 reload 在飞而漏报** ★。
+	r.mu.RLock()
+	path := r.configPath
+	r.mu.RUnlock()
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return Rejection{}, false
+	}
+	r.rejectMu.Lock()
+	defer r.rejectMu.Unlock()
+	if r.rejected == nil {
+		return Rejection{}, false
+	}
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return Rejection{}, false
 	}
-
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxDriftConfigBytes+1))
+	if err != nil || len(data) > maxDriftConfigBytes || sha256.Sum256(data) != r.rejected.fileHash {
+		return Rejection{}, false
 	}
-
-	return &config, nil
+	return r.rejected.rejection, true
 }
 
 // GetConfig returns the current configuration.

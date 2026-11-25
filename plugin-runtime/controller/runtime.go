@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	root "github.com/kaixuan/llm-gateway-go/plugin-runtime"
@@ -18,11 +19,28 @@ import (
 
 // runtimeAdapter uses the new reconciliation DTOs, but every process operation
 // is delegated to the established root supervisor.
+//
+// ★★ 锁不变式（★ 2026-11-26 12h 审计轮**实测复核**后登记 ★★）：
+//
+//	本适配器直接读写 `c.desired` / `c.disabled` / `c.scope`，而这三个字段的
+//	**写侧**在 `Controller.transact` 家族里、由 `c.opMu` 保护 ⇒
+//	★ 本适配器的每一个方法**必须**在持有 `c.opMu` 的调用栈里被调用 ★
+//	⇒ **当前唯一入口是 `Controller.Reconcile`（它整段持 `opMu`）** ✔
+//	（`reconciler.Start` 里那个自带的后台循环——它若被启用，其 `Reconcile`
+//	  调用**不经** `Controller.opMu` ⇒ ★ 那时这里就是数据竞争 ★ ⇒
+//	  ★ **谁要启用那个循环，必须先给适配器补锁** ★）。
+//
+//	⇒ 本轮**未**给适配器加锁：★ ① 现网没有那条并发路径（唯一入口持 opMu）★
+//	  ② 加锁需同时处理「适配器方法 ↔ transact」的锁序，★ 在没有复现路径的
+//	  情况下动它，★ 比登记更危险（★ 改错锁序＝把活锁变成死锁 ★）★。
 type runtimeAdapter struct{ c *Controller }
 
 func (a *runtimeAdapter) List(_ context.Context, filter reconciler.RegistryFilter) ([]*reconciler.RegistryPlugin, error) {
 	var result []*reconciler.RegistryPlugin
 	for id, m := range a.c.desired {
+		if !a.c.inScope(id) {
+			continue
+		}
 		enabled := !a.c.disabled[id]
 		if filter.EnabledOnly && !enabled {
 			continue
@@ -96,6 +114,9 @@ func (a *runtimeAdapter) ListAll() []*dto.ProcessState {
 	a.c.mu.RLock()
 	defer a.c.mu.RUnlock()
 	for _, state := range states {
+		if !a.c.inScope(state.PluginID) {
+			continue
+		}
 		status := dto.StatusStopped
 		switch {
 		case state.Status == "crashed" || a.c.unhealthy[state.PluginID]:
@@ -213,6 +234,10 @@ func waitReady(ctx context.Context, socket string, m *root.Manifest) error {
 		hs, err := root.HandshakeContext(ctx, client, "http://unix", m.Runtime.HandshakePath, m)
 		if err == nil && (hs.Status != "ready" || hs.PluginVersion != m.PluginVersion) {
 			err = errors.New("handshake not ready or version mismatch")
+		}
+		if err == nil && slices.Contains(m.Capabilities, root.CapabilityErrorRemediation) &&
+			!slices.Contains(hs.Capabilities, root.CapabilityErrorRemediation) {
+			err = errors.New("handshake missing error-remediation capability")
 		}
 		if err == nil {
 			req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix"+m.Runtime.HealthPath, nil)

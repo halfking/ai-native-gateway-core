@@ -5076,6 +5076,8 @@ func main() {
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 				nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
+				// ★ 2026-11-26（第36轮 · 第四处修正）：注入路由层自己的候选解析器。
+				wireGatewayPlanLookup(nodeProbeWorker, providerClient)
 				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 				}
@@ -5406,6 +5408,8 @@ func main() {
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 			nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
+			// ★ 2026-11-26（第36轮 · 第四处修正）：同 site 1 的接线（判据单源）。
+			wireGatewayPlanLookup(nodeProbeWorker, providerClient)
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
 			if probeStreamHub != nil {
@@ -7944,7 +7948,7 @@ func main() {
 		//	③ IndexRefresh 命中 nil 接收者时 RefreshOnce 返回 (false, nil) ⇒
 		//	   路由回 200「索引已刷新」——**什么都没刷却报成功**。
 		//	⇒ 装配期显式判空后再装接口。
-		pbDeps := PlaybookDeps{}
+		pbDeps := PlaybookDeps{PluginController: pluginController}
 		if autoIndexRefresher != nil {
 			pbDeps.IndexRefresh = autoIndexRefresher
 		}
@@ -8254,6 +8258,15 @@ func main() {
 				}
 				return piDetectorCoreGlobal.RefreshRules()
 			})
+			// ★ 2026-11-25 取证轮：取证采集面（分析前取证 + 按需取证端点）与
+			//	复测用的在线检测器（判官复查要走它的端点解析器；未开 V2 时为 nil ⇒
+			//	该复测项如实报不可用，其余复测项不受影响）。
+			piEvidenceGatherer := admin.NewPIEvidenceGatherer(piSQLDBGlobal)
+			piAnalysisHandler.SetEvidenceGatherer(piEvidenceGatherer)
+			piAnalysisHandler.SetReplayJudge(piDetectorCoreGlobal)
+			if piErrorAnalyzerGlobal != nil {
+				piErrorAnalyzerGlobal.SetEvidenceProvider(piEvidenceGatherer)
+			}
 			slog.Info("pi-analysis API registered")
 		}
 		// /api/admin/error-playbook/* — 错误处理手册（2026-11-20）：

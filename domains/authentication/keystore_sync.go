@@ -25,6 +25,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -159,12 +160,27 @@ func (kv *KeyVerifier) keyStoreFullLoad(ctx context.Context) error {
 	}
 	defer rows.Close()
 	next := make(map[string]*KeyInfo, 1024)
+	malformed := 0
 	for rows.Next() {
 		info, scanErr := scanKeyStoreRow(rows)
 		if scanErr != nil {
+			// ★ 一行脏 capabilities ⇒ **只跳过这一把 Key**（★ 它不进副本 ⇒
+			// 它的请求拿不到授权 ⇒ fail-closed ★），**不牵连整批** ⇒
+			// 其余成千上万把 Key 照常可用（★ 原实现在这里 return ⇒ 全站瘫痪 ★）。
+			if errors.Is(scanErr, ErrMalformedCapabilities) {
+				malformed++
+				slog.Warn("key verifier: skipping key with malformed capabilities",
+					"error", scanErr)
+				continue
+			}
 			return scanErr
 		}
 		next[info.keyHash] = info.info
+	}
+	if malformed > 0 {
+		slog.Error("key verifier: skipped keys with malformed capabilities",
+			"count", malformed,
+			"hint", "repair api_keys.capabilities to a JSON array of strings")
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -196,6 +212,12 @@ func (kv *KeyVerifier) keyStoreSyncDelta(ctx context.Context, interval time.Dura
 	for rows.Next() {
 		entry, scanErr := scanKeyStoreRow(rows)
 		if scanErr != nil {
+			// ★ 同上：★ 脏 capabilities 只跳过这一把 Key（★ 不牵连整批增量 ★）。
+			if errors.Is(scanErr, ErrMalformedCapabilities) {
+				slog.Warn("key verifier: skipping key with malformed capabilities",
+					"error", scanErr)
+				continue
+			}
 			rows.Close()
 			return scanErr
 		}
@@ -251,8 +273,8 @@ func (kv *KeyVerifier) keyStoreSyncDelta(ctx context.Context, interval time.Dura
 }
 
 // keyStoreSelectSQL is the shared column list. It matches callVerifyDB's
-// projection plus ak.expires_at (read-time validity) and ak.key_hash (the
-// store key).
+// projection plus ak.expires_at (read-time validity), ak.key_hash (the
+// store key) and ak.capabilities (W4.2 会话能力绑 Key).
 const keyStoreSelectSQL = `
 	SELECT
 		ak.key_hash,
@@ -272,7 +294,8 @@ const keyStoreSelectSQL = `
 		ak.key_alias,
 		app.customer_id,
 		ak.expires_at,
-		COALESCE(ak.is_system, FALSE)
+		COALESCE(ak.is_system, FALSE),
+		COALESCE(ak.capabilities, '[]'::jsonb)::text
 	FROM api_keys ak
 	JOIN applications app ON app.id = ak.application_id
 `
@@ -294,6 +317,7 @@ func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, er
 	var appID int64
 	var hash string
 	var info KeyInfo
+	var rawCapabilities []byte
 	if err := rows.Scan(
 		&hash,
 		&info.ID,
@@ -313,9 +337,17 @@ func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, er
 		&info.CustomerID,
 		&info.ExpiresAt,
 		&info.IsSystem,
+		&rawCapabilities,
 	); err != nil {
 		return keyStoreRow{}, err
 	}
+	// ★ 2026-11-26 12h 审计轮：capabilities 走**容错解析**（★ 不再让 pgx 直接
+	// 扫进 []string ★）—— 一行脏值只坏那一把 Key，**不牵连整批装载**。
+	caps, ok := parseCapabilityList(rawCapabilities)
+	if !ok {
+		return keyStoreRow{}, fmt.Errorf("%w: key_id=%d", ErrMalformedCapabilities, info.ID)
+	}
+	info.Capabilities = caps
 	info.ApplicationID = int(appID)
 	return keyStoreRow{keyHash: hash, info: &info}, nil
 }

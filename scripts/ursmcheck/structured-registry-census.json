@@ -494,6 +494,24 @@
       "path": "scripts/guards/win-test-baseline.json",
       "kind": "excluded",
       "reason": "★ 规则文件（★ Windows 全量测试基线：记的是「实测失败集」的名单位棘轮，只降不升）⇒ 读方 scripts/guards/check-win-test-baseline.sh。★★ 归 excluded 而不是 registry 的**实质理由**：★ 该读方**无参运行会跑整仓 `go test ./...`**（★ 读方用法：`bash check-win-test-baseline.sh <go-test 输出日志>`）⇒ ⇒ 把它登记成 registry 会让掏空门**跑两遍整仓测试**（★ 实测量级：小时级）⇒ ⇒ 掏空态**不可承受** ⇒ ⇒ 因此不进行为化掏空覆盖。★ ★★ **登记于 2026-10-29（第 42 增量）**：★ 该文件由上游 24h 审计第 6 轮（e37fce837）新增 ⇒ 合并 origin/main 时**漏了登记** ⇒ 门红 ⇒ 本轮补登记（★ 只补归属，不改上游的门）。"
+    },
+    {
+      "path": "cmd/config-drift-plugin/plugin-manifest.json",
+      "kind": "excluded",
+      "reader": "cmd/gateway/remediation_templates_test.go",
+      "reason": "★ 生产插件清单（★ 随插件二进制交付；控制器运行时装载插件时读取并校验签名与字段）⇒ 不是门读的登记册；★ 仓内按路径读它的只有把它当作【被测对象真实输入】的控制器集成测试（TestRemediationTemplates：go build 插件后把清单拷进 bundle、由控制器装载）⇒ 掏空它红的是「产品装载失败」、不是「门瞎」⇒ 归 excluded（2026-11-25 本会话系列第 29 轮代上游登记，上游 29727b3ba 带进来时没登记；★ 观察：这三份清单目前没有轻量的 schema 读方）"
+    },
+    {
+      "path": "cmd/sse-break-analysis-plugin/plugin-manifest.json",
+      "kind": "excluded",
+      "reader": "cmd/gateway/remediation_templates_test.go",
+      "reason": "★ 生产插件清单（★ 随插件二进制交付；控制器运行时装载插件时读取并校验签名与字段）⇒ 不是门读的登记册；★ 仓内按路径读它的只有把它当作【被测对象真实输入】的控制器集成测试（TestRemediationTemplates：go build 插件后把清单拷进 bundle、由控制器装载）⇒ 掏空它红的是「产品装载失败」、不是「门瞎」⇒ 归 excluded（2026-11-25 本会话系列第 29 轮代上游登记，上游 29727b3ba 带进来时没登记；★ 观察：这三份清单目前没有轻量的 schema 读方）"
+    },
+    {
+      "path": "cmd/upstream-cooldown-plugin/plugin-manifest.json",
+      "kind": "excluded",
+      "reader": "cmd/gateway/remediation_templates_test.go",
+      "reason": "★ 生产插件清单（★ 随插件二进制交付；控制器运行时装载插件时读取并校验签名与字段）⇒ 不是门读的登记册；★ 仓内按路径读它的只有把它当作【被测对象真实输入】的控制器集成测试（TestRemediationTemplates：go build 插件后把清单拷进 bundle、由控制器装载）⇒ 掏空它红的是「产品装载失败」、不是「门瞎」⇒ 归 excluded（2026-11-25 本会话系列第 29 轮代上游登记，上游 29727b3ba 带进来时没登记；★ 观察：这三份清单目前没有轻量的 schema 读方）★ 另一个读方：cmd/gateway/upstream_cooldown_test.go 的 TestUpstreamCooldownPilot（:481 同样按路径读它、拷进 bundle）。"
     }
   ]
 }

@@ -160,6 +160,7 @@ export interface ExecutionListFilter {
   error_type?: string
   limit?: number
   offset?: number
+  recommendations?: 'only'
 }
 
 export interface ExecutionListResult {
@@ -238,6 +239,7 @@ export async function listExecutions(
     'GET',
     `${BASE}/executions${qs({
       entry_id: filter.entry_id,
+      recommendations: filter.recommendations,
       status: filter.status,
       error_type: filter.error_type,
       limit: filter.limit,

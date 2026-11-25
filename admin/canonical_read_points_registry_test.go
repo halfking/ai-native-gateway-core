@@ -553,22 +553,19 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "R172 会话族两臂直查 helper：canonical 视图名只出现在一条注释里（对比说明「canonical 视图没有反连接」）；本文件的读面是会话族 hot ∪ 父表，与 canonical 视图无关",
 	},
-	// internal/metricsstore/processor.go：请求指标**维增强**读 canonical 视图
-	//   request_logs_with_current_month（迁移 890 删掉 v1 母表后的双腿稳定形态）。
-	// ★ 分类核定依据：该读点读 gw_task_id（734 **details 腿**列）与 gw_session_id
-	//   （视图里的 **CASE 表达式**列）⇒ 与 admin/request_trace.go 的读点1 同形态
-	//   ⇒ 归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
+	// internal/metricsstore/processor.go：**V2 投影器**（2026-11-26 合并轮：
+	//   codex/211-statistics-v2-release 的 feat(stats) 把旧「批量维增强」重写为
+	//   终态请求投影 Processor —— pending/history 双游标 + LATERAL 维补齐）。
+	// ★ 分类核定依据：投影 SQL 里 LEFT JOIN LATERAL 读双腿 canonical 视图
+	//   request_logs_with_current_month（ts ±1 天窗口按 request_id 点查）
+	//   ⇒ 读 gw_task_id（734 **details 腿**列）与 gw_session_id（视图里的
+	//   **CASE 表达式**列）⇒ 仍归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
 	"internal/metricsstore/processor.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "请求投影按租户、请求 ID 与日志时间窗口补充会话、归属、模型、协议和错误维度。",
+		Note:  "V2 终态请求投影：pending/history 双游标逐 fact 用 LATERAL 点查 canonical 视图补齐 21 列维度（读双腿视图 request_logs_with_current_month —— 迁移 890 已删 v1 母表，裸读 FROM request_logs 在生产上 42P01）",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{
-				"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base",
-				"client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base", "egress_protocol:base",
-				"error_kind:base", "failure_detail_code:base", "gw_session_id:expr", "gw_task_id:detail", "identity_hash:base",
-				"outbound_model:base", "request_id:base", "stream_interrupted:base", "task_type:base", "tenant_id:base", "ts:base", "work_type:base",
-			}, Class: classNeedsDetailsLeg, Note: "任务、密钥与客户端模型来自 details 腿，会话标识和客户端 IP 来自视图表达式。"},
+			{Kind: "read", Columns: []string{"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base", "client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base", "egress_protocol:base", "error_kind:base", "failure_detail_code:base", "gw_session_id:expr", "gw_task_id:detail", "identity_hash:base", "outbound_model:base", "request_id:base", "stream_interrupted:base", "task_type:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "V2 投影 LATERAL 读点：按 (tenant_id, request_id, ts±1d) 点查双腿视图补齐维度 ⇒ 引用 734 details 腿的列（gw_task_id/api_key_prefix）与视图里的 CASE 表达式列（gw_session_id）⇒ 窄投影须带上 details LEFT JOIN 并复刻 CASE 表达式"},
 		},
 	},
 	"admin/providers.go": {
@@ -1045,6 +1042,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		Note:  "附件正文读取（attachments 列走 details 腿）",
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"attachments:detail", "request_id:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "附件正文读取（attachments 列走 details 腿）；本读点读 attachments:detail,request_id:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+		},
+	},
+	"domains/promptinjection/error_discovery.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNarrowMigratable,
+		Note:  "请求错误发现器：判定一个失败分组是否**全部来自探测流量**——按请求号点查 canonical 视图，读 task_type / origin_stage（该读点不带 ts 谓词；请求号取自同一窗口内的候选失败表，有界 50 个，逐个占位符）。★ 2026-11-26 PI 分析取证轮（L123）新增，判据与 admin/analytics.go 的业务隔离谓词同源（internal/probekind）。",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"origin_stage:base", "request_id:base", "task_type:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "探测判定：按请求号点查（COUNT(DISTINCT request_id)），读 task_type / origin_stage；三列在视图里都是底表直映（890：t.xxx AS xxx）⇒ 窄投影可等价供给。★ 不带 ts 谓词是有意的：请求号刚由同一窗口的候选失败表给出，走 request_id 索引点查（预发布库实测执行计划 Index Scan，13ms 量级）。"},
 		},
 	},
 	"domains/routeincident/store.go": {
@@ -2644,46 +2649,47 @@ func canonicalTimeWindowedReadPointFiles(t *testing.T, root string) map[string]b
 // ★   ⇒ 那是**登记错误**（★ 口径是文件级）⇒ ⇒ 要么改口径、要么把它移出清单 ⇒
 // ★   ⇒ ★★ **不许用「例外」把它藏起来**：★ 藏起来就等于门看不见它。★★
 var canonicalTimeWindowedReadPoints = map[string]string{
-	"internal/metricsstore/processor.go":     "请求投影按租户、请求 ID 和事实时间前后一天的 ts 范围读取 canonical 视图，视图不提供分区键。",
-	"admin/compression_stats.go":             "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/credential_monitor.go":            "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/credential_monitor_heatmap.go":    "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/credential_success_rate.go":       "凭据成功率；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/data_lifecycle.go":                "数据生命周期：① 7 天趋势；② 清理预览的受影响行数（不取列，只要 COUNT(*)）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/diagnostics_credential.go":        "凭据诊断明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/live_stream_sse.go":               "SSE 实时流：① 全量事件行；② 按 request_id 数组取状态；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/memora_handlers.go":               "memora 上下文：① 任务/会话头；② 最近一条模型；③ 计数；④ 轮次明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/model_routing_diagnostic.go":      "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/model_status.go":                  "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/no_topic_session.go":              "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/probe_history.go":                 "探针历史；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/provider_models.go":               "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/route_incidents.go":               "路由事故面；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/session_analytics_breakdown.go":   "会话分析维度下钻：① 按模型；② 按供应商；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/session_analytics/queries.go":     "会话分析用户详情页：① 用户模型用量聚合（GetUserModelUsage）；② 用户 API Key 用量聚合（GetUserAPIKeyUsage）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/session_analytics_timeseries.go":  "会话分析时间序列：① 会话/请求/成本；② 成本拆分；③ 延迟分位；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/swim_lane_init.go":                "泳道初始化；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/tenants.go":                       "租户统计（tenant_id / tokens / cost / credits_charged）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/top_problems.go":                  "Top 问题：① 按凭据；② 按模型；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/topology_clients_today.go":        "头部统计客户端组（单一统计轮）：request_logs 直查按客户端聚合；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/topology_window_stats.go":         "头部统计短窗口口径（?window=5m|1h）：① 供应商聚合；② 模型聚合；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/usage.go":                         "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/usage_credits.go":                 "requestLogsFromClause(days) 按天数分臂：≤7 天走会话族热腿原生源，>7 天走 canonical 视图 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/usage_enhanced.go":                "planCostTrend() 按 groupBy 在计费宽表与请求表（canonical 视图）之间选基表 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/user_profile.go":                  "用户画像：① 列表端点窗口内用量聚合（usageAggregatesByOwner）；② 员工×模型矩阵（queryUserUsageMatrix）；③ 模型使用统计（handleUserModelUsage）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/usage_trend_series.go":            "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"admin/work_types.go":                    "工作类型分布（work_type / is_auto_request / ts / canonical_model）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"bg/daily_probe_audit.go":                "探针每日审计（离线诊断面，不在线上读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"bg/integrity_fingerprint_drift.go":      "指纹漂移审计（离线诊断面）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"bg/passive_probe_listener.go":           "被动探针监听器（探针系统后台面，不在管理台读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"bg/stats_minute_rollup.go":              "离线分钟汇总（读视图只为把窗口内的行汇进汇总表）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"bg/stats_minute_rollup_retire.go":       "离线分钟汇总退役（DELETE 的子查询用视图定位要清理的窗口）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"db/probe_views_unified.go":              "探针视图的**生产者**（CREATE OR REPLACE VIEW v_model_health_dashboard）⇒ 它是视图的下游聚合面，不是终端读点；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"domains/routeincident/store.go":         "路由事故 store；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"domains/sessionsummary/summarizer.go":   "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 reque…；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"internal/collector/gateway_adapters.go": "collector 适配：① 延迟分位；② 模型计数；③ 30 秒计数；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"internal/quality/minute_aggregator.go":  "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"maas/usage.go":                          "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/compression_stats.go":                 "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_monitor.go":                "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_monitor_heatmap.go":        "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/credential_success_rate.go":           "凭据成功率；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/data_lifecycle.go":                    "数据生命周期：① 7 天趋势；② 清理预览的受影响行数（不取列，只要 COUNT(*)）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/diagnostics_credential.go":            "凭据诊断明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/live_stream_sse.go":                   "SSE 实时流：① 全量事件行；② 按 request_id 数组取状态；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/memora_handlers.go":                   "memora 上下文：① 任务/会话头；② 最近一条模型；③ 计数；④ 轮次明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/metricsstore/processor.go":         "V2 终态请求投影（2026-11-26 合并轮补登）：pending/history 双游标逐 fact 用 LATERAL 按 (tenant_id, request_id, ts ±1 天) 点查 canonical 视图补齐维度；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（★ 该窗口谓词就是为绕开逐分区扫描设的 ±1 天窄窗，实测逐 fact 点查走索引）",
+	"admin/model_routing_diagnostic.go":          "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/model_status.go":                      "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/no_topic_session.go":                  "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/probe_history.go":                     "探针历史；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/provider_models.go":                   "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/route_incidents.go":                   "路由事故面；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics_breakdown.go":       "会话分析维度下钻：① 按模型；② 按供应商；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics/queries.go":         "会话分析用户详情页：① 用户模型用量聚合（GetUserModelUsage）；② 用户 API Key 用量聚合（GetUserAPIKeyUsage）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics_timeseries.go":      "会话分析时间序列：① 会话/请求/成本；② 成本拆分；③ 延迟分位；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/swim_lane_init.go":                    "泳道初始化；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/tenants.go":                           "租户统计（tenant_id / tokens / cost / credits_charged）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/top_problems.go":                      "Top 问题：① 按凭据；② 按模型；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/topology_clients_today.go":            "头部统计客户端组（单一统计轮）：request_logs 直查按客户端聚合；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/topology_window_stats.go":             "头部统计短窗口口径（?window=5m|1h）：① 供应商聚合；② 模型聚合；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage.go":                             "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_credits.go":                     "requestLogsFromClause(days) 按天数分臂：≤7 天走会话族热腿原生源，>7 天走 canonical 视图 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_enhanced.go":                    "planCostTrend() 按 groupBy 在计费宽表与请求表（canonical 视图）之间选基表 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/user_profile.go":                      "用户画像：① 列表端点窗口内用量聚合（usageAggregatesByOwner）；② 员工×模型矩阵（queryUserUsageMatrix）；③ 模型使用统计（handleUserModelUsage）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/usage_trend_series.go":                "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/work_types.go":                        "工作类型分布（work_type / is_auto_request / ts / canonical_model）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/daily_probe_audit.go":                    "探针每日审计（离线诊断面，不在线上读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/integrity_fingerprint_drift.go":          "指纹漂移审计（离线诊断面）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/passive_probe_listener.go":               "被动探针监听器（探针系统后台面，不在管理台读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/stats_minute_rollup.go":                  "离线分钟汇总（读视图只为把窗口内的行汇进汇总表）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"bg/stats_minute_rollup_retire.go":           "离线分钟汇总退役（DELETE 的子查询用视图定位要清理的窗口）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"db/probe_views_unified.go":                  "探针视图的**生产者**（CREATE OR REPLACE VIEW v_model_health_dashboard）⇒ 它是视图的下游聚合面，不是终端读点；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"domains/promptinjection/error_discovery.go": "请求错误发现器：① 候选失败按 (错误类型, 供应商, 模型) 分组（读的是候选失败表 candidate_failure_logs_hot，带 ts 范围）；② 探测判定按请求号点查 canonical 视图（该读点本身**不带** ts 谓词，走 request_id 索引）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 按文件级口径登记 ⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（实测：点查经 Append 逐分区走索引，13ms 量级；若将来迁两臂直查，此读点按 request_id 点查即可、不需要时间下界）",
+	"domains/routeincident/store.go":             "路由事故 store；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"domains/sessionsummary/summarizer.go":       "★ **已修（R173）**：标题解析读点原 `ORDER BY ts DESC, id DESC`，而视图的 `id` 恒 NULL ⇒ 同 ts 的并列行取哪一行随机 ⇒ ★ 现改为 `ORDER BY ts DESC, request_id DESC`（稳定键）；另两个读点取 reque…；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/collector/gateway_adapters.go":     "collector 适配：① 延迟分位；② 模型计数；③ 30 秒计数；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/quality/minute_aggregator.go":      "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"maas/usage.go":                              "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 }
 
 // TestCanonicalViewCannotExpressPartitionPruning 是【行为判据】。

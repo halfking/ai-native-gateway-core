@@ -84,6 +84,10 @@ const blankNotes = (rows: { key: string; note: string }[]): string[] =>
  *   B. **块内死**（5 条）：命名空间在用，只有这几条没有
  */
 const KNOWN_ORPHAN_I18N: { key: string; note: string }[] = [
+  // ── 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：
+  //   ReportRollupView 改 V2 投影（days 参数）后遗留的孤儿键
+  { key: 'rr.query.range', note: 'V2 投影改造（2026-11-26 合并轮）：视图从 start/end 区间参数改为 days 参数，range 回显行整体删除 ⇒ 键遗留无人用' },
+  { key: 'rr.legacySnapshotView', note: 'V2 投影改造（2026-11-26 合并轮）：legacy 模式按钮文案改用 rr.projectedView ⇒ 本键遗留无人用' },
   // ── `account.role` 整块：命名空间在源码里零出现
   { key: 'account.role', note: '整块无人引用' },
   // ── `account.versionInfo` 整块：命名空间在源码里零出现
@@ -271,8 +275,12 @@ describe('① 读数：分母必须写在这里，不许只报「孤儿有几条
     // ★★ 先钉**形状**再验命中 —— 批 140 变异 K07 实测出的洞：
     //   只验「每种形态命中数 > 0」的话，**删掉 P_PREFIX_RES 里的一项**之后，
     //   `hits` 数组也跟着变短，循环不再检查被删的那一项 ⇒ ①-3 变成空洞。
-    expect(PREFIX_RES).toHaveLength(3)
-    expect(PREFIX_FORM_NAMES).toHaveLength(3)
+    // ★ 2026-11-25 菜单 PC 对齐轮：3 → 4（新增形态④「模板赋值/属性绑定」——
+    //   `const key = \`rr.evidence.values.${v}\`` 与
+    //   `:context-key="\`statisticsHelp.pages.${c}\`"` 都不带 `t(` 前缀，
+    //   三条正则全漏 ⇒ 59 键假孤儿。判据改 4 对 4。）
+    expect(PREFIX_RES).toHaveLength(4)
+    expect(PREFIX_FORM_NAMES).toHaveLength(4)
     for (let i = 0; i < hits.length; i++) {
       expect(hits[i], `${PREFIX_FORM_NAMES[i]} 一个都没抓到 ⇒ 覆盖面退化了`).toBeGreaterThan(0)
     }
@@ -337,8 +345,8 @@ describe('③ ★★★ 登记项必须仍然是孤儿（有人用了就要删�
 // ── ④ 名单规模与质量 ────────────────────────────────────────────────────────
 
 describe('④ 名单规模与质量', () => {
-  it('④-1 ★★★★ KNOWN_ORPHAN_I18N 恰好 72 条（逐条定性过）', () => {
-    expect(KNOWN_ORPHAN_I18N).toHaveLength(72)
+  it('④-1 ★★★★ KNOWN_ORPHAN_I18N 恰好 74 条（逐条定性过；2026-11-26 合并轮 +2：V2 投影改造遗留 rr.query.range / rr.legacySnapshotView）', () => {
+    expect(KNOWN_ORPHAN_I18N).toHaveLength(74)
   })
 
   it('④-2 ★★★★ 每一条都必须有非空的「为什么确定没人用」', () => {

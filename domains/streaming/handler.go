@@ -7483,6 +7483,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		ProviderID:         intPtr(result.Candidate.ProviderID),
 		UpstreamStatusCode: intPtr(successUpstreamStatusCode(result)),
 
+		// A fallback can serve a different model than the initial resolution.
+		CanonicalID: result.Candidate.CanonicalID,
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(evt.CanonicalName),
 		ClientProfile:  strPtr(evt.ClientProfile),

@@ -304,6 +304,12 @@ describe('navItemsFor', () => {
       // ★ 2026-10-07 第四十九轮：凭据×模型实时状态（credential_state_handlers.go:175
       //   `wrap := h.superAdmin`）—— 这一条**要** super_admin，与前几批 admin 档页面相反。
       'credential-model-state',
+      // ★ 2026-11-25 菜单 PC 对齐轮：错误处理手册（PC 端 11-21 落地）。
+      //   注册处 wrap = AdminMiddleware（admin/error_playbook_handler.go:72-74，
+      //   只认证不检 role）⇒ 后端 tenant_admin 可读，但 entries/executions
+      //   两表没有 tenant_id 列 ⇒ 平台级全局事实 ⇒ 与 ops-overview 同第三类
+      //   过度限制到 super_admin（PC 端菜单同档 super+hideForTenant）。
+      'error-playbook',
       'flow',
       // ★ 2026-10-14 第一百零九批：响应格式异常
       //   （admin/handler.go:913-914 两条都是 h.superAdmin）⇒ 这一条**要** super_admin。
@@ -775,8 +781,10 @@ describe('DRAWER_GROUPS 配置不变量', () => {
     expect(new Set(keys).size).toBe(keys.length)
   })
 
-  it('★ 89 席 / 6 组（整理轮守门数字：增减席必须是对接新面的轮次，不许重构轮悄悄改）', () => {
-    expect(DRAWER_NAV.length).toBe(89)
+  it('★ 90 席 / 6 组（整理轮守门数字：增减席必须是对接新面的轮次，不许重构轮悄悄改）', () => {
+    // ★ 2026-11-25 菜单 PC 对齐轮：89 → 90（+1 = error-playbook，PC 端 11-21
+    //   落地 /admin/error-playbook 后移动端一直缺席；对接新面 ⇒ 数字随轮改）。
+    expect(DRAWER_NAV.length).toBe(90)
     expect(DRAWER_GROUPS.length).toBe(6)
   })
 

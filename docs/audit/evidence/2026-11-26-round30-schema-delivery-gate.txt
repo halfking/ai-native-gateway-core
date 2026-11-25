@@ -1,0 +1,302 @@
+第 30 轮（本会话系列）证据档 —— 「生产 SQL 引用的表与列必须有投递来源创建」门
+------------------------------------------------------------------------------------------------
+日期：2026-11-26 ｜ 仓：llm-gateway-go ｜ 工作树：llm-gateway-go-3-r30（同级私有检出，未碰共享主检出）
+新门提交：4c38c53e5（6 个文件，全为新增，零改动既有文件；基座＝上游尖端 913506480）
+§5 的读数取自与新门提交逐字节相同的内容 e881dba20（当时基座 117a82fe0）上的冻结树
+  （HEAD_FROZEN=1 / TRACKED_FROZEN=1 / STATUS_IDENTICAL=1）；其后上游只进了 PI 分析器两笔（96afbccab／913506480）
+  ⇒ 新基座上复跑了：构建、判据库测试、三道门、悬空引用门、AGENTS 门族、promptinjection 包
+本档在其后的文档提交里
+
+§0 一页结论
+------------------------------------------------------------------------------------------------
+1. 部署阻断（820fcc4f0：api_keys.capabilities 的加列件不在任何投递通道）已由上游解除：b87526bce（启动时应用）
+   ＋ af0ad99e1（启动时核对形状），经 8b9ff1540 并入 main。本轮独立复核成立（§1.4）。
+2. 我方为同一件事建成的通道投递件 999b **已建成、已验证、未采用**：提交前 fetch 撞上上游的修法 ⇒ 取对方（§1）。
+3. 建议里的第二件事已落：新立一道按对象判的门（不看定义件放在哪个目录）＋ 已知欠账台账（两头核账）（§2、§4）。
+4. 新门第一次校准就抓出 5 组存量命中，逐组读代码定性：死代码 1 组、有意的双形状 1 组、**存量缺口 3 组**；
+   后三组在由仓内投递建出来的空库上实测全部 42703（§3）⇒ 属 owner 决策，登记、不代修。
+5. 零 schema 变更 / 零迁移字节变更 / 零生产写 / 零部署。三台现役版本本轮未动、未复核。
+
+§1 任务与同题相撞：999b（已建成、已验证、未采用）
+------------------------------------------------------------------------------------------------
+1.1 999b 是什么
+  取号：startup 序列 3 位数已用满，沿 983b／983c／999a 的字母后缀先例取 999b（纯数字前缀才进安装器版本台账，
+        字母后缀件恒执行 ⇒ 与 L121 订正后的口径一致）。
+  up 件 sha256：918fb94a18ffb19f4749aa48fb25c49c3861910db9ebce644e0eba641b7e2969
+  落点（11 个登记面）：sql/migrations/startup/999b_api_keys_capabilities.sql ＋ .down.sql；
+        installer/cmd/llm-gw-installer/embeddata/startup/ 逐字节副本 ×2；installer/cmd/llm-gw-installer/main.go
+        （go:embed ＋ map）；installer/internal/dbinit/runner.go 的 StartupFiles（末尾追加）；
+        sql/schema/installed_startup_migrations.tsv（由 TestStartupManifest -update 生成）；
+        scripts/apply-db-revision-sequence.sh 的 files=() ＋ ledger_artifact_probe；
+        installer/internal/dbinit/runner_channel_ledger_test.go 的 wantBoth 344 → 345；
+        installer/migrations/999b_api_keys_capabilities/{up.sql,down.sql,README.md}；
+        sql/schema/startup_migration_nonplain.tsv（两行）；docs/db-changelog.md（带 sha256 的条目）；
+        scripts/ursmcheck/startup_ledger_version_identity_gate_test.go 的自证用例。
+        另有对象普查三张台账由 scripts/audit/db-object-census.py 重新生成（expect／reconcile／reachability）。
+
+1.2 999b 在树上时的读数（基线 d4d9b0ab7 ＋ 21 行未提交改动；2026-11-26 02:44–03:45）
+  go build ./...                     EXIT=0（55s）
+  go vet（五个包）                   EXIT=0
+  空库新装烟测门                     PASS（84s；四段；「startup migration 999b_api_keys_capabilities.sql 完成」；
+                                     安装器交接凭证 434 个 startup 迁移；接管后复跑 373/373；
+                                     一次性容器自起自删，前后容器清单一致）
+  真库验证（一次性 PG17 容器）       SCRATCH_VERDICT=PASS：复现 42703 → up → 产物齐（列／GIN 索引／台账行）→
+                                     幂等重放 rc=0 且值保留 → down → 再 up
+  全量 scripts/ursmcheck             ok 418.867s / EXIT=0（三张普查台账重生成后）
+  部署通道契约测试                   OK (skipped=1)，apply-db-revision-sequence contract passed
+  对象普查与触达门                   PASS（expected=984；columns artifact 3936 行 ×4 环境；
+                                     reachability manifest=408 package_up=408 rows=984；
+                                     baseline-dependent 342／new-install-gap 13／none 593／prod-gap 36）
+  installer 模块测试                 ok（含 internal/upgrader）
+  五个包                             schemadelivery 1.762s／authentication 6.230s／sqlguard 8.256s／
+                                     cmd/gateway 16.154s／admin 103.617s 全 ok
+  tests/*.sh                         74 套：73 过；session_storage_audit_gate.sh 是既有的环境红（审计镜像缺失）
+  敏感信息扫描                       BLOCK 32／WARN 2097（沿用项；本轮改动文件上 0 条）
+
+1.3 撞车与取舍
+  提交前 fetch：上游已并入 8b9ff1540（11-26 03:13，S5 定价车道），其中
+    b87526bce（11-26 01:06）fix(auth): apply API key capabilities schema at startup
+    af0ad99e1（11-26 02:07）fix(auth): verify capability schema shape at startup
+  做法：散目录件搬进 db/migrations/，由 db/api_key_capabilities.go 以 go:embed 带进二进制，
+        ensureAPIKeyCapabilities 在 db.Open 的自愈链上（db/db.go:506）按目录形状判定 → 不满足即应用 → 复核。
+  取舍：取上游的、放弃 999b（未提交；留档在本机 /tmp/r30/999b-not-adopted/）。理由两条：
+    ① 上游的更根本：二进制每次启动自愈，覆盖新装、升级、以及跳过了迁移的存量库；
+    ② 两条路叠在一起等于同一列有两个创建者，多一套台账与普查面，还得保证两边形状永远一致
+       （启动核对是严格的：默认值、可空性、索引方法任一不符即拒绝启动）。
+  纪律：「同题相撞取更根本的一方」；别人已经修好的东西不带着第二份修法上车。
+
+1.4 上游修法的独立复核（不默认「上游做过了」；一次性 PG17 容器；仓根 a8c192628）
+  库的来路：新装基线（sql/schema 的 00／01／02）→ 部署通道 files=() 全量 370 条按清单顺序喂给 psql
+            （367 过／3 失败：651／705／837，报的都是 relation "public.request_logs(_hot)" does not exist
+              ——这是「基线＋部署通道」这条自拼路径特有的：v1 族表不在新装基线里；安装器真实路径以烟测门为准）。
+  ★ 迁移全部跑完之后 api_keys.capabilities 仍不存在（exists=0）⇒ 上游的修法只在网关二进制启动之后才成立。
+  走它自己的代码路径（在 db 包里直接调 ensureAPIKeyCapabilities，对象是由仓内投递建出来的真 api_keys 表）：
+    调用前    生产查询 ⇒ 42703 column ak.capabilities does not exist
+    首次调用  nil；列 jsonb／NOT NULL／默认 '[]'::jsonb；idx_api_keys_capabilities 为 GIN 且 valid；生产查询通过
+    再调一次  nil（幂等）
+    漂移 A 同名 btree 索引（IF NOT EXISTS 会放过它）⇒ 报错「requires a non-null JSONB column …」；删掉后重调 ⇒ nil、GIN 复建
+    漂移 B 列类型 json                       ⇒ 报错（42704 data type json has no default operator class for access method "gin"）
+    漂移 C 默认值漂移                         ⇒ 报错「requires …」
+    漂移 D 列被改成可空                       ⇒ 报错「requires …」
+    四种漂移改回后重调均 nil；终态形状正确。
+  ⇒ 结论：上游那份修法在由仓内投递建出来的库上成立，判别不是空转（四种漂移全被拦下）。
+  边界：二进制启动之前读这一列的东西（安装器的后置步骤、离线工具）仍会 42703。
+
+§2 新门：判据的演化与校准（全部在真实树上量）
+------------------------------------------------------------------------------------------------
+2.1 第一版：「同一段 SQL 里既有表名、又有列名整词」⇒ 364 处
+  全是误报：0::bigint AS total_requests（输出别名）、SQL 注释里的表名（_request_logs_hot／titles）、
+  别表的裸列（sensitive_words／categories）、别名 sam.payload（指向另一张表）⇒ 没人能用的门。
+2.2 改成 SQL 词法分析 ＋ 四种绑定（限定名／INSERT 列清单／UPDATE 赋值目标／单表语句的裸列）⇒ 124 处
+  其中 48 处是 tests/ 下的测试工具引用 tests/ 自己的 schema.sql ⇒ tests/、scripts/ 不算生产面。
+  定义侧顺带修掉三处漏认（否则已投递的列会被读成未投递）：
+    ① 一条语句连加多列只认了第一列（852：一条语句加三列）；
+    ② 先 ALTER COLUMN 再 ADD 的语句整条读不到（527 的形态）——表头正则原要求「表名后紧跟 ADD」；
+    ③ ALTER 落在 DO 块的 EXECUTE 字符串里、且没有结尾分号时，语句范围会一路吞到文件尾 ⇒ 后面的 ALTER 全漏。
+2.3 剩 5 组，逐组读代码定性（都不是本轮引入）
+  | 组 | 代码位置 | 定性 | 依据 |
+  |---|---|---|---|
+  | credentials 上 13 列 | bg/bandit_flusher.go（两条 UPDATE） | 死代码 | cmd/gateway/main.go:1942「Bandit 选路已删除（2026-09-19）…从未在生产接线，R28 审计 #20 判死代码后整体移除」；bg.NewBanditFlusher 无生产调用方；定义件 sql/migrations/domain/033_bandit_scoring.sql 不在通道 |
+  | prompt_injection_detections 四列 | domains/promptinjection/detector.go 的 insertDetectionSQLLegacyCols | 有意的双形状 | 注释写明 fleet 形状真实分歧（211 正典、245/154 带 315 四列），boot 期探测列集后二选一；sql/schema/fresh_install_column_gaps.tsv 另有登记 |
+  | system_probe_runs.total_tokens | bg/systemmonitor/audit.go:121 的 INSERT | 存量缺口 | 定义件 sql/migrations/domain/346_system_probe_run_tokens.sql 不在通道；读侧同一列 2026-10-20 已因 42703 改掉（admin/systemmonitor_handlers.go 注释记着真库的列）；写侧 best-effort（monitor.go writeAudit）⇒ 审计行静默丢失 |
+  | tool_usage_stats 13 列 | domains/toolexecution/postgres_store.go（382／431） | 存量缺口 | 代码按 sql/migrations/domain/134 的形状读写（tool_name／date／total_calls…），投递出来的是新装基线的另一套列（tool_id／usage_date／call_count…）；134 不在通道 |
+  | licenses.tenant_id／releases.tenant_id | tenantops/handler.go（41／72） | 存量缺口 | 加列件 sql/migrations/startup/up/389_tenant_ops_scope.sql 不在通道；两个处理器已在 cmd/gateway/main.go:8574 接线（GET /api/tenant/license/status、/autoupdate/check） |
+2.4 台账与最终读数
+  台账 internal/schemadelivery/known_undelivered.go：5 个文件／6 张表／33 列，逐条带理由与出路；
+  命中 48 处引用（同一列在多条语句里出现各算一处）。
+  校准轨迹（未登记的引用）：364 → 124 → 0（外加一次回摆：别名改成按位置绑定时，字面量开头的 SELECT／UPDATE
+    被当成表名 ⇒ 26 条台账条目变成「不再命中」⇒ 关键字永远不算表名 ⇒ 恢复）。
+  新门提交上的读数（e881dba20 与变基后相同）：通道文件 828（点名但读不到 0）／认可目录 51／嵌入 544／候选 SQL 2489 件／
+    已投递对象 9684／未投递对象 2573／含 SQL 的生产 Go 1140 ⇒ 未登记的引用 0、已知欠账 48、失效登记 0。
+  判据库测试 71 条全过（含子测试）：定义侧 13 种语句形态／改名与分区／合并派生／词法／绑定 30 例正反／
+    五处认可来源 7 臂／不算的情形 5 臂／台账两头核账 4 臂／真实文件咬合 3 臂。
+
+§3 空库实测：被新门点名的 SQL（一次性 PG17 容器；库的来路同 §1.4；仓根 a8c192628）
+------------------------------------------------------------------------------------------------
+  对照① tool_usage_stats.usage_date（基线列）              rc=0
+  对照② api_keys.capabilities（迁移跑完、二进制未启动）      42703 column "capabilities" does not exist
+  ① systemmonitor/audit.go:122 INSERT … total_tokens        42703 column "total_tokens" of relation "system_probe_runs" does not exist
+  ② toolexecution/postgres_store.go:383 SELECT …            42703 column "tool_name" does not exist
+  ③ tenantops/handler.go:42 SELECT … FROM licenses          42703 column "tenant_id" does not exist
+  ④ tenantops/handler.go:73 SELECT … FROM releases          42703 column "tenant_id" does not exist
+  ⑤ bandit_flusher.go:101 UPDATE credentials SET …          42703 column "bandit_alpha" of relation "credentials" does not exist
+  ⑥ detector.go:686 INSERT …LegacyCols（旧形状写侧）        42703 column "detection_score" of relation "prompt_injection_detections" does not exist
+  列清单逐字取自被点名的代码位置；表本身都在（七张表 table=1）。
+  ⇒ 量具不是恒红（对照①通过）；⑥ 是预期行为（正典库上走不到旧形状分支）。
+  未核实：三台现役库各自有没有这些列（L120 的读数显示 245/154 的 system_probe_runs 有行）——本轮没有、也不该
+          在未授权的情况下读生产库。
+
+§4 变异自证（真实树；每一步断言期望结论；trap 还原并核 md5；仓根 a8c192628）
+------------------------------------------------------------------------------------------------
+  0) 基线：三道门绿（ursmcheck 3.266s／admin 3.484s／authentication 2.759s）
+  1) 删掉上游那行 //go:embed（Go 仍编译得过；删掉的行数 = 1）
+     ⇒ 三道门全红；点名齐全：
+        ursmcheck：keystore_sync.go／verifier.go／admin/keys.go／api_keys.capabilities
+        admin 绊线：admin/keys.go／api_keys.capabilities
+        authentication 绊线：keystore_sync.go／verifier.go／api_keys.capabilities
+  2) 台账少登记一列（systemmonitor 的 total_tokens）
+     ⇒ 全仓门红并点名 bg/systemmonitor/audit.go system_probe_runs.total_tokens；两条绊线不管别的包 ⇒ 仍绿
+  3) 台账多一条已不再命中的登记
+     ⇒ 三道门全红，均点名「不再被命中：pkg/none.go api_keys.x」
+  4) 还原 ⇒ 两个文件 md5 一致；三道门回绿
+  MUTATION_VERDICT=ALL_EXPECTATIONS_MET
+
+§5 全套读数（新门提交的内容 e881dba20；基座 117a82fe0；2026-11-26 05:09–05:31）
+------------------------------------------------------------------------------------------------
+HEAD=e881dba203（工作树改动 0 行） fp0=b02e60a4b861… start=2026-11-26 05:09:16 load=12.12 15.80 16.45 disk=18Gi
+===== A. 构建 ＋ vet =====
+EXIT go_build=0 (21s) 05:09:37 load=18.69 17.11 16.91 disk=18Gi
+EXIT go_vet=0 (2s) 05:09:39 load=18.69 17.11 16.91 disk=18Gi
+===== B. 空库新装烟测门（安装器真实路径 ＋ 部署迁移通道；只打它自己起的一次性容器） =====
+SMOKE_START=05:09:39 containers_before=44
+EXIT smoke=0 (88s) 05:11:07 load=27.00 20.45 18.22 disk=18Gi
+一次性容器：l30-fresh-install-smoke-55446（★ ★ 本门只打它，★ 绝不打任何别的容器）
+  ✔ 目标库确认为空（public 表数 0）
+  ✅ startup migration 999a_data_maintenance_playbook.sql 完成
+  ✅ 安装器交接凭证已登记 433 个 startup 迁移
+  ✔ 新装后日对账迁移和读面齐全
+  ✔ 会话分析物化视图 4 个
+  ✔ session_summaries.total_credits_charged 在
+  ✔ minimax-m3.1-flash 在位且 featured=TRUE
+  ✔ 第二次安装成功（★ 增量路径）
+  ✔ 增量后日对账迁移和读面齐全
+  ✔ 台账行数未变（415）⇒ 没有迁移被重放
+  ✔ 第二次运行没有重放任何带版本号的迁移
+  ✔ 增量路径后 4 个会话分析物化视图仍在
+  ✔ 增量路径后 total_credits_charged 仍在
+★ 跑第三阶段（安装器新装库交给部署迁移通道）…
+★ 跑第四阶段（部署迁移通道复跑）…
+fresh-install-smoke: PASS
+SMOKE_END=05:11:07 containers_after=44 added=removed=
+===== C. 五个包 =====
+EXIT test_internal_schemadelivery=0 (0s) 05:11:07 load=27.00 20.45 18.22 disk=18Gi
+  ok   github.com/kaixuan/llm-gateway-go/internal/schemadelivery 0.377s
+EXIT test_domains_authentication=0 (9s) 05:11:16 load=26.72 20.58 18.29 disk=18Gi
+  ok   github.com/kaixuan/llm-gateway-go/domains/authentication 8.213s
+EXIT test_internal_sqlguard=0 (12s) 05:11:28 load=28.10 21.09 18.50 disk=18Gi
+  ok   github.com/kaixuan/llm-gateway-go/internal/sqlguard 11.611s
+EXIT test_cmd_gateway=0 (23s) 05:11:51 load=33.11 22.89 19.23 disk=17Gi
+  ok   github.com/kaixuan/llm-gateway-go/cmd/gateway 17.019s
+EXIT test_admin=0 (114s) 05:13:45 load=29.89 23.95 20.05 disk=16Gi
+  ok   github.com/kaixuan/llm-gateway-go/admin 105.718s
+===== D. 全量 scripts/ursmcheck =====
+EXIT ursmcheck=0 (360s) 05:19:45 load=35.05 30.61 24.36 disk=15Gi
+  ok   github.com/kaixuan/llm-gateway-go/scripts/ursmcheck 353.364s
+===== E. tests/*.sh（限时 300s；切流状态机 1200s） =====
+SUITES total=74 pass=73 fail=1
+FAILED: session_storage_audit_gate.sh(rc=1,1s)
+PASSED_BUT_OVER_60s: daily_regression_wiring_test.sh(63s) scan_secrets_placeholder_privilege_test.sh(81s)
+===== F. 扫描 =====
+EXIT scan=1 (256s) 05:30:59 load=46.84 66.60 49.82 disk=8.0Gi
+SCAN severity:  By severity: BLOCK 32 WARN 2098 
+HEAD_FROZEN=1 TRACKED_FROZEN=1 STATUS_IDENTICAL=1 fp1=b02e60a4b861… status_after_lines=0
+DONE 2026-11-26 05:31:05
+JOB_EXIT=0
+
+§6 量具侧的自曝（本轮自己犯的错，按被发现的方式分类）
+------------------------------------------------------------------------------------------------
+  被真实树的校准读数抓到（都是「量具错、不是结论错」）：
+    · 「同时出现就算」⇒ 364 处误报；
+    · 定义侧三处漏认（§2.2）——不修的话，已投递的列会被读成未投递；
+    · 别名改成按位置绑定后，字面量开头的 SELECT／UPDATE 被当成表名 ⇒ 26 条登记变成「不再命中」；
+    · listFiles 加了「root 得是 git 顶层」的判断，而调用方传的是相对路径 ⇒ 退回目录遍历 ⇒ 候选 SQL
+      从 2489 涨到 2813（读数莫名其妙变了才发现）⇒ Check 入口先落成绝对路径；
+    · 视图列不判之前，model_offers（基线里是 cmb 之上的视图）被散文件 292 的一句 ALTER TABLE 带成「未投递列」。
+  被自检与写测试抓到：
+    · RE2 不支持 (?!…) 负向先行——同一个错犯了两次（第二次是改另一处时顺手又写上）；
+    · 表改名与列改名并成一条正则后，RENAME TO x 根本匹配不上；
+    · 语句范围的扫描在「DO 块 EXECUTE 字符串里的 ALTER」上会吞到文件尾——不修比不改还糟；
+    · 重写库的那次 Write 中途断了、文件尾部是残片（当场发现重写）。
+  验证脚本自己的错（每一处都制造过一次「看起来是上游的问题」的 FAIL）：
+    · format_type 传了两个 oid；CREATE INDEX 的索引名带了 schema 前缀（PG 不允许）；把漂移 B 的报错码
+      猜成 42804（实际 42704）；词法用例数错一个逗号；期望清单没排序、拿未排序的清单去比。
+  叙述上的错：
+    · 空库脚本的输出里有一句预先写死的「3 个失败件是已知的」——写下它的时候并没有核实过，
+      实际原因是自拼路径上没有 v1 族表（§1.4）。已如实改写。
+  环境面的错：zsh 下取 PIPESTATUS 得到空串 ⇒ 退出码没取到 ⇒ 改成不经管道直接取 rc 重跑。
+
+§7 边界（判据库的包注释里有同样的清单）
+------------------------------------------------------------------------------------------------
+  · 定义只认 CREATE TABLE (…) 与 ALTER TABLE … ADD [COLUMN]（含一条语句连做几个动作）、改名（只增不删）、
+    分区（子表继承母表的列）；不认 DROP COLUMN ⇒ 「引用一个已被通道删掉的列」不报。
+  · 动态 SQL（format/EXECUTE 里的表名列名）、运行时按路径读的 SQL 看不见。
+  · 视图只记名字；已投递来源建成的视图，它的列不判。
+  · 绑定靠词法不是语法树：多表语句里的裸列、别名声明在另一个字面量里的限定名 ⇒ 漏报（测试里标了「漏报」）。
+  · ④⑤（代码自带 DDL、go:embed）只证明「二进制里有这段 SQL」，不证明每条启动路径都会执行它。
+  · 认可投递位是显式目录清单（sql/schema、installer/migrations）；新开一种会被执行的目录要回来登记。
+  · 生产面 ＝ 非 _test.go、且不在 tests/ 与 scripts/ 下。
+
+§8 待 owner
+------------------------------------------------------------------------------------------------
+  A. 存量缺口三组（出路都是二选一：把定义件搬进投递通道并登记〔schema 变更〕，或改代码不再引用）：
+       ① bg/systemmonitor/audit.go 写 system_probe_runs.total_tokens（346 未投递）；
+       ② domains/toolexecution/postgres_store.go 与 tool_usage_stats 的基线形状不一致（134 未投递）；
+       ③ tenantops/handler.go 读 licenses／releases.tenant_id（389 未投递）。
+     台账里逐条有登记；任何一条修好后，门会要求同步删掉那条登记（否则红）。
+  B. 死代码 bg/bandit_flusher.go：删除文件及其测试后删台账第一条。
+  C. 有意的双形状写侧（detector.go 的 315 旧形状）：fleet 形状收敛后可删。
+  D. 部署：本轮零部署；上游的启动自愈是否已随哪一次部署落到三台，本轮未复核。
+  E. 上游修法的边界：二进制启动之前这一列不存在（§1.4）。
+  F. 部署路径上的覆盖缺口（本轮核对 scripts/deploy-test-gate.sh 时才发现自己原先写错了一句）：
+     部署闸门按「diff 触及的包」选包（.go 改动 ⇒ 所在包；非 .go 改动 ⇒ DD_GUARDED_DOMAINS 表映射到门包），
+     不是一张固定清单 ⇒ 全仓门（住在慢门族 scripts/ursmcheck）只在这批改动碰到那个包时才会在部署前跑；
+     对生产代码的日常改动，部署路径上只有 admin 与 domains/authentication 两道绊线。
+     ⇒ 别的包里新增的未投递引用，要等下一次全量慢门才红。
+     可行的补法（待 owner，涉及部署闸门、未做）：把全仓门搬进轻包，并在 DD_GUARDED_DOMAINS 加一条
+     「.sql 改动 ⇒ 该轻包」的规则——动之前要先确认「基线树上还没有这个包」时闸门怎么判。
+     另：这笔提交触及 scripts/ursmcheck/ ⇒ 下一次含它的部署，闸门会整包跑这个重包（仓内登记的实测 14 分钟以上）。
+  G. 沿用项不变：V2 两分支是否并入、镜像 CI、package-forensics 的 needs、三条 Codex 分支的去留、
+     既有 PI 分析读端点是否按租户过滤等（见 L123 ⑧ 与 L119 ⑨）。
+     另：上游 1ce143242「嵌套模块分箱」看起来就是 L121 登记的 plugin-runtime/config 门禁路径缺陷的修法——未复核。
+
+
+§5.1 变异自证的原始输出
+------------------------------------------------------------------------------------------------
+HEAD=a8c192628 m0g=a0e017aae3a0 m0k=9aa9b029eb35 porcelain=4
+===== 0) 基线：三道门都应绿 =====
+[b_urf] rc=0 ok   github.com/kaixuan/llm-gateway-go/scripts/ursmcheck 3.266s
+     ✓ 如期绿
+[b_adm] rc=0 ok   github.com/kaixuan/llm-gateway-go/admin 3.484s
+     ✓ 如期绿
+[b_aut] rc=0 ok   github.com/kaixuan/llm-gateway-go/domains/authentication 2.759s
+     ✓ 如期绿
+===== 1) 变异：删掉上游那行 //go:embed（Go 仍编译得过）⇒ 三道门都必须红、各点各的文件 =====
+     删掉的行数: 1（应为 1）
+[m1_urf] rc=1 FAIL github.com/kaixuan/llm-gateway-go/scripts/ursmcheck 2.733s
+     ✓ 如期红
+     ✓ 点名齐全：domains/authentication/keystore_sync.go domains/authentication/verifier.go admin/keys.go api_keys.capabilities
+[m1_adm] rc=1 FAIL github.com/kaixuan/llm-gateway-go/admin 2.816s
+     ✓ 如期红
+     ✓ 点名齐全：admin/keys.go api_keys.capabilities
+[m1_aut] rc=1 FAIL github.com/kaixuan/llm-gateway-go/domains/authentication 2.739s
+     ✓ 如期红
+     ✓ 点名齐全：domains/authentication/keystore_sync.go domains/authentication/verifier.go api_keys.capabilities
+===== 2) 变异：台账少登记一列（systemmonitor 的 total_tokens）⇒ 全仓门红并点名；两条绊线不管别的包 ⇒ 仍绿 =====
+     台账里 total_tokens 行数: 0（应为 0）
+[m2_urf] rc=1 FAIL github.com/kaixuan/llm-gateway-go/scripts/ursmcheck 2.676s
+     ✓ 如期红
+     ✓ 点名齐全：bg/systemmonitor/audit.go system_probe_runs.total_tokens
+[m2_adm] rc=0 ok   github.com/kaixuan/llm-gateway-go/admin 2.802s
+     ✓ 如期绿
+[m2_aut] rc=0 ok   github.com/kaixuan/llm-gateway-go/domains/authentication 2.804s
+     ✓ 如期绿
+===== 3) 变异：台账多一条已经不再命中的登记 ⇒ 三道门都必须红（防免死金牌） =====
+     台账里 pkg/none.go 行数: 1（应为 1）
+[m3_urf] rc=1 FAIL github.com/kaixuan/llm-gateway-go/scripts/ursmcheck 2.841s
+     ✓ 如期红
+     ✓ 点名齐全：不再被命中：pkg/none.go api_keys.x
+[m3_adm] rc=1 FAIL github.com/kaixuan/llm-gateway-go/admin 2.638s
+     ✓ 如期红
+     ✓ 点名齐全：不再被命中：pkg/none.go api_keys.x
+[m3_aut] rc=1 FAIL github.com/kaixuan/llm-gateway-go/domains/authentication 2.754s
+     ✓ 如期红
+     ✓ 点名齐全：不再被命中：pkg/none.go api_keys.x
+===== 4) 还原并复跑 =====
+RESTORED_G=1 RESTORED_K=1
+[a_urf] rc=0 ok   github.com/kaixuan/llm-gateway-go/scripts/ursmcheck 3.474s
+     ✓ 如期绿
+[a_adm] rc=0 ok   github.com/kaixuan/llm-gateway-go/admin 2.750s
+     ✓ 如期绿
+[a_aut] rc=0 ok   github.com/kaixuan/llm-gateway-go/domains/authentication 2.596s
+     ✓ 如期绿
+MUTATION_VERDICT=ALL_EXPECTATIONS_MET

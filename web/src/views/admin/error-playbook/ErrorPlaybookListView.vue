@@ -2,7 +2,7 @@
   <div class="error-playbook-view">
     <PageHeader :title="t('errorPlaybook.title')" :subtitle="t('errorPlaybook.subtitle')">
       <template #actions>
-        <button class="ep-btn" type="button" :disabled="listLoading" @click="load">
+        <button class="ep-btn" type="button" :disabled="listLoading" @click="refresh">
           {{ t('errorPlaybook.action.refresh') }}
         </button>
         <button class="ep-btn ep-btn--primary" type="button" @click="openCreate">
@@ -48,6 +48,54 @@
         :sub="stats.llm_wired ? t('errorPlaybook.stats.llmOn') : t('errorPlaybook.stats.llmOff')"
       />
     </StatsRow>
+
+    <SaStateBanner
+      v-if="canViewRecommendations && recommendationsError"
+      kind="error"
+      :title="t('errorPlaybook.recommendations.loadFailed')"
+      :reason="recommendationsError"
+      :action-label="t('errorPlaybook.action.retry')"
+      @action="loadRecommendations"
+    />
+    <section v-if="canViewRecommendations && recommendationRows.length" class="ep-recommendations">
+      <h2>{{ t('errorPlaybook.recommendations.title') }}</h2>
+      <DataTable :loading="recommendationsLoading" min-width="780px">
+        <table class="ep-table">
+          <thead>
+            <tr>
+              <th>{{ t('errorPlaybook.recommendations.scope') }}</th>
+              <th>{{ t('errorPlaybook.recommendations.windowStart') }}</th>
+              <th>{{ t('errorPlaybook.recommendations.evidence') }}</th>
+              <th>{{ t('errorPlaybook.recommendations.recommendation') }}</th>
+              <th>{{ t('errorPlaybook.col.source') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in recommendationRows" :key="row.id">
+              <td><template v-if="row.provider_id">{{ row.tenant_id }} / #{{ row.provider_id }}</template>
+                <template v-else>{{ t('errorPlaybook.recommendations.runtimeConfig') }}</template></td>
+              <td>{{ formatTime(row.window_start_unix ? row.window_start_unix * 1000 : row.createdAt) }}</td>
+              <td>
+                <template v-if="row.plugin === 'upstream-cooldown'">
+                  429 × {{ fmt(row.count_429) }} · 502 × {{ fmt(row.count_502) }}
+                </template>
+                <template v-else-if="row.plugin === 'sse-break-analysis'">
+                  {{ t('errorPlaybook.recommendations.streamEvidence', {
+                    upstream: fmt(row.upstream), idle: fmt(row.idle_timeout), network: fmt(row.network),
+                  }) }}
+                </template>
+                <template v-else>{{ t('errorPlaybook.recommendations.checksumMismatch') }}</template>
+                <template v-if="row.distinct_requests">
+                  <br />{{ t('errorPlaybook.recommendations.distinctRequests', { count: fmt(row.distinct_requests) }) }}
+                </template>
+              </td>
+              <td class="ep-recommendations__recommendation">{{ recommendationText(row) }}</td>
+              <td class="ep-mono">{{ row.plugin }} {{ row.template_version }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </DataTable>
+    </section>
 
     <div class="ep-filters">
       <label class="ep-field">
@@ -220,7 +268,7 @@
 //（契约 C），与默认序用「默认/点击切换」共存而不是互相覆盖。
 // ★ 用 localeCompare 而不是码点序：码点序会把中文标题排得很乱。
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
@@ -231,8 +279,10 @@ import StatCard from '../../../components/ui/StatCard.vue'
 import SaStateBanner from '../session-analytics/components/SaStateBanner.vue'
 import PlanEditor from './components/PlanEditor.vue'
 import { useErrorPlaybookLoader } from './useErrorPlaybookLoader'
+import { store } from '../../../store'
 import {
   listEntries,
+  listExecutions,
   createEntry,
   getStats,
   type PlaybookEntry,
@@ -254,6 +304,72 @@ const qDraft = ref('')
 const appliedQuery = ref('')
 const sourceFilter = ref('')
 const enabledFilter = ref<'' | 'true' | 'false'>('')
+
+interface PluginSuggestion {
+  schema_version: number
+  tenant_id?: string
+  provider_id?: number
+  window_start_unix?: number
+  count_429?: number
+  count_502?: number
+  distinct_requests?: number
+  upstream?: number
+  idle_timeout?: number
+  network?: number
+  recommendation: string
+  cooldown_seconds?: number
+  template_version: string
+}
+
+type SuggestionRow = PluginSuggestion & { id: number; plugin: string; createdAt: string }
+
+const recommendationLabels: Readonly<Record<string, string>> = {
+  review_next_model_ladder_step: 'errorPlaybook.recommendations.reviewStep',
+  review_upstream_stream: 'errorPlaybook.recommendations.reviewUpstream',
+  review_proxy_idle_and_upstream_flush: 'errorPlaybook.recommendations.reviewProxy',
+  review_transport: 'errorPlaybook.recommendations.reviewNetwork',
+  correlate_stream_evidence: 'errorPlaybook.recommendations.reviewMixed',
+  review_approved_configuration: 'errorPlaybook.recommendations.reviewConfig',
+  compare_with_last_accepted_configuration: 'errorPlaybook.recommendations.restoreConfig',
+}
+
+function recommendationText(row: SuggestionRow): string {
+  return t(recommendationLabels[row.recommendation], { seconds: fmt(row.cooldown_seconds) })
+}
+
+const canViewRecommendations = computed(
+  () => store.userInfo?.role === 'super_admin' && store.userInfo.tenant_id === 'default',
+)
+const recommendationRows = ref<SuggestionRow[]>([])
+const { loading: recommendationsLoading, error: recommendationsError, run: runRecommendationsQuery } = useErrorPlaybookLoader()
+
+async function loadRecommendations(): Promise<void> {
+  if (!canViewRecommendations.value) {
+    recommendationRows.value = []
+    return
+  }
+  const result = await runRecommendationsQuery(
+    () => listExecutions({ recommendations: 'only', status: 'awaiting_approval', limit: 20 }),
+    'errorPlaybook.recommendations.loadFailed',
+  )
+  if (result && canViewRecommendations.value) {
+    recommendationRows.value = (result.executions ?? []).flatMap((row) => {
+      const context = row.context as PluginSuggestion | null | undefined
+      if (
+        context?.schema_version !== 1 ||
+        !Object.hasOwn(recommendationLabels, context.recommendation)
+      ) return []
+      return [{ ...context, id: row.id, plugin: row.executed_by.slice('plugin:'.length), createdAt: row.created_at }]
+    })
+  }
+}
+
+function refresh(): void {
+  void load()
+  void loadRecommendations()
+}
+
+watch(canViewRecommendations, loadRecommendations, { immediate: true })
 
 const nameSort = ref<'none' | 'asc' | 'desc'>('none')
 
@@ -303,10 +419,10 @@ function fmt(v: number | null | undefined): string {
   return Number(v).toLocaleString()
 }
 
-function formatTime(value: string | null): string {
+function formatTime(value: string | number | null): string {
   if (!value) return '—'
   const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return value
+  if (Number.isNaN(d.getTime())) return String(value)
   return d.toLocaleString()
 }
 
@@ -452,6 +568,19 @@ onMounted(load)
 
 .ep-stats {
   margin-bottom: 12px;
+}
+
+.ep-recommendations {
+  margin-bottom: 16px;
+}
+
+.ep-recommendations h2 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+.ep-table td.ep-recommendations__recommendation {
+  white-space: normal;
 }
 
 .ep-btn {

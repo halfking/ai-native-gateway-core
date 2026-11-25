@@ -32,6 +32,10 @@ type ErrorAnalysisWorker struct {
 	// ★ 2026-11-17 第57增量：Start 幂等守卫。注释此前声称「幂等」但
 	//   实现没有守卫 ⇒ 每次 Start 都再起一条循环（重复 LLM 花费）。
 	started atomic.Bool
+
+	// preBatch 是每轮领取之前先跑的一步（2026-11-25：请求错误发现器挂在这里——
+	// 先发现、再分析，同一节拍；nil ⇒ 不跑）。装配期设置一次，之后只读。
+	preBatch func(ctx context.Context)
 }
 
 // NewErrorAnalysisWorker 创建后台 worker。
@@ -80,6 +84,14 @@ func (w *ErrorAnalysisWorker) Start(ctx context.Context) {
 	})
 }
 
+// SetPreBatch 设置每轮领取之前的前置步骤（装配期调用一次）。
+func (w *ErrorAnalysisWorker) SetPreBatch(fn func(ctx context.Context)) {
+	if w == nil {
+		return
+	}
+	w.preBatch = fn
+}
+
 // Stop 停止 worker 循环。
 func (w *ErrorAnalysisWorker) Stop() {
 	if w == nil {
@@ -96,6 +108,10 @@ func (w *ErrorAnalysisWorker) Stop() {
 func (w *ErrorAnalysisWorker) runOnce(ctx context.Context) {
 	if w == nil || w.analyzer == nil {
 		return
+	}
+	if w.preBatch != nil {
+		// 前置步骤自己兜住错误：发现失败不该让本轮的分析也停摆。
+		w.preBatch(ctx)
 	}
 	processed, err := w.analyzer.ProcessBatch(ctx)
 	if err != nil {

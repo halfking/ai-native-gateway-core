@@ -25,6 +25,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SessionAnalyticsSpecs()...)
 	// 2026-11-20: 错误处理手册（错误类型→预定执行方案）的自动化开关族。
 	out = append(out, ErrorPlaybookSpecs()...)
+	// 2026-11-25: PI 错误分析的取证轮旋钮（请求错误发现器）。
+	out = append(out, PIAnalysisSpecs()...)
 	out = append(out, DashboardSpecs()...)
 	// 2026-08-19: read-only legacy/canonical statistics shadow comparison.
 	out = append(out, StatsShadowSpecs()...)

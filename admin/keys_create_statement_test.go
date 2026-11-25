@@ -28,10 +28,11 @@ import (
 // 形状一一对应。
 
 // 个人 key 的落库语句形状（pgxmock 把空白归一成单空格）。
-const personalKeyInsertPattern = `INSERT INTO api_keys \(application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, TRUE, \$7, \$8, 'active', \$9, \$10\) RETURNING id`
+// W4.2：追加 capabilities 列（第 11 位参数，COALESCE 为 '[]'）。
+const personalKeyInsertPattern = `INSERT INTO api_keys \(application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, capabilities\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, TRUE, \$7, \$8, 'active', \$9, \$10, COALESCE\(\$11::jsonb, '\[\]'::jsonb\)\) RETURNING id`
 
 // 团队 key 的落库语句形状。
-const teamKeyInsertPattern = `INSERT INTO api_keys \(application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, TRUE, \$7, \$8, 'active', \$9, \$10, \$11\) RETURNING id`
+const teamKeyInsertPattern = `INSERT INTO api_keys \(application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id, capabilities\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, TRUE, \$7, \$8, 'active', \$9, \$10, \$11, COALESCE\(\$12::jsonb, '\[\]'::jsonb\)\) RETURNING id`
 
 // expectKeyCreatePreamble 铺 createKey 在 INSERT 之前的两条查询：应用已存在、同组没有
 // 可用的旧密钥（pgx.ErrNoRows ⇒ findActiveKeyConflict 判「无冲突」）。
@@ -46,13 +47,15 @@ func expectKeyCreatePreamble(mock pgxmock.PgxPoolIface, tenantID, alias string) 
 
 // keyInsertArgs 是 createKey 落库语句的期望参数：应用 id 与租户钉精确值（pgxmock 的
 // 参数比对是类型敏感的 DeepEqual），其余列（哈希 / 前缀 / 密文 / 限额 / 备注 / 别名）只
-// 钉「有这一位」。末尾可再追加 team_id 的匹配器。
+// 钉「有这一位」。extra（如 team_id 匹配器）插在 capabilities 之前——与生产参数
+// 顺序一致（…, team_id, capabilities），capabilities（W4.2）恒在最后一位。
 func keyInsertArgs(extra ...any) []any {
 	args := []any{5, "tenant-a"}
 	for i := 0; i < 8; i++ {
 		args = append(args, pgxmock.AnyArg())
 	}
-	return append(args, extra...)
+	args = append(args, extra...)
+	return append(args, pgxmock.AnyArg()) // capabilities (jsonb), 恒最后一位
 }
 
 // teamIDArg 钉最后一个参数就是请求里的 team_id（createKey 传的是 *int64）。

@@ -154,6 +154,35 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   //   两者都是**前端常量** ⇒ 闭合集 ⇒ 不进 OPEN_PREFIXES。
   ['rr.evidence.sections.', dailySections], // DailyReconciliationEvidence.vue 的 select v-for
   ['rr.evidence.fields.', [...new Set([...Object.values(dailyEvidenceLayouts), invoiceEvidenceLayout].flatMap((l) => [...l.summary, ...l.rows]))]], // DailyReconciliationValues.vue 的 dl v-for
+  // ── 2026-11-25 菜单 PC 对齐轮补登记（orphanKeys ②-1 报出 59 键假孤儿后收口）──
+  //   ★ 两族前缀都**不在 t( 紧邻位置** ⇒ 三种拼接形态都抓不到（keyScan PREFIX_RES
+  //     形态②要求 `t(` 后紧跟反引号）⇒ orphanKeys 把它们整族判成假孤儿：
+  //   · rr.evidence.values. —— DailyReconciliationValues.vue:11
+  //     `const key = \`rr.evidence.values.${value}\`` 然后 `t(key)`。
+  //     后缀 = metric() 只翻译七个字段（kind/match_status/traffic_class/status/
+  //     outcome/delivery/estimate_basis）的取值。**后端自由字符串 ⇒ 开放集**
+  //     （ EvidenceFields = Record<string, unknown>），已知值取自词典并逐键
+  //     对拍过后端字面量（domains/reconciliation/{report,invoice_report,
+  //     coverage,invoice}.go 的 SQL CASE/IN/CHECK + invoice.go switch）——
+  //     37 键与后端字面量集 diff 为空 ⇒ 进 OPEN_PREFIXES 表边界。
+  //   · statisticsHelp.pages. —— HyperApp.vue:118
+  //     `:context-key="\`statisticsHelp.pages.${statsHelp.contextKey}\`"`，
+  //     contextKey 取值 = statisticsHelpRoutes.ts 的 routes 表（11 条闭合常量）。
+  //     ⚠️ 拼接只到**中间节点**；词典里的叶子是 `.title` / `.context` 两层
+  //     （StatisticsHelpSheet.vue:50/56 再各拼一层）⇒ 登记的后缀 = 11 页 × {title, context}
+  //     （flattenDict 只出叶子，中间节点不算键）。前端常量 ⇒ 闭合集 ⇒ 不进 OPEN_PREFIXES。
+  ['rr.evidence.values.', ['business', 'platform', 'unknown', 'success', 'failure', 'rate_limited', 'cancelled', 'pending', 'prepared', 'sent', 'not_sent', 'supplier_contract', 'legacy_unverified', 'contract_missing_usage', 'request_total', 'usage_bucket', 'fixed_fee', 'tax', 'discount', 'credit', 'refund', 'adjustment', 'matched', 'bill_adjustment', 'delivery_unconfirmed', 'attempt_missing', 'attempt_ambiguous', 'invoice_reference_ambiguous', 'model_mismatch', 'bucket_review', 'bucket_matched', 'bucket_scope_overlap', 'bucket_model_unconfirmed', 'bucket_delivery_unconfirmed', 'bucket_count_mismatch', 'bucket_usage_missing', 'bucket_usage_mismatch']], // DailyReconciliationValues.vue metric()（**开放集**，见 OPEN_PREFIXES）
+  // ★ 错误处理手册（2026-11-25 菜单 PC 对齐轮，移动只读席 ErrorPlaybookView.vue）。
+  //   四个拼接前缀，后缀全部是**前端闭合常量**：
+  //   · plan    —— api/errorPlaybook.ts PLAYBOOK_PLAN_KINDS（schema 995 CHECK 同集）
+  //   · source  —— 同上 PLAYBOOK_SOURCES（schema 995 CHECK 同集）
+  //   · status  —— 同上 EXECUTION_STATUSES（engine.go 写入侧）
+  //   · trigger —— 同上 TRIGGER_SOURCES（schema 995 CHECK 同集）
+  ['ep.plan.', ['script', 'api', 'prompt']], // PLAYBOOK_PLAN_KINDS
+  ['ep.source.', ['seed', 'manual', 'pi_analysis', 'refinement']], // PLAYBOOK_SOURCES
+  ['ep.status.', ['running', 'success', 'failed', 'skipped']], // EXECUTION_STATUSES
+  ['ep.trigger.', ['standard', 'auto_analyze', 'manual', 'refinement']], // TRIGGER_SOURCES
+  ['statisticsHelp.pages.', ['usage.title', 'usage.context', 'usageEnhanced.title', 'usageEnhanced.context', 'usageTrendSeries.title', 'usageTrendSeries.context', 'reportRollup.title', 'reportRollup.context', 'reconciliation.title', 'reconciliation.context', 'cacheState.title', 'cacheState.context', 'logs.title', 'logs.context', 'sessionAudit.title', 'sessionAudit.context', 'sessionsOnline.title', 'sessionsOnline.context', 'sessionAnalytics.title', 'sessionAnalytics.context', 'requestDetail.title', 'requestDetail.context']], // HyperApp.vue 模板拼接 + StatisticsHelpSheet 的 .title/.context，页名取 statisticsHelpRoutes.ts（闭合）
   // ── ② 区结束 ──────────────────────────────────────────────────────────
 ]
 
@@ -167,13 +196,14 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
 const OPEN_PREFIXES: readonly string[] = [
   'heatmap.state_', // CredentialHeatmapView.vue:123 t(`heatmap.state_${s}`)，s = m.node_status.state
   'rd.bstatus_', // requestDetail.ts:208 bodyStatusOf 直接回传后端原串
+  'rr.evidence.values.', // DailyReconciliationValues.vue:11 metric() 只翻七个字段的取值，value = 后端自由字符串（EvidenceFields）
 ]
 
 /**
  * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
-const GENERATED_KEY_TOTAL = 295 // 2026-11-25 重测：191 + 104（日对账证据：sections 7 + fields 97）：50 个前缀 × 各自后缀数（原 191 = 48 个前缀，live 页 +6 那一版）
+const GENERATED_KEY_TOTAL = 372 // 2026-11-26 合并轮重测：369 + 3（V2 投影轮新增 3 个动态键：2006-11-25 菜单 PC 对齐轮 369 → 合并树 372；56 个前缀 × 各自后缀数）
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {
@@ -226,7 +256,7 @@ describe('★★★ 第六组：拼接前缀的**覆盖**门（本批新增）',
   it('⑥-3 ★★★ 开放集前缀必须显式列在 OPEN_PREFIXES 里（不许悄悄当成闭合的）', () => {
     // ★ 后缀来自后端自由字符串的前缀，登记只能覆盖「已知值」。
     //   若有人把某个开放集前缀当成闭合的，删一条就不再有任何提示。
-    expect([...OPEN_PREFIXES].sort()).toEqual(['heatmap.state_', 'rd.bstatus_'])
+    expect([...OPEN_PREFIXES].sort()).toEqual(['heatmap.state_', 'rd.bstatus_', 'rr.evidence.values.'])
   })
 
   it('⑥-4 ★★★ DYNAMIC_KEYS 里不得有重复前缀', () => {
@@ -273,20 +303,22 @@ describe('★★★ 第六组：拼接前缀的**覆盖**门（本批新增）',
 //   若这里用一个不存在的假前缀当正控，V1 那样的变异照样全绿 ——
 //   ⇒ 正控必须同时钉住「抓得到」**与**「判为真」。
 describe('★★★★ 第七组：源头召回自证（掏空扫描器必须红）', () => {
-  // ★ 三种拼接形态各一个，取的都是**本文件 DYNAMIC_KEYS 里已登记**的真实前缀
-  //   （matrix.row. = 形态① / dh.state. = 形态② / cache.state. = 形态③）。
+  // ★ 四种拼接形态各一个，取的都是**本文件 DYNAMIC_KEYS 里已登记**的真实前缀
+  //   （matrix.row. = 形态① / dh.state. = 形态② / cache.state. = 形态③ /
+  //     rr.evidence.values. = 形态④——先赋值再 t(key)，不紧跟 `t(`）。
   const SYNTHETIC = [
     'const a = t(\'matrix.row.\' + r)',
     'const b = t(`dh.state.${state}`)',
     'const c = \'cache.state.\' + v',
+    'const key = `rr.evidence.values.${value}`',
   ].join('\n')
 
-  const SYNTHETIC_PREFIXES = ['matrix.row.', 'dh.state.', 'cache.state.']
+  const SYNTHETIC_PREFIXES = ['matrix.row.', 'dh.state.', 'cache.state.', 'rr.evidence.values.']
 
-  it('⑦-1 ★★★★★★ 合成源码里的三种形态前缀必须全部被抓到', () => {
+  it('⑦-1 ★★★★★★ 合成源码里的四种形态前缀必须全部被抓到', () => {
     const got = concatPrefixes(SYNTHETIC)
     const missed = SYNTHETIC_PREFIXES.filter((p) => !got.has(p))
-    // 已知三种前缀必须全部召回；扫描器返空时 missed 非空，断言变红。
+    // 已知四种前缀必须全部召回；扫描器返空时 missed 非空，断言变红。
     expect(
       missed,
       `扫描器没抓到合成源码里的 ${missed.length} 个已知形态前缀 ⇒ 该合成召回检查失败，` +
@@ -294,12 +326,13 @@ describe('★★★★ 第七组：源头召回自证（掏空扫描器必须红
     ).toEqual([])
   })
 
-  it('⑦-2 ★★★★★★ 形状钉：三种形态的扫描器与名称表必须仍然是 3 对 3', () => {
+  it('⑦-2 ★★★★★★ 形状钉：四种形态的扫描器与名称表必须仍然是 4 对 4', () => {
     // ★ 与批 140 的 K07 同因：`prefixHits` 按 `PREFIX_RES` 的长度返回数组，
     //   删掉 `PREFIX_RES` 里的一项 ⇒ 数组跟着变短 ⇒ ⑥-2 的循环**不再检查被删的那项** ⇒ 全绿。
     // ⇒ 形状必须**单独**钉住，命中钉才有效。
-    expect(PREFIX_FORM_NAMES).toHaveLength(3)
-    expect(prefixHits(SYNTHETIC)).toHaveLength(3)
+    // ★ 2026-11-25 菜单 PC 对齐轮：3 → 4（形态④「模板赋值/属性绑定」，见 keyScan.ts 文件头）。
+    expect(PREFIX_FORM_NAMES).toHaveLength(4)
+    expect(prefixHits(SYNTHETIC)).toHaveLength(4)
     const each = prefixHits(SYNTHETIC)
     for (let i = 0; i < each.length; i++) {
       expect(each[i], `形态 ${PREFIX_FORM_NAMES[i]} 在合成源码里一个都没抓到`).toBeGreaterThan(0)
