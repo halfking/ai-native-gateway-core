@@ -55,7 +55,7 @@ func RebuildRequestDailyBoard(ctx context.Context, tx *sql.Tx, day string) error
 		WHERE ` + requestDailyBounds + ` AND api_key_id IS NOT NULL
 		GROUP BY traffic_class, api_key_id >> 6, GROUPING SETS ((tenant_id), ())`,
 		`WITH inputs AS (
-			SELECT tenant_id, traffic_class, minutes, ` + boardBucket("minutes") + ` AS bucket,
+			SELECT tenant_id, traffic_class, minutes, ` + boardBucket("occurred_at", "minutes") + ` AS bucket,
 				` + boardModel + ` AS model, total_tokens, credits_charged, cost_amount, cost_currency, status, latency_ms
 			FROM public.request_metrics_projection CROSS JOIN (VALUES (5),(15),(60),(360)) sizes(minutes)
 			WHERE ` + requestDailyBounds + `
@@ -91,7 +91,7 @@ func readRequestBoardDaily(ctx context.Context, db requestStatsDB, query BoardQu
 	}
 	args = append(args, query.BucketMinutes)
 	minutes := fmt.Sprintf("$%d::int", len(args))
-	bucket := boardBucket(minutes)
+	bucket := boardBucket("occurred_at", minutes)
 	querySQL := `WITH projection AS (` + boardProjectionState + `),
 clean_days AS MATERIALIZED (
 	SELECT day FROM public.request_metrics_daily_state
@@ -175,11 +175,7 @@ trend_inputs AS (
 	FROM bounded GROUP BY bucket, GROUPING SETS ((model), ())
 	HAVING grouping(model)=1 OR (model <> '__others__' AND model IN (SELECT key FROM top_models))
 ),
-bucket_counts AS MATERIALIZED (
-	SELECT bucket, is_total, model, ` + boardMeasureSums + `,
-		sum(success) AS success, sum(latency_sum) AS latency_sum, sum(latency_count) AS latency_count
-	FROM trend_inputs GROUP BY bucket, is_total, model
-),
+` + boardDailyBucketCounts(query, minutes) + `,
 trends AS (
 	SELECT bucket, requests, tokens, credits, cost_usd, success,
 		coalesce(latency_sum::float8/nullif(latency_count,0),0) AS avg_latency_ms
@@ -199,4 +195,33 @@ chart_points AS (
 )
 ` + boardResultSQL
 	return scanRequestBoard(ctx, db, querySQL, args, true)
+}
+
+func boardDailyBucketCounts(query BoardQuery, minutes string) string {
+	const grouped = `SELECT bucket, is_total, model, ` + boardMeasureSums + `,
+		sum(success) AS success, sum(latency_sum) AS latency_sum, sum(latency_count) AS latency_count
+	FROM trend_inputs`
+	const groupBy = ` GROUP BY bucket, is_total, model`
+
+	if (query.TenantID == "" && query.BucketMinutes < 15) || (query.IncludeProbes && query.TrafficClass == nil) {
+		return `bucket_counts AS MATERIALIZED (` + grouped + groupBy + `)`
+	}
+
+	// A single tenant scope and traffic class each supply one row per model and
+	// bucket. If published days start and end on bucket boundaries, their rows
+	// cannot overlap each other or the grouped rows from uncovered timestamps.
+	return `bucket_layout AS MATERIALIZED (
+		SELECT NOT EXISTS (
+			SELECT FROM clean_days
+			CROSS JOIN LATERAL (VALUES (day::timestamp AT TIME ZONE ` + requestDailyZone + `),
+				((day+1)::timestamp AT TIME ZONE ` + requestDailyZone + `)) AS edges(boundary)
+			WHERE ` + boardBucket("boundary", minutes) + ` <> boundary
+		) AS disjoint
+	), bucket_counts AS MATERIALIZED (
+		SELECT bucket, is_total, model, requests, tokens, credits, cost_usd,
+			success, latency_sum, latency_count
+		FROM trend_inputs WHERE (SELECT disjoint FROM bucket_layout)
+		UNION ALL
+		` + grouped + ` WHERE NOT (SELECT disjoint FROM bucket_layout)` + groupBy + `
+	)`
 }

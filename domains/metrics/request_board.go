@@ -95,8 +95,8 @@ const boardPieGrouping = `CASE
 
 const boardPieSets = "(agent_key), (ip_key), (hash_key), (model), (error_key), (status), (tenant_key)"
 
-func boardBucket(size string) string {
-	return "date_bin(make_interval(mins => " + size + "), occurred_at, '2000-01-01 00:00:00+00')"
+func boardBucket(timestamp, size string) string {
+	return "date_bin(make_interval(mins => " + size + "), " + timestamp + ", '2000-01-01 00:00:00+00')"
 }
 
 const boardRankedPies = `ranked_pies AS (
@@ -156,7 +156,7 @@ func ReadRequestBoard(ctx context.Context, db requestStatsDB, query BoardQuery) 
 func readRequestBoardDetail(ctx context.Context, db requestStatsDB, query BoardQuery) (RequestBoard, error) {
 	clauses, args := boardWhere(query)
 	args = append(args, query.BucketMinutes)
-	bucket := boardBucket(fmt.Sprintf("$%d::int", len(args)))
+	bucket := boardBucket("occurred_at", fmt.Sprintf("$%d::int", len(args)))
 	sql := `
 WITH projection AS (` + boardProjectionState + `),
 bounded AS MATERIALIZED (

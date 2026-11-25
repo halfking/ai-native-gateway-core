@@ -1378,7 +1378,8 @@ SELECT 'board-day-'||n,CASE WHEN n<15 THEN 'board-days' ELSE 'board-days-other' 
   CASE WHEN n%2=0 THEN '192.0.2.15'::inet ELSE NULL END, CASE WHEN n%2=0 THEN 'named' ELSE '' END,
   'session-'||(n%4),n,n*0.001,CASE WHEN n%2=0 THEN 'USD' ELSE 'CNY' END,n,n*17,n*3,
   CASE WHEN n=7 THEN 'upstream_timeout' ELSE NULL END,'async_processor',23000+n
-FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+(n%3)*interval '1 minute' AS ts
+FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+
+             CASE WHEN n=2 THEN interval '23 hours 58 minutes' ELSE (n%3)*interval '1 minute' END AS ts
 	  FROM generate_series(1,16) n) rows;`)
 		zone := time.FixedZone("UTC+8", 8*3600)
 		start := time.Date(2026, 11, 16, 0, 0, 0, 0, zone)
@@ -1411,6 +1412,9 @@ FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+(n%3)*i
 		partial.EndTime = f.EndTime.Add(time.Minute)
 		withProbe := f
 		withProbe.IncludeProbes = true
+		probeOnly := withProbe
+		probe := "probe"
+		probeOnly.TrafficClass = &probe
 		refresh := func(fn func(context.Context) (bool, error)) {
 			t.Helper()
 			for range 30 {
@@ -1439,6 +1443,7 @@ FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+(n%3)*i
 		assertParity(t, f)
 		assertParity(t, partial)
 		assertParity(t, withProbe)
+		assertParity(t, probeOnly)
 		allTenants := withProbe
 		allTenants.TenantID = ""
 		assertParity(t, allTenants)
@@ -1462,6 +1467,12 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
 		countPublished(0)
 		assertParity(t, withProbe)
 		exec("DROP TRIGGER reject_board_publish ON public.request_metrics_board_days; DROP FUNCTION public.reject_board_publish()")
+		if built, err := processor.RefreshDailyBoard(ctx); !built || err != nil {
+			t.Fatalf("expected one board day to republish: built=%v error=%v", built, err)
+		}
+		countPublished(1)
+		assertParity(t, f)
+		assertParity(t, withProbe)
 		refresh(processor.RefreshDailyBoard)
 		countPublished(2)
 		assertParity(t, f)
