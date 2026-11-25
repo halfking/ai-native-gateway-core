@@ -21,6 +21,7 @@ import SessionAnalyticsFilterOptionsView from './SessionAnalyticsFilterOptionsVi
 import SanitizeRulesView from './SanitizeRulesView.vue'
 import FormatAnomaliesView from './FormatAnomaliesView.vue'
 import ModelIntegrityDriftView from './ModelIntegrityDriftView.vue'
+import ErrorPlaybookView from './ErrorPlaybookView.vue'
 
 import { setTransport, resetTransport } from '@/api/transport'
 import { zhCN } from '@/i18n/zh-CN'
@@ -128,6 +129,10 @@ const TABLE = [
   //   本批补上后再纳入本普查。
   { path: '/format-anomalies', comp: FormatAnomaliesView, file: 'FormatAnomaliesView.vue', gate: 'formatAnomaliesRoleIsAllowed', tier: 'super_admin', okRole: 'super_admin', nope: 'fa-denied', trigger: 'fa-load-list', fill: [] },
   { path: '/model-integrity-drift', comp: ModelIntegrityDriftView, file: 'ModelIntegrityDriftView.vue', gate: 'modelIntegrityDriftRoleIsAllowed', tier: 'super_admin', okRole: 'super_admin', nope: 'mid-denied', trigger: 'mid-load', fill: [] },
+  // ★ 2026-11-25 菜单 PC 对齐轮：错误处理手册（PC 端 11-21 落地）——
+  //   新席**带着兜底入场**（视图内 allowed 门 + ep-nope 区 + onMounted 不发请求），
+  //   与批 150「先裸奔后补兜底」的教训相反。
+  { path: '/error-playbook', comp: ErrorPlaybookView, file: 'ErrorPlaybookView.vue', gate: 'allowed', tier: 'super_admin', okRole: 'super_admin', nope: 'ep-nope', trigger: 'ep-load', fill: [] },
 ] as const
 
 /**
