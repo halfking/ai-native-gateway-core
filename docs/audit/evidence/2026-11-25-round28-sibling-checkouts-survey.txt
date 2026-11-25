@@ -1,0 +1,158 @@
+# 同级目录其他检出的只读清点（第 28 轮补记，2026-11-25 11:14）
+# 范围：/Users/niuer/workspace/ai-native-tools/llm-gateway 下每一个含 .git 的目录（子模块检出、独立克隆、它们登记的全部 worktree 与本地分支）。
+# 性质：只读。没有在任何一个同级检出里执行删除、提交、推送或改写；它们属于别的车道，是否扩面清理待 owner 决定。
+# 判据：dirty＝git status --porcelain 行数；「最新文件改动」＝worktree 内（深度不超过 4、跳过 .git／node_modules／dist 等）最新 mtime；
+#      in origin/main＝该 HEAD 是否已被 origin/main（各检出本地的远端跟踪引用，可能未 fetch）包含。
+
+===== A. 清点原始输出（survey_checkouts.py） =====
+====================================================================================================
+REPO common-dir: .git/modules/ai-native-maintain | first seen at: ai-native-maintain
+  remote codeup	git@codeup.aliyun.com:kaixuan/official-deploy/ai-native-maintain.git (fetch)
+  remote codeup	git@codeup.aliyun.com:kaixuan/official-deploy/ai-native-maintain.git (push)
+  remote origin	git@github.com:halfking/ai-native-gateway-maintain.git (fetch)
+  remote origin	git@github.com:halfking/ai-native-gateway-maintain.git (push)
+  worktrees: 1
+    .git/modules/ai-native-maintain                                99b04a9fc (detached)                           dirty=0   lastcommit=2026-11-20T04:16:11+08:00 (7618 min ago) | newest file mtime 261 min ago | in origin/main: yes | in github/main: n/a
+  local branches:
+    main                                     132686f 2026-11-20T00:30:41+08:00 (7843 min ago) upstream=origin/main    [behind 1] in origin/main: yes | in github/main: n/a
+====================================================================================================
+REPO common-dir: .git/modules/ai-session-manager | first seen at: ai-session-manager
+  remote origin	git@github.com:halfking/ai-session-manager.git (fetch)
+  remote origin	git@github.com:halfking/ai-session-manager.git (push)
+  worktrees: 1
+    .git/modules/ai-session-manager                                8fe5a4eb0 (detached)                           dirty=0   lastcommit=2026-11-18T23:59:36+08:00 (9315 min ago) | newest file mtime 261 min ago | in origin/main: yes | in github/main: n/a
+  local branches:
+    main                                     73724d9 2026-11-16T11:33:02+08:00 (12941 min ago) upstream=origin/main    [behind 2] in origin/main: yes | in github/main: n/a
+====================================================================================================
+REPO common-dir: .git/modules/cloudreve | first seen at: cloudreve
+  remote origin	git@github.com:halfking/cloudreve.git (fetch)
+  remote origin	git@github.com:halfking/cloudreve.git (push)
+  worktrees: 1
+    .git/modules/cloudreve                                         cea56ecaf (detached)                           dirty=0   lastcommit=2026-10-06T23:53:02+08:00 (71241 min ago) | newest file mtime 261 min ago | in origin/main: yes | in github/main: n/a
+  local branches:
+    main                                     cea56ec 2026-10-06T23:53:02+08:00 (71241 min ago) upstream=origin/main    [behind 4] in origin/main: yes | in github/main: n/a
+====================================================================================================
+REPO common-dir: llm-gateway-client/.git | first seen at: llm-gateway-client
+  remote origin	git@github.com:halfking/llm-gateway-client.git (fetch)
+  remote origin	git@github.com:halfking/llm-gateway-client.git (push)
+  worktrees: 1
+    llm-gateway-client                                             9e122ffc8 main                                 dirty=0   lastcommit=2026-11-21T02:51:33+08:00 (6263 min ago) | newest file mtime 6263 min ago | in origin/main: yes | in github/main: n/a
+  local branches:
+    main                                     9e122ff 2026-11-21T02:51:33+08:00 (6263 min ago) upstream=origin/main    -          in origin/main: yes | in github/main: n/a
+    audit/docs-round85                       0ff7b68 2026-11-19T01:01:36+08:00 (9253 min ago) upstream=origin/main    [behind 2] in origin/main: yes | in github/main: n/a
+    audit/docs-round86                       0ff7b68 2026-11-19T01:01:36+08:00 (9253 min ago) upstream=origin/main    [behind 2] in origin/main: yes | in github/main: n/a
+    audit/docs-round83                       835d989 2026-11-16T02:49:05+08:00 (13465 min ago) upstream=origin/main    [behind 4] in origin/main: yes | in github/main: n/a
+====================================================================================================
+REPO common-dir: .git/modules/llm-gateway-go | first seen at: llm-gateway-go
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (fetch)
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (push)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (fetch)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (push)
+  worktrees: 5
+    .git/modules/llm-gateway-go                                    76832a9ac main                                 dirty=0   lastcommit=2026-11-25T06:47:17+08:00 (267 min ago) | newest file mtime 8 min ago | in origin/main: yes | in github/main: yes
+    /private/tmp/gate_base                                         dba08ade3 (detached)                           dirty=0   lastcommit=2026-11-24T15:54:19+08:00 (1160 min ago) | newest file mtime 420 min ago | in origin/main: yes | in github/main: yes
+    /private/tmp/ir_check2                                         d76bb8307 (detached)                           dirty=0   lastcommit=2026-11-25T04:25:49+08:00 (408 min ago) | newest file mtime 384 min ago | in origin/main: yes | in github/main: yes
+    /private/tmp/om3                                               55f5bb18d (detached)                           dirty=0   lastcommit=2026-11-25T04:59:44+08:00 (374 min ago) | newest file mtime 353 min ago | in origin/main: yes | in github/main: yes
+    /private/tmp/om4                                               1b931c3af (detached)                           dirty=0   lastcommit=2026-11-25T05:07:32+08:00 (367 min ago) | newest file mtime 330 min ago | in origin/main: yes | in github/main: yes
+  local branches:
+    main                                     76832a9ac 2026-11-25T06:47:17+08:00 (267 min ago) upstream=origin/main    -          in origin/main: yes | in github/main: yes
+====================================================================================================
+REPO common-dir: llm-gateway-go-3/.git | first seen at: llm-gateway-go-3
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (fetch)
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (push)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (fetch)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (push)
+  worktrees: 2
+    llm-gateway-go-3                                               76229dd25 main                                 dirty=0   lastcommit=2026-11-25T10:50:59+08:00 (23 min ago) | newest file mtime 13 min ago | in origin/main: yes | in github/main: yes
+    llm-gateway-go-3-r28sib                                        76229dd25 audit/round28-sibling-survey         dirty=1   lastcommit=2026-11-25T10:50:59+08:00 (23 min ago) | newest file mtime 0 min ago | in origin/main: yes | in github/main: yes
+  local branches:
+    audit/round28-sibling-survey             76229dd25 2026-11-25T10:50:59+08:00 (23 min ago) upstream=origin/main    -          in origin/main: yes | in github/main: yes
+    main                                     76229dd25 2026-11-25T10:50:59+08:00 (23 min ago) upstream=origin/main    -          in origin/main: yes | in github/main: yes
+    codex/reconciliation-release-preview     c43c3e63f 2026-11-25T06:41:10+08:00 (273 min ago) upstream=-              -          in origin/main: no | in github/main: no
+    codex/reconciliation-upgrade             5a6b63c51 2026-11-24T21:44:43+08:00 (810 min ago) upstream=-              -          in origin/main: no | in github/main: no
+====================================================================================================
+REPO common-dir: llm-gateway-go-5/.git | first seen at: llm-gateway-go-5
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (fetch)
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (push)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (fetch)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (push)
+  worktrees: 8
+    llm-gateway-go-5                                               866b286cc main                                 dirty=8   lastcommit=2026-11-25T06:53:03+08:00 (261 min ago) | newest file mtime 73 min ago | in origin/main: yes | in github/main: yes
+    /private/tmp/wt-base4                                          cd288ad0c (detached)                           dirty=0   lastcommit=2026-11-24T12:53:12+08:00 (1341 min ago) | newest file mtime 1160 min ago | in origin/main: yes | in github/main: yes
+    /private/tmp/wt-base5                                          54030ac22 (detached)                           dirty=0   lastcommit=2026-11-24T04:15:05+08:00 (1859 min ago) | newest file mtime 1173 min ago | in origin/main: yes | in github/main: yes
+    /private/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/tmp.6CluWO2SdR/base a98dd6613 (detached)                           dirty=0   lastcommit=2026-11-24T17:33:21+08:00 (1061 min ago) | newest file mtime 779 min ago | in origin/main: yes | in github/main: yes
+    /private/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/tmp.LtqXZamCAk/base dd89c6bb6 (detached)                           dirty=14977 lastcommit=2026-11-23T20:07:24+08:00 (2347 min ago) | newest file mtime 2254 min ago | in origin/main: yes | in github/main: yes
+    /private/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/tmp.uOZqx8MmiE/base 5c106f8c8 (detached)                           dirty=0   lastcommit=2026-11-24T21:26:28+08:00 (828 min ago) | newest file mtime 790 min ago | in origin/main: yes | in github/main: yes
+    llm-gateway-go-5-l1l5                                          55f5bb18d feat/211-config-todos-l1l5           dirty=1   lastcommit=2026-11-25T04:59:44+08:00 (375 min ago) | newest file mtime 375 min ago | in origin/main: yes | in github/main: yes
+    llm-gateway-go-5-reqlogs                                       b36089b1d (detached)                           dirty=0   lastcommit=2026-11-25T08:25:42+08:00 (169 min ago) | newest file mtime 156 min ago | in origin/main: yes | in github/main: no
+  local branches:
+    main                                     866b286cc 2026-11-25T06:53:03+08:00 (261 min ago) upstream=origin/main    [behind 27] in origin/main: yes | in github/main: yes
+    feat/211-config-todos-l1l5               55f5bb18d 2026-11-25T04:59:44+08:00 (375 min ago) upstream=origin/main    [behind 55] in origin/main: yes | in github/main: yes
+====================================================================================================
+REPO common-dir: llm-gateway-go-cursor/.git | first seen at: llm-gateway-go-cursor
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (fetch)
+  remote github	git@github.com:halfking/ai-native-gateway-core.git (push)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (fetch)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git (push)
+  worktrees: 1
+    llm-gateway-go-cursor                                          76832a9ac main                                 dirty=0   lastcommit=2026-11-25T06:47:17+08:00 (267 min ago) | newest file mtime 261 min ago | in origin/main: yes | in github/main: yes
+  local branches:
+    main                                     76832a9ac 2026-11-25T06:47:17+08:00 (267 min ago) upstream=origin/main    -          in origin/main: yes | in github/main: yes
+====================================================================================================
+REPO common-dir: salesdecorate/.git | first seen at: salesdecorate
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/salesdecorate.git (fetch)
+  remote origin	git@codeup.aliyun.com:kaixuan/official-deploy/salesdecorate.git (push)
+  worktrees: 1
+    salesdecorate                                                  930044786 main                                 dirty=0   lastcommit=2026-11-20T04:16:11+08:00 (7618 min ago) | newest file mtime 2389 min ago | in origin/main: yes | in github/main: n/a
+  local branches:
+    main                                     9300447 2026-11-20T04:16:11+08:00 (7618 min ago) upstream=origin/main    -          in origin/main: yes | in github/main: n/a
+    audit/docs-round86                       75c7bab 2026-11-20T01:13:46+08:00 (7801 min ago) upstream=origin/main    [behind 1] in origin/main: yes | in github/main: n/a
+    audit/docs-round85                       b2a01ae 2026-11-19T01:32:20+08:00 (9222 min ago) upstream=origin/main    [behind 2] in origin/main: yes | in github/main: n/a
+    audit/docs-round84                       0eb8b5e 2026-11-18T01:39:12+08:00 (10655 min ago) upstream=-              -          in origin/main: yes | in github/main: n/a
+
+===== B. 带未提交记录的 worktree：审计事实 =====
+--- /private/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/tmp.LtqXZamCAk/base ---
+  status codes: {' D': 14977}
+  tracked files in HEAD: 28920 | files physically present (excluding .git): 13943
+  => only tracked files missing from disk; no modified and no untracked content (a partial checkout, nothing to commit)
+--- llm-gateway-go-5-l1l5 (main checkout of that clone/worktree) : 1 uncommitted entries ---
+  ?? docs/audit/evidence/2026-11-25-owner-axis-pending-items-analysis.md   in main: NO
+--- llm-gateway-go-5 (main checkout of that clone/worktree) : 8 uncommitted entries ---
+  ?? docs/audit/2026-11-25-request-logs-优化完成总结.md   in main: NO
+  ?? docs/audit/2026-11-25-request-logs-优化实施报告.md   in main: NO
+  ?? docs/audit/2026-11-25-request-logs-手动测试验证报告.md   in main: NO
+  ?? docs/audit/2026-11-25-request-logs-最终完成报告.md   in main: NO
+  ?? docs/audit/2026-11-25-request-logs-超时优化总结.html   in main: NO
+  ?? maestro/flows/14-request-logs-timeout-optimization.yaml   in main: NO
+  ?? maestro/run-request-logs-test.sh   in main: NO
+  ?? tests/maestro/request-logs-timeout-test.yaml   in main: NO
+--- llm-gateway-go (main checkout of that clone/worktree) : 0 uncommitted entries ---
+--- llm-gateway-go-cursor (main checkout of that clone/worktree) : 0 uncommitted entries ---
+--- llm-gateway-go-5-reqlogs (main checkout of that clone/worktree) : 0 uncommitted entries ---
+
+===== C. 工作目录在各同级检出里的进程（lsof -a -d cwd，快照） =====
+  pid=3657    ZCode Helper                 llm-gateway-go-5
+  pid=17536   ZCode Helper                 llm-gateway-go
+  pid=34218   Google Chrome                llm-gateway-go-cursor
+  pid=34222   chrome_crashpad_handler      llm-gateway-go-cursor
+  pid=34227   Google Chrome Helper (Aperit llm-gateway-go-cursor
+  pid=34228   Google Chrome Helper (Aperit llm-gateway-go-cursor
+  pid=34229   Google Chrome Helper (Aperit llm-gateway-go-cursor
+  pid=43321   node                         llm-gateway-go
+  pid=46741   Google Chrome                llm-gateway-go-5
+  pid=46849   chrome_crashpad_handler      llm-gateway-go-5
+  pid=46863   Google Chrome Helper (Aperit llm-gateway-go-5
+  pid=46864   Google Chrome Helper (Aperit llm-gateway-go-5
+  pid=46866   Google Chrome Helper (Aperit llm-gateway-go-5
+  pid=48323   ssh                          llm-gateway-go-cursor
+  pid=70890   adb                          llm-gateway-go
+  pid=76971   Google Chrome                llm-gateway-go-cursor
+  pid=76974   chrome_crashpad_handler      llm-gateway-go-cursor
+  pid=76979   Google Chrome Helper (Aperit llm-gateway-go-cursor
+  pid=76980   Google Chrome Helper (Aperit llm-gateway-go-cursor
+  pid=76981   Google Chrome Helper (Aperit llm-gateway-go-cursor
+  (no process had its working directory in the temporary worktrees listed in section A)
+
+===== D. 工作区内部嵌套仓库 =====
+  find llm-gateway-go-3 -maxdepth 5 -name .git (excluding node_modules): only llm-gateway-go-3/.git
+  umbrella superproject (/Users/niuer/workspace/ai-native-tools/llm-gateway): branch main only, 1 worktree

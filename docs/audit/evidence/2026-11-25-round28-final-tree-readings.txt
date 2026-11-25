@@ -1,0 +1,69 @@
+# 最终提交 254ae0ef4 上的全量读数（第 28 轮收尾，2026-11-25 13:18–13:41）
+# 目的：此前扩展读数取自 ab0c0b5b1、靠「其后只改文档」推断对最终树成立；收尾期间又改了 maestro 工具、Makefile 与若干 shell 测试
+#      ⇒ 这个前提不再成立 ⇒ 在最终提交上直接重跑整套读数。
+# 隔离：同级分离 HEAD worktree @ 254ae0ef4；每段读数首尾 HEAD 与内容指纹一致。零生产写、零部署；烟测门只打自己起的一次性容器。
+# 说明：原始输出来自 /tmp/l108-audit/logs（/tmp 会被系统清理，这里留副本）。
+
+===== A. 发布读数（job_release.sh） =====
+HEAD=254ae0ef45e540be9a2dc474b934b2098f64f994 HEAD_FROZEN=1 START=2026-11-25 13:18:38
+EXIT go_build=0
+EXIT ursmcheck=0 ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	301.258s 
+EXIT scan=1
+HEAD_END=254ae0ef45e540be9a2dc474b934b2098f64f994 CONTENT_FROZEN=1 END=2026-11-25 13:27:47
+  （扫描的 BLOCK 32／WARN 2073 是 main 上既有命中：26 条脱敏测试夹具、3 条审计文档里的测试库口令、1 条假 Slack token 的引述、2 条根目录指南的本地开发库口令）
+
+===== B. 扩展读数（job_final_tree.sh；urSM 一步已在 A 段读过、此处不重复） =====
+HEAD=254ae0ef45e540be9a2dc474b934b2098f64f994 (uncommitted: 0 files) fp0=e09131fc302ce394ad2e09f53ca26658150a9971dcef5e91ca5adaa1b4b0e6ba start=2026-11-25 13:32:41
+EXIT go_build=0 (58s) 13:33:39
+EXIT go_vet=0 (10s) 13:33:49
+EXIT go_pkgs=0 (146s) 13:36:15
+MODULE installer build=0 vet=0 test=0 ok=14 fail=0
+MODULE plugin-runtime/config build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/discovery build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/eventbus build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/ipc build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/reconciler build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/supervisor build=0 vet=0 test=0 ok=1 fail=0
+EXIT web_tsc=0
+EXIT web_vitest=0  Test Files  379 passed | 1 skipped (380)       Tests  3839 passed | 2 skipped (3841) 
+EXIT web_build=0
+EXIT mobile_tsc=0
+EXIT mobile_vitest=1 ⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯  Test Files  7 failed | 244 passed (251)       Tests  11 failed | 9309 passed | 1 skipped (9321) 
+EXIT maestro=0 SELFTEST: PASS
+HEAD_FROZEN=1 CONTENT_FROZEN=1 fp1=e09131fc302ce394ad2e09f53ca26658150a9971dcef5e91ca5adaa1b4b0e6ba
+DONE 2026-11-25 13:39:57
+go_pkgs 逐包计数: ok=43 FAIL=0 no-test-files=1
+web-mobile 失败用例: 最终提交 11 条；与窗口内此前那次读数逐条相同=True
+    FAIL  src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-1 ★★★★★ 读数：分母必须写在这里，不许只报「对不上的几条」
+    FAIL  src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上
+    FAIL  src/api/goLineRef.spec.ts > ② ★★ 未登记的漂移一律红 > ②-1 ★★★★★ 对不上的引用必须全部已登记（★ 本批起覆盖**全范围**）
+    FAIL  src/api/goLineRef.spec.ts > ③ ★★★ 登记项必须仍然对不上（修好了就要删登记） > ③-1 ★★★★★ 登记项每一条都仍然判为对不上（修好了就要删登记）
+    FAIL  src/i18n/orphanKeys.spec.ts > ② ★★★ 未登记的孤儿键一律红 > ②-1 ★★★★★ 判为孤儿的键必须全部已登记
+    FAIL  src/views/DataLifecycleStorageView.spec.ts > ① 权限档 admin（两条独立理由，缺一不可） > ①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ `:1034`/`:1035`（12h-audit 20261017）→ 实为 `:1038`（2026-10-21 views 行号
+    FAIL  src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-6 ★★★★★★ 读 Go 源码：`:1182` 与 `:1185` **相邻两行却是两种档位**
+    FAIL  src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:1178 → 实为 :1179/:1180/:1182/:1185 → 再漂至实为 :1182/:
+    FAIL  src/views/StorageMigrationStateView.spec.ts > ① 权限档「admin」（服务端无角色下限 ⇒ 前端是唯一的门） > ①-5 ★★★★★★ 读 Go 源码：`:1182`（superAdmin）与 `:1185`（admin）相邻两行两种档位
+    FAIL  src/views/TurnsFilterOptionsView.spec.ts > ① 权限档「admin」（第四个写下错话的模块） > ①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）→ 实为 `:1352`
+    FAIL  src/views/UsageEnhancedView.spec.ts > ① 权限档 admin（本仓第一个「有租户维度但缺角色下限」的家族） > ①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，经 `:1297`（批153）、`:1332`（12h-audit 20261017）再漂至 `:1339`（2026-10-21 views 行号订正轮）→ 实为 `:1
+
+===== C. 空库新装烟测门（scripts/checks/fresh-install-smoke.sh，bash 5） =====
+镜像：kx-citus-pg17:offline-arm64
+一次性容器：l30-fresh-install-smoke-68205（★ ★ 本门只打它，★ 绝不打任何别的容器）
+  ✔ 目标库确认为空（public 表数 0）
+  ✔ 新装后日对账迁移和读面齐全
+  ✔ 会话分析物化视图 4 个
+  ✔ session_summaries.total_credits_charged 在
+  ✔ minimax-m3.1-flash 在位且 featured=TRUE
+  ✔ 第二次安装成功（★ 增量路径）
+  ✔ 增量后日对账迁移和读面齐全
+  ✔ 台账行数未变（415）⇒ 没有迁移被重放
+  ✔ 第二次运行没有重放任何带版本号的迁移
+  ✔ 增量路径后 4 个会话分析物化视图仍在
+  ✔ 增量路径后 total_credits_charged 仍在
+★ 跑第三阶段（安装器新装库交给部署迁移通道）…
+  已检查 首次接管，安装器凭证命中 372/372
+★ 跑第四阶段（部署迁移通道复跑）…
+  已检查 接管后复跑，安装器凭证命中 372/372
+fresh-install-smoke: PASS
+SMOKE_EXIT=0 start=2026-11-25 13:40:25 end=2026-11-25 13:41:50
+容器清单: 跑前 36 / 跑后 36 / 新增 0（零残留）

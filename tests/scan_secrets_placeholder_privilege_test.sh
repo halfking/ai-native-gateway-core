@@ -561,6 +561,9 @@ KNOWN_EXEMPT_CRED=(
   'maestro/run-mock-only.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
   'maestro/run-session-analytics.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
   'maestro/run-stats-range-picker.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
+  # ★ 2026-11-25 第 28 轮（代上游收口）：上游新增的请求日志 runner 与上面三条同形
+  #   （凭据位是变量 ${ADMIN_PASSWORD}、不是字面量）⇒ 登记进已知清单，棘轮继续守住。
+  'maestro/run-request-logs-time-ranges.sh	${ADMIN_PASSWORD}	ASSIGN	\$\{[A-Z_][A-Z0-9_]*\}'
 )
 
 KNOWN_SORTED="$(printf '%s\n' "${KNOWN_EXEMPT_CRED[@]}" | grep -v '^__FILL__$' | sort -u)"

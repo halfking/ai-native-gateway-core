@@ -1,0 +1,115 @@
+# pre-push 钩子的 shell 套件读数 与 cgo 边界漂移诊断（第 28 轮收尾补记，2026-11-25 12:2x–12:4x）
+# 对象：提交 2075b652b（两条新门接进 Makefile 快门 + 扫描器已知清单补登）。零生产写、零部署；cgo 边界只诊断、未改代码。
+# 说明：原始输出来自 /tmp/l108-audit/logs（/tmp 会被系统清理，这里留副本）。标「逐字」的段是当时工具输出的原样摘录。
+
+===== A. 全部 tests/*.sh 真跑（bash 5；每套 120 秒上限，deploy_seamless_state_machine 为 240 秒） =====
+HEAD=2075b652b suites=74 passed=69 failed=5 wall=399s bash=/Users/niuer/sdk/bash5/bin/bash
+FAIL deploy_211_contract_test.sh (rc=1, 0s) :: 结果: 134 通过, 1 失败
+FAIL deploy_nocgo_build_test.sh (rc=1, 52s) ::    - github.com/mattn/go-sqlite3 re-entered the CGO_ENABLED=0 dep graph of ./cmd/gateway
+FAIL deploy_ssh_retry_test.sh (rc=1, 0s) ::  summary: 14 passed, 7 failed
+FAIL session_storage_audit_gate.sh (rc=1, 0s) :: [session-storage-audit] FAIL: 审计镜像缺失 (需 postgres:17-alpine / redis:7.4.11-alpine)
+FAIL verify_cgo_convention_test.sh (rc=1, 10s) ::   → 更新本名单与 AGENTS.md 的「CGO 边界」，并重新评估本机 cgo=0 口径。
+--- slowest 8 ---
+  66s rc=0   scan_secrets_placeholder_privilege_test.sh
+  53s rc=0   daily_regression_wiring_test.sh
+  52s rc=1   deploy_nocgo_build_test.sh
+  40s rc=0   deploy_local_reap_test.sh
+  25s rc=0   deploy_seamless_state_machine_test.sh
+  20s rc=0   monitor_single_instance_gate_test.sh
+  14s rc=0   ursm_root_migration_runner_test.sh
+  10s rc=1   verify_cgo_convention_test.sh
+
+===== B. 已收口的两套：前 → 后 =====
+--- tests/gate_scripts_caller_registry_test.sh ---
+before (797bceac3): PASS=228 FAIL=2
+after  (2075b652b): PASS=230 FAIL=0
+--- tests/scan_secrets_placeholder_privilege_test.sh (bash 5) ---
+before (3fbc3a1ce; 797bceac3 只多改了 maestro 与记录文件，不影响本套): PASS=9 FAIL=1
+after  (2075b652b): PASS=10 FAIL=0
+--- 读 Makefile 的相邻套件（after） ---
+daily_regression_wiring_test: rc=0 | PASS=6 FAIL=0
+ci_carrier_ir_conversion_wiring_test: rc=0 | PASS=29 FAIL=0
+scan_secrets_reading_set_parity_test: rc=0 | PASS=14 FAIL=0
+--- make guards-gate-scripts（整条快门实跑） ---
+ℹ️ 门脚本接线门：37 条（★ 实时数出）
+rc=0 secs=226
+通过 38 / 失败 0
+  （日志里的 "FAIL … mutation_probe" 是变异探针套件预期的失败输出，计入通过）
+
+===== C. cgo 边界漂移：根因与影响（只读诊断） =====
+--- 依赖链（CGO_ENABLED=0 go list -json -deps ./cmd/gateway；最短导入链，逐字） ---
+packages in CGO_ENABLED=0 dep graph of ./cmd/gateway: 1018 | sqlite3 present: True
+shortest import chain (main -> sqlite3):
+    github.com/kaixuan/llm-gateway-go/cmd/gateway
+    github.com/kaixuan/llm-gateway-go/domains/reconciliation
+    github.com/mattn/go-sqlite3
+direct importers of sqlite3 in graph: ['github.com/kaixuan/llm-gateway-go/domains/reconciliation']
+--- 导入点与来源 ---
+domains/reconciliation/attempt_outbox.go:19:	_ "github.com/mattn/go-sqlite3"   （无构建约束）
+first commit adding the file: cdd155fff huangxt 2026-11-24T04:20:57+08:00 合并 origin/main 并解决迁移编号冲突（单父提交）
+--- cgo=1 闭包里能到达 go-sqlite3 的包（与 tests/verify_cgo_convention_test.sh 同一口径；登记值为 6 个） ---
+detected: 39 packages
+    admin admin/dashboardapi admin/session_analytics api bg bg/systemmonitor cmd/gateway cmd/gateway-v2 cmd/maas-api cmd/quality-monitor cmd/request-reconciliation-shadow cmd/sessionforensics cmd/tools/propose-baseline-prices cmd/verify-model-fetch deploy/sql/verify domains/errorplaybook domains/integration domains/promptinjection domains/reconciliation domains/security/plugins domains/sessionforensics domains/streaming domains/streaming/executors domains/streaming/integrity pkg/authplugin/native scripts/ursmcheck sql/migrations/startup storage storage/factory storage/lite storage/sqlite test tests tests/48h-audit/D09-node-state-selfcheck/business tests/48h-audit/D09-node-state-selfcheck/data tests/48h-audit/D09-node-state-selfcheck/safety tests/48h-audit/D09-node-state-selfcheck/stress tests/integration tests/session_identity_contract
+--- cgo=0 构建网关是否成立 ---
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <tmp>/llm-gateway ./cmd/gateway  => rc=0（二进制 121216369 字节）
+  离线安装包（scripts/build-offline-packages.sh）与 deploy-local.sh 走的就是 CGO_ENABLED=0；211 的容器镜像走 Dockerfile（CGO_ENABLED=1）。
+--- 最小探针（隔离树内临时包，database/sql + 空导入 go-sqlite3，sql.Open 后 Ping；逐字；探针已删除、工作树干净） ---
+== CGO_ENABLED=0 ==
+open err: <nil>
+ping err: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+== CGO_ENABLED=1 ==
+open err: <nil>
+ping err: <nil>
+--- 运行时路径 ---
+cmd/gateway/main.go:2015 reconciliation.OpenAttemptOutbox(...) 只在 reconciliationShadowSetup(...) 为真时执行；
+reconciliationShadowDecision: env != "true" => disabled（reason=switch_not_enabled）。
+打开失败时: slog.Error("supplier attempt shadow outbox unavailable; evidence will be written directly") 后退回 reconciliation.NewAttemptRecorder(pool)。
+  => 生产今天不受影响（开关默认关闭、211 容器路径不转发该开关）；属潜伏缺陷。
+--- 两道门的口径（为什么没有单方面修） ---
+tests/deploy_nocgo_build_test.sh: CGO_ENABLED=0 go list -deps ./cmd/gateway 不得含 go-sqlite3 —— 按惯例（storage/sqlite/driver_cgo.go|driver_nocgo.go）拆 //go:build cgo 即可回绿。
+tests/verify_cgo_convention_test.sh: CGO_ENABLED=1 闭包里只有登记的 6 个包可到达 go-sqlite3 —— 拆构建约束后该门仍红；要么让日志走 storage 层，要么更新登记册与 AGENTS.md 的 CGO 边界。属 owner 的设计决定。
+
+===== D. deploy_ssh_retry_test.sh：夹具缺临时密钥文件（提交 09ab986f1） =====
+--- before（e4034d251，无外部密钥）---
+ summary: 14 passed, 7 failed
+   FAIL ssh_run 1st try: rc=1 out=ssh-retry: injected SSH key missing for target 245
+   FAIL ssh_run retry: rc=1 out=ssh-retry: injected SSH key missing for target 245
+   FAIL ssh_run call count: rc=1 out=ssh-retry: injected SSH key missing for target 245
+   FAIL ssh_run exhausted: rc=1 out_tail=sh: line 252: SSH_RETRY_KEY_ARGS: unbound variable calls=0
+   FAIL exhausted call count: rc=1 out_tail=sh: line 252: SSH_RETRY_KEY_ARGS: unbound variable calls=0
+   FAIL auth fail: rc=1 elapsed=0
+   FAIL no fallback switch. log: [ssh-retry] init target=154 socket=/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T//ssh-retry-67846/cm-154.sock
+--- 试跑：只从外部给一个空的临时密钥文件（SSH_KEY_FILE=<空文件>） ---
+ summary: 21 passed, 0 failed
+--- 根因 ---
+ 被测库 scripts/deploy-lib/ssh-retry.sh：scripts/deploy-lib 是受版本控制的软链（mode 120000）→ ../../../deploy-lib，
+ 解析到 /Users/niuer/workspace/ai-native-tools/deploy/deploy-lib，属另一个 git 仓库（ai-native-tools）。
+ 同级仓库提交 ab0897b5（2026-11-05）起 _ssh_retry_key_args 要求密钥文件在磁盘上存在；本仓测试用假 ssh 桩、未提供密钥
+ ⇒ 每次 ssh_run 在第一步就失败（7 条断言同一起点）。
+--- after（09ab986f1：夹具自造空的临时密钥文件；无外部密钥）---
+ bash 3.2: summary: 21 passed, 0 failed
+ bash 5  : summary: 21 passed, 0 failed
+ tests/gate_scripts_caller_registry_test.sh: PASS=227 FAIL=0（接进 Makefile 快门 ⇒ 豁免表删掉旧行，13 → 12 行）
+ make guards-gate-scripts: rc=0 secs=292 | 通过 38 / 失败 0
+--- 另登记（属 deploy-lib 仓库，未动） ---
+ 密钥缺失路径上，同级库第 252 行 "${#SSH_RETRY_KEY_ARGS[@]}" 在 bash 3.2 + set -u 下报 unbound variable
+ （仍以 rc=1 失败，但错误信息不再是 "injected SSH key missing"）；bash 5 下不出现。
+
+===== E. deploy_211_contract_test.sh：锚点假红（提交 0062e13cc） =====
+--- before（e6c01cb4a）---
+ 结果: 134 通过, 1 失败     FAIL 绑定体检的位置太晚（迁移/起容器已经动过了）
+--- 引擎 scripts/deploy-seamless-docker.sh 的真实顺序（未改） ---
+ 2937: dd_check_slot_binding                         ← 槽位↔端口绑定体检（先于一切写动作）
+ 2953: REVISION_SEQ="$DD_REVISION_SEQ"
+ 2962:     bash "$REVISION_SEQ" || die "…"           ← 迁移重放真正执行
+ 3033: DD_CANDIDATE_CONTAINER="$(dd_container_name …)" ← 起候选容器
+  122: DD_REVISION_SEQ="$(…)/apply-db-revision-sequence.sh"   ← 只是定义路径（2ae7a12e8，2026-11-23 挪到顶部）
+--- 根因 ---
+ 测试的「迁移」锚点是 grep -n 'REVISION_SEQ=' 的首个匹配 ⇒ 命中第 122 行（DD_REVISION_SEQ=…）⇒ 2937 被判成晚于迁移。
+ 修法：锚点改为 grep -nE '^[[:space:]]*bash "\$REVISION_SEQ"'（首个匹配＝2962）；三个锚点任一为空 ⇒ 报「找不到锚点」。
+--- after（0062e13cc，真实引擎） ---
+ 结果: 135 通过, 0 失败     ok 绑定体检发生在迁移重放与起容器之前（脱节时一个字节都不写）
+--- 变异自证（DEPLOY_211_ENGINE 指向 /tmp 下的引擎临时副本；真实引擎 git status 无改动） ---
+ M1 体检挪到迁移重放之后            => rc=1 | 134 通过, 1 失败 | FAIL 绑定体检的位置太晚（迁移/起容器已经动过了）
+ M2 引擎改了重放的写法（锚点消失）  => rc=1 | 134 通过, 1 失败 | FAIL 绑定体检顺序断言找不到锚点（体检=2937 / 迁移重放=无 / 起候选容器=3033）…
+ M3 体检调用被删掉                  => rc=1 | 134 通过, 1 失败 | FAIL 绑定体检顺序断言找不到锚点（体检=无 / 迁移重放=2961 / 起候选容器=3032）…

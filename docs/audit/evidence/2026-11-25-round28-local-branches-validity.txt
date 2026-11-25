@@ -1,0 +1,342 @@
+# 两个本地分支的有效性读数（第 28 轮补记，2026-11-25 10:20–10:46）
+# 对象：codex/reconciliation-upgrade @ 5a6b63c51（基准 27e719539）与 codex/reconciliation-release-preview @ c43c3e63f（基准 5c106f8c8）
+# 方法：每个尖端各建一棵隔离 worktree（分离 HEAD、内容冻结标志全 1），读 go build / go vet / 改动包 go test / installer 模块 /
+#      前端类型检查与 vitest / maestro 自检；再在各自的基准提交上同条件重跑仓级门禁包与同一批失败 spec，
+#      按「失败测试名集合」把红分成【继承】（基准同条件也红）与【分支带来】（基准绿、尖端红）。
+# 说明：原始输出来自 /tmp/l108-audit/logs/val-*（/tmp 会被系统清理，这里留副本）。
+#      同名同红的门没有逐条核对失败原因是否相同（go test 未加 -v，失败信息无法准确归到测试名），以合并后树上的整包重跑为准。
+#      读数期间零生产写、零部署；两个分支原样保留在本机（不并入、不删除、不推送）。
+
+===== A. 尖端读数原始输出（job_validity.sh） =====
+--- upgrade tip ---
+TREE=/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3-val-upgrade HEAD=5a6b63c51462a3641c8e6c3494aad8772c9ecf00 base=27e719539 frozen=1 start=2026-11-25 10:20:35
+EXIT go_build=0 10:22:10
+PKGS_ROOT=11
+EXIT go_vet_pkgs_fail=0 EXIT go_test_pkgs_fail=1 ok=9 FAIL=3 notest=1 10:30:25
+EXIT inst_build=0
+EXIT inst_vet=0
+EXIT inst_test=0 ok=13 FAIL=0 10:30:33
+EXIT web_typecheck=0  10:30:55
+EXIT mobile_typecheck=0  10:31:05
+EXIT maestro_selftest=0  10:31:05
+EXIT web_vitest=1  Test Files  6 failed | 362 passed | 1 skipped (369)       Tests  11 failed | 3753 passed | 2 skipped (3766)  10:32:00
+EXIT mobile_vitest=1  Test Files  8 failed | 243 passed (251)       Tests  12 failed | 9107 passed | 1 skipped (9120)  10:32:37
+HEAD_END=5a6b63c51462a3641c8e6c3494aad8772c9ecf00 CONTENT_FROZEN=1 end=2026-11-25 10:32:37
+--- preview tip ---
+TREE=/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3-val-preview HEAD=c43c3e63f6d02acd7b445be09fb2946041e79690 base=5c106f8c8 frozen=1 start=2026-11-25 10:20:35
+EXIT go_build=0 10:22:11
+PKGS_ROOT=13
+EXIT go_vet_pkgs_fail=0 EXIT go_test_pkgs_fail=1 ok=11 FAIL=3 notest=1 10:31:28
+EXIT inst_build=0
+EXIT inst_vet=0
+EXIT inst_test=0 ok=14 FAIL=0 10:32:18
+EXIT web_typecheck=0  10:32:48
+EXIT mobile_typecheck=0  10:32:49
+EXIT maestro_selftest=0  10:32:49
+EXIT web_vitest=1  Test Files  6 failed | 362 passed | 1 skipped (369)       Tests  11 failed | 3753 passed | 2 skipped (3766)  10:33:39
+EXIT mobile_vitest=1  Test Files  8 failed | 243 passed (251)       Tests  12 failed | 9107 passed | 1 skipped (9120)  10:34:14
+HEAD_END=c43c3e63f6d02acd7b445be09fb2946041e79690 CONTENT_FROZEN=1 end=2026-11-25 10:34:14
+
+===== B. 改动包逐包结果（go vet / go test） =====
+--- upgrade tip: packages with changed .go files on the branch side ---
+PKG ./admin vet_rc=0 test_rc=0 secs=120
+PKG ./admin/dashboardapi vet_rc=0 test_rc=0 secs=1
+PKG ./cmd/gateway vet_rc=0 test_rc=0 secs=25
+PKG ./cmd/request-reconciliation-shadow vet_rc=0 test_rc=0 secs=1
+PKG ./domains/metrics vet_rc=0 test_rc=0 secs=0
+PKG ./domains/reconciliation vet_rc=0 test_rc=0 secs=3
+PKG ./domains/reportrollup vet_rc=0 test_rc=0 secs=0
+PKG ./domains/streaming/executors vet_rc=0 test_rc=0 secs=38
+PKG ./internal/metricsstore vet_rc=0 test_rc=0 secs=1
+PKG ./middleware vet_rc=0 test_rc=0 secs=1
+PKG ./scripts/ursmcheck vet_rc=0 test_rc=1 secs=304
+--- preview tip: packages with changed .go files on the branch side ---
+PKG ./admin vet_rc=0 test_rc=0 secs=124
+PKG ./admin/dashboardapi vet_rc=0 test_rc=0 secs=2
+PKG ./bg vet_rc=0 test_rc=0 secs=41
+PKG ./cmd/gateway vet_rc=0 test_rc=0 secs=25
+PKG ./cmd/request-reconciliation-shadow vet_rc=0 test_rc=0 secs=0
+PKG ./domains/errorplaybook vet_rc=0 test_rc=0 secs=3
+PKG ./domains/metrics vet_rc=0 test_rc=0 secs=1
+PKG ./domains/reconciliation vet_rc=0 test_rc=0 secs=2
+PKG ./domains/reportrollup vet_rc=0 test_rc=0 secs=1
+PKG ./domains/streaming/executors vet_rc=0 test_rc=0 secs=37
+PKG ./internal/metricsstore vet_rc=0 test_rc=0 secs=1
+PKG ./middleware vet_rc=0 test_rc=0 secs=2
+PKG ./scripts/ursmcheck vet_rc=0 test_rc=1 secs=318
+
+===== C. 仓级门禁包 scripts/ursmcheck：尖端对基准 =====
+--- upgrade: tip red=13 / base red=11 ---
+  [分支带来] (red on tip, green at base): 3
+    + TestPipefailRaceCriterionMatchesWording
+    + TestPipefailRaceLedgerCoversCandidateSet
+    + TestSection1975CandidateListMatchesGeneratorByteForByte
+  [继承] (red at base too): 10
+    = TestAdminRoutesSnapshotMatchesGenerator
+    = TestDanglingRelationReferencesAreExempted
+    = TestDbObjectExpectSetMatchesIndependentDerivation
+    = TestDbObjectGapLedgerIsFullyRecomputable
+    = TestDeployEnvFlagNoGapRemains
+    = TestInstallerReachabilityLedgerIsRecomputable
+    = TestInstallerReachabilityLedgerPinsItsInputs
+    = TestPGTestEnvRegistryCoversEveryGapName
+    = TestRealDBLegsUseDeclaredDSNEnvNames
+    = TestRequestSurfaceDocEvidenceStillHolds
+    - (red at base, green on tip) TestAdminRoutesSnapshotRowCount
+--- preview: tip red=9 / base red=1 ---
+  [分支带来] (red on tip, green at base): 8
+    + TestDbObjectExpectSetMatchesIndependentDerivation
+    + TestDbObjectGapLedgerIsFullyRecomputable
+    + TestInstallerReachabilityLedgerIsRecomputable
+    + TestPGTestEnvRegistryCoversEveryGapName
+    + TestPipefailRaceCriterionMatchesWording
+    + TestPipefailRaceLedgerCoversCandidateSet
+    + TestRealDBLegsUseDeclaredDSNEnvNames
+    + TestSection1975CandidateListMatchesGeneratorByteForByte
+  [继承] (red at base too): 1
+    = TestInstallerReachabilityLedgerPinsItsInputs
+
+===== D. 前端 vitest：尖端（全量）对基准（只跑尖端失败的同一批 spec） =====
+--- upgrade / web: tip red=11 / base red=6 ---
+  [分支带来] 5
+    + src/components/ui/mobileListUx.spec.ts > 03 §3.3 移动端行点击契约 > KNOWN_GAP 的每一项，其文件必须真的有详情目的地（缺口已修则本门转红）
+    + src/config/orphanViewComponent.test.ts > orphanViewComponent —— 孤儿组件守卫 > 豁免表不得腐烂：登记的条目必须仍然是孤儿（已修复 ⇒ 红）
+    + src/views/analyticsChartLifecycle.contract.spec.ts > P1-2 ECharts 实例生命周期 > ② ClientAnalyticsView：dispose + 路由参数 watch（换 id 必须重画）
+    + src/views/analyticsChartLifecycle.contract.spec.ts > P1-2 ECharts 实例生命周期 > ③ TaskAnalyticsView：dispose + 路由参数 watch（换 id 必须重画）
+    + src/views/userProfileEmptyVsFailed.silentcatch.test.ts > UserProfileView：加载失败不得说成「暂无数据」 > ② 成功但确实没数据 → 仍然显示「暂无用户画像数据」
+  [继承] 6
+    = src/components/ui/mobileListUx.spec.ts > 03 §3.3 移动端行点击契约 > NON_NAVIGABLE 的每一项，其文件不得有详情目的地（有了就该给入口）
+    = src/components/ui/mobileListUx.spec.ts > 03 §3.3 移动端行点击契约 > 登记表与实测集合双向相等
+    = src/i18n/localeKeyParity.test.ts > i18n 跨语种键存在性平价（localeKeyParity） > ★ 硬闸：每个可达键必须在全部 8 个语种都存在（双向，不设参照方）
+    = src/i18n/localeKeyParity.test.ts > i18n 跨语种键存在性平价（localeKeyParity） > 棘轮：各语种「相对 union 缺失的键数」不得超过 baseline（只许降不许升）
+    = src/i18n/parity.test.ts > i18n parity gate > every locale explicitly defines all zh-CN leaf keys
+    = src/i18n/parity.test.ts > i18n parity gate > every locale resolves zh-CN module keys through the configured English fallback
+--- upgrade / web-mobile: tip red=12 / base red=12 ---
+  [分支带来] 0
+  [继承] 12
+    = src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-1 ★★★★★ 读数：分母必须写在这里，不许只报「对不上的几条」
+    = src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上
+    = src/api/goLineRef.spec.ts > ② ★★ 未登记的漂移一律红 > ②-1 ★★★★★ 对不上的引用必须全部已登记（★ 本批起覆盖**全范围**）
+    = src/api/goLineRef.spec.ts > ③ ★★★ 登记项必须仍然对不上（修好了就要删登记） > ③-1 ★★★★★ 登记项每一条都仍然判为对不上（修好了就要删登记）
+    = src/api/orphanLedger.spec.ts > 孤儿棘轮 > ⑥-2 ★★★★★ 「可达但无 views 直接引用」的模块必须逐个点名
+    = src/i18n/dynamicKeys.spec.ts > ★★★ 第六组：拼接前缀的**覆盖**门（本批新增） > ⑥-1 ★★★★★ 源码里每一个拼接前缀都必须登记在 DYNAMIC_KEYS 里
+    = src/i18n/orphanKeys.spec.ts > ② ★★★ 未登记的孤儿键一律红 > ②-1 ★★★★★ 判为孤儿的键必须全部已登记
+    = src/views/DataLifecycleStorageView.spec.ts > ① 权限档 admin（两条独立理由，缺一不可） > ①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ `:1034`/`:1035`（12h-audit 20261017）→ 实为 `:1038`（2026-10-21 views 行号订正轮）→ 实为 `:1041`（2026-10-26 行号漂移订正轮）
+    = src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-6 ★★★★★★ 读 Go 源码：`:1182` 与 `:1185` **相邻两行却是两种档位**
+    = src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:1178 → 实为 :1179/:1180/:1182/:1185 → 再漂至实为 :1182/:1183/:1185/:1188（2026-10-26 行号漂移订正轮）
+    = src/views/StorageMigrationStateView.spec.ts > ① 权限档「admin」（服务端无角色下限 ⇒ 前端是唯一的门） > ①-5 ★★★★★★ 读 Go 源码：`:1182`（superAdmin）与 `:1185`（admin）相邻两行两种档位
+    = src/views/TurnsFilterOptionsView.spec.ts > ① 权限档「admin」（第四个写下错话的模块） > ①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）→ 实为 `:1352`（2026-10-26 行号漂移订正轮）且是 admin 档
+--- preview / web: tip red=11 / base red=6 ---
+  [分支带来] 5
+    + src/components/ui/mobileListUx.spec.ts > 03 §3.3 移动端行点击契约 > KNOWN_GAP 的每一项，其文件必须真的有详情目的地（缺口已修则本门转红）
+    + src/config/pageHelpRegistry.test.ts > pageHelpRegistry 路由真实性 > 每条 match（除虚拟键）都对应 router.ts 里的真实路由 path
+    + src/views/analyticsChartLifecycle.contract.spec.ts > P1-2 ECharts 实例生命周期 > ② ClientAnalyticsView：dispose + 路由参数 watch（换 id 必须重画）
+    + src/views/analyticsChartLifecycle.contract.spec.ts > P1-2 ECharts 实例生命周期 > ③ TaskAnalyticsView：dispose + 路由参数 watch（换 id 必须重画）
+    + src/views/userProfileEmptyVsFailed.silentcatch.test.ts > UserProfileView：加载失败不得说成「暂无数据」 > ② 成功但确实没数据 → 仍然显示「暂无用户画像数据」
+  [继承] 6
+    = src/components/ui/mobileListUx.spec.ts > 03 §3.3 移动端行点击契约 > NON_NAVIGABLE 的每一项，其文件不得有详情目的地（有了就该给入口）
+    = src/components/ui/mobileListUx.spec.ts > 03 §3.3 移动端行点击契约 > 登记表与实测集合双向相等
+    = src/i18n/localeKeyParity.test.ts > i18n 跨语种键存在性平价（localeKeyParity） > ★ 硬闸：每个可达键必须在全部 8 个语种都存在（双向，不设参照方）
+    = src/i18n/localeKeyParity.test.ts > i18n 跨语种键存在性平价（localeKeyParity） > 棘轮：各语种「相对 union 缺失的键数」不得超过 baseline（只许降不许升）
+    = src/i18n/parity.test.ts > i18n parity gate > every locale explicitly defines all zh-CN leaf keys
+    = src/i18n/parity.test.ts > i18n parity gate > every locale resolves zh-CN module keys through the configured English fallback
+--- preview / web-mobile: tip red=12 / base red=12 ---
+  [分支带来] 0
+  [继承] 12
+    = src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-1 ★★★★★ 读数：分母必须写在这里，不许只报「对不上的几条」
+    = src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上
+    = src/api/goLineRef.spec.ts > ② ★★ 未登记的漂移一律红 > ②-1 ★★★★★ 对不上的引用必须全部已登记（★ 本批起覆盖**全范围**）
+    = src/api/goLineRef.spec.ts > ③ ★★★ 登记项必须仍然对不上（修好了就要删登记） > ③-1 ★★★★★ 登记项每一条都仍然判为对不上（修好了就要删登记）
+    = src/api/orphanLedger.spec.ts > 孤儿棘轮 > ⑥-2 ★★★★★ 「可达但无 views 直接引用」的模块必须逐个点名
+    = src/i18n/dynamicKeys.spec.ts > ★★★ 第六组：拼接前缀的**覆盖**门（本批新增） > ⑥-1 ★★★★★ 源码里每一个拼接前缀都必须登记在 DYNAMIC_KEYS 里
+    = src/i18n/orphanKeys.spec.ts > ② ★★★ 未登记的孤儿键一律红 > ②-1 ★★★★★ 判为孤儿的键必须全部已登记
+    = src/views/DataLifecycleStorageView.spec.ts > ① 权限档 admin（两条独立理由，缺一不可） > ①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ `:1034`/`:1035`（12h-audit 20261017）→ 实为 `:1038`（2026-10-21 views 行号订正轮）→ 实为 `:1041`（2026-10-26 行号漂移订正轮）
+    = src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-6 ★★★★★★ 读 Go 源码：`:1182` 与 `:1185` **相邻两行却是两种档位**
+    = src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:1178 → 实为 :1179/:1180/:1182/:1185 → 再漂至实为 :1182/:1183/:1185/:1188（2026-10-26 行号漂移订正轮）
+    = src/views/StorageMigrationStateView.spec.ts > ① 权限档「admin」（服务端无角色下限 ⇒ 前端是唯一的门） > ①-5 ★★★★★★ 读 Go 源码：`:1182`（superAdmin）与 `:1185`（admin）相邻两行两种档位
+    = src/views/TurnsFilterOptionsView.spec.ts > ① 权限档「admin」（第四个写下错话的模块） > ①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）→ 实为 `:1352`（2026-10-26 行号漂移订正轮）且是 admin 档
+
+--- 共有红的失败信息摘录（upgrade tip, web） ---
+  AssertionError: 豁免表里这些条目已不是孤儿组件（组件已被路由指向或已删除）：UserProfileListView
+  AssertionError: 跨语种键存在性不平等（223 条）：
+  AssertionError: 棘轮被突破：
+  AssertionError: Module: (index), Locale: ar-SA
+  AssertionError: Module: reports, Locale: ar-SA
+  AssertionError: expected '<script setup lang="ts">\nimport { re…' to match /watch\(clientId/
+  AssertionError: expected '<script setup lang="ts">\nimport { re…' to match /watch\(taskId/
+  AssertionError: expected '← common.backsessions.userProfile.det…' to contain '暂无用户画像数据'
+  AssertionError: 这些调用点 compact 无入口但**未登记**（要么补入口，要么登记理由）：
+  AssertionError: src/views/UserProfileView.vue:455 在源码里找不到了: expected undefined to be truthy
+  AssertionError: src/views/UserProfileView.vue:423 在源码里找不到了: expected undefined to be truthy
+
+===== E. 内存合并（git merge-tree --write-tree --name-only main <branch>）对当前 main =====
+--- upgrade: conflicted paths=32 ---
+    admin/canonical_read_points_registry_test.go
+    docs/audit/2026-10-24-magpie-v0.1.1367-改造落地审计.md
+    docs/db-changelog.md
+    docs/subsystems/request-surface.md
+    installer/cmd/llm-gw-installer/main.go
+    installer/internal/dbinit/runner.go
+    installer/internal/dbinit/runner_channel_ledger_test.go
+    internal/metricsstore/processor.go
+    maestro/flows/13-session-analytics-users.yaml
+    scripts/apply-db-revision-sequence.sh
+    scripts/audit/asset/admin-routes.txt
+    scripts/audit/asset/db-object-expect.tsv
+    scripts/audit/asset/post-surface-ledger.tsv
+    scripts/ursmcheck/request_surface_doc_currency_test.go
+    sql/schema/installed_startup_migrations.tsv
+    sql/schema/startup_migration_nonplain.tsv
+    web/src/api/sessionAnalytics.ts
+    web/src/components/analytics/SessionStatsRankings.vue
+    web/src/locales/ar-SA/reports.ts
+    web/src/locales/de-DE/reports.ts
+    web/src/locales/es-ES/reports.ts
+    web/src/locales/fr-FR/reports.ts
+    web/src/locales/ja-JP/reports.ts
+    web/src/locales/zh-TW/reports.ts
+    web/src/router.ts
+    web/src/views/BoardOperationalListView.vue
+    web/src/views/BoardOperationalView.test.ts
+    web/src/views/BoardOperationalView.vue
+    web/src/views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue
+    web/src/views/admin/session-analytics/SessionAnalyticsModelRankingView.vue
+    web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue
+    web/src/views/admin/session-analytics/components/SaTop5Rankings.vue
+--- preview: conflicted paths=25 ---
+    bg/node_probe_quota_verdict_test.go
+    docs/db-changelog.md
+    domains/errorplaybook/data_quality_source.go
+    installer/internal/dbinit/runner.go
+    installer/internal/dbinit/runner_channel_ledger_test.go
+    scripts/apply-db-revision-sequence.sh
+    scripts/apply-db-revision-sequence_runtime_test.py
+    scripts/deploy-seamless-docker.sh
+    sql/schema/startup_migration_nonplain.tsv
+    tests/deploy_211_teardown_order_test.sh
+    web/src/api/sessionAnalytics.ts
+    web/src/components/analytics/SessionStatsRankings.vue
+    web/src/locales/ar-SA/reports.ts
+    web/src/locales/de-DE/reports.ts
+    web/src/locales/es-ES/reports.ts
+    web/src/locales/fr-FR/reports.ts
+    web/src/locales/ja-JP/reports.ts
+    web/src/locales/zh-TW/reports.ts
+    web/src/views/BoardOperationalListView.vue
+    web/src/views/BoardOperationalView.test.ts
+    web/src/views/BoardOperationalView.vue
+    web/src/views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue
+    web/src/views/admin/session-analytics/SessionAnalyticsModelRankingView.vue
+    web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue
+    web/src/views/admin/session-analytics/components/SaTop5Rankings.vue
+--- in both sets: 20 | only upgrade: 12 | only preview: 5 ---
+
+===== F. 文件级分类（重算） =====
+--- codex/reconciliation-upgrade vs main: 320 paths changed on the branch side ---
+    30  already identical on main
+   239  differs from main
+    51  NEW on branch, absent on main
+     0  deleted on branch
+--- codex/reconciliation-release-preview vs its base 5c106f8c8: 335 paths (statuses {'A': 75, 'M': 260}) ---
+   278  same as upgrade tip
+     5  older state in upgrade history
+    52  content found in neither history
+  paths of "content found in neither history":
+    admin/canonical_read_points_registry_test.go
+    bg/node_probe_quota_verdict_test.go
+    bg/report_rollup_worker.go
+    cmd/gateway/main.go
+    docs/06-deployment/04-runbooks/operations/UPGRADE.md
+    docs/audit/2026-10-24-magpie-v0.1.1367-改造落地审计.md
+    docs/audit/2026-11-24-请求会话统计与内外对账复验总结.md
+    docs/db-changelog.md
+    docs/statistics-standardization-implementation-plan.md
+    docs/subsystems/request-surface.md
+    domains/errorplaybook/data_quality_source.go
+    domains/reconciliation/report_integration_test.go
+    domains/reportrollup/realdb_e2e_test.go
+    domains/reportrollup/rollup.go
+    installer/README.md
+    installer/cmd/llm-gw-installer/embeddata/startup/973_request_metrics_projection.sql
+    installer/cmd/llm-gw-installer/main.go
+    installer/cmd/llm-gw-installer/upgrade.go
+    installer/internal/dbinit/migration_version_identity_test.go
+    installer/internal/dbinit/runner.go
+    installer/internal/dbinit/runner_incremental_test.go
+    installer/internal/dbinit/runner_ledger_test.go
+    installer/internal/upgrader/manifest.go
+    installer/internal/upgrader/manifest_test.go
+    installer/internal/upgrader/offline_apply.go
+    installer/internal/upgrader/offline_apply_migrations_test.go
+    installer/migrations/973_request_metrics_projection/up.sql
+    internal/metricsstore/config.go
+    internal/metricsstore/processor.go
+    internal/metricsstore/processor_test.go
+    maestro/flows/13-session-analytics-users.yaml
+    maestro/tools/assert-session-analytics.mjs
+    scripts/apply-db-revision-sequence.sh
+    scripts/apply-db-revision-sequence_runtime_test.py
+    scripts/audit/asset/admin-routes.txt
+    scripts/audit/asset/post-surface-ledger.tsv
+    scripts/build-upgrade-package.sh
+    scripts/checks/fresh-install-smoke.sh
+    scripts/checks/request-reconciliation-schema.sql
+    scripts/deploy-seamless-docker.sh
+    scripts/init-local-db.sh
+    scripts/ops/test_wait_request_metrics_ready.py
+    scripts/ops/wait-request-metrics-ready.py
+    scripts/ursmcheck/request_surface_doc_currency_test.go
+    sql/migrations/startup/973_request_metrics_projection.sql
+    sql/schema/installed_startup_migrations.tsv
+    sql/schema/startup_migration_nonplain.tsv
+    tests/deploy_211_contract_test.sh
+    tests/deploy_211_teardown_order_test.sh
+    web/src/config/navCoverage.test.ts
+    web/src/config/pageHelpRegistry.ts
+    web/src/router.ts
+  of those, absent on both the upgrade tip and main (6):
+    docs/audit/2026-11-24-请求会话统计与内外对账复验总结.md
+    installer/cmd/llm-gw-installer/embeddata/startup/973_request_metrics_projection.sql
+    installer/migrations/973_request_metrics_projection/up.sql
+    internal/metricsstore/config.go
+    scripts/ops/test_wait_request_metrics_ready.py
+    sql/migrations/startup/973_request_metrics_projection.sql
+
+===== G. 迁移编号 =====
+--- upgrade tip (5a6b63c51) ---
+    sql/migrations/startup/983_request_metrics.down.sql
+    sql/migrations/startup/983_request_metrics.sql
+    sql/migrations/startup/983b_add_raw_model_name.down.sql
+    sql/migrations/startup/983b_add_raw_model_name.sql
+    sql/migrations/startup/983c_add_occurred_cursor_index.down.sql
+    sql/migrations/startup/983c_add_occurred_cursor_index.sql
+    sql/migrations/startup/983d_request_metrics_projection.down.sql
+    sql/migrations/startup/983d_request_metrics_projection.sql
+    sql/migrations/startup/988_provider_invoice_usage_buckets.down.sql
+    sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+    sql/migrations/startup/988b_reconciliation_version_ledger.down.sql
+    sql/migrations/startup/988b_reconciliation_version_ledger.sql
+--- preview tip (c43c3e63f) ---
+    sql/migrations/startup/973_request_metrics_projection.down.sql
+    sql/migrations/startup/973_request_metrics_projection.sql
+    sql/migrations/startup/983_request_metrics.down.sql
+    sql/migrations/startup/983_request_metrics.sql
+    sql/migrations/startup/983b_add_raw_model_name.down.sql
+    sql/migrations/startup/983b_add_raw_model_name.sql
+    sql/migrations/startup/983c_add_occurred_cursor_index.down.sql
+    sql/migrations/startup/983c_add_occurred_cursor_index.sql
+    sql/migrations/startup/988_provider_invoice_usage_buckets.down.sql
+    sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+--- main (main) ---
+    sql/migrations/startup/983_request_metrics.down.sql
+    sql/migrations/startup/983_request_metrics.sql
+    sql/migrations/startup/983b_add_raw_model_name.down.sql
+    sql/migrations/startup/983b_add_raw_model_name.sql
+    sql/migrations/startup/983c_add_occurred_cursor_index.down.sql
+    sql/migrations/startup/983c_add_occurred_cursor_index.sql
+    sql/migrations/startup/988_provider_invoice_usage_buckets.down.sql
+    sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+--- the ledger-description rewrite block (previous_description) exists only in: ---
+  main: none
+  codex/reconciliation-upgrade: none
+  codex/reconciliation-release-preview: ['installer/cmd/llm-gw-installer/embeddata/startup/973_request_metrics_projection.sql', 'installer/migrations/973_request_metrics_projection/up.sql', 'sql/migrations/startup/973_request_metrics_projection.sql']
