@@ -178,6 +178,8 @@
       <li><span class="tag">web-mobile</span> —— 窗口前既有的 11 个红（行号漂移类）；动态键 <code>rr.evidence.values.</code> 是扫描器看不见的第四种拼接形态。</li>
       <li><span class="tag">环境</span> —— <code>llm-gateway-local-8782</code> 崩溃循环（本地 PG 54318 不可达）；<code>.build-local</code> 11GB；<code>.audit-validation</code> 无保留策略；3 个已退出的 <code>llmgw-211-*</code> 容器。</li>
       <li><span class="tag">记录</span> —— 归档档内 L21、L74 各有两份；L79 在历史上被两轮用过；3 条旧归档指针标题对不上段头。</li>
+      <li><span class="tag">推送保护</span> —— pre-push 钩子在本克隆未接线（接上会拦住一切推送）。等价执行结果：敏感信息扫描 BLOCK 32／WARN 2073，<b>本轮新增的行上 0 条</b>；其中 2 条是根目录 <code>DEPLOYMENT-VERIFICATION-GUIDE.md</code> 的本地开发库口令，请 owner 确认是否移除。</li>
+      <li><span class="tag">上游带入</span> —— pre-push 钩子的 <code>tests/*.sh</code> 有 6 套真红（纯上游树同条件同红）：门脚本登记册缺上游新增的两个脚本、deploy_211 契约 1 条、ssh-retry 7 条、扫描白名单缺 1 条、cgo 名单不一致。</li>
       <li><span class="tag">沿用</span> —— 上一轮登记的 owner 待决项（N1/N5/N6 口径、通道重放 983、闸门扩面剩余半边、census 口径、方案 A、P2）本轮无变化。</li>
     </ul>
     <p class="note">本轮零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。所有修复在私有工作树上完成，逐文件暂存后提交。</p>
