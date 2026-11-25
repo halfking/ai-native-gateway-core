@@ -1,3 +1,16 @@
+# 【订正头 · 2026-11-25 第 29 轮 · 原文件原文一字未动，以下各行是原文】
+# ★ 原文第 1 行与第 2 行说「未推送、未合并、未部署」与「main 上的代码未改」——
+# ★ **这两句已被事实推翻**：该候选分支 **已被并行车道找回并合入 main**
+# ★ （合并 `0248b4c93b`，owner 指示「按建议执行」；候选提交 `bc22d1444e` 现为 `origin/main` 的祖先），
+# ★ 且**两道 cgo 门已回绿**（本轮实测：`verify_cgo_convention` EXIT=0 ／ 8 packages；
+# ★ `deploy_nocgo_build` EXIT=0 ／ 8 PASS 0 FAIL）。
+# ★ 下方 A–E 各段是**候选分支当时的实测读数**，其历史价值在于：
+# ★ **正因为这份证据档把设计与读数逐字留住了，该方案在被找回后仍可被逐字复核，而不是重新发明。**
+# ★ 复核命令：
+# ★   git merge-base --is-ancestor bc22d1444e origin/main   # 0 ⇒ 已并入
+# ★   bash tests/verify_cgo_convention_test.sh               # 期望 EXIT=0
+# ★   bash tests/deploy_nocgo_build_test.sh                   # 期望 EXIT=0
+# ★ 现状与待 owner 项见 docs/audit/2026-11-25-一周审核目标.md。
 # cgo 边界漂移的候选修法（第 28 轮，本地分支 wip/cgo-boundary-inject-20261125 @ bc22d1444；未推送、未合并、未部署）
 # 基线：origin/main dd592b93b。本文只记录候选分支上的实测读数；main 上的代码未改。
 # 说明：原始输出来自 /tmp/l108-audit/logs（/tmp 会被系统清理，这里留副本）。
