@@ -31,7 +31,10 @@ export interface RequestLogRow {
   cost_display: number | string | null
   cost_currency: string | null
   latency_ms: number | null
-  success: boolean
+  // 2026-11-25：历史残缺行的 success 在库里是 NULL（211 实测 53 行，同一时刻的一批）。
+  // 此前这种行会让整个列表 / 详情接口 503（扫描 NULL 进非空 bool 失败）⇒ 现如实返回 null；
+  // 状态以 request_status 为准（这类行是 in_progress）。各处都是真值判断，null 与 false 同义。
+  success: boolean | null
   request_status: 'in_progress' | 'success' | 'failure' | 'rate_limited'
   error_kind: string | null
   search_text: string | null

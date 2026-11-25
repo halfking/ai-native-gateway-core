@@ -42,7 +42,12 @@ type requestLogRow struct {
 	CostDisplay       *float64  `json:"cost_display"`
 	CostCurrency      *string   `json:"cost_currency"`
 	LatencyMs         *int      `json:"latency_ms"`
-	Success           bool      `json:"success"`
+	// ★ 2026-11-25：Success 是**可空**的。session_turns.success 对少数历史残缺行是
+	// NULL（211 实测 53 行，同一时刻的一批：无 status_code / error_kind）——它们经
+	// requestLogStatusExpr 归为 in_progress。此前这里是非空 bool ⇒ 任何把它们选出来的
+	// 查询（如 request_status=in_progress，或它们恰落在某一页里）在行扫描时抛
+	// 「cannot scan NULL into *bool」⇒ 整页 503（详情接口同理）。现如实返回 null。
+	Success           *bool     `json:"success"`
 	RequestStatus     string    `json:"request_status"`
 	ErrorKind         *string   `json:"error_kind"`
 	SearchText        *string   `json:"search_text"`
