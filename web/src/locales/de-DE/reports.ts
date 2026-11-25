@@ -11,7 +11,7 @@ export default {
   legacySnapshotView: 'Historische Snapshots',
   daily: {
     terminalProjection: "Endgültige Nutzung aus der Anfrageprojektion",
-    terminalProjectionPending: "Ein Teil der endgültigen Nutzung wird noch verarbeitet",
+    terminalProjectionPending: "Die abschließenden Nutzungsdaten werden noch synchronisiert. Der älteste Eintrag wartet seit {at}. Korrekturen aus anderen Tagen können diesen Bericht beeinflussen.",
     title: 'Tägliche Abgleichsbelege',
     section: 'Belegart',
     day: 'Abgleichsdatum',
@@ -48,9 +48,6 @@ export default {
       noInvoices: 'Für diesen Kalendertag wurden keine Lieferantenrechnungen importiert.',
       account: 'Lieferant {provider} · Konto {account}',
       fields: {
-      total_tokens: "Erfasste endgültige Token",
-      measured_total_requests: "Anfragen mit gemessener Gesamtzahl an Token",
-      usage_source: "Nutzungsquelle",
         invoice_total: 'Rechnungsgesamtbetrag',
         matched_lines: 'Verknüpfte Anfragezeilen',
         bucket_matched_lines: 'Geprüfte Nutzungsbuckets',
@@ -124,6 +121,9 @@ export default {
       internal: 'Brutto-Abbuchungen, netto gebuchte Credits und Verbrauchsbuckets werden für dieses Datum getrennt ausgewiesen.',
     },
     fields: {
+      total_tokens: "Erfasste endgültige Token",
+      measured_total_requests: "Anfragen mit gemessener Gesamtzahl an Token",
+      usage_source: "Nutzungsquelle",
       requests: 'Client-Anfragen',
       success: 'Erfolgreich',
       failure: 'Fehlgeschlagen',

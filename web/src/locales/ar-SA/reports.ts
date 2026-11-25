@@ -11,7 +11,7 @@ export default {
   legacySnapshotView: 'اللقطات التاريخية',
   daily: {
     terminalProjection: "الاستخدام النهائي من إسقاط الطلبات",
-    terminalProjectionPending: "بعض الاستخدام النهائي لم تتم معالجته بعد",
+    terminalProjectionPending: "تجري مزامنة الاستخدام النهائي. أقدم سجل في قائمة الانتظار منذ {at}. قد تؤثر تعديلات أيام أخرى في هذا التقرير.",
     title: 'أدلة التسوية اليومية',
     section: 'نوع الدليل',
     day: 'تاريخ التسوية',
@@ -48,9 +48,6 @@ export default {
       noInvoices: 'لم تُستورد أي فواتير من المزوّدين لهذا اليوم التقويمي.',
       account: 'المزوّد {provider} · الحساب {account}',
       fields: {
-      total_tokens: "الرموز النهائية المحتفظ بها",
-      measured_total_requests: "الطلبات التي قيس إجمالي رموزها",
-      usage_source: "مصدر الاستخدام",
         invoice_total: 'إجمالي الفاتورة',
         matched_lines: 'أسطر الطلبات المرتبطة',
         bucket_matched_lines: 'مجموعات الاستخدام المفحوصة',
@@ -124,6 +121,9 @@ export default {
       internal: 'تُعرض إجمالي الخصومات وصافي الأرصدة المرحّلة ومجموعات الاستهلاك بشكل منفصل لهذا التاريخ.',
     },
     fields: {
+      total_tokens: "الرموز النهائية المحتفظ بها",
+      measured_total_requests: "الطلبات التي قيس إجمالي رموزها",
+      usage_source: "مصدر الاستخدام",
       requests: 'طلبات العميل',
       success: 'ناجحة',
       failure: 'فاشلة',

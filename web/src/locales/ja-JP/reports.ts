@@ -11,7 +11,7 @@ export default {
   legacySnapshotView: '過去のスナップショット',
   daily: {
     terminalProjection: "リクエスト投影の終端使用量",
-    terminalProjectionPending: "一部の終端使用量を処理しています",
+    terminalProjectionPending: "終端使用量を同期しています。最も古い処理待ちの記録は {at} のものです。別の日の修正がこのレポートに影響する場合があります。",
     title: '日次照合エビデンス',
     section: 'エビデンス種別',
     day: '照合日',
@@ -48,9 +48,6 @@ export default {
       noInvoices: 'この暦日にインポートされたサプライヤー請求書はありません。',
       account: 'サプライヤー {provider} · アカウント {account}',
       fields: {
-      total_tokens: "保持された終端トークン",
-      measured_total_requests: "合計トークンを計測済みのリクエスト",
-      usage_source: "使用量の取得元",
         invoice_total: '請求書合計',
         matched_lines: '紐付いたリクエスト明細',
         bucket_matched_lines: '検証済みの使用量バケット',
@@ -124,6 +121,9 @@ export default {
       internal: '総デビット、差引記帳クレジット、消費バケットはこの日についてそれぞれ別に表示されます。',
     },
     fields: {
+      total_tokens: "保持された終端トークン",
+      measured_total_requests: "合計トークンを計測済みのリクエスト",
+      usage_source: "使用量の取得元",
       requests: 'クライアントリクエスト',
       success: '成功',
       failure: '失敗',

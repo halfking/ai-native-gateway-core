@@ -11,7 +11,7 @@ export default {
   legacySnapshotView: 'Instantáneas históricas',
   daily: {
     terminalProjection: "Uso final de la proyección de solicitudes",
-    terminalProjectionPending: "Parte del uso final aún se está procesando",
+    terminalProjectionPending: "El uso final aún se está sincronizando. El registro pendiente más antiguo es de {at}. Las correcciones de otros días pueden afectar a este informe.",
     title: 'Evidencia de conciliación diaria',
     section: 'Tipo de evidencia',
     day: 'Fecha de conciliación',
@@ -48,9 +48,6 @@ export default {
       noInvoices: 'No se importaron facturas de proveedores para este día natural.',
       account: 'Proveedor {provider} · Cuenta {account}',
       fields: {
-      total_tokens: "Tokens finales conservados",
-      measured_total_requests: "Solicitudes con un total de tokens medido",
-      usage_source: "Origen del uso",
         invoice_total: 'Total de factura',
         matched_lines: 'Líneas de solicitud vinculadas',
         bucket_matched_lines: 'Buckets de uso comprobados',
@@ -124,6 +121,9 @@ export default {
       internal: 'Los débitos brutos, los créditos contabilizados netos y los buckets de consumo se muestran por separado para esta fecha.',
     },
     fields: {
+      total_tokens: "Tokens finales conservados",
+      measured_total_requests: "Solicitudes con un total de tokens medido",
+      usage_source: "Origen del uso",
       requests: 'Solicitudes de cliente',
       success: 'Con éxito',
       failure: 'Con fallo',

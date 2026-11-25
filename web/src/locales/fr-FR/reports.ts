@@ -11,7 +11,7 @@ export default {
   legacySnapshotView: 'Instantanés historiques',
   daily: {
     terminalProjection: "Utilisation finale issue de la projection des requêtes",
-    terminalProjectionPending: "Une partie de l’utilisation finale est encore en cours de traitement",
+    terminalProjectionPending: "Les données d’utilisation finales sont en cours de synchronisation. La plus ancienne entrée en attente date du {at}. Les révisions d’autres jours peuvent modifier ce rapport.",
     title: 'Preuves de rapprochement quotidien',
     section: 'Type de preuve',
     day: 'Date de rapprochement',
@@ -48,9 +48,6 @@ export default {
       noInvoices: 'Aucune facture fournisseur n’a été importée pour ce jour calendaire.',
       account: 'Fournisseur {provider} · Compte {account}',
       fields: {
-      total_tokens: "Jetons finaux conservés",
-      measured_total_requests: "Requêtes dont le total de jetons a été mesuré",
-      usage_source: "Source de l’utilisation",
         invoice_total: 'Total de la facture',
         matched_lines: 'Lignes de requête associées',
         bucket_matched_lines: 'Buckets d’utilisation contrôlés',
@@ -124,6 +121,9 @@ export default {
       internal: 'Les débits bruts, les crédits comptabilisés nets et les buckets de consommation sont affichés séparément pour cette date.',
     },
     fields: {
+      total_tokens: "Jetons finaux conservés",
+      measured_total_requests: "Requêtes dont le total de jetons a été mesuré",
+      usage_source: "Source de l’utilisation",
       requests: 'Requêtes client',
       success: 'Succès',
       failure: 'Échec',

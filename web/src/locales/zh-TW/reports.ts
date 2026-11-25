@@ -11,7 +11,7 @@ export default {
   legacySnapshotView: '歷史快照',
   daily: {
     terminalProjection: "請求投影的終態用量",
-    terminalProjectionPending: "部分終態用量仍在處理",
+    terminalProjectionPending: "終態用量仍在同步，最早排隊於 {at}。跨日修訂也可能影響結果。",
     title: '每日對帳證據',
     section: '證據類型',
     day: '對帳日期',
@@ -48,9 +48,6 @@ export default {
       noInvoices: '此日曆天沒有已匯入的供應商帳單。',
       account: '供應商 {provider} · 帳戶 {account}',
       fields: {
-      total_tokens: "留存的終態 Token",
-      measured_total_requests: "已量測 Token 總量的請求",
-      usage_source: "用量來源",
         invoice_total: '帳單總額',
         matched_lines: '已關聯的逐筆行',
         bucket_matched_lines: '已核對的用量桶行',
@@ -124,6 +121,9 @@ export default {
       internal: '分別列出當日的扣款積分毛額、沖正後的淨積分與用量桶。',
     },
     fields: {
+      total_tokens: "留存的終態 Token",
+      measured_total_requests: "已量測 Token 總量的請求",
+      usage_source: "用量來源",
       requests: '用戶端請求',
       success: '成功',
       failure: '失敗',
