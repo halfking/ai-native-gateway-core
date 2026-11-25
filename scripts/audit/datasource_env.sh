@@ -138,6 +138,16 @@ export TEST_PG_DSN="$__datasource_dsn"
 export TEST_PG_URL="$__datasource_dsn"
 export TEST_RESOLVE_INVARIANT_DB_URL="$__datasource_dsn"
 export TEST_RETIREMENT_HTTP_DSN="$__datasource_dsn"
+# ★ TEST_UPSTREAM_COOLDOWN_DSN（第 27 轮代上游收口）：
+#   cmd/gateway/upstream_cooldown_test.go:304 的真库腿认这个变量名，★ 而事实源没登记
+#   ⇒ ⇒ 那条腿在两个通道里都会**静默 SKIP**（★ go test 把 SKIP 算成绿 ⇒ 门禁看不见「腿没跑」★★）。
+#   ⇒ 登记它 ⇒ 真库腿能拿到 DSN。
+#   ★ **为什么它可以进事实源**（★ 与 dsn_exclusive 的区别 ★）：
+#   setupCooldownDatabase（:302）**自己建一个独立 schema**（★ `cooldown_<UnixNano>` ★★），
+#   之后所有读写都经 `search_path` 落进那个 schema；Cleanup 只 **DROP 自己那个 schema**（:319）
+#   ⇒ ⇒ **不碰 public、也不清空任何既有对象** ⇒ 与 TEST_DATA_INIT_DSN 同款（★ 派生一次性落点 ★★）
+#   ⇒ ⇒ 通用 DSN 指向产品库是安全的。
+export TEST_UPSTREAM_COOLDOWN_DSN="$__datasource_dsn"
 # ⚠ TEST_SESSION_INGEST_DATABASE_URL **不在事实源里**（R86 轮）：
 #   它是 dsn_exclusive（专用值）—— internal/sessionv2mirror/ingest_schema_realdb_test.go:40
 #   的守卫要求「库名以 _test 结尾」**且** `TEST_SESSION_INGEST_ISOLATED=1`，
