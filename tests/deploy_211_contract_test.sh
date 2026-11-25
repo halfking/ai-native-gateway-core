@@ -648,11 +648,18 @@ else
   bad "引擎没有绑定体检：upstream 指向别的产品的端口时仍会照常切流/停槽"
 fi
 # 体检必须发生在**写动作之前**（迁移重放 / 起容器 / 切流 / 停旧槽都在它后面）
+# ★ 2026-11-25 第 28 轮（代上游收口）：「迁移」的锚点此前是 'REVISION_SEQ=' 的**首个**匹配。
+#   2ae7a12e8（2026-11-23）把路径解析挪到文件顶部之后，首个匹配变成顶部那行
+#   DD_REVISION_SEQ="$(…)/apply-db-revision-sequence.sh"——它只是定义路径、不写任何东西
+#   ⇒ 体检被误判成「晚于迁移」而假红（134 过 1 败）。
+#   现在锚在**真正执行重放的那一行**（bash "$REVISION_SEQ"）；并且锚点找不到时
+#   如实报「找不到锚点」而不是「位置太晚」——引擎改了写法时这条断言必须跟着改，不能蒙混。
 _guard_line="$(grep -n 'dd_check_slot_binding$' "$SCRIPT" | head -1 | cut -d: -f1)"
-_migrate_line="$(grep -n 'REVISION_SEQ=' "$SCRIPT" | head -1 | cut -d: -f1)"
+_migrate_line="$(grep -nE '^[[:space:]]*bash "\$REVISION_SEQ"' "$SCRIPT" | head -1 | cut -d: -f1)"
 _candidate_line="$(grep -n 'DD_CANDIDATE_CONTAINER="$(dd_container_name' "$SCRIPT" | head -1 | cut -d: -f1)"
-if [[ -n "$_guard_line" && -n "$_migrate_line" && -n "$_candidate_line" ]] \
-   && [[ "$_guard_line" -lt "$_migrate_line" && "$_guard_line" -lt "$_candidate_line" ]]; then
+if [[ -z "$_guard_line" || -z "$_migrate_line" || -z "$_candidate_line" ]]; then
+  bad "绑定体检顺序断言找不到锚点（体检=${_guard_line:-无} / 迁移重放=${_migrate_line:-无} / 起候选容器=${_candidate_line:-无}）⇒ 引擎改了写法，本断言要跟着改（不能当成通过）"
+elif [[ "$_guard_line" -lt "$_migrate_line" && "$_guard_line" -lt "$_candidate_line" ]]; then
   ok "绑定体检发生在迁移重放与起容器之前（脱节时一个字节都不写）"
 else
   bad "绑定体检的位置太晚（迁移/起容器已经动过了）"
