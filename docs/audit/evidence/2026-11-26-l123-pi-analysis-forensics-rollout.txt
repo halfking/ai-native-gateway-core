@@ -82,3 +82,23 @@
   curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:<port>/api/admin/pi-analysis/queue/<id>/evidence
   curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:<port>/api/admin/pi-analysis/queue/<id>/verify
 端口：211 活跃槽 8781（蓝绿后在 8781/8783 间切换）；245 8782；154 8781。
+
+## 六、收尾复核（回填推送之后；全部现跑；只读）
+主干此后推进到 d264c8ee83：回填提交 42768cc3f2 ＋ 测试夹具改名 d264c8ee83（纯测试），另含并行车 L124 的
+测试、判据库与文档。与三台在役的 3b7f6a25 相比，非测试、非文档的改动只有 internal/schemadelivery（没有非测试导入方）⇒ 行为等价，未再部署。
+  [211] version 2.6.2-3b7f6a25-20261126-211 build_seq 3286 ｜ 未鉴权 stats 401 ｜ authz 9/9 PASS
+         results total=8 parse_failed=0 ｜ evidence(#10) request 20 / session 1 / attempts 10 / window 3 / playbook 1，degraded=[]，34ms
+  [245] version 2.6.2-3b7f6a25-20261125-3173 ｜ 401 ｜ authz 9/9 PASS ｜ results total=20 parse_failed=0
+         evidence(#26) request 21 / session 1 / attempts 1 / window 2，degraded=[]，599ms
+  [154] version 2.6.2-3b7f6a25-20261125-3174 ｜ 401 ｜ authz 9/9 PASS
+         evidence(#26) 首次：degraded=[{"part":"request ledger","reason":"request ledger: query timed out (limit 3s); …"}]（其余几路照常，总 3349ms）
+                  同一条目重试三次：126 / 56 / 126ms，request 21，degraded=[]
+         执行计划（共享库，只读 EXPLAIN ANALYZE，request_id=4c3b2ff8…）：session_turns_hot 走 session_turns_hot_tenant_request_key，
+                  各月分区各走 (tenant_id, request_id, partition_date) 索引，Buffers: shared hit=19 ⇒ 不是查询缺陷
+「可自动修正」逐条读数（GET /results/{id} 的 fix_plan_view；两套库 28 条）：auto_fixable=true 0 条；
+         blockers：no_actions 27、view_only_type 1；rule_adjustment 有值的只有 245/154 的 #8
+         （{"action":"add_fallback_rules",…} ⇒ 白名单外 ⇒ note「1 unrecognized rule_adjustment item(s) ignored」）。
+         自动修正的 apply / revert 路径本轮未在生产数据上执行，只有单测覆盖。
+245/154 在役前端产物（静态核对，/opt/llm-gateway-go/releases/<seq>-3b7f6a25/web/assets）：
+         两台同为 PIAnalysisView-CduLkg8c.js（58,471 字节）；原样显示的翻译调用 0 处；取证键 86 个；详情各区块的 test id 齐全。
+         浏览器级真实渲染只在 211 做过（见第四节）。
