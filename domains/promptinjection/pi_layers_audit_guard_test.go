@@ -22,7 +22,6 @@ package promptinjection
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -442,8 +441,6 @@ func TestParseResponse_NormalisesEnums(t *testing.T) {
 //	· 「```json」分支不校验块内是不是 JSON；
 //	· 裸 JSON 分支取**第一个 {** 到**最后一个 }**。
 func TestExtractJSON_HandlesRealLLMOutputShapes(t *testing.T) {
-	ea := &ErrorAnalyzer{}
-
 	cases := []struct {
 		name     string
 		response string
@@ -472,16 +469,14 @@ func TestExtractJSON_HandlesRealLLMOutputShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := ea.extractJSON(tc.response)
-			if out == "" {
-				t.Fatalf("extractJSON returned empty for %q", tc.response)
+			// ★ 2026-11-25 容错改造：判据上移到真正的解析入口（extractJSON 已退役）——
+			//   「取第一个合法块」这条性质不变，但现在连「结果里的 root_cause」一起钉。
+			out, _ := parseAnalysisResponse(tc.response)
+			if out == nil {
+				t.Fatalf("parseAnalysisResponse returned nil for %q", tc.response)
 			}
-			var parsed map[string]interface{}
-			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-				t.Fatalf("extractJSON produced invalid JSON %q: %v", out, err)
-			}
-			if parsed["root_cause"] != tc.wantRoot {
-				t.Errorf("root_cause = %v, want %q (got %q)", parsed["root_cause"], tc.wantRoot, out)
+			if out.RootCause != tc.wantRoot {
+				t.Errorf("root_cause = %q, want %q", out.RootCause, tc.wantRoot)
 			}
 		})
 	}

@@ -176,7 +176,10 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 		//
 		// 现在即使不落盘，也把规范层装到 stderr 的 JSON handler 上，
 		// 保证「无论是否配置 LLM_GATEWAY_LOG_FILE，输出形态都一样」。
-		installStandard(newJSONHandler(os.Stderr, level), level)
+		//
+		// ★ 2026-11-25：目的地经 withRecent 包一层 ⇒ 近期日志环形缓冲
+		//   （recent.go）在不落盘模式下同样有内容。
+		installStandard(newJSONHandler(withRecent(os.Stderr), level), level)
 		return nil, nil
 	}
 
@@ -196,7 +199,11 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 	// Mirror to stderr so a misconfigured LLM_GATEWAY_LOG_FILE never
 	// silently drops logs. Operators can `tail -F` either stream
 	// interchangeably; JSON records are identical line-for-line.
-	mw := io.MultiWriter(lj, os.Stderr)
+	//
+	// ★ 2026-11-25：withRecent 在目的地之后多挂一条「近期日志」旁路
+	//   （recent.go）——它只拷贝已经格式化、已经脱敏的行，不改变前两个
+	//   目的地看到的字节。
+	mw := withRecent(lj, os.Stderr)
 	effectiveLogWriter = lj
 	loggerMu.Lock()
 	activeLogger = lj
@@ -269,7 +276,8 @@ func newJSONHandler(w io.Writer, level slog.Level) slog.Handler {
 // ⚠ 本函数**只**装规范层，不开落盘与 Bleve——那两件事必须等配置加载完
 // （落盘路径、轮转参数都来自配置）。
 func InstallEarly(level slog.Level) {
-	installStandard(newJSONHandler(os.Stderr, level), level)
+	// 2026-11-25：同样挂近期日志旁路 ⇒ 启动早期的行也进缓冲（见 recent.go）。
+	installStandard(newJSONHandler(withRecent(os.Stderr), level), level)
 }
 
 // installStandard 把 handler 装到 slog 默认 logger，并叠加 rule 71 的
@@ -440,7 +448,7 @@ func ReInit(cfg Config) error {
 
 	// 2) cfg.File == ""：停用
 	if cfg.File == "" {
-		installStandard(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		installStandard(slog.NewJSONHandler(withRecent(os.Stderr), &slog.HandlerOptions{
 			Level:       level,
 			ReplaceAttr: replaceAttr,
 		}), level)
@@ -450,7 +458,7 @@ func ReInit(cfg Config) error {
 
 	// 3) 创建新 logger
 	if err := os.MkdirAll(filepath.Dir(cfg.File), 0o755); err != nil {
-		installStandard(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		installStandard(slog.NewJSONHandler(withRecent(os.Stderr), &slog.HandlerOptions{
 			Level:       level,
 			ReplaceAttr: replaceAttr,
 		}), level)
@@ -464,7 +472,9 @@ func ReInit(cfg Config) error {
 		Compress:   cfg.Compress,
 		LocalTime:  cfg.LocalTime,
 	}
-	mw := io.MultiWriter(lj, os.Stderr)
+	// 2026-11-25：与 Init 同款——目的地经 withRecent 挂近期日志旁路 ⇒ 运行期
+	// 改日志配置（本函数）之后环形缓冲**不丢、不裂成两份**。
+	mw := withRecent(lj, os.Stderr)
 	effectiveLogWriter = lj
 	activeLogger = lj
 	activeConfig = cfg

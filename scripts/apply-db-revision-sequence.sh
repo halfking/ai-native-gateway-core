@@ -302,15 +302,33 @@ extract_migration_version() {
 #   version** ⇒ ★ 若投递面里有两个文件共用同一个版本键 ⇒ 台账那一行**无法证明**
 #   是哪一个文件写的 ⇒ ★★ 用它推断「本文件已被应用」＝**假跳过** ⇒ 产物永不落地 ★★
 # ★ 用法：migration_version_conflict_count "<version>" <basename...>
-#   ⇒ 打印同键文件数（★ 1 ⇒ 键在本投递面内唯一 ⇒ 推断成立 ★；★ ≥2 ⇒ 拒绝推断 ★）
+#   ⇒ 打印同键的**不同文件**数（★ 1 ⇒ 键在本投递面内唯一 ⇒ 推断成立 ★；
+#     ★ ≥2 ⇒ 拒绝推断 ★）
 # ★ 实测（★ 2026-11-26 L121 轮 ★）：★ 投递面 369 条内部 = 0 组冲突；
 #   ★ 投递面 ∪ 安装器清单（407 条）= 0 组冲突 ⇒ ★ 当前唯一性成立 ★★
 #   ⇒ 但这是**实测读数、不是恒真** ⇒ ⇒ 运行时必须每次现查、★ 不能写死 ★
+#
+# ★★ 2026-11-26 12h 审计轮订正（★ **计数口径** ★）：★★
+#   原实现按**数组条目**计数 ⇒ 而投递面 files=() 里**同一个文件被登记了两次**
+#   （800_provider_endpoint_protocols.sql / 856_usage_ledger_ts_cover_agg_idx.sql
+#   —— 两处都是不同轮次的**重复登记**，不是两个不同文件）⇒ 该版本的「同键文件数」
+#   被算成 2 ⇒ ★ 唯一性闸对这两个版本**误判为冲突** ⇒ 方案A 的推断被**误关**
+#   ⇒ 这两个文件在历史库上会被**重放**（而不是被识别为「安装器已应用」）。
+#   ⇒ ★⇒ 闸要问的是「**几个不同的文件**共用这个版本键」⇒ ⇒ **按不同文件计数** ★
+#   ⇒ ★ 这与仓内**唯一真源**的口径一致：scripts/lib/deploy-surface.sh 的
+#     deploy_surface_extract **本来就去重**（★ 「去重且保留首次位置」★）⇒
+#     ★ 本函数若不按不同文件计数，★ **同一口径就分叉成了两份** ★（★ 仓内既有教训 ★）。
 migration_version_conflict_count() {
-  local version="$1" base count=0
+  local version="$1" base count=0 seen=" "
   shift
   for base in "$@"; do
-    [[ "$(extract_migration_version "$base")" == "$version" ]] && count=$((count + 1))
+    [[ "$(extract_migration_version "$base")" == "$version" ]] || continue
+    # ★ 同一 basename 只计一次（★ 「几个不同的文件」而不是「几个条目」★）
+    case "$seen" in
+      *" $base "*) continue ;;
+    esac
+    seen="$seen$base "
+    count=$((count + 1))
   done
   printf '%s' "$count"
 }
@@ -1332,13 +1350,17 @@ files=(
   # 序列通道缺席 → 目录驱动门报「startup migration 801 exists but is missing
   # from the channel files=(...) array」，正是该门注释里点名的 693/699/701/703
   # 复发形态：fresh install 有、存量库升级永远不落地）。
-  # 800：每 provider 多端点表 + providers 旧行回填，CREATE TABLE IF NOT
-  # EXISTS + ON CONFLICT DO NOTHING 幂等。
   # 801（原 759，撞号让位后改号）：只 CREATE OR REPLACE 733 建的
   # promote_session_turn_details_hot_to_partition，不跑批量 DELETE、不改
   # 存量分区，重放安全。位置约束同 StartupFiles：必须晚于 733（其目标函数
   # 依赖 733 建的 session_turn_details 表与 hot 表），故排在序列末尾。
-  "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
+  # ★ 2026-11-26 12h 审计轮：★ 800 在本数组里**被登记了两次**（一次在 631 之后
+  # ★ —— 那里它的回填依赖 631 加的 providers.deleted_at；★ 一次在这里）★★
+  #   ⇒ 按仓内唯一真源 scripts/lib/deploy-surface.sh 的口径（★ 「去重且保留
+  #   首次位置」★）★ 生效位置一直是**首次登记处**（631 之后）★ ⇒ ★ 这一处是
+  #   **重复登记**、删除它**不改变投递顺序与投递内容**（★ 第二次走到时早已被
+  #   台账指纹判为已应用 ★）⇒ 删除，避免「同一文件两个条目」被误读成
+  #   「版本键冲突」（★ 唯一性闸按条目计数时会把 800 误判为冲突 ★）。
   "$ROOT_DIR/sql/migrations/startup/801_session_turn_details_duplicate_drain.sql"
   # 2026-09-30 会话存储解耦 v3 S4 前置（802）：session_turn_details 族补
   # (tenant_id, gw_task_id) 部分索引（母表 + hot）。跨租户访问门
@@ -1653,7 +1675,11 @@ files=(
   # 与 842 同款取舍：不加 CONCURRENTLY（分区父表上会被拒），窗口内写被阻塞、
   # 读不受影响，逐分区合计 <900 MB，实测窗口秒级，建议低峰应用。
   # 两条 CREATE INDEX IF NOT EXISTS 均幂等；无表依赖，可放链尾。
-  "$ROOT_DIR/sql/migrations/startup/856_usage_ledger_ts_cover_agg_idx.sql"
+  # ★ 2026-11-26 12h 审计轮：★ 856 在本数组里**被登记了两次**（★ 一次在上面
+  # ★ 「856（2026-10-13 …本轮补齐五点同步的另一腿）」那一组 ★）★★
+  #   ⇒ 按唯一真源 deploy-surface.sh 的口径（★ 「去重且保留首次位置」★）
+  #   ★ 生效位置一直是**首次登记处** ★ ⇒ ★ 这一处是重复登记、删除它不改变
+  #   投递顺序与投递内容 ★ ⇒ 删除（同 800，★ 避免被误读成版本键冲突 ★）。
   # 2026-10-07 §10.106.28：candidate_failure_logs 两臂补 (ts DESC) 索引。
   # 该族无任何 ts 打头的索引 ⇒ 无过滤的 max(ts) 只能全量扫索引条目
   # （父表 cost 4566 / hot 171，26 倍差），而告警语句 58,001 次调用。
@@ -3370,8 +3396,11 @@ END
 # fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
 # 产物必须真实在场」，不是「库里所有记账行」）。
 declare -a sha_matched_markers=()
-# 本轮识别为「安装器已应用」而跳过的文件（★ 方案 A：部署通道账本统一）
-declare -a installer_applied_markers=()
+# ★ 2026-11-26 12h 审计轮：★ 删除 `installer_applied_markers`（★ 写而不读 ★）：
+#   它只被 append、从不被读取 ⇒ 留着的唯一效果是**让读代码的人以为**存在一条
+#   「推断跳过也要进探针范围」的路径（★ 而探针范围是 `sha_matched_markers` ★）
+#   ⇒ ★ 推断跳过**不进**探针范围是**刻意的**（★ 推断出来的跳过没有文件身份
+#   证明 ⇒ 不拿它做「台账 ↔ 产物」对账 ★）⇒ 变量删掉，口径留在注释里 ★。
 
 # ★ 投递面 basename 清单（★ 版本键唯一性闸门的输入 ★）
 # ★ 为什么需要它：★ schema_migrations.version 一行只能属于一个 version ⇒
@@ -3513,7 +3542,7 @@ for file in "${files[@]}"; do
     #   ★ 权威账只记录「本通道真跑过」的行 ⇒ ★ 不制造假指纹、不吸收后续漂移 ★
     printf 'skipped by installer-ledger inference (version %s; not recorded in the deployment ledger): %s\n' \
       "${version}" "${file#"$ROOT_DIR/"}"
-    installer_applied_markers+=("${base}")
+    # ★ 推断跳过**不进**探针范围（★ 探针范围＝sha_matched_markers＝本通道真跑过的 ★）
     continue
   fi
 

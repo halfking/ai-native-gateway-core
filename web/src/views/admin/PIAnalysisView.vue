@@ -148,6 +148,15 @@
 
     <!-- 分析结果表格 -->
     <div v-if="activeTab === 'results'" class="table-container">
+      <!-- ★ 2026-11-25：存量「解析失败」的占位结论 —— 一键重解析（只读已存的响应，不调用模型）。 -->
+      <div class="chain-note-banner" v-if="parseFailedCount > 0" data-testid="pi-parse-failed-banner">
+        <strong>{{ t('common.piAnalysis.forensics.parseFailedBannerTitle', { n: parseFailedCount }) }}</strong>
+        <span>{{ t('common.piAnalysis.forensics.parseFailedBannerBody') }}</span>
+        <span v-if="bulkReparseNote" data-testid="pi-parse-failed-result">{{ bulkReparseNote }}</span>
+        <button class="btn-secondary" :disabled="bulkReparsing" @click="reparseAll">
+          {{ bulkReparsing ? '…' : t('common.piAnalysis.forensics.reparseAllButton') }}
+        </button>
+      </div>
       <table class="data-table">
         <thead>
           <tr>
@@ -236,6 +245,25 @@
                   <div class="timeline-label">{{ t('common.piAnalysis.detail.timelineCompleted') }}</div>
                   <div class="timeline-time">{{ activeContext?.completed_at ? formatTime(activeContext.completed_at) : '—' }}</div>
                 </div>
+                <!-- 修复已应用 / 最近复测：时间线从「错误发生」一直走到「修好了没有」。 -->
+                <template v-if="detailData?.applied_at">
+                  <div class="timeline-bar done"></div>
+                  <div class="timeline-step" data-testid="pi-timeline-fix-applied">
+                    <div class="timeline-dot done"></div>
+                    <div class="timeline-label">{{ t('common.piAnalysis.forensics.timelineFixApplied') }}</div>
+                    <div class="timeline-time">{{ formatTime(detailData.applied_at) }}</div>
+                  </div>
+                </template>
+                <template v-if="lastVerification">
+                  <div class="timeline-bar done"></div>
+                  <div class="timeline-step" data-testid="pi-timeline-last-verify">
+                    <div class="timeline-dot done"></div>
+                    <div class="timeline-label">{{ t('common.piAnalysis.forensics.timelineLastVerify') }}</div>
+                    <div class="timeline-time">
+                      <span class="status" :class="verdictClass(verdictOf(lastVerification))">{{ verdictLabel(verdictOf(lastVerification)) }}</span>
+                    </div>
+                  </div>
+                </template>
               </div>
               <div v-if="detailData?.analysis_duration_ms" class="timeline-duration">
                 {{ t('common.piAnalysis.detail.timelineDuration', { ms: detailData.analysis_duration_ms }) }}
@@ -308,9 +336,125 @@
               </div>
             </div>
 
+            <!-- ── 取证材料（2026-11-25 取证轮）：请求账本 / 上游尝试 / 会话上下文 / 服务日志 / 手册 ── -->
+            <div class="detail-section" data-testid="pi-evidence-section">
+              <h3>{{ t('common.piAnalysis.forensics.evidenceTitle') }}</h3>
+              <div class="actions-section">
+                <button class="btn-secondary" :disabled="evidenceLoading" @click="loadEvidence">
+                  {{ evidenceLoading ? t('common.piAnalysis.forensics.evidenceLoading') : t('common.piAnalysis.forensics.evidenceReload') }}
+                </button>
+                <div class="view-only-note" v-if="evidenceFailed" data-testid="pi-evidence-failed">{{ t('common.piAnalysis.forensics.evidenceFailed') }}</div>
+              </div>
+
+              <template v-if="evidence">
+                <!-- 请求账本：出错的那一条请求（模型 / 协议 / 结果 / 失败阶段 / 耗时 / tokens） -->
+                <div class="detail-sub" v-if="evidenceRequestFacts.length" data-testid="pi-evidence-request">
+                  <h4>
+                    {{ t('common.piAnalysis.forensics.requestTitle') }}
+                    <button v-if="evidence.request_id" class="btn-link" @click="openRequest(evidence.request_id)">{{ t('common.piAnalysis.forensics.openRequest') }}</button>
+                  </h4>
+                  <div class="detail-grid">
+                    <div class="detail-item" v-for="(f, i) in evidenceRequestFacts" :key="i">
+                      <label>{{ factLabel(f.key) }}:</label>
+                      <span v-if="f.lines"><span v-for="(line, j) in f.lines" :key="j">{{ line }}<br /></span></span>
+                      <span v-else :class="f.cls">{{ factValue(f) }}</span>
+                    </div>
+                  </div>
+                  <pre class="collapsible" v-if="evidence.request?.request_preview">{{ evidence.request.request_preview }}</pre>
+                </div>
+
+                <!-- 上游尝试：该请求在各上游上的失败记录 -->
+                <div class="detail-sub" v-if="evidenceAttempts.length" data-testid="pi-evidence-attempts">
+                  <h4>{{ t('common.piAnalysis.forensics.attemptsTitle') }}</h4>
+                  <div class="rule-card" v-for="(a, i) in evidenceAttempts" :key="i">
+                    <div class="rule-card-head">
+                      <span class="badge badge-info">#{{ a.attempt_index }}</span>
+                      <span>{{ a.provider_id }} / {{ a.model }}</span>
+                      <span class="badge badge-warning">{{ a.error_kind }}</span>
+                      <span v-if="a.upstream_status_code" class="status status-error">{{ t('common.piAnalysis.forensics.factUpstreamStatus') }} {{ a.upstream_status_code }}</span>
+                      <span class="muted">{{ formatTime(a.ts) }} · {{ a.latency_ms }} ms</span>
+                    </div>
+                    <p>{{ a.error_message }}</p>
+                  </div>
+                </div>
+
+                <!-- 会话上下文：同一会话里前后相邻的请求（时间正序） -->
+                <div class="detail-sub" v-if="evidenceSession.length" data-testid="pi-evidence-session">
+                  <h4>{{ t('common.piAnalysis.forensics.sessionTitle') }}</h4>
+                  <div class="rule-card" v-for="(row, i) in evidenceSession" :key="i">
+                    <div class="rule-card-head">
+                      <span class="badge badge-error" v-if="row.is_target">{{ t('common.piAnalysis.forensics.targetRequest') }}</span>
+                      <span class="muted">{{ formatTime(row.ts) }}</span>
+                      <span class="status" :class="requestStatusClass(row.request_status)">{{ requestStatusLabel(row.request_status) }}</span>
+                      <span>{{ row.client_model }}</span>
+                      <span v-if="row.error_kind" class="badge badge-error">{{ row.error_kind }}</span>
+                      <span class="muted" v-if="row.latency_ms">{{ row.latency_ms }} ms</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 同型错误分布：偶发还是一直在发生 -->
+                <div class="detail-sub" v-if="evidenceWindow.length" data-testid="pi-evidence-window">
+                  <h4>{{ t('common.piAnalysis.forensics.windowTitle') }}</h4>
+                  <div class="rule-card" v-for="(w, i) in evidenceWindow" :key="i">
+                    <div class="rule-card-head">
+                      <span>{{ w.provider_id }} / {{ w.model }}</span>
+                      <span class="badge badge-warning">{{ w.error_kind }}</span>
+                      <span>{{ t('common.piAnalysis.forensics.windowCount', { n: w.count }) }}</span>
+                      <span class="muted">{{ formatTime(w.last_ts) }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 服务日志：本实例近期日志缓冲里与该错误相关的行 -->
+                <div class="detail-sub" data-testid="pi-evidence-logs">
+                  <h4>{{ t('common.piAnalysis.forensics.logsTitle') }}</h4>
+                  <p class="muted" v-if="!evidenceLogText" data-testid="pi-evidence-logs-empty">{{ evidenceLogNote }}</p>
+                  <pre class="collapsible" v-else>{{ evidenceLogText }}</pre>
+                </div>
+
+                <!-- 错误处理手册里的同型条目 -->
+                <div class="detail-sub" v-if="evidencePlaybook.length" data-testid="pi-evidence-playbook">
+                  <h4>{{ t('common.piAnalysis.forensics.playbookTitle') }}</h4>
+                  <div class="rule-card" v-for="(entry, i) in evidencePlaybook" :key="i">
+                    <div class="rule-card-head">
+                      <span class="badge badge-info">#{{ entry.id }}</span>
+                      <span>{{ entry.title }}</span>
+                      <span class="badge" :class="entry.enabled ? 'badge-success' : 'badge-warning'">{{ entry.enabled ? t('common.piAnalysis.forensics.enabledYes') : t('common.piAnalysis.forensics.enabledNo') }}</span>
+                    </div>
+                    <p>{{ entry.root_cause }}</p>
+                    <div class="action-reason">{{ t('common.piAnalysis.forensics.playbookMeta', { kind: entry.plan_kind, hits: entry.hit_count, ok: entry.success_count, fail: entry.failure_count }) }}</div>
+                  </div>
+                </div>
+
+                <!-- 取证说明：哪一路没取到、为什么 -->
+                <div class="detail-sub" v-if="evidenceNotes.length" data-testid="pi-evidence-notes">
+                  <h4>{{ t('common.piAnalysis.forensics.notesTitle') }}</h4>
+                  <ul><li v-for="(note, i) in evidenceNotes" :key="i">{{ note }}</li></ul>
+                </div>
+              </template>
+            </div>
+
             <!-- ── 分析 · 结论 ─────────────────────────────────────── -->
             <div class="detail-section">
               <h3>{{ t('common.piAnalysis.detail.analysisTitle') }}</h3>
+              <!-- ★ 旧解析器读不出的占位结论：重新解析存量响应（不调用模型）/ 带取证重新分析。 -->
+              <div class="view-only-note" v-if="parseFailed" data-testid="pi-parse-failed-note">
+                <p>{{ t('common.piAnalysis.forensics.parseFailedBanner') }}</p>
+                <div class="actions-section">
+                  <button class="btn-secondary" :disabled="reparsing" @click="reparseThis">
+                    {{ reparsing ? '…' : t('common.piAnalysis.forensics.reparseButton') }}
+                  </button>
+                  <div class="view-only-note" v-if="reparseFailed" data-testid="pi-reparse-failed">{{ t('common.piAnalysis.forensics.reparseFailed') }}</div>
+                </div>
+              </div>
+              <!-- 解析诊断：模型输出不完整 / 未按结构 ⇒ 结论按保守口径处理（如实说明，不装作完整）。 -->
+              <div class="view-only-note" v-else-if="diagnostics && diagnostics.mode !== 'canonical'" data-testid="pi-parse-diagnostics">
+                <p v-if="diagnostics.truncated || diagnostics.finish_reason === 'length'">{{ t('common.piAnalysis.forensics.parseNoteTruncated') }}</p>
+                <p v-if="diagnostics.mode === 'unstructured'">{{ t('common.piAnalysis.forensics.parseNoteUnstructured') }}</p>
+                <p v-else-if="diagnostics.mode === 'salvaged'">{{ t('common.piAnalysis.forensics.parseNoteSalvaged') }}</p>
+                <p v-if="diagnostics.lost_keys.length">{{ t('common.piAnalysis.forensics.parseNoteLost', { keys: diagnostics.lost_keys.join(', ') }) }}</p>
+              </div>
               <template v-if="detailData">
                 <div class="detail-grid">
                   <div class="detail-item">
@@ -365,13 +509,93 @@
                   <h4>{{ t('common.piAnalysis.detail.rawResponseTitle') }}</h4>
                   <pre class="collapsible">{{ detailData.llm_response_raw }}</pre>
                 </div>
+                <div class="detail-sub" v-if="modelOutput" data-testid="pi-model-output">
+                  <h4>{{ t('common.piAnalysis.forensics.modelOutputTitle') }}</h4>
+                  <pre class="collapsible">{{ JSON.stringify(modelOutput, null, 2) }}</pre>
+                </div>
               </template>
-              <p v-else class="muted">{{ t('common.piAnalysis.detail.notAnalyzedYet') }}</p>
+              <p v-else-if="!analyzeQueued" class="muted">{{ t('common.piAnalysis.detail.notAnalyzedYet') }}</p>
             </div>
 
             <!-- ── 修正建议 ────────────────────────────────────────── -->
             <div class="detail-section" v-if="detailData">
-              <h3>{{ t('common.piAnalysis.detail.fixTitle') }}</h3>
+              <h3>{{ t('common.piAnalysis.forensics.planTitle') }}</h3>
+              <!-- ★ 2026-11-25：结构化修正方案 —— 自动动作 / 人工步骤 / 配置 / 代码 / 部署 / 验证。
+                   自动动作由下面「规则调整建议」承载（后端单点判定能不能执行）；其余全部给人落地。 -->
+              <div class="view-only-note" v-if="planIsEmpty" data-testid="pi-plan-empty">{{ t('common.piAnalysis.forensics.planEmpty') }}</div>
+              <template v-if="fixPlan && !planIsEmpty">
+                <div class="detail-sub" v-if="fixPlan.summary" data-testid="pi-plan-summary">
+                  <h4>{{ t('common.piAnalysis.forensics.planSummary') }}</h4>
+                  <p>{{ fixPlan.summary }}</p>
+                </div>
+
+                <div class="detail-sub" v-if="fixPlan.manual_steps?.length" data-testid="pi-plan-steps">
+                  <h4>{{ t('common.piAnalysis.forensics.planManualTitle') }}</h4>
+                  <div class="rule-card" v-for="st in fixPlan.manual_steps" :key="st.step">
+                    <div class="rule-card-head">
+                      <span class="badge badge-info">{{ st.step }}</span>
+                      <span class="badge" :class="stepKindBadge(normalizeKind(st.kind))">{{ kindLabel(st.kind) }}</span>
+                      <span class="severity" :class="stepRiskClass(normalizeRisk(st.risk))">{{ riskLabel(st.risk) }}</span>
+                      <span>{{ st.title }}</span>
+                    </div>
+                    <p v-if="st.detail">{{ st.detail }}</p>
+                  </div>
+                </div>
+
+                <div class="detail-sub" v-if="fixPlan.config_changes?.length" data-testid="pi-plan-config">
+                  <h4>{{ t('common.piAnalysis.forensics.planConfigTitle') }}</h4>
+                  <div class="rule-card" v-for="(c, i) in fixPlan.config_changes" :key="i">
+                    <div class="rule-card-head"><code>{{ c.target }}</code></div>
+                    <div class="action-params">
+                      {{ t('common.piAnalysis.forensics.currentValue') }}: <code>{{ c.current || '—' }}</code> → {{ t('common.piAnalysis.forensics.proposedValue') }}: <code>{{ c.proposed }}</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="detail-sub" v-if="fixPlan.code_changes?.length" data-testid="pi-plan-code">
+                  <h4>{{ t('common.piAnalysis.forensics.planCodeTitle') }}</h4>
+                  <div class="rule-card" v-for="(c, i) in fixPlan.code_changes" :key="i">
+                    <div class="rule-card-head">
+                      <code v-if="c.file">{{ c.file }}</code>
+                      <button v-if="c.patch" class="btn-link" @click="copyPatch(c.patch)">{{ t('common.piAnalysis.forensics.copyPatch') }}</button>
+                    </div>
+                    <p>{{ c.description }}</p>
+                    <pre class="rule-pattern" v-if="c.patch">{{ c.patch }}</pre>
+                  </div>
+                </div>
+
+                <div class="detail-sub" v-if="fixPlan.deploy" data-testid="pi-plan-deploy">
+                  <h4>{{ t('common.piAnalysis.forensics.planDeployTitle') }}</h4>
+                  <div class="detail-grid">
+                    <div class="detail-item">
+                      <span class="badge" :class="fixPlan.deploy.required ? 'badge-warning' : 'badge-success'">
+                        {{ fixPlan.deploy.required ? t('common.piAnalysis.forensics.planDeployRequired') : t('common.piAnalysis.forensics.planDeployNotRequired') }}
+                      </span>
+                    </div>
+                    <div class="detail-item" v-if="fixPlan.deploy.targets?.length">
+                      <label>{{ t('common.piAnalysis.forensics.planTargets') }}:</label><span>{{ fixPlan.deploy.targets.join(', ') }}</span>
+                    </div>
+                  </div>
+                  <div class="rule-card" v-for="(st, i) in fixPlan.deploy.steps || []" :key="i"><p>{{ st }}</p></div>
+                  <div class="action-reason" v-if="fixPlan.deploy.rollback">{{ t('common.piAnalysis.forensics.planRollback') }}: {{ fixPlan.deploy.rollback }}</div>
+                </div>
+
+                <div class="detail-sub" v-if="fixPlan.verification" data-testid="pi-plan-verify">
+                  <h4>{{ t('common.piAnalysis.forensics.planVerifyTitle') }}</h4>
+                  <div class="detail-grid">
+                    <div class="detail-item" v-if="fixPlan.verification.method">
+                      <label>{{ t('common.piAnalysis.forensics.verifyMethodLabel') }}:</label><span>{{ verifyMethodLabel(fixPlan.verification.method) }}</span>
+                    </div>
+                    <div class="detail-item" v-if="fixPlan.verification.expect">
+                      <label>{{ t('common.piAnalysis.forensics.verifyExpect') }}:</label><span>{{ fixPlan.verification.expect }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="actions-section">
+                  <button class="btn-secondary" :disabled="copying" @click="copyPlan">{{ t('common.piAnalysis.forensics.planCopy') }}</button>
+                </div>
+              </template>
               <div class="detail-sub" v-if="detailData.suggested_fix">
                 <h4>{{ t('common.piAnalysis.detail.suggestedFixTitle') }}</h4>
                 <p>{{ detailData.suggested_fix }}</p>
@@ -402,20 +626,92 @@
               </div>
             </div>
 
+            <!-- ── 复测（2026-11-25 取证轮）：规则重放 / 出错层复查 / 复发统计 → 结论 ── -->
+            <div class="detail-section" data-testid="pi-verify-section">
+              <h3>{{ t('common.piAnalysis.forensics.verifyTitle') }}</h3>
+              <div class="actions-section">
+                <div class="detail-item" v-if="showJudgeOption">
+                  <label><input type="checkbox" v-model="verifyIncludeJudge" data-testid="pi-verify-include-judge" /> {{ t('common.piAnalysis.forensics.verifyIncludeJudge') }}</label>
+                </div>
+                <button class="btn-secondary" :disabled="verifying" @click="runVerify" data-testid="pi-verify-run">
+                  {{ verifying ? t('common.piAnalysis.forensics.verifyRunning') : t('common.piAnalysis.forensics.verifyButton') }}
+                </button>
+                <div class="view-only-note" v-if="verifyResult?.error" data-testid="pi-verify-failed">{{ t('common.piAnalysis.forensics.verifyFailed') }}</div>
+              </div>
+
+              <template v-if="verifyResult && !verifyResult.error">
+                <div class="detail-grid" data-testid="pi-verify-verdict">
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.forensics.verdictLabel') }}:</label>
+                    <span class="status" :class="verdictClass(verdictOf(verifyResult))">{{ verdictLabel(verdictOf(verifyResult)) }}</span>
+                  </div>
+                  <div class="detail-item"><label>{{ t('common.piAnalysis.forensics.verifyAtLabel') }}:</label><span>{{ formatTime(verifyResult.at) }}</span></div>
+                  <div class="detail-item"><label>{{ t('common.piAnalysis.forensics.verifyByLabel') }}:</label><span>{{ verifyResult.by }}</span></div>
+                </div>
+                <div class="rule-card" v-for="(c, i) in verifyResult.checks || []" :key="i">
+                  <div class="rule-card-head">
+                    <span>{{ checkNameLabel(c.name) }}</span>
+                    <span class="status" :class="checkClass(c.status)">{{ checkStatusLabel(c.status) }}</span>
+                    <span v-if="c.decisive" class="badge badge-info">{{ t('common.piAnalysis.forensics.checkDecisive') }}</span>
+                  </div>
+                  <div class="detail-grid" v-if="c.detail">
+                    <div class="detail-item" v-if="c.detail.originally_matched">
+                      <label>{{ t('common.piAnalysis.forensics.detailOriginally') }}:</label><span>{{ noneText(c.detail.originally_matched) }}</span>
+                    </div>
+                    <div class="detail-item" v-if="c.detail.now_matched">
+                      <label>{{ t('common.piAnalysis.forensics.detailNow') }}:</label><span>{{ noneText(c.detail.now_matched) }}</span>
+                    </div>
+                    <div class="detail-item" v-if="c.detail.still_matching">
+                      <label>{{ t('common.piAnalysis.forensics.detailStill') }}:</label><span>{{ noneText(c.detail.still_matching) }}</span>
+                    </div>
+                    <div class="detail-item" v-if="typeof c.detail.rule_count === 'number'">
+                      {{ t('common.piAnalysis.forensics.detailRuleCount', { n: c.detail.rule_count }) }}
+                    </div>
+                    <div class="detail-item" v-if="c.detail.layer"><label>{{ t('common.piAnalysis.forensics.detailLayer') }}:</label><span>{{ c.detail.detail }}</span></div>
+                    <div class="detail-item" v-if="typeof c.detail.queue_rows === 'number'">
+                      {{ t('common.piAnalysis.forensics.detailRecurrence', { q: c.detail.queue_rows, f: c.detail.failure_rows ?? 0 }) }}
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <p class="muted" v-else-if="!lastVerification" data-testid="pi-verify-none">{{ t('common.piAnalysis.forensics.verdictNone') }}</p>
+
+              <div class="detail-sub" v-if="verifyHistory.length" data-testid="pi-verify-history">
+                <h4>{{ t('common.piAnalysis.forensics.historyTitle') }}</h4>
+                <div class="rule-card" v-for="(h, i) in verifyHistory.slice().reverse()" :key="i">
+                  <div class="rule-card-head">
+                    <span class="muted">{{ formatTime(h.at) }}</span>
+                    <span class="status" :class="verdictClass(verdictOf(h))">{{ verdictLabel(verdictOf(h)) }}</span>
+                    <span>{{ h.by }}</span>
+                    <span class="badge badge-success" v-if="h.fix_applied">{{ t('common.piAnalysis.forensics.fixAppliedTag') }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- ── 操作区 ──────────────────────────────────────────── -->
             <div class="detail-section actions-section" v-if="!detailError">
               <template v-if="!detailData">
-                <button class="btn-primary" :disabled="isTriggering" @click="triggerAnalysis">
-                  {{ t('common.piAnalysis.detail.triggerForThis') }}
+                <div class="view-only-note" v-if="analyzeQueued" data-testid="pi-analyze-queued">{{ t('common.piAnalysis.forensics.analyzeQueued') }}</div>
+                <!-- 定向分析：只分析这一条（批量触发按优先级领取，不保证轮到它）。 -->
+                <button class="btn-primary" :disabled="analyzing || analyzeQueued" @click="analyzeThis" data-testid="pi-analyze-this">
+                  {{ analyzing ? '…' : t('common.piAnalysis.detail.triggerForThis') }}
                 </button>
               </template>
               <template v-else-if="!detailData.auto_applied">
-                <div class="view-only-note" v-if="!canApply && lowConfidenceReason">
-                  {{ lowConfidenceReason }}
-                </div>
+                <!-- 为什么不能自动修正：逐条列出后端判定的阻断原因（按钮状态与接口结论同源）。 -->
+                <template v-if="!canApply">
+                  <div class="view-only-note" v-for="b in (planBlockers.length ? planBlockers : ['low_confidence'])" :key="b" data-testid="pi-apply-blocker">
+                    {{ blockerLabel(b, detailData.confidence_score ?? 0) }}
+                  </div>
+                </template>
                 <button class="btn-primary" :disabled="!canApply || applying" @click="applyFix">
                   {{ applying ? '…' : t('common.piAnalysis.detail.applyButton') }}
                 </button>
+                <button class="btn-secondary" :disabled="analyzing || analyzeQueued" @click="analyzeThis" data-testid="pi-reanalyze">
+                  {{ t('common.piAnalysis.forensics.reanalyzeButton') }}
+                </button>
+                <div class="view-only-note" v-if="analyzeQueued">{{ t('common.piAnalysis.forensics.analyzeQueued') }}</div>
               </template>
               <template v-else>
                 <span class="badge badge-success">{{ t('common.piAnalysis.detail.appliedBadge') }}</span>
@@ -449,9 +745,34 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { summarizePiAnalysisStats } from '@/lib/piAnalysisStats'
+import {
+  BLOCKER_KEYS,
+  asArray,
+  autoActionDetail,
+  buildPlanText,
+  checkClass,
+  countParseFailed,
+  diagnosticsOf,
+  fixPlanOf,
+  isParseFailed,
+  isPlanEmpty,
+  modelOutputOf,
+  normalizeKind,
+  normalizeRisk,
+  requestFacts,
+  requestStatusClass,
+  serviceLogText,
+  stepKindBadge,
+  stepRiskClass,
+  supportsJudgeOption,
+  verdictClass,
+  verdictOf,
+} from '@/lib/piAnalysisForensics'
+import { createLatestRequestGuard } from '@/utils/latestRequestGuard'
+import { openRequestDetailPage } from '@/utils/openRequestDetailPage'
 
 const { t } = useI18n()
 
@@ -511,21 +832,71 @@ const appliedRecords = computed<any[]>(() => {
 
 const CONFIDENCE_FLOOR = 0.8
 
+// ★ 2026-11-25 取证轮：详情弹窗的取证 / 定向分析 / 重解析 / 复测状态。
+const evidence = ref<any>(null)
+const evidenceLoading = ref(false)
+const evidenceFailed = ref(false)
+const analyzing = ref(false)
+const analyzeQueued = ref(false)
+const reparsing = ref(false)
+const reparseFailed = ref(false)
+const bulkReparsing = ref(false)
+const bulkReparseNote = ref('')
+const verifying = ref(false)
+const verifyIncludeJudge = ref(false)
+const verifyResult = ref<any>(null)
+const copying = ref(false)
+
+// ★ 按钮状态与接口结论同源：后端在结果详情里附 fix_plan_view（能不能自动修正、
+//   为什么不能）。旧版后端没有这个字段时退回前端的本地判定。
+const planView = computed<any>(() => detailData.value?.fix_plan_view ?? null)
+const planBlockers = computed<string[]>(() => (planView.value ? asArray<string>(planView.value.blockers) : []))
+
 const canApply = computed(() =>
   !!detailData.value &&
   !detailData.value.auto_applied &&
-  normalizedActions.value.length > 0 &&
-  (detailData.value.confidence_score ?? 0) >= CONFIDENCE_FLOOR,
+  (planView.value
+    ? planView.value.auto_fixable === true
+    : normalizedActions.value.length > 0 && (detailData.value.confidence_score ?? 0) >= CONFIDENCE_FLOOR),
 )
 
-const lowConfidenceReason = computed(() => {
-  if (!detailData.value) return ''
-  const conf = detailData.value.confidence_score ?? 0
-  if (conf < CONFIDENCE_FLOOR) {
-    return t('common.piAnalysis.detail.viewOnlyLowConfidence', { conf: (conf * 100).toFixed(0) + '%' })
-  }
-  return ''
+// ── 取证 / 诊断 / 方案 / 复测 的读数（纯函数在 lib/piAnalysisForensics.ts）────
+const parseFailedCount = computed(() => countParseFailed(resultsData.value))
+const diagnostics = computed(() => diagnosticsOf(detailData.value))
+const fixPlan = computed(() => fixPlanOf(detailData.value))
+const planIsEmpty = computed(() => isPlanEmpty(fixPlan.value))
+const modelOutput = computed(() => modelOutputOf(detailData.value))
+const parseFailed = computed(() => isParseFailed(detailData.value))
+
+const queueMetadata = computed<Record<string, any>>(() => {
+  const m = queueDetail.value?.metadata
+  return m && typeof m === 'object' ? m : {}
 })
+const verifyHistory = computed<any[]>(() => asArray(queueMetadata.value.verifications))
+const lastVerification = computed<any>(
+  () => queueMetadata.value.last_verification ?? verifyHistory.value[verifyHistory.value.length - 1] ?? null,
+)
+
+const evidenceRequestFacts = computed(() => requestFacts(evidence.value?.request))
+const evidenceAttempts = computed<any[]>(() => asArray(evidence.value?.upstream_attempts))
+const evidenceSession = computed<any[]>(() => asArray(evidence.value?.session_context))
+const evidenceWindow = computed<any[]>(() => asArray(evidence.value?.error_window))
+const evidencePlaybook = computed<any[]>(() => asArray(evidence.value?.playbook_entries))
+const evidenceNotes = computed<string[]>(() => asArray<string>(evidence.value?.notes))
+const evidenceLogText = computed(() => serviceLogText(asArray<any>(evidence.value?.service_logs)))
+// 「没搜到日志」的原因：缓冲不覆盖 / 没有请求号 / 窗内确实没有。
+const evidenceLogNote = computed(() => {
+  const meta = evidence.value?.service_log_meta
+  if (!meta || meta.available === false) return t('common.piAnalysis.forensics.logsUnavailable')
+  if (asArray(evidence.value?.service_logs).length > 0) return ''
+  if (meta.covers_window === false) {
+    return t('common.piAnalysis.forensics.logsNotCovered', { at: formatTime(String(meta.oldest_at ?? '')) })
+  }
+  if (!activeContext.value?.request_id) return t('common.piAnalysis.forensics.logsNoRequest')
+  return t('common.piAnalysis.forensics.logsEmptyCovered')
+})
+
+const showJudgeOption = computed(() => supportsJudgeOption(String(activeContext.value?.error_type ?? '')))
 
 function normalizeActions(raw: any): any[] {
   if (!raw) return []
@@ -717,36 +1088,383 @@ async function loadResults() {
   }
 }
 
-// ★ 详情打开：先试 results（有分析 → 全量四区），404 再落 queue 详情（未分析 → 前因 + 触发分析）。
+// 详情请求的序号守卫：用户连点两行时，先发出的慢响应不能覆盖后一行的内容。
+const detailGuard = createLatestRequestGuard()
+
+// ★ 详情打开：结果详情与队列详情**并行**取。
+//   results（有分析 → 结论 + 建议 + 应用状态）；queue（前因上下文 + 复测留痕——
+//   复测记录落在队列行上，未分析的行也要能看）。结果 404 ⇒ 未分析，走队列详情。
 async function openDetail(queueId: number) {
+  const seq = detailGuard.next()
   activeDetailId.value = queueId
   showDetailDialog.value = true
   detailLoading.value = true
   detailError.value = ''
   detailData.value = null
   queueDetail.value = null
+  evidence.value = null
+  evidenceFailed.value = false
+  analyzeQueued.value = false
+  reparseFailed.value = false
+  verifyResult.value = null
+  verifyIncludeJudge.value = false
+  stopPolling()
   try {
-    const res = await fetch(`/api/admin/pi-analysis/results/${queueId}`)
-    if (res.status === 404) {
-      const qres = await fetch(`/api/admin/pi-analysis/queue/${queueId}`)
-      if (!qres.ok) {
-        throw Object.assign(new Error(`queue detail: HTTP ${qres.status}`), { status: qres.status })
-      }
+    const [res, qres] = await Promise.all([
+      fetch(`/api/admin/pi-analysis/results/${queueId}`),
+      fetch(`/api/admin/pi-analysis/queue/${queueId}`).catch(() => null),
+    ])
+    if (!detailGuard.isCurrent(seq)) return
+    if (qres && qres.ok) {
       queueDetail.value = await qres.json()
+    }
+    if (res.status === 404) {
+      if (!qres || !qres.ok) {
+        throw Object.assign(new Error(`queue detail: HTTP ${qres?.status}`), { status: qres?.status ?? 0 })
+      }
     } else if (!res.ok) {
       throw Object.assign(new Error(`result detail: HTTP ${res.status}`), { status: res.status })
     } else {
       detailData.value = await res.json()
     }
   } catch (error) {
-    detailError.value = error instanceof Error ? error.message : String(error)
+    if (!detailGuard.isCurrent(seq)) return
+    // ★ 用户看到的是「怎么办」；原始错误只进控制台（内部报文不进界面）。
+    console.error('Failed to load detail:', error)
+    detailError.value = t('common.piAnalysis.forensics.detailLoadFailed')
   } finally {
-    detailLoading.value = false
+    if (detailGuard.isCurrent(seq)) {
+      detailLoading.value = false
+      // 有请求号或会话号的行：打开即取证（取证是独立的只读查询，不阻塞详情）。
+      const ctx = detailData.value || queueDetail.value
+      if (ctx?.request_id || ctx?.session_id) loadEvidence()
+    }
   }
 }
 
 function viewDetail(queueId: number) {
   openDetail(queueId)
+}
+
+// ── 取证 ────────────────────────────────────────────────────────────────────
+
+async function loadEvidence() {
+  const id = activeDetailId.value
+  const seq = detailGuard.next()
+  evidenceLoading.value = true
+  evidenceFailed.value = false
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/queue/${id}/evidence`)
+    if (!res.ok) {
+      throw Object.assign(new Error(`evidence: HTTP ${res.status}`), { status: res.status })
+    }
+    const data = await res.json()
+    if (!detailGuard.isCurrent(seq) || id !== activeDetailId.value) return
+    evidence.value = data
+    // 复测留痕随取证响应一起回来 ⇒ 同步进队列详情（时间线与历史立即可见）。
+    if (queueDetail.value && Array.isArray(data.verifications)) {
+      queueDetail.value = {
+        ...queueDetail.value,
+        metadata: {
+          ...(queueDetail.value.metadata || {}),
+          verifications: data.verifications,
+          last_verification: data.last_verification,
+        },
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load evidence:', error)
+    if (detailGuard.isCurrent(seq)) evidenceFailed.value = true
+  } finally {
+    if (detailGuard.isCurrent(seq)) evidenceLoading.value = false
+  }
+}
+
+// ── 定向分析（这一条）：分析 / 重新分析 ────────────────────────────────────
+
+const POLL_INTERVAL_MS = 4000
+const POLL_MAX_ATTEMPTS = 45 // 3 分钟：一次分析通常一分钟内出结果
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let pollAttempts = 0
+
+function stopPolling() {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+  pollAttempts = 0
+}
+
+// 轮询队列状态：离开「分析中/待处理」即刷新详情并停。
+async function pollQueueStatus(queueId: number) {
+  pollTimer = null
+  pollAttempts += 1
+  if (queueId !== activeDetailId.value) return
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/queue/${queueId}`)
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status })
+    const item = await res.json()
+    if (queueId !== activeDetailId.value) return
+    if (item.status === 'analyzed' || item.status === 'failed' || pollAttempts >= POLL_MAX_ATTEMPTS) {
+      analyzeQueued.value = false
+      await openDetail(queueId)
+      return
+    }
+  } catch (error) {
+    console.error('Failed to poll analysis status:', error)
+  }
+  pollTimer = setTimeout(() => pollQueueStatus(queueId), POLL_INTERVAL_MS)
+}
+
+async function analyzeThis() {
+  const id = activeDetailId.value
+  analyzing.value = true
+  reparseFailed.value = false
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/queue/${id}/analyze`, { method: 'POST' })
+    // 409 = 正被别的流程分析中：对用户而言同样是「已在分析」。
+    if (!res.ok && res.status !== 409) {
+      throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status })
+    }
+    if (id !== activeDetailId.value) return
+    analyzeQueued.value = true
+    stopPolling()
+    pollTimer = setTimeout(() => pollQueueStatus(id), POLL_INTERVAL_MS)
+  } catch (error) {
+    console.error('Failed to start analysis:', error)
+    alert(t('common.piAnalysis.forensics.analyzeFailed'))
+  } finally {
+    analyzing.value = false
+  }
+}
+
+// ── 重解析：读已存的模型响应，不调用模型 ──────────────────────────────────
+
+async function reparseThis() {
+  const id = activeDetailId.value
+  reparsing.value = true
+  reparseFailed.value = false
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/results/${id}/reparse`, { method: 'POST' })
+    if (res.status === 422) {
+      // 存量响应仍读不出 ⇒ 如实说，并指向下一步（带取证重新分析）。
+      if (id === activeDetailId.value) reparseFailed.value = true
+      return
+    }
+    if (!res.ok) {
+      throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status })
+    }
+    if (id !== activeDetailId.value) return
+    await openDetail(id)
+  } catch (error) {
+    console.error('Failed to re-parse:', error)
+    if (id === activeDetailId.value) reparseFailed.value = true
+  } finally {
+    reparsing.value = false
+  }
+}
+
+async function reparseAll() {
+  bulkReparsing.value = true
+  bulkReparseNote.value = ''
+  try {
+    const res = await fetch('/api/admin/pi-analysis/results/reparse-failed', { method: 'POST' })
+    if (!res.ok) {
+      throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status })
+    }
+    const data = await res.json()
+    bulkReparseNote.value = t('common.piAnalysis.forensics.reparseAllDone', {
+      ok: data.reparsed ?? 0, total: data.scanned ?? 0, left: (data.still_unparsable ?? 0) + (data.failed ?? 0),
+    })
+    await loadResults()
+    loadStats()
+  } catch (error) {
+    console.error('Failed to bulk re-parse:', error)
+    bulkReparseNote.value = t('common.piAnalysis.forensics.reparseAllFailed')
+  } finally {
+    bulkReparsing.value = false
+  }
+}
+
+// ── 复测 ────────────────────────────────────────────────────────────────────
+
+async function runVerify() {
+  const id = activeDetailId.value
+  verifying.value = true
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/queue/${id}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ include_llm: verifyIncludeJudge.value }),
+    })
+    if (!res.ok) {
+      throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status })
+    }
+    const data = await res.json()
+    if (id !== activeDetailId.value) return
+    verifyResult.value = data
+    // 留痕已写进队列行 ⇒ 重取取证（它顺带带回最新的复测历史与时间线）。
+    await loadEvidence()
+  } catch (error) {
+    console.error('Failed to run verification:', error)
+    if (id === activeDetailId.value) verifyResult.value = { error: true }
+  } finally {
+    verifying.value = false
+  }
+}
+
+// ── 复制修正方案 ────────────────────────────────────────────────────────────
+
+function planText(): string {
+  const plan = fixPlan.value
+  if (!plan) return ''
+  const F = 'common.piAnalysis.forensics.'
+  return buildPlanText(plan, {
+    title: `#${activeDetailId.value} ${formatErrorType(activeContext.value?.error_type || '')}`,
+    labels: {
+      planAutoTitle: t(F + 'planAutoTitle'),
+      planManualTitle: t(F + 'planManualTitle'),
+      planConfigTitle: t(F + 'planConfigTitle'),
+      planCodeTitle: t(F + 'planCodeTitle'),
+      planDeployTitle: t(F + 'planDeployTitle'),
+      planDeployRequired: t(F + 'planDeployRequired'),
+      planDeployNotRequired: t(F + 'planDeployNotRequired'),
+      planTargets: t(F + 'planTargets'),
+      planRollback: t(F + 'planRollback'),
+      planVerifyTitle: t(F + 'planVerifyTitle'),
+      verifyExpect: t(F + 'verifyExpect'),
+      verifyMethod_rules_replay: t(F + 'verifyMethod_rules_replay'),
+      verifyMethod_layer_recheck: t(F + 'verifyMethod_layer_recheck'),
+      verifyMethod_recurrence: t(F + 'verifyMethod_recurrence'),
+      verifyMethod_request_replay: t(F + 'verifyMethod_request_replay'),
+      verifyMethod_manual: t(F + 'verifyMethod_manual'),
+    },
+    kinds: {
+      config: t(F + 'kindConfig'), code: t(F + 'kindCode'), ops: t(F + 'kindOps'),
+      upstream: t(F + 'kindUpstream'), client: t(F + 'kindClient'),
+    },
+    risks: { low: t(F + 'riskLow'), medium: t(F + 'riskMedium'), high: t(F + 'riskHigh') },
+    actions: normalizedActions.value.map((a) => ({
+      label: actionLabel(a.action), target: a.rule_name, detail: autoActionDetail(a),
+    })),
+  })
+}
+
+async function copyPlan() {
+  const text = planText()
+  if (!text) return
+  copying.value = true
+  try {
+    await navigator.clipboard.writeText(text)
+    alert(t('common.piAnalysis.forensics.planCopied'))
+  } catch (error) {
+    console.error('Failed to copy plan:', error)
+    alert(t('common.piAnalysis.forensics.planCopyFailed'))
+  } finally {
+    copying.value = false
+  }
+}
+
+async function copyPatch(patch: string) {
+  try {
+    await navigator.clipboard.writeText(patch)
+    alert(t('common.piAnalysis.forensics.planCopied'))
+  } catch (error) {
+    console.error('Failed to copy patch:', error)
+    alert(t('common.piAnalysis.forensics.planCopyFailed'))
+  }
+}
+
+// ── 展示用的小映射 ──────────────────────────────────────────────────────────
+
+function openRequest(requestId: string) {
+  // 复用全仓同一入口打开请求详情页（新标签页）；弹窗的 loading 不受影响。
+  openRequestDetailPage(requestId)
+}
+
+function factLabel(key: string): string {
+  const keyMap: Record<string, string> = {
+    time: 'factTime', model: 'factModel', protocol: 'factProtocol', status: 'factStatus',
+    errorKind: 'factErrorKind', failureStage: 'factFailureStage', upstreamStatus: 'factUpstreamStatus',
+    latency: 'factLatency', tokens: 'factTokens', provider: 'factProvider', credential: 'factCredential',
+    agent: 'factAgent', routing: 'factRouting', interrupted: 'factInterrupted', routingOutcomes: 'factRouting',
+  }
+  const k = keyMap[key]
+  return k ? t(`common.piAnalysis.forensics.${k}`) : key
+}
+
+function factValue(f: { key: string; value: string; raw?: Record<string, number> }): string {
+  if (f.key === 'tokens' && f.raw) {
+    return t('common.piAnalysis.forensics.tokensValue', f.raw)
+  }
+  if (f.key === 'interrupted') return t('common.piAnalysis.forensics.interruptedYes')
+  if (f.key === 'time') return formatTime(f.value)
+  return f.value
+}
+
+function requestStatusLabel(status: string): string {
+  const keyMap: Record<string, string> = {
+    success: 'requestStatusSuccess', failure: 'requestStatusFailure',
+    rate_limited: 'requestStatusRateLimited', in_progress: 'requestStatusInProgress',
+  }
+  const k = keyMap[status]
+  return k ? t(`common.piAnalysis.forensics.${k}`) : status
+}
+
+function kindLabel(kind: string): string {
+  return t(`common.piAnalysis.forensics.kind${capitalize(normalizeKind(kind))}`)
+}
+
+function riskLabel(risk: string): string {
+  return t(`common.piAnalysis.forensics.risk${capitalize(normalizeRisk(risk))}`)
+}
+
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
+}
+
+function checkStatusLabel(status: string): string {
+  const keyMap: Record<string, string> = {
+    pass: 'checkPass', fail: 'checkFail', skipped: 'checkSkipped',
+    not_applicable: 'checkNotApplicable', info: 'checkInfo', error: 'checkError',
+  }
+  const k = keyMap[status]
+  return k ? t(`common.piAnalysis.forensics.${k}`) : status
+}
+
+function checkNameLabel(name: string): string {
+  const keyMap: Record<string, string> = {
+    rules_replay: 'checkRulesReplay', layer_recheck: 'checkLayerRecheck', recurrence: 'checkRecurrence',
+  }
+  const k = keyMap[name]
+  return k ? t(`common.piAnalysis.forensics.${k}`) : name
+}
+
+function verdictLabel(verdict: string | null | undefined): string {
+  const keyMap: Record<string, string> = {
+    not_reproducing: 'verdictNotReproducing', reproducing: 'verdictReproducing', inconclusive: 'verdictInconclusive',
+  }
+  const k = verdict ? keyMap[verdict] : ''
+  return k ? t(`common.piAnalysis.forensics.${k}`) : t('common.piAnalysis.forensics.verdictNone')
+}
+
+function blockerLabel(blocker: string, conf: number): string {
+  const k = BLOCKER_KEYS[blocker]
+  if (!k) return blocker
+  if (blocker === 'low_confidence') {
+    return t(`common.piAnalysis.forensics.${k}`, { conf: (conf * 100).toFixed(0) + '%' })
+  }
+  return t(`common.piAnalysis.forensics.${k}`)
+}
+
+function verifyMethodLabel(method: string): string {
+  const k = `verifyMethod_${method}`
+  const text = t(`common.piAnalysis.forensics.${k}`)
+  return text === `common.piAnalysis.forensics.${k}` ? method : text
+}
+
+function noneText(rules: string[]): string {
+  return rules.length > 0 ? rules.join(', ') : t('common.piAnalysis.forensics.detailNone')
 }
 
 // ★ 应用修复：确认弹窗逐条列出将执行的动作（与后端白名单同一口径）。
@@ -806,7 +1524,14 @@ function closeDetail() {
   detailData.value = null
   queueDetail.value = null
   detailError.value = ''
+  evidence.value = null
+  verifyResult.value = null
+  stopPolling()
 }
+
+onBeforeUnmount(() => {
+  stopPolling()
+})
 
 // 触发分析
 async function triggerAnalysis() {
@@ -876,7 +1601,8 @@ function formatErrorType(type: string): string {
     'policy_load_failed': t('common.piAnalysis.page.errorTypePolicyLoadFailed'),
     'unexpected_behavior': t('common.piAnalysis.page.errorTypeUnexpectedBehavior'),
     'performance_issue': t('common.piAnalysis.page.errorTypePerformanceIssue'),
-    'output_guard_blocked': t('common.piAnalysis.page.errorTypeOutputGuardBlocked')
+    'output_guard_blocked': t('common.piAnalysis.page.errorTypeOutputGuardBlocked'),
+    'request_failed': t('common.piAnalysis.forensics.errorTypeRequestFailed')
   }
   return map[type] || type
 }
