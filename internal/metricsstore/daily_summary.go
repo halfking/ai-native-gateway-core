@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/metrics"
+	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
 
 const claimDailySummarySQL = `
@@ -51,6 +52,23 @@ func (p *ProjectionProcessor) RefreshDailyBoard(ctx context.Context) (bool, erro
 	})
 }
 
+const claimDailyHistorySQL = `
+	SELECT s.day::text FROM public.request_metrics_daily_state s
+	WHERE NOT s.dirty
+	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
+	  AND NOT EXISTS (SELECT 1 FROM public.request_metrics_history_days h WHERE h.day=s.day)
+	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
+
+func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, error) {
+	return p.refreshDay(ctx, claimDailyHistorySQL, func(ctx context.Context, tx *sql.Tx, day string) error {
+		var published bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_history_days WHERE day=$1::date)", day).Scan(&published); err != nil || published {
+			return err
+		}
+		return reportrollup.RebuildDailyHistory(ctx, tx, day)
+	})
+}
+
 func (p *ProjectionProcessor) refreshDay(ctx context.Context, claim string, rebuild func(context.Context, *sql.Tx, string) error) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -83,6 +101,10 @@ func (p *ProjectionProcessor) RunDailySummary(ctx context.Context, cfg Config) {
 
 func (p *ProjectionProcessor) RunDailyBoard(ctx context.Context, cfg Config) {
 	runDaily(ctx, cfg, "board", p.RefreshDailyBoard)
+}
+
+func (p *ProjectionProcessor) RunDailyHistory(ctx context.Context, cfg Config) {
+	runDaily(ctx, cfg, "history", p.RefreshDailyHistory)
 }
 
 func runDaily(ctx context.Context, cfg Config, report string, refresh func(context.Context) (bool, error)) {

@@ -4477,6 +4477,7 @@ func main() {
 		go projectionProcessor.Run(metricsProcessorCtx, metricsCfg)
 		go projectionProcessor.RunDailySummary(metricsProcessorCtx, metricsCfg)
 		go projectionProcessor.RunDailyBoard(metricsProcessorCtx, metricsCfg)
+		go projectionProcessor.RunDailyHistory(metricsProcessorCtx, metricsCfg)
 		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
@@ -4484,7 +4485,6 @@ func main() {
 			"batch_size", metricsCfg.BatchSize,
 			"max_rounds_per_tick", metricsCfg.MaxRoundsPerTick)
 	}
-
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
 	// instances as well, not just on the active-role primary.
 	//

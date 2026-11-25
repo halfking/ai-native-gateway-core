@@ -86,10 +86,26 @@ func BuildProjectedSummary(ctx context.Context, q Querier, start, end time.Time,
 	return buildGrainReport(ctx, q, start, end, view, filter, names, false, &coverage, scope)
 }
 
-const projectedDimensions = `coalesce(nullif(raw_model_name,''),nullif(outbound_model,''),nullif(client_model,''),'__unknown__') AS raw_model_name,
+const projectedModelKey = `coalesce(nullif(raw_model_name,''),nullif(outbound_model,''),nullif(client_model,''),'__unknown__')`
+const projectedDimensions = projectedModelKey + ` AS raw_model_name,
 	provider_id, credential_id, api_key_id, tenant_id, coalesce(nullif(person_key,''),'unknown') AS person`
 
 const projectedDateWhere = `occurred_at >= $1 AND occurred_at < $2 AND source_fact_id IS NOT NULL`
+const projectedErrorKind = `coalesce(nullif(error_kind,''),nullif(status,''),'unknown')`
+const projectedLatencySample = `status='success' AND latency_ms>0`
+
+const projectedAdditiveMeasures = `count(*) AS requests, count(*) FILTER (WHERE status='success') AS successes,
+	coalesce(sum(prompt_tokens),0)::bigint AS input_tokens,
+	coalesce(sum(completion_tokens),0)::bigint AS output_tokens,
+	coalesce(sum(cached_tokens),0)::bigint AS cache_read,
+	coalesce(sum(cache_write_tokens),0)::bigint AS cache_write,
+	coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0)*100 AS usd_cents,
+	coalesce(sum(credits_charged),0)::bigint AS credits,
+	coalesce(sum(total_tokens),0)::bigint AS tokens,
+	coalesce(sum(cached_tokens) FILTER (WHERE cache_input_tokens IS NOT NULL),0)::bigint AS cache_covered_read,
+	coalesce(sum(cache_input_tokens),0)::bigint AS cache_input,
+	count(cache_input_tokens) AS cache_coverage,
+	count(cost_amount) FILTER (WHERE cost_currency='USD') AS usd_coverage`
 
 func projectedBusinessOnly(view View, filter GrainFilter) bool {
 	return filter.BusinessOnly || view == ViewInternal || view == ViewKey
@@ -193,28 +209,16 @@ func projectedGrainSQL(where string, daily bool, view View, scope ProjectedSumma
 	}
 	return `WITH bounded AS (
 		SELECT (occurred_at AT TIME ZONE $3)::date AS report_date, ` + projectedDimensions + `,
-			outbound_model, status, coalesce(nullif(error_kind,''),nullif(status,''),'unknown') AS kind,
+			outbound_model, status, ` + projectedErrorKind + ` AS kind,
 			prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
 			total_tokens, credits_charged, latency_ms, cost_amount, cost_currency
 		FROM public.request_metrics_projection WHERE ` + projectedDateWhere + ` AND (NOT $4::boolean OR traffic_class='business')
 	), facts AS ` + materialization + ` (SELECT * FROM bounded WHERE true` + where + `),
 	measures AS (
-		SELECT ` + flags + measureKeys + `
-			count(*) AS requests, count(*) FILTER (WHERE status='success') AS successes,
-			coalesce(sum(prompt_tokens),0)::bigint AS input_tokens,
-			coalesce(sum(completion_tokens),0)::bigint AS output_tokens,
-			coalesce(sum(cached_tokens),0)::bigint AS cache_read,
-			coalesce(sum(cache_write_tokens),0)::bigint AS cache_write,
-			coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0)*100 AS usd_cents,
-			coalesce(sum(credits_charged),0)::bigint AS credits,
+		SELECT ` + flags + measureKeys + projectedAdditiveMeasures + `,
 			percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)
-				FILTER (WHERE status='success' AND latency_ms>0) AS latency_ranks,
-			count(*) FILTER (WHERE status='success' AND latency_ms>0) AS latency_coverage,
-			coalesce(sum(total_tokens),0)::bigint AS tokens,
-			coalesce(sum(cached_tokens) FILTER (WHERE cache_input_tokens IS NOT NULL),0)::bigint AS cache_covered_read,
-			coalesce(sum(cache_input_tokens),0)::bigint AS cache_input,
-			count(cache_input_tokens) AS cache_coverage,
-			count(cost_amount) FILTER (WHERE cost_currency='USD') AS usd_coverage
+				FILTER (WHERE ` + projectedLatencySample + `) AS latency_ranks,
+			count(*) FILTER (WHERE ` + projectedLatencySample + `) AS latency_coverage
 		FROM facts GROUP BY GROUPING SETS (` + sets + `)
 	)
 	SELECT ` + projectedGrainColumns + `, NULL::text,
@@ -230,6 +234,11 @@ func projectedGrainSQL(where string, daily bool, view View, scope ProjectedSumma
 }
 
 func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFilter, daily bool, coverage ProjectionCoverage, scope ProjectedSummaryScope, sink func(groupKind, grainScanRow)) error {
+	if eligibleDailyHistory(view, filter, coverage, scope) {
+		if used, err := runDailyHistory(ctx, q, view, filter, coverage, scope, sink); used || err != nil {
+			return err
+		}
+	}
 	args := []any{coverage.From, coverage.Through, coverage.Timezone, projectedBusinessOnly(view, filter)}
 	where, args := projectedGrainWhere(filter, args)
 	rows, err := q.Query(ctx, projectedGrainSQL(where, daily, view, scope), args...)

@@ -16,12 +16,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/admin/dashboardapi"
 	"github.com/kaixuan/llm-gateway-go/domains/metrics"
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
+
+type historyQueryProbe struct {
+	reportrollup.Querier
+	mode string
+}
+
+func (p *historyQueryProbe) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
+	if strings.Contains(query, "FROM public.request_metrics_daily_history") {
+		p.mode = "published"
+		if strings.Contains(query, "FROM gaps") {
+			p.mode = "mixed"
+		}
+	}
+	return p.Querier.Query(ctx, query, args...)
+}
 
 func TestRequestMetricsProjectionPostgres(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_TEST_DSN")
@@ -101,6 +117,8 @@ VALUES
 	apply("983e_request_metrics_daily_summary.sql")
 	apply("983f_request_metrics_daily_board.sql")
 	apply("983f_request_metrics_daily_board.sql")
+	apply("983g_request_metrics_daily_history.sql")
+	apply("983g_request_metrics_daily_history.sql")
 
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
@@ -1393,6 +1411,123 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
 		assertParity(t, allTenants)
 	})
 
+	t.Run("published_history_merges_exact_ranks_and_uncached_days", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+ request_id, tenant_id, occurred_at, occurred_date, billing_date, status, traffic_class, provider_id,
+ outbound_model, prompt_tokens, cached_tokens, cache_input_tokens, total_tokens, latency_ms,
+ cost_amount, cost_currency, error_kind, source, source_fact_id)
+SELECT 'cached-history-'||id, CASE WHEN id=2 THEN 'history-b' ELSE 'history-a' END,
+ stamp::timestamptz,(stamp::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,
+ (stamp::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,status,traffic,provider,
+ 'history-model-'||(id%2),id*20,id*2,CASE WHEN id%2=0 THEN id*25 END, id*21,latency,
+ id*0.0000123, CASE WHEN id=4 THEN 'CNY' ELSE 'USD' END,kind,'async_processor',25000+id
+FROM (VALUES
+ (1,'2026-11-12 00:00+08','success','business',9,80,NULL),
+ (2,'2026-11-12 23:59+08','success','business',10,190,NULL),
+ (3,'2026-11-13 05:00+08','success','business',9,8589935572,NULL),
+ (4,'2026-11-13 05:10+08','success','probe',9,3500,NULL),
+ (5,'2026-11-13 05:20+08','timeout','business',NULL,999,'upstream_timeout'),
+ (6,'2026-11-14 00:00+08','success','business',9,500,NULL),
+ (7,'2026-11-14 05:20+08','failed','business',NULL,0,NULL)
+) AS fixture(id,stamp,status,traffic,provider,latency,kind);
+INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CONFLICT DO NOTHING;`)
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Date(2026, 11, 11, 0, 0, 0, 0, loc)
+		end := start.AddDate(0, 0, 3)
+		assertParity := func(wantMode string, filter reportrollup.GrainFilter) {
+			t.Helper()
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, end, end.AddDate(0, 0, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				view  reportrollup.View
+				scope reportrollup.ProjectedSummaryScope
+			}{
+				{reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution},
+				{reportrollup.ViewProvider, reportrollup.ProjectedSummaryTotals},
+				{reportrollup.ViewInternal, reportrollup.ProjectedSummaryTotals},
+			} {
+				want, err := reportrollup.BuildProjectedReport(ctx, tx, start, end, tc.view, filter, reportrollup.Names{}, false, coverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want.Models = []reportrollup.ModelRow{}
+				want.DailyModels, want.Credentials, want.APIKeys, want.Tenants, want.Persons = nil, nil, nil, nil, nil
+				if tc.scope == reportrollup.ProjectedSummaryTotals {
+					want.Providers, want.ModelTotals = nil, nil
+				}
+				probe := &historyQueryProbe{Querier: tx}
+				got, err := reportrollup.BuildProjectedSummary(ctx, probe, start, end, tc.view, filter, reportrollup.Names{}, coverage, tc.scope)
+				if err != nil || probe.mode != wantMode || !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s/%s used history mode %q want %q: %v\ngot %+v\nwant %+v", tc.view, tc.scope, probe.mode, wantMode, err, got, want)
+				}
+			}
+		}
+		drain := func(refresh func(context.Context) (bool, error)) {
+			t.Helper()
+			for range 75 {
+				more, err := refresh(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !more {
+					return
+				}
+			}
+			t.Fatal("history worker did not drain")
+		}
+		assertParity("", reportrollup.GrainFilter{})
+		drain(processor.RefreshDailySummary)
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", reportrollup.GrainFilter{})
+		assertParity("published", reportrollup.GrainFilter{BusinessOnly: true})
+		assertParity("", reportrollup.GrainFilter{TenantID: "history-a"})
+		exec(`UPDATE public.request_metrics_projection SET occurred_at='2026-11-13 10:00+08',
+			occurred_date='2026-11-13', billing_date='2026-11-13', latency_ms=491, cost_amount=0.12345678
+			WHERE request_id='cached-history-2';
+			DELETE FROM public.request_metrics_projection WHERE request_id='cached-history-1';`)
+		var published int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_history_days
+			WHERE day BETWEEN '2026-11-12' AND '2026-11-14'`).Scan(&published); err != nil || published != 1 {
+			t.Fatalf("both revised dates must become uncovered, published=%d: %v", published, err)
+		}
+		assertParity("mixed", reportrollup.GrainFilter{})
+		drain(processor.RefreshDailySummary)
+		exec(`CREATE FUNCTION public.reject_history_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'injected history publication failure'; END $$;
+			CREATE TRIGGER reject_history_publish BEFORE INSERT ON public.request_metrics_history_days
+			FOR EACH STATEMENT EXECUTE FUNCTION public.reject_history_publish();`)
+		if _, err := processor.RefreshDailyHistory(ctx); err == nil || !strings.Contains(err.Error(), "injected history publication failure") {
+			t.Fatalf("expected history publication to roll back: %v", err)
+		}
+		assertParity("mixed", reportrollup.GrainFilter{})
+		exec("DROP TRIGGER reject_history_publish ON public.request_metrics_history_days; DROP FUNCTION public.reject_history_publish()")
+		results := make(chan error, 2)
+		for _, worker := range []*ProjectionProcessor{processor, NewProjectionProcessor(db)} {
+			go func() {
+				_, err := worker.RefreshDailyHistory(ctx)
+				results <- err
+			}()
+		}
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", reportrollup.GrainFilter{})
+	})
+
 	t.Run("history_percentiles_follow_the_displayed_group", func(t *testing.T) {
 		exec(`
 INSERT INTO public.request_metrics_projection (
@@ -1517,6 +1652,23 @@ FROM (VALUES
 		if state := readProjectionWatermark(http.StatusServiceUnavailable); state.Ready ||
 			state.PendingCount == 0 || state.OldestWaitSeconds < 300 {
 			t.Fatalf("stale backlog should block readiness: %+v", state)
+		}
+		apply("983g_request_metrics_daily_history.down.sql")
+		apply("983g_request_metrics_daily_history.down.sql")
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(2026, 11, 13, 0, 0, 0, 0, loc)
+		historyCoverage, err := reportrollup.ReadProjectionCoverage(ctx, pool, day, day, day.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe := &historyQueryProbe{Querier: pool}
+		history, err := reportrollup.BuildProjectedSummary(ctx, probe, day, day, reportrollup.ViewInternal,
+			reportrollup.GrainFilter{}, reportrollup.Names{}, historyCoverage, reportrollup.ProjectedSummaryTotals)
+		if err != nil || probe.mode != "" || history.Totals.RequestCount != 3 {
+			t.Fatalf("history should continue from the projection after schema rollback: %+v %v", history, err)
 		}
 		apply("983f_request_metrics_daily_board.down.sql")
 		apply("983f_request_metrics_daily_board.down.sql")

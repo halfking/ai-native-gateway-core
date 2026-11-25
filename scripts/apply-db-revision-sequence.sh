@@ -2912,6 +2912,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/983d_request_metrics_projection.sql"
   "$ROOT_DIR/sql/migrations/startup/983e_request_metrics_daily_summary.sql"
   "$ROOT_DIR/sql/migrations/startup/983f_request_metrics_daily_board.sql"
+  "$ROOT_DIR/sql/migrations/startup/983g_request_metrics_daily_history.sql"
 )
 
 
@@ -3878,6 +3879,8 @@ ledger_artifact_probe "983e_request_metrics_daily_summary.sql" \
   "to_regclass('public.request_metrics_daily_state') IS NOT NULL AND to_regclass('public.request_metrics_daily_summary') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_codes') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_masks') IS NOT NULL AND to_regclass('public.idx_request_metrics_daily_dirty') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_projection'::regclass AND tgname IN ('invalidate_request_metrics_daily_insert','invalidate_request_metrics_daily_update','invalidate_request_metrics_daily_delete','invalidate_request_metrics_daily_truncate') AND tgenabled IN ('O','A')) = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983e') = 1"
 ledger_artifact_probe "983f_request_metrics_daily_board.sql" \
   "to_regclass('public.request_metrics_board_days') IS NOT NULL AND to_regclass('public.request_metrics_board_pies') IS NOT NULL AND to_regclass('public.request_metrics_board_providers') IS NOT NULL AND to_regclass('public.request_metrics_board_keys') IS NOT NULL AND to_regclass('public.request_metrics_board_series') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983f') = 1"
+ledger_artifact_probe "983g_request_metrics_daily_history.sql" \
+  "to_regclass('public.request_metrics_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983g') = 1"
 # ★ 999a 的产物 = 手册条目行（纯种子迁移：不建对象，只 INSERT 六条
 #   data_maintenance: 前缀的 prompt 条目）⇒ 探针 = 六条全在。
 #   ★ 999a_data_maintenance_playbook.sql

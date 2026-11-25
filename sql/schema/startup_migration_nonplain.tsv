@@ -116,3 +116,5 @@ canonical/983e_request_metrics_daily_summary.sql	both	-	从 983d 派生的可重
 embeddata/983e_request_metrics_daily_summary.sql	installer	-	983e 的安装器内嵌副本，顺序在 983d 之后。
 canonical/983f_request_metrics_daily_board.sql	both	-	看板每日分布与趋势，由部署序列和安装器 StartupFiles 交付。
 embeddata/983f_request_metrics_daily_board.sql	installer	-	983f 的安装器内嵌副本，顺序在 983e 之后。
+canonical/983g_request_metrics_daily_history.sql	both	-	历史报表日汇总和精确延迟样本，由部署序列和安装器交付。
+embeddata/983g_request_metrics_daily_history.sql	installer	-	983g 的安装器内嵌副本，依赖 983e 日状态表。

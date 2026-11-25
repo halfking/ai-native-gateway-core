@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/domains/metrics"
@@ -34,7 +35,7 @@ func requestMetricsFixtureConfig(t *testing.T, dsn string) *pgxpool.Config {
 }
 
 // The opt-in load check runs against a local disposable restore after its
-// migration channel has applied through 983f. It writes only derived statistics.
+// migration channel has applied through 983g. It writes only derived statistics.
 func TestRequestMetricsProjectionLoad(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_LOAD_DSN")
 	if dsn == "" {
@@ -82,32 +83,28 @@ func TestRequestMetricsProjectionLoad(t *testing.T) {
 	}
 	t.Logf("backfill work=%d elapsed=%s", work, time.Since(started))
 
-	started = time.Now()
-	var rebuilt int
-	for {
-		built, err := processor.RefreshDailySummary(ctx)
-		if err != nil {
-			t.Fatal(err)
+	for _, job := range []struct {
+		name    string
+		refresh func(context.Context) (bool, error)
+	}{
+		{"summary", processor.RefreshDailySummary},
+		{"board", processor.RefreshDailyBoard},
+		{"history", processor.RefreshDailyHistory},
+	} {
+		started = time.Now()
+		var rebuilt int
+		for {
+			built, err := job.refresh(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !built {
+				break
+			}
+			rebuilt++
 		}
-		if !built {
-			break
-		}
-		rebuilt++
+		t.Logf("daily %s days=%d elapsed=%s", job.name, rebuilt, time.Since(started))
 	}
-	t.Logf("daily summary days=%d elapsed=%s", rebuilt, time.Since(started))
-	started = time.Now()
-	rebuilt = 0
-	for {
-		built, err := processor.RefreshDailyBoard(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !built {
-			break
-		}
-		rebuilt++
-	}
-	t.Logf("daily board days=%d elapsed=%s", rebuilt, time.Since(started))
 
 	for _, days := range []int{1, 7, 30, 90} {
 		filter := metrics.MetricsFilter{StartTime: end.AddDate(0, 0, -days), EndTime: end}
@@ -156,7 +153,34 @@ func TestRequestMetricsProjectionLoad(t *testing.T) {
 				reportrollup.Names{}, true, coverage)
 			return err
 		})
+		measure("history-totals", func() error {
+			return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewInternal, reportrollup.ProjectedSummaryTotals)
+		})
+		measure("history-provider-distribution", func() error {
+			return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution)
+		})
 	}
+}
+
+func measureHistorySummary(ctx context.Context, pool *pgxpool.Pool, start, end time.Time, view reportrollup.View, scope reportrollup.ProjectedSummaryScope) error {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, "SET LOCAL jit=off"); err != nil {
+		return err
+	}
+	coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, end.AddDate(0, 0, -1), end)
+	if err != nil {
+		return err
+	}
+	report, err := reportrollup.BuildProjectedSummary(ctx, tx, start, end.AddDate(0, 0, -1), view, reportrollup.GrainFilter{}, reportrollup.Names{}, coverage, scope)
+	if err != nil {
+		return err
+	}
+	_, err = json.Marshal(report)
+	return err
 }
 
 func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
@@ -181,7 +205,7 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 		FROM public.request_metrics_projection_state WHERE singleton`).Scan(&previous); err != nil {
 		t.Fatal(err)
 	}
-	projectionDone, dailyDone, boardDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	projectionDone, dailyDone, boardDone, historyDone := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(projectionDone)
 		worker.Run(pollCtx, DefaultConfig())
@@ -194,7 +218,11 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 		defer close(boardDone)
 		worker.RunDailyBoard(pollCtx, DefaultConfig())
 	}()
-	defer func() { stop(); <-projectionDone; <-dailyDone; <-boardDone }()
+	go func() {
+		defer close(historyDone)
+		worker.RunDailyHistory(pollCtx, DefaultConfig())
+	}()
+	defer func() { stop(); <-projectionDone; <-dailyDone; <-boardDone; <-historyDone }()
 	if err := waitForProjectionPoll(ctx, pool, previous); err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +281,27 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 	t.Logf("poll=%s samples=%d upper-bound p95=%s max=%s", DefaultConfig().Interval, len(delays), p95, delays[len(delays)-1])
 	if p95 > 5*time.Minute {
 		t.Fatalf("projection delay exceeds five minutes: %s", p95)
+	}
+	for {
+		var ready bool
+		var observed time.Time
+		if err := pool.QueryRow(ctx, `SELECT bool_and(h.day IS NOT NULL), clock_timestamp()
+			FROM public.request_metrics_projection p
+			LEFT JOIN public.request_metrics_history_days h ON h.day=(p.occurred_at AT TIME ZONE 'Asia/Shanghai')::date
+			WHERE p.tenant_id='fixture-latency' AND starts_with(p.request_id,$1)`, batchID).Scan(&ready, &observed); err != nil {
+			t.Fatal(err)
+		}
+		// Every sample is visible in the projection before checking publication.
+		// Reuse the same arrival order for both latency upper bounds.
+		historyP95 := p95 + observed.Sub(published)
+		if historyP95 > 5*time.Minute {
+			t.Fatalf("daily history publication delay exceeds five minutes: %s", historyP95)
+		}
+		if ready {
+			t.Logf("daily history published samples=%d upper-bound p95=%s", len(arrivals), historyP95)
+			break
+		}
+		time.Sleep(time.Second)
 	}
 }
 

@@ -262,8 +262,8 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     StartupFiles 末尾）⇒ **交集 +1**（★ 343 → 344 ★★）；
 		//     两通道独有清单不变（25 / 63）。
 		//
-		// 983d, 983e and 983f are delivered through both startup channels.
-		wantBoth          = 347
+		// 983d through 983g are delivered through both startup channels.
+		wantBoth          = 348
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)
