@@ -282,9 +282,18 @@ func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFi
 			if scope == ProjectedSummaryTotals || projectedProviderDistribution(view) {
 				return nil
 			}
-			// Published history covers totals and models. Query tenant and
-			// person groups in the same snapshot without repeating those ranks.
-			groups = projectedInternalGroups(scope)
+			tenants, err := readDailyHistory(ctx, q, coverage, historyTenant, true, sink)
+			if err != nil {
+				return err
+			}
+			if tenants {
+				if scope == projectedSummaryPersonPage {
+					return nil
+				}
+				groups = []string{projectedPersonGroup}
+			} else {
+				groups = projectedInternalGroups(scope)
+			}
 		}
 	}
 	args := []any{coverage.From, coverage.Through, coverage.Timezone, projectedBusinessOnly(view, filter)}

@@ -14,24 +14,48 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const dailyHistoryZone = "Asia/Shanghai"
+const (
+	dailyHistoryZone       = "Asia/Shanghai"
+	historyDaysTable       = "public.request_metrics_history_days"
+	historyCellsTable      = "public.request_metrics_daily_history"
+	tenantHistoryDaysTable = "public.request_metrics_tenant_history_days"
+	tenantHistoryCellTable = "public.request_metrics_daily_tenant_history"
+)
+
+type historyKind uint8
+
+const (
+	historyTotal historyKind = iota
+	historyModel
+	historyProvider
+	historyTenant
+)
 
 const historyFacts = `status, ` + projectedErrorKind + ` AS kind, ` + projectedModelKey + ` AS model,
-	provider_id, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
+	provider_id, tenant_id, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
 	total_tokens, credits_charged, latency_ms, cost_amount, cost_currency`
 
 const historyKeys = `report_date, business_only, dimension, group_key`
 const historyMeasures = `requests, successes, input_tokens, output_tokens, cache_read, cache_write,
 	usd_cents, credits, tokens, cache_covered_read, cache_input, cache_coverage, usd_coverage, latency_samples`
 
-func historyCellsSQL(distribution bool) string {
+func historyCellsSQL(kind historyKind) string {
 	keys := `report_date, business_only, 'total'::text AS dimension, ''::text AS group_key`
 	groupBy := `report_date, business_only`
-	if distribution {
+	switch kind {
+	case historyModel:
+		keys = `report_date, business_only,
+			CASE WHEN GROUPING(model)=0 THEN 'model' ELSE 'total' END AS dimension,
+			CASE WHEN GROUPING(model)=0 THEN model ELSE '' END AS group_key`
+		groupBy += `, GROUPING SETS ((), (model))`
+	case historyProvider:
 		keys = `report_date, business_only,
 			CASE WHEN GROUPING(model)=0 THEN 'model' WHEN GROUPING(provider_id)=0 THEN 'provider' ELSE 'total' END AS dimension,
 			CASE WHEN GROUPING(model)=0 THEN model WHEN GROUPING(provider_id)=0 THEN coalesce(provider_id,-1)::text ELSE '' END AS group_key`
 		groupBy += `, GROUPING SETS ((), (model), (provider_id))`
+	case historyTenant:
+		keys = `report_date, business_only, 'tenant'::text AS dimension, tenant_id AS group_key`
+		groupBy += `, tenant_id`
 	}
 	return `, measures AS (
 		SELECT ` + keys + `, ` + projectedAdditiveMeasures + `,
@@ -53,22 +77,44 @@ func historyCellsSQL(distribution bool) string {
 // RebuildDailyHistory writes all cells before publishing the day. The caller
 // holds the shared daily-state row lock for the duration of the transaction.
 func RebuildDailyHistory(ctx context.Context, tx *sql.Tx, day string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM public.request_metrics_daily_history WHERE report_date=$1::date`, day); err != nil {
+	return rebuildDailyHistory(ctx, tx, day, historyProvider)
+}
+
+// RebuildDailyTenantHistory publishes business tenant cells under the same
+// day lock, independently of the cells an older gateway can rebuild.
+func RebuildDailyTenantHistory(ctx context.Context, tx *sql.Tx, day string) error {
+	return rebuildDailyHistory(ctx, tx, day, historyTenant)
+}
+
+func historyTables(kind historyKind) (days, cells string) {
+	if kind == historyTenant {
+		return tenantHistoryDaysTable, tenantHistoryCellTable
+	}
+	return historyDaysTable, historyCellsTable
+}
+
+func rebuildDailyHistory(ctx context.Context, tx *sql.Tx, day string, kind historyKind) error {
+	days, cells := historyTables(kind)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+cells+` WHERE report_date=$1::date`, day); err != nil {
 		return err
+	}
+	traffic := `(false), (true)`
+	if kind == historyTenant {
+		traffic = `(true)`
 	}
 	_, err := tx.ExecContext(ctx, `WITH facts AS NOT MATERIALIZED (
 		SELECT $1::date AS report_date, scope.business_only, `+historyFacts+`
-		FROM public.request_metrics_projection CROSS JOIN (VALUES (false), (true)) scope(business_only)
+		FROM public.request_metrics_projection CROSS JOIN (VALUES `+traffic+`) scope(business_only)
 		WHERE source_fact_id IS NOT NULL AND (NOT scope.business_only OR traffic_class='business')
 		  AND occurred_at >= ($1::date::timestamp AT TIME ZONE '`+dailyHistoryZone+`')
 		  AND occurred_at < (($1::date+1)::timestamp AT TIME ZONE '`+dailyHistoryZone+`')
-	)`+historyCellsSQL(true)+`
-	INSERT INTO public.request_metrics_daily_history (`+historyKeys+`, `+historyMeasures+`, errors)
+	)`+historyCellsSQL(kind)+`
+	INSERT INTO `+cells+` (`+historyKeys+`, `+historyMeasures+`, errors)
 	SELECT * FROM raw_cells`, day)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO public.request_metrics_history_days (day) VALUES ($1::date)`, day)
+	_, err = tx.ExecContext(ctx, `INSERT INTO `+days+` (day) VALUES ($1::date)`, day)
 	return err
 }
 
@@ -92,31 +138,26 @@ const historyFirstDay = `($1::timestamptz AT TIME ZONE '` + dailyHistoryZone + `
 const historyLastDay = `($2::timestamptz AT TIME ZONE '` + dailyHistoryZone + `')::date`
 const historyDayBounds = `day >= ` + historyFirstDay + ` AND day < ` + historyLastDay
 
-const historyPublishedSelect = `SELECT ` + historyKeys + `, ` + historyMeasures + `, errors
-	FROM public.request_metrics_daily_history
-	WHERE report_date >= ` + historyFirstDay + ` AND report_date < ` + historyLastDay + `
-	  AND business_only=$3`
-
 const historyFactsSelect = `SELECT (p.occurred_at AT TIME ZONE '` + dailyHistoryZone + `')::date AS report_date,
 	$3::boolean AS business_only, ` + historyFacts
 
 const historyFactsFilter = `p.source_fact_id IS NOT NULL AND (NOT $3::boolean OR p.traffic_class='business')`
 
-func dailyHistorySQL(fullyPublished, contiguousGap, distribution, providers bool) string {
+func dailyHistorySQL(fullyPublished, contiguousGap bool, kind historyKind) string {
+	days, cells := historyTables(kind)
 	selection := ""
-	if !distribution {
+	switch kind {
+	case historyTotal:
 		selection = " AND dimension='total'"
-	} else if !providers {
+	case historyModel:
 		selection = " AND dimension<>'provider'"
 	}
-	rawSelection := ""
-	if distribution && !providers {
-		rawSelection = " WHERE dimension<>'provider'"
-	}
+	published := `SELECT ` + historyKeys + `, ` + historyMeasures + `, errors FROM ` + cells + `
+		WHERE report_date >= ` + historyFirstDay + ` AND report_date < ` + historyLastDay + ` AND business_only=$3` + selection
 	var input string
 	switch {
 	case fullyPublished:
-		input = `WITH history AS (` + historyPublishedSelect + selection + `)`
+		input = `WITH history AS (` + published + `)`
 	case contiguousGap:
 		// Concrete bounds let the planner estimate the raw branch from the
 		// occurrence index. A range-valued join estimates many more raw rows.
@@ -124,13 +165,13 @@ func dailyHistorySQL(fullyPublished, contiguousGap, distribution, providers bool
 		FROM public.request_metrics_projection p WHERE ` + historyFactsFilter + `
 		  AND p.occurred_at >= ($4::date::timestamp AT TIME ZONE '` + dailyHistoryZone + `')
 		  AND p.occurred_at < ($5::date::timestamp AT TIME ZONE '` + dailyHistoryZone + `')
-	)` + historyCellsSQL(distribution) + `, history AS (` + historyPublishedSelect + selection + `
+	)` + historyCellsSQL(kind) + `, history AS (` + published + `
 		AND (report_date < $4::date OR report_date >= $5::date)
-		UNION ALL SELECT * FROM raw_cells` + rawSelection + `
+		UNION ALL SELECT * FROM raw_cells
 	)`
 	default:
 		input = `WITH clean_days AS MATERIALIZED (
-		SELECT day FROM public.request_metrics_history_days WHERE ` + historyDayBounds + `
+		SELECT day FROM ` + days + ` WHERE ` + historyDayBounds + `
 	), gaps AS (
 		SELECT tstzmultirange(tstzrange($1,$2,'[)')) - coalesce(range_agg(
 			tstzrange(day::timestamp AT TIME ZONE '` + dailyHistoryZone + `',
@@ -140,11 +181,11 @@ func dailyHistorySQL(fullyPublished, contiguousGap, distribution, providers bool
 		FROM gaps CROSS JOIN LATERAL unnest(missing) AS r(span)
 		JOIN public.request_metrics_projection p ON p.occurred_at >= lower(span) AND p.occurred_at < upper(span)
 		WHERE ` + historyFactsFilter + `
-	)` + historyCellsSQL(distribution) + `, history AS (
+	)` + historyCellsSQL(kind) + `, history AS (
 		SELECT ` + historyKeys + `, ` + historyMeasures + `, errors
-		FROM public.request_metrics_daily_history JOIN clean_days ON day=report_date
+		FROM ` + cells + ` JOIN clean_days ON day=report_date
 		WHERE business_only=$3` + selection + `
-		UNION ALL SELECT * FROM raw_cells` + rawSelection + `
+		UNION ALL SELECT * FROM raw_cells
 	)`
 	}
 	return input + ` SELECT report_date, dimension, group_key, ` + historyMeasures + `, errors FROM history`
@@ -172,8 +213,20 @@ func (r latencyRun) at(index int) int64 {
 // published days are absent. Scope, coverage and all reads share the caller's
 // snapshot so dirty intervals can be combined with published ones exactly once.
 func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilter, coverage ProjectionCoverage, scope ProjectedSummaryScope, sink func(groupKind, grainScanRow)) (bool, error) {
+	kind := historyTotal
+	if scope.includesDistribution() {
+		kind = historyModel
+		if projectedProviderDistribution(view) {
+			kind = historyProvider
+		}
+	}
+	return readDailyHistory(ctx, q, coverage, kind, projectedBusinessOnly(view, filter), sink)
+}
+
+func readDailyHistory(ctx context.Context, q Querier, coverage ProjectionCoverage, kind historyKind, businessOnly bool, sink func(groupKind, grainScanRow)) (bool, error) {
+	days, _ := historyTables(kind)
 	var exists bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass('public.request_metrics_history_days') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+	if err := q.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, days).Scan(&exists); err != nil || !exists {
 		return false, err
 	}
 	var published int
@@ -182,16 +235,16 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 	if err := q.QueryRow(ctx, `SELECT count(h.day), count(*)-count(h.day),
 		min(d.day::date) FILTER (WHERE h.day IS NULL), max(d.day::date) FILTER (WHERE h.day IS NULL)
 		FROM generate_series(`+historyFirstDay+`::timestamp, (`+historyLastDay+`-1)::timestamp, interval '1 day') AS d(day)
-		LEFT JOIN public.request_metrics_history_days h ON h.day=d.day::date`,
+		LEFT JOIN `+days+` h ON h.day=d.day::date`,
 		coverage.From, coverage.Through).Scan(&published, &missing, &firstMissing, &lastMissing); err != nil || published == 0 {
 		return false, err
 	}
 	contiguousGap := missing > 0 && firstMissing.Time.AddDate(0, 0, missing-1).Equal(lastMissing.Time)
-	args := []any{coverage.From, coverage.Through, projectedBusinessOnly(view, filter)}
+	args := []any{coverage.From, coverage.Through, businessOnly}
 	if contiguousGap {
 		args = append(args, firstMissing.Time, lastMissing.Time.AddDate(0, 0, 1))
 	}
-	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, scope.includesDistribution(), projectedProviderDistribution(view)), args...)
+	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, kind), args...)
 	if err != nil {
 		return true, fmt.Errorf("read daily request history: %w", err)
 	}
@@ -234,6 +287,8 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 				group.kind, group.row.providerID = gkProvider, &providerID
 			case "model":
 				group.kind, group.row.model = gkModel, key
+			case "tenant":
+				group.kind, group.row.tenant = gkTenant, key
 			default:
 				return true, fmt.Errorf("unknown daily history dimension %q", dimension)
 			}
@@ -256,13 +311,13 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 			setHistoryRanks(&day, []latencyRun{samples}, samples.size())
 			emitHistoryRow(sink, gkDay, day, errors)
 		}
-		row.gDate, row.providerID, row.model = true, group.row.providerID, group.row.model
+		row.gDate, row.providerID, row.model, row.tenant = true, group.row.providerID, group.row.model, group.row.tenant
 		emitHistoryRow(sink, group.kind, row, errors)
 	}
 	if err := rows.Err(); err != nil {
 		return true, err
 	}
-	if _, ok := groups[[2]string{"total", ""}]; !ok {
+	if _, ok := groups[[2]string{"total", ""}]; !ok && kind != historyTenant {
 		sink(gkTotal, grainScanRow{gDate: true, projection: &projectedMeasures{}})
 	}
 	for _, group := range groups {
@@ -276,7 +331,7 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 func emitHistoryRow(sink func(groupKind, grainScanRow), group groupKind, row grainScanRow, errors map[string]int64) {
 	sink(group, row)
 	for kind, count := range errors {
-		sink(group, grainScanRow{gDate: row.gDate, date: row.date, providerID: row.providerID, model: row.model, kind: kind, errKindCount: count})
+		sink(group, grainScanRow{gDate: row.gDate, date: row.date, providerID: row.providerID, model: row.model, tenant: row.tenant, kind: kind, errKindCount: count})
 	}
 }
 

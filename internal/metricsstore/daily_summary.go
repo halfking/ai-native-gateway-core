@@ -52,21 +52,45 @@ func (p *ProjectionProcessor) RefreshDailyBoard(ctx context.Context) (bool, erro
 	})
 }
 
-const claimDailyHistorySQL = `
+func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	const historyDays = "public.request_metrics_history_days"
+	const tenantDays = "public.request_metrics_tenant_history_days"
+	var tenantsAvailable bool
+	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, tenantDays).Scan(&tenantsAvailable); err != nil {
+		return false, err
+	}
+	missing := `NOT EXISTS (SELECT 1 FROM ` + historyDays + ` h WHERE h.day=s.day)`
+	if tenantsAvailable {
+		missing += ` OR NOT EXISTS (SELECT 1 FROM ` + tenantDays + ` t WHERE t.day=s.day)`
+	}
+	claim := `
 	SELECT s.day::text FROM public.request_metrics_daily_state s
 	WHERE NOT s.dirty
 	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
-	  AND NOT EXISTS (SELECT 1 FROM public.request_metrics_history_days h WHERE h.day=s.day)
+	  AND (` + missing + `)
 	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
-
-func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, error) {
-	return p.refreshDay(ctx, claimDailyHistorySQL, func(ctx context.Context, tx *sql.Tx, day string) error {
-		var published bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_history_days WHERE day=$1::date)", day).Scan(&published); err != nil || published {
+	return p.refreshDay(ctx, claim, func(ctx context.Context, tx *sql.Tx, day string) error {
+		// Use one lock acquisition for both publications. Separate polling
+		// workers can otherwise lose a tick each while competing for this row.
+		if err := publishMissingHistory(ctx, tx, day, historyDays, reportrollup.RebuildDailyHistory); err != nil {
 			return err
 		}
-		return reportrollup.RebuildDailyHistory(ctx, tx, day)
+		if tenantsAvailable {
+			return publishMissingHistory(ctx, tx, day, tenantDays, reportrollup.RebuildDailyTenantHistory)
+		}
+		return nil
 	})
+}
+
+func publishMissingHistory(ctx context.Context, tx *sql.Tx, day, days string, rebuild func(context.Context, *sql.Tx, string) error) error {
+	// Another worker can publish the day between the claim snapshot and lock.
+	var published bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+days+" WHERE day=$1::date)", day).Scan(&published); err != nil || published {
+		return err
+	}
+	return rebuild(ctx, tx, day)
 }
 
 func (p *ProjectionProcessor) refreshDay(ctx context.Context, claim string, rebuild func(context.Context, *sql.Tx, string) error) (bool, error) {
