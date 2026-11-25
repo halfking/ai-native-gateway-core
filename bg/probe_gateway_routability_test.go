@@ -112,15 +112,22 @@ func TestProbeGatewayRoundDecisionSkipsUnroutable(t *testing.T) {
 
 // TestProbeGatewayRoundRoutableSQLUsesRoutingSources guards the **single
 // source** of the routability judgement: the query must ask the routing
-// layer's own candidate table (`model_offers` — the table the gateway's
-// candidate_diag counts as `offers_total`) plus the credential-level gates
-// (`v_routable_credential_models`), and must bind both the credential and the
-// model.
+// layer's own candidate table (`model_offers` — the view the gateway's
+// candidate_diag counts as `offers_total`) plus the routing layer's own gate
+// (`v_routable_credential_models.is_routable` — the very column the routing
+// candidate query filters on, provider/client.go:2068), and must bind both the
+// credential and the model.
 //
-// ★ Why `model_offers` and NOT only the view: 211 实测两表已漂移 —— 99023 的
-// gpt-image-2.5-sunburst 在 `credential_model_bindings` 上 available=true、在
-// `model_offers` 上 available=false/probe_http_429 ⇒ 只问视图会读成「可路由」
-// ⇒ 第一版判据对实测残留**不咬**。
+// ★ 2026-11-26 12h 审计轮订正（★ 前一版的注释把两张表当成可漂移的两张表，
+// ★ 事实是 `model_offers` **本身就是视图**、`available` 就是 `cmb.available`
+// ★ ⇒ 不存在漂移；★ 且路由层的候选查询用的**就是**资格视图的 `is_routable` ★）。
+//
+// ★★ 判据因此**直接读视图自己那一列**，而不是枚举视图的排除原因文本：★★
+//	· 前一版用「凭据级前缀」匹配 `unavailable_reason` ⇒ **漏掉**绑定/模型级与
+//	  探针级的四类理由（binding_unavailable / model_unavailable /
+//	  model_manual_disabled / **node_probe_failed**）⇒ 其中 `node_probe_failed`
+//	  正是上一版自己实测到的残留主因 ⇒ 判据对它不咬；
+//	· 枚举 CASE 出来的文本必然随视图演进而漂移 ⇒ 改为读 `is_routable` 本列。
 func TestProbeGatewayRoundRoutableSQLUsesRoutingSources(t *testing.T) {
 	sql := probeGatewayRoundRoutableSQL
 	for _, want := range []string{
@@ -129,18 +136,23 @@ func TestProbeGatewayRoundRoutableSQLUsesRoutingSources(t *testing.T) {
 		"credential_id = $1",
 		"raw_model_name = $2",
 		"o.available IS TRUE",
-		"unavailable_reason",
+		// ★ 判据读路由层自己的那一列（is_routable），不枚举排除原因文本。
+		"is_routable",
+		"NOT bool_or(v.is_routable)",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("the routability judgement is missing %q\ngot:\n%s", want, sql)
 		}
 	}
-	// 凭据级排除原因用**前缀**判（provider_ / credential_ / lifecycle_ /
-	// availability_ / quota_ / recent_probe_unreachable），不枚举状态码 ——
-	// 枚举必然随视图演进而漂移。
-	for _, want := range []string{"provider_", "credential_", "availability_", "quota_"} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("the credential-level reason match is missing the %q prefix\ngot:\n%s", want, sql)
+	// ★ 排除原因**不再**用前缀枚举（★ 那是漏掉 node_probe_failed 的根因 ★）：
+	// 视图的排除原因是 CASE 出来的文本，★ 枚举它必然随视图演进而漂移 ★。
+	for _, unwanted := range []string{
+		"unavailable_reason ~",
+		"provider_|credential_",
+		"node_probe_failed",
+	} {
+		if strings.Contains(sql, unwanted) {
+			t.Fatalf("the routability judgement must not enumerate exclusion reasons (%q)\ngot:\n%s", unwanted, sql)
 		}
 	}
 }

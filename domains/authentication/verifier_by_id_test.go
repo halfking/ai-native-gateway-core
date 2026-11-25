@@ -13,8 +13,8 @@ func verifyByIDRows() *pgxmock.Rows {
 		"id", "tenant_id", "application_id", "application_code", "key_prefix",
 		"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
 		"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias",
-		"customer_id", "is_system",
-	}).AddRow(7, "tenant-a", 3, "app1", "sk-7", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, true)
+		"customer_id", "is_system", "capabilities",
+	}).AddRow(7, "tenant-a", 3, "app1", "sk-7", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, true, `["session.audit"]`)
 }
 
 func TestKeyVerifier_VerifyByID(t *testing.T) {
@@ -36,6 +36,12 @@ func TestKeyVerifier_VerifyByID(t *testing.T) {
 	}
 	if !info.IsSystem {
 		t.Fatal("VerifyByID must propagate api_keys.is_system for durable dispatch trust")
+	}
+	// ★ 2026-11-26 12h 审计轮：★ VerifyByID 的投影**原先漏了 capabilities** ⇒
+	// 这条路径读出的 Capabilities 恒为 nil ⇒ 同一把 Key 在两条读路径上读出两副
+	// 面孔 ⇒ 一旦 W4.3 把能力闸接上，走这条路径的调用方会一律判「无能力」。
+	if len(info.Capabilities) != 1 || info.Capabilities[0] != "session.audit" {
+		t.Fatalf("VerifyByID must propagate api_keys.capabilities, got %v", info.Capabilities)
 	}
 	if err := mp.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
