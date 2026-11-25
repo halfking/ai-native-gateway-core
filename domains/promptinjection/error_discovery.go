@@ -24,6 +24,16 @@ package promptinjection
 // ★ 多实例安全：245 与 154 共享一个库、各跑一个发现器 ⇒ 两边会同时发现同一
 //
 //	组；采集器的「事务内 advisory lock + 查重」保证同一指纹只入队一次。
+//
+// ★ 第四道闸（2026-11-26 部署前补）：**全部来自探测流量的分组不入队**。
+//
+//	245/154 共用库实测：`upstream_down`（供应商 18 的 nvidia 系模型）那一组看似
+//	「上游故障」，到请求账本里一查 `origin_stage = node_probe`——是节点探测在打
+//	一个「需要出口代理而没有」的供应商。探测失败是**探测子系统**的健康信号，
+//	不是「请求过程中发生的错误」；不排除的话，发现器一上线就会把探测噪声当成
+//	请求错误送去调模型。判据与请求账本的业务隔离谓词同源（internal/probekind
+//	的阶段表 ＋ task_type = probe_triggered ＋ probe- 请求号前缀），不另立口径。
+//	只要组里有一条不是探测，就照常入队；判不出来（账本不在场 / 超时）也不跳过。
 
 import (
 	"context"
@@ -33,6 +43,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // DiscoveryConfig 是发现器的运行配置（装配侧每轮从 settings 读出注入，热生效）。
@@ -53,6 +65,8 @@ const (
 	discoveryMaxWindow    = 24 * time.Hour
 	discoveryMaxPerRound  = 20
 	discoveryQueryTimeout = 15 * time.Second
+	// discoveryProbeLookups 是「这组失败里有多少条来自探测」最多核对多少个请求号。
+	discoveryProbeLookups = 50
 )
 
 // clientCanceledKinds 是「调用方主动取消」类的错误类型——不是故障，不入队。
@@ -73,6 +87,8 @@ type RequestErrorDiscoverer struct {
 	db        *sql.DB
 	collector *ErrorCollector
 	cfgFn     func() DiscoveryConfig
+	// probeOnly 判定一个分组是否**全部**来自探测流量；nil ⇒ 用默认实现（查请求账本）。
+	probeOnly func(ctx context.Context, windowArg string, g failureGroup) (bool, error)
 }
 
 // NewRequestErrorDiscoverer 创建发现器。cfgFn 可为 nil（用默认配置）。
@@ -125,6 +141,74 @@ const discoverySampleSQL = `
 	  AND COALESCE(raw_model_name, '') = $4
 	ORDER BY ts DESC
 	LIMIT 1`
+
+// discoveryGroupRequestIDsSQL 取一个分组在窗口内的请求号（有界）。
+const discoveryGroupRequestIDsSQL = `
+	SELECT DISTINCT request_id
+	FROM candidate_failure_logs_hot
+	WHERE ts > NOW() - $1::interval
+	  AND error_kind = $2 AND provider_id::text = $3 AND COALESCE(raw_model_name, '') = $4
+	LIMIT $5`
+
+// discoveryProbeMarkedCountSQL 数一组请求号里被请求账本标成「探测」的有几个。
+//
+//	★ 判据与 admin/analytics.go 的业务隔离谓词同源：internal/probekind 的阶段表
+//	  （SSOT）＋ task_type = 'probe_triggered' ＋ 'probe-' 请求号前缀。
+//	★ 请求号用逐个占位符而不是 text[]：pgx stdlib 对数组的绑定有坑（见上）。
+func discoveryProbeMarkedCountSQL(placeholders string) string {
+	return fmt.Sprintf(`
+	SELECT COUNT(DISTINCT rl.request_id)
+	FROM request_logs_with_current_month rl
+	WHERE rl.request_id IN (%s)
+	  AND (COALESCE(rl.task_type, '') = 'probe_triggered'
+	       OR COALESCE(rl.origin_stage, '') IN (%s)
+	       OR rl.request_id LIKE 'probe-%%')`, placeholders, probekind.SQLStageList())
+}
+
+// probeOnlyDefault 是 probeOnly 的默认实现：到请求账本里数这一组的请求有多少是探测。
+//
+//	★ 请求号取满上限（被截断）时不下「全部是探测」的结论——没看到的那部分里
+//	  可能有业务请求。★ 账本读不到（表不在场 / 超时）⇒ 返回 error，由调用方按
+//	  「不跳过」处理：宁可多分析一组，也不静默漏掉真实故障。
+func (d *RequestErrorDiscoverer) probeOnlyDefault(ctx context.Context, windowArg string, g failureGroup) (bool, error) {
+	rows, err := d.db.QueryContext(ctx, discoveryGroupRequestIDsSQL,
+		windowArg, g.kind, g.provider, g.model, discoveryProbeLookups+1)
+	if err != nil {
+		return false, fmt.Errorf("query group request ids: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("scan group request id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, fmt.Errorf("iterate group request ids: %w", err)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return false, nil // 窗口边界上行被搬走/清理了 ⇒ 交给后面的取样去决定
+	}
+	if len(ids) > discoveryProbeLookups {
+		return false, nil // 请求号太多、没看全 ⇒ 不下结论
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	var marked int64
+	if err := d.db.QueryRowContext(ctx, discoveryProbeMarkedCountSQL(strings.Join(placeholders, ", ")), args...).
+		Scan(&marked); err != nil {
+		return false, fmt.Errorf("count probe-marked requests: %w", err)
+	}
+	return marked >= int64(len(ids)), nil
+}
 
 // RunOnce 跑一轮发现；返回本轮交给采集器的分组数（查重之后实际入库的可能更少）。
 func (d *RequestErrorDiscoverer) RunOnce(ctx context.Context) (int, error) {
@@ -189,8 +273,22 @@ func (d *RequestErrorDiscoverer) RunOnce(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
+	probeOnly := d.probeOnly
+	if probeOnly == nil {
+		probeOnly = d.probeOnlyDefault
+	}
 	enqueued := 0
 	for _, g := range groups {
+		probe, err := probeOnly(ctx, windowArg, g)
+		if err != nil {
+			// 判不出来 ⇒ 不跳过（见 probeOnly 的说明）。
+			slog.Warn("pi_request_error_discovery: could not tell probe traffic from request traffic; group kept",
+				"error_kind", g.kind, "provider_id", g.provider, "model", g.model, "error", err)
+		} else if probe {
+			slog.Info("pi_request_error_discovery: group is probe traffic only; skipped",
+				"error_kind", g.kind, "provider_id", g.provider, "model", g.model, "count", g.count)
+			continue
+		}
 		ce, err := d.sample(ctx, windowArg, g, int(window.Minutes()))
 		if err != nil {
 			slog.Warn("pi_request_error_discovery: sample lookup failed",
