@@ -117,6 +117,11 @@ async function onErrorClick(kind: string) {
       error_kind: kind,
       days: props.days,
       dimension: errorDrillDim.value,
+      tenant_id: props.board?.tenant_id,
+      provider_id: props.board?.provider_id,
+      include_probes: props.board?.probe_scope === 'included',
+      window_start: props.board?.window_start,
+      window_end: props.board?.window_end,
     })
     errorDrillItems.value = res.items
   } catch (err) {

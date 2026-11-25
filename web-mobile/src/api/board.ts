@@ -1,6 +1,6 @@
 import { req, type RequestOptions } from './client'
 
-// board.ts — /api/admin/dashboard/board（形状对齐 web/src/api/board.ts，字段裁剪到移动端渲染面）。
+// board.ts — /api/admin/dashboard/v2/board（形状对齐 web/src/api/board.ts，字段裁剪到移动端渲染面）。
 
 export interface BoardSummary {
   total_requests?: number
@@ -63,5 +63,5 @@ export interface BoardPayload {
 }
 
 export function fetchBoard(days = 7, options?: RequestOptions): Promise<BoardPayload> {
-  return req<BoardPayload>('GET', `/api/admin/dashboard/board?days=${days}&include_operational=1`, undefined, options)
+  return req<BoardPayload>('GET', `/api/admin/dashboard/v2/board?days=${days}&include_operational=1`, undefined, options)
 }

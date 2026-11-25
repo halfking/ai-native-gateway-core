@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,12 +32,11 @@ func TestDailyReconciliationDefaultCapability(t *testing.T) {
 	const flag = "LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED"
 	handler := capabilitiesTestHandler(false)
 	t.Setenv(flag, "true")
-	if handler.featureCapabilities().DailyReconciliationDefault != nil {
+	if handler.featureCapabilities(context.Background()).DailyReconciliationDefault != nil {
 		t.Fatal("daily read preference requires a database connection")
 	}
+	t.Setenv(flag, "false")
 	handler.db = fillRevocationCache(t, nil)
-	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
-	t.Cleanup(func() { settings.SystemTimezoneLocationForTest("") })
 	mux := http.NewServeMux()
 	handler.RegisterCapabilityRoutes(mux)
 	token, _, err := SignToken(7, "tenant-a", "sa", "super_admin", capabilitiesTestSecret, false)
@@ -56,12 +56,30 @@ func TestDailyReconciliationDefaultCapability(t *testing.T) {
 		}
 		return caps
 	}
-	if got := read().DailyReconciliationDefault; got == nil || got.Day == "" || got.Timezone != "Asia/Shanghai" {
-		t.Fatalf("daily read preference missing or invalid: %+v", got)
-	}
-	t.Setenv(flag, "false")
 	if got := read().DailyReconciliationDefault; got != nil {
 		t.Fatalf("rollback still advertises optional daily read preference: %+v", got)
+	}
+}
+
+func TestReconciliationDefaultUsesFinancialClose(t *testing.T) {
+	now := time.Date(2026, 11, 24, 17, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ value, want string }{
+		{"2026-11-23@Asia/Shanghai", "2026-11-23"},
+		{"open@Asia/Shanghai", ""},
+		{"2026-11-25@Asia/Shanghai", ""},
+	} {
+		calendar, err := settings.ParseReconciliationCalendar(tc.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := lastClosedReconciliationDay(now, calendar)
+		if tc.want == "" {
+			if got != nil {
+				t.Fatalf("%s advertised an open day: %+v", tc.value, got)
+			}
+		} else if got == nil || got.Day != tc.want || got.Timezone != "Asia/Shanghai" {
+			t.Fatalf("%s default = %+v, want %s", tc.value, got, tc.want)
+		}
 	}
 }
 
@@ -122,11 +140,11 @@ func TestCapabilitiesRouteIsRegisteredUnconditionally(t *testing.T) {
 //
 //	「端点真的在」不可能不一致（这是本端点存在的全部理由）。
 func TestCapabilitiesDerivedFromHandlerAssembly(t *testing.T) {
-	off := capabilitiesTestHandler(false).featureCapabilities()
+	off := capabilitiesTestHandler(false).featureCapabilities(context.Background())
 	if off.CostReconciliation {
 		t.Fatal("对账 handler 未装配 ⇒ 能力位必须为 false")
 	}
-	on := capabilitiesTestHandler(true).featureCapabilities()
+	on := capabilitiesTestHandler(true).featureCapabilities(context.Background())
 	if !on.CostReconciliation {
 		t.Fatal("对账 handler 已装配 ⇒ 能力位必须为 true")
 	}

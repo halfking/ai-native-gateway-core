@@ -77,11 +77,11 @@ function install(overrides: Partial<ReturnType<typeof payloads>> = {}) {
   mockedReq.mockImplementation(async (_method, url) => {
     const path = new URL(url, 'http://localhost').pathname
     switch (path) {
-      case '/api/usage/summary': return p.summary
-      case '/api/admin/usage/cost-trend': return p.costTrend
-      case '/api/admin/usage/period-compare': return p.periodCompare
-      case '/api/admin/usage/cache-economics': return p.cacheEconomics
-      case '/api/usage/hot-keys': return p.hotKeys
+      case '/api/usage/v2/summary': return p.summary
+      case '/api/admin/usage/v2/cost-trend': return p.costTrend
+      case '/api/admin/usage/v2/period-compare': return p.periodCompare
+      case '/api/admin/usage/v2/cache-economics': return p.cacheEconomics
+      case '/api/usage/v2/hot-keys': return p.hotKeys
       default: return realUsageResponse(url)
     }
   })

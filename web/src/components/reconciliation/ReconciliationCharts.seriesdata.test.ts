@@ -50,11 +50,26 @@ describe('reconTrendSeries', () => {
     const series = reconTrendSeries(fixture.days, fixture.snapshot_dates, 'cost')
     const first = fixture.snapshot_dates.find((date) => fixture.days.some((day) => day.date === date))!
     const totals = fixture.days.find((day) => day.date === first)!.totals
-    expect(series.money[0]).toBeCloseTo(totals.estimated_cost_cents / 100)
+    expect(series.money[0]).toBeCloseTo((totals.estimated_cost_cents ?? 0) / 100)
   })
 
   it('drops every day when coverage is an empty list', () => {
     expect(reconTrendSeries(fixture.days, [], 'credits').labels).toEqual([])
+  })
+
+  it('leaves gaps for projected costs and cache rates with no evidence', () => {
+    const day = fixture.days.find(({ totals }) => totals.request_count > 0)!
+    const totals = {
+      ...day.totals,
+      usd_measured_requests: 0,
+      estimated_cost_cents: 0,
+      cache_measured_requests: 0,
+      cache_hit_ratio: null,
+    }
+    const series = reconTrendSeries([{ date: day.date, totals }], [day.date], 'cost')
+    expect(series.money).toEqual([null])
+    expect(series.hit).toEqual([null])
+    expect(series.success[0] + series.fail[0]).toBe(totals.request_count)
   })
 
   it('passes those series into chart.js instead of only mentioning them in source', async () => {

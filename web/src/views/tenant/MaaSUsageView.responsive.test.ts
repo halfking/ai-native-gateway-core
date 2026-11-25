@@ -570,11 +570,11 @@ describe('MaaSUsageView：跨层契约', () => {
     expect(SOURCE).toContain('<template #empty>')
   })
 
-  it('0 新增 i18n 键：只引用 tenants.usage.* / tenants.maasUsageView.* / common.* / hyper.* 的既有键', () => {
+  it('用量和账本复用既有词条，费用覆盖提示与租户详情一致', () => {
     const used = new Set([...CODE_ONLY.matchAll(/t\('([^']+)'/g)].map((m) => m[1]))
     for (const k of used) {
       expect(
-        /^(tenants\.usage\.|tenants\.maasUsageView\.|common\.|hyper\.)/.test(k),
+        /^(tenants\.usage\.|tenants\.maasUsageView\.|common\.|hyper\.)/.test(k) || k === 'tenants.detail.usdCoverage',
         `出现了预期词条前缀之外的键：${k}`,
       ).toBe(true)
     }

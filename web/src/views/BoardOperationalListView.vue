@@ -130,7 +130,8 @@ function navigateToDetail(item: BoardPieItem) {
   
   router.push({
     path,
-    query: { days: timeRange.value }
+    query: { ...route.query, days: timeRange.value, start: boardData.value?.window_start ?? boardRange.value.start,
+      end: boardData.value?.window_end ?? boardRange.value.end }
   })
 }
 

@@ -2146,6 +2146,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 幂等（纯 INSERT + ON CONFLICT DO NOTHING，零 DDL）⇒
 			//     内容指纹重放零冲突；零外部依赖 ⇒ 位置只受清单序约束。
 			"999a_data_maintenance_playbook.sql",
+			"973_request_metrics_projection.sql",
 		},
 	}
 }

@@ -12,18 +12,12 @@ import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
   fetchSessionOverview,
-  fetchSessionTrend,
-  fetchActiveSessions,
-  fetchModuleStats,
+  normalizeSessionTrendData,
   fetchErrorStats,
   fetchPerformanceStats,
-  getHealthDistribution,
   DashboardApiError,
   type SessionOverviewData,
   type SessionTrendData,
-  type ActiveSessionItem,
-  type HealthDistributionData,
-  type ModuleStatsData,
   type ErrorStatsData,
   type PerformanceData,
   type QueryParams,
@@ -63,14 +57,12 @@ export function useDashboard(options: UseDashboardOptions = {}) {
 
   const overview = ref<SessionOverviewData | null>(null)
   const trend = ref<SessionTrendData | null>(null)
-  const activeSessions = ref<ActiveSessionItem[]>([])
-  const healthDistribution = ref<HealthDistributionData | null>(null)
-  const moduleStats = ref<ModuleStatsData | null>(null)
   const errorStats = ref<ErrorStatsData | null>(null)
   const performanceStats = ref<PerformanceData | null>(null)
 
   const lastUpdated = ref<Date | null>(null)
   const responseTime = ref<number>(0)
+  let requestVersion = 0
 
   // ════════════════════════════════════════════════════════════
   // 计算属性
@@ -104,6 +96,7 @@ export function useDashboard(options: UseDashboardOptions = {}) {
    * 加载所有数据
    */
   async function loadAll(params?: QueryParams) {
+    const version = ++requestVersion
     loading.value = true
     error.value = null
     const startTime = Date.now()
@@ -116,66 +109,39 @@ export function useDashboard(options: UseDashboardOptions = {}) {
       }
 
       // 并行加载所有数据
-      const [overviewResult, trendResult, activeResult, healthResult, moduleResult, errorResult, perfResult] = await Promise.allSettled([
+      const [overviewResult, errorResult, perfResult] = await Promise.allSettled([
         fetchSessionOverview(queryParams),
-        fetchSessionTrend(queryParams),
-        fetchActiveSessions({ ...queryParams, size: 20 }),
-        getHealthDistribution(queryParams),
-        fetchModuleStats(queryParams),
         fetchErrorStats(queryParams),
         fetchPerformanceStats(queryParams),
       ])
+      if (version !== requestVersion) return
 
       // 处理结果
       if (overviewResult.status === 'fulfilled') {
-        overview.value = overviewResult.value.data
+        applyOverview(overviewResult.value.data, queryParams.days)
       } else {
-        console.error('Failed to load overview:', overviewResult.reason)
-      }
-
-      if (trendResult.status === 'fulfilled') {
-        trend.value = trendResult.value
-      } else {
-        console.error('Failed to load trend:', trendResult.reason)
-      }
-
-      if (activeResult.status === 'fulfilled') {
-        activeSessions.value = activeResult.value
-      }
-
-      if (healthResult.status === 'fulfilled') {
-        const response = healthResult.value
-        if (response.success && response.data) {
-          healthDistribution.value = response.data
-        }
-      }
-
-      if (moduleResult.status === 'fulfilled') {
-        moduleStats.value = moduleResult.value
-      } else {
-        console.error('Failed to load module stats:', moduleResult.reason)
+        overview.value = null
+        trend.value = null
       }
 
       if (errorResult.status === 'fulfilled') {
         errorStats.value = errorResult.value
       } else {
+        errorStats.value = null
         console.error('Failed to load error stats:', errorResult.reason)
       }
 
       if (perfResult.status === 'fulfilled') {
         performanceStats.value = perfResult.value
       } else {
+        performanceStats.value = null
         console.error('Failed to load performance stats:', perfResult.reason)
       }
 
       lastUpdated.value = new Date()
       responseTime.value = Date.now() - startTime
 
-      // 如果所有请求都失败，则抛出错误
-      if (
-        overviewResult.status === 'rejected' &&
-        trendResult.status === 'rejected'
-      ) {
+      if (overviewResult.status === 'rejected') {
         throw overviewResult.reason
       }
     } catch (e: unknown) {
@@ -188,24 +154,46 @@ export function useDashboard(options: UseDashboardOptions = {}) {
         console.error('Dashboard API Error:', e.code, e.message)
       }
     } finally {
-      loading.value = false
+      if (version === requestVersion) loading.value = false
     }
+  }
+
+  function applyOverview(data: SessionOverviewData, rangeDays: number) {
+    overview.value = data
+    if (!data.trend_summary) {
+      trend.value = null
+      return
+    }
+    trend.value = normalizeSessionTrendData({
+      trend: data.session_trend,
+      summary: data.trend_summary,
+      period: data.period,
+      period_start: data.period_start,
+      period_end: data.period_end,
+    }, rangeDays)
   }
 
   /**
    * 加载会话总览
    */
   async function loadOverview(params?: QueryParams) {
+    const version = ++requestVersion
     loading.value = true
     error.value = null
     try {
-      const result = await fetchSessionOverview({ days: days.value, ...(extraParams?.value ?? {}), ...params })
-      overview.value = result.data
+      const query = { days: days.value, ...(extraParams?.value ?? {}), ...params }
+      const result = await fetchSessionOverview(query)
+      if (version !== requestVersion) return
+      applyOverview(result.data, query.days)
       lastUpdated.value = new Date()
     } catch (e: unknown) {
-      error.value = surfaceError(e, { key: 'dashboard.loadError' })
+      if (version === requestVersion) {
+        overview.value = null
+        trend.value = null
+        error.value = surfaceError(e, { key: 'dashboard.loadError' })
+      }
     } finally {
-      loading.value = false
+      if (version === requestVersion) loading.value = false
     }
   }
 
@@ -297,9 +285,6 @@ export function useDashboard(options: UseDashboardOptions = {}) {
     // 数据
     overview,
     trend,
-    activeSessions,
-    healthDistribution,
-    moduleStats,
     errorStats,
     performanceStats,
 

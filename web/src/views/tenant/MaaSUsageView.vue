@@ -265,6 +265,9 @@ const ledgerCardFields = computed<CardField[]>(() => [
         <div class="stat-hint">
           {{ t('tenants.usage.statCreditsConsumedHint', { days, n: fmtNum(summary.total_requests) }) }}
         </div>
+        <div v-if="isAdminTenantView && summary.cost_rows_without_usd_evidence" class="stat-hint">
+          {{ t('tenants.detail.usdCoverage', { n: summary.cost_rows_without_usd_evidence }) }}
+        </div>
       </div>
       <div class="stat-card card">
         <div class="stat-label">{{ t('tenants.maasUsageView.ledgerTotalLabel') }}</div>

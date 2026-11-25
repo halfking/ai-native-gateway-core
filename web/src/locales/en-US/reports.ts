@@ -1,6 +1,13 @@
 // reports.ts — Reconciliation report page (provider/internal dual view, R65 i18n sync;
 // extended 2026-09-30 stats UI round). Keys mirror views/admin/ReconciliationReport.vue.
 export default {
+  projectedView: 'Historical request statistics',
+  projectedDays: 'Observed requests on {n} days',
+  projectedBasis: 'Days use {zone}. The credit ledger records postings, and daily reconciliation shows supplier sends and invoices.',
+  projectedPending: 'Some requests in this period are still being processed.',
+  projectedMissingUSD: '{n} requests have no USD amount or use another currency.',
+  projectedEmpty: 'No requests were observed for these dates and filters.',
+  projectedToday: ' (the current day is still open)',
   legacySnapshotView: 'Historical snapshots',
   daily: {
     title: 'Daily reconciliation evidence', section: 'Evidence', day: 'Reconciliation date', timezone: 'Time zone (IANA)',
@@ -10,6 +17,8 @@ export default {
     details: 'Evidence details', amountBreakdown: 'Supplier amounts by currency and traffic class',
     window: '{start} to {end} (exclusive), {zone}', readAt: 'Read at {at}', exactInCSV: 'Exact value in CSV', yes: 'Yes', no: 'No',
     internalNote: 'The credit comparison uses complete hourly buckets. Buckets that cross a day boundary appear separately.',
+    terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection.',
+    terminalProjectionPending: 'Terminal usage is still syncing. The oldest queued record is from {at}. Revisions from another day can affect this report.',
     sections: { requests: 'Client requests', attempts: 'Supplier attempts', sessions: 'Sessions', postings: 'Credit postings', coverage: 'Evidence coverage', internal: 'Internal credit check', supplier_invoices: 'Daily supplier invoices' },
     invoices: {
       load: 'Find invoices for this day', noInvoices: 'No supplier invoices were imported for this calendar day.', account: 'Supplier {provider} · Account {account}',
@@ -52,6 +61,7 @@ export default {
       requests: 'Client requests', success: 'Successful', failure: 'Failed', rate_limited: 'Rate limited', cancelled: 'Cancelled', pending: 'Pending',
       unknown_status: 'Unknown outcome', unassigned_session: 'Without a session', local_day: 'Local date', request_id: 'Request ID',
       admission_rejected_requests: 'Gateway admission rejections', admission_rejection: 'Admission rejection reason',
+      total_tokens: 'Retained terminal tokens', measured_total_requests: 'Requests with a measured token total', usage_source: 'Usage source',
       parent_request_id: 'Parent request ID', linked_client_requests: 'Linked client requests',
       tenant_id: 'Tenant ID', session_id: 'Session ID', traffic_class: 'Traffic class', status: 'Status', input_tokens: 'Input tokens',
       output_tokens: 'Output tokens', recorded_supplier_sends: 'Recorded sends for request', recorded_attempts: 'Recorded attempts', sent: 'Confirmed sends',

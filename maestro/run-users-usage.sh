@@ -35,15 +35,16 @@ JAVA_HOME_CANDIDATE="$(find_jdk)"
 export JAVA_HOME="${JAVA_HOME_CANDIDATE}"
 export PATH="${JAVA_HOME}/bin:${PATH}"
 
-# 凭据：只从仓根 .env.local（与 run-local.sh 同口径）
-if [ ! -f "${ROOT}/.env.local" ]; then
-  echo "!! 缺 ${ROOT}/.env.local（LLM_GATEWAY_ADMIN_USER / LLM_GATEWAY_ADMIN_PASSWORD）" >&2
-  exit 2
+if [ -z "${MAESTRO_ADMIN_USER:-}" ] || [ -z "${MAESTRO_ADMIN_PASSWORD:-}" ]; then
+  if [ -f "${ROOT}/.env.local" ]; then
+    # shellcheck disable=SC1091
+    source "${ROOT}/.env.local"
+  fi
 fi
-# shellcheck disable=SC1091
-source "${ROOT}/.env.local"
 ADMIN_USER="${MAESTRO_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:?missing}}"
 ADMIN_PASSWORD="${MAESTRO_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:?missing}}"
+
+ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-系统管理员}"
 
 OUT_DIR="maestro/reports/$(date +%Y%m%d-%H%M%S)-users-usage"
 mkdir -p "${OUT_DIR}"
@@ -60,6 +61,7 @@ maestro test \
   -e BASE_URL="${BASE_URL}" \
   -e ADMIN_USER="${ADMIN_USER}" \
   -e "ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
+  -e "ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME}" \
   "${ROOT}/maestro/flows/13-session-analytics-users.yaml" 2>&1 | tee "${OUT_DIR}/flow13.log"
 F13_EXIT=${PIPESTATUS[0]}
 set -e
@@ -89,11 +91,10 @@ for _ in $(seq 1 30); do
 done
 
 set +e
-node "${ROOT}/maestro/tools/assert-users-usage.mjs" \
+ADMIN_PASSWORD="${ADMIN_PASSWORD}" node "${ROOT}/maestro/tools/assert-users-usage.mjs" \
   --cdp "http://127.0.0.1:${CDP_PORT}" \
   --url "${BASE_URL}" \
-  --user "${ADMIN_USER}" \
-  --password "${ADMIN_PASSWORD}" 2>&1 | tee "${OUT_DIR}/cdp-assert.log"
+  --user "${ADMIN_USER}" 2>&1 | tee "${OUT_DIR}/cdp-assert.log"
 CDP_EXIT=${PIPESTATUS[0]}
 set -e
 echo "▶ CDP 断言 rc=${CDP_EXIT}"
@@ -101,5 +102,5 @@ echo "▶ CDP 断言 rc=${CDP_EXIT}"
 echo "==== 汇总 ===="
 echo "flow13      rc=${F13_EXIT}（0=绿）"
 echo "cdp-assert  rc=${CDP_EXIT}（0=绿 / 1=产品红 / 2=量具失效）"
-[ "${F13_EXIT}" -eq 0 ] && [ "${CDP_EXIT}" -eq 0 ] && exit 0
-exit 1
+[ "${F13_EXIT}" -eq 0 ] || exit 1
+exit "${CDP_EXIT}"

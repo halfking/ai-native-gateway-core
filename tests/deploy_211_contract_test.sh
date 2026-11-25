@@ -898,10 +898,43 @@ else
 fi
 # 部署机 → 远端引擎的转发：--via 形态的引擎在**目标机**上跑，部署机的环境
 # 变量到不了那儿 ⇒ 清单必须显式转发，否则「export 了再部署」是空操作。
-if grep -qE 'DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES' "$SCRIPT"; then
+if grep -qE '(^|[[:space:]])LLM_GATEWAY_HARD_BLOCK_RULES([[:space:]]|$)' <<<"$_fwd_list"; then
   ok "引擎把 LLM_GATEWAY_HARD_BLOCK_RULES 转发到远端（部署机 export 有效）"
 else
   bad "引擎不转发 LLM_GATEWAY_HARD_BLOCK_RULES：部署机 export 的清单到不了远端"
+fi
+
+# Execute the same SSH assignment string and Docker argument assembly as the engine.
+if extract_fn dd_statistics_candidate_env > "$TMP/stats-env.sh"; then
+  _stats_args="$(sed -n '/^GW_ENV=(/,/^)/p' "$SCRIPT" | grep -F 'DD_STATS_CONTAINER_ENV')"
+  _stats_forward="$(grep -m1 -F '_dd_fwd+="$DD_STATS_REMOTE_ENV"' "$SCRIPT")"
+  if [[ -n "$_stats_args" && -n "$_stats_forward" ]]; then
+    _stats_output="$(
+      source "$TMP/stats-env.sh"
+      unset LLM_GATEWAY_METRICS_INTERVAL LLM_GATEWAY_METRICS_BATCH_SIZE LLM_GATEWAY_METRICS_MAX_ROUNDS
+      unset LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED
+      dd_statistics_candidate_env
+      [[ -z "$DD_STATS_REMOTE_ENV" && -z "${DD_STATS_CONTAINER_ENV[*]:-}" ]] || exit 1
+
+      LLM_GATEWAY_METRICS_INTERVAL="1.5s"
+      LLM_GATEWAY_METRICS_BATCH_SIZE="1250"
+      LLM_GATEWAY_METRICS_MAX_ROUNDS="3"
+      LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED="true"
+      dd_statistics_candidate_env
+      _dd_fwd=""
+      eval "$_stats_forward"
+      eval "_args=($_stats_args)"
+      printf '%s\n' "${_args[@]}"
+      bash -c "$_dd_fwd env" | grep -E '^LLM_GATEWAY_(METRICS_|RECONCILIATION_SHADOW_ENABLED=)' | sort
+    )"
+    check "投影覆盖和影子采集仅显式开启，实际转发并注入候选容器" \
+      $'-e\nLLM_GATEWAY_METRICS_INTERVAL=1.5s\n-e\nLLM_GATEWAY_METRICS_BATCH_SIZE=1250\n-e\nLLM_GATEWAY_METRICS_MAX_ROUNDS=3\n-e\nLLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED=true\nLLM_GATEWAY_METRICS_BATCH_SIZE=1250\nLLM_GATEWAY_METRICS_INTERVAL=1.5s\nLLM_GATEWAY_METRICS_MAX_ROUNDS=3\nLLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED=true' \
+      "$_stats_output"
+  else
+    bad "投影覆盖或影子采集缺少实际远端转发或容器参数接线"
+  fi
+else
+  bad "无法提取候选统计与对账参数"
 fi
 
 echo

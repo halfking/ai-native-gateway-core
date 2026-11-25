@@ -45,6 +45,8 @@ if '-Atqc' in args:
     elif 'SELECT 1 FROM public.gateway_db_revision_sequences' in q:
         m = re.search("sequence_name='([^']+)'", q).group(1)
         if m in s['ledger']: print('1')
+    elif q.startswith("SELECT to_regclass('public.request_metrics_projection_state')"):
+        print(s.get('projection_artifacts', 't'))
     elif q.startswith('INSERT INTO public.gateway_db_revision_sequences'):
         m, source, execution, adapter = re.search(r"VALUES \('([^']+)', '([^']+)', '([^']+)', '([^']+)'\)", q).groups()
         s['ledger'].setdefault(m, dict(source=source, execution=execution, adapter=adapter))
@@ -121,7 +123,7 @@ def _posix_runtime_available():
 
 
 class RuntimeFixture(unittest.TestCase):
-    def fixture(self, transport, generation):
+    def fixture(self, transport, generation, projection=False):
         artifacts = ROOT / '.audit-validation'
         artifacts.mkdir(exist_ok=True)
         root = Path(tempfile.mkdtemp(prefix='revision-runtime-', dir=artifacts))
@@ -130,7 +132,11 @@ class RuntimeFixture(unittest.TestCase):
         migrations.mkdir(parents=True)
         names = ['001_fixture.sql', '860_rename_request_logs_family_pending_delete.sql',
                  '543_request_logs_discard_events.sql']
-        for name, text in zip(names, [SQL, RENAME, SQL]):
+        bodies = [SQL, RENAME, SQL]
+        if projection:
+            names.append('973_request_metrics_projection.sql')
+            bodies.append(SQL)
+        for name, text in zip(names, bodies):
             (migrations / name).write_text(text)
         body = re.sub(r'^files=\(.*?^\)', 'files=(\n' + '\n'.join(
             '  "$ROOT_DIR/sql/migrations/startup/' + n + '"' for n in names) + '\n)',
@@ -165,6 +171,15 @@ class RuntimeFixture(unittest.TestCase):
                                 env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
+
+    def test_first_projection_delivery_checks_artifacts(self):
+        root, state, env, names = self.fixture('psql', 'legacy', projection=True)
+        s = json.loads(state.read_text())
+        s['projection_artifacts'] = 'f'
+        state.write_text(json.dumps(s))
+        result = self.run_fixture(root, env, expected=5)
+        self.assertIn('applying sql/migrations/startup/' + names[-1], result.stdout)
+        self.assertIn('产物对账失败：' + names[-1], result.stderr)
 
     def test_installer_handoff_rejects_missing_seal_and_mismatched_source(self):
         root, state, env, names = self.fixture('psql', 'renamed')

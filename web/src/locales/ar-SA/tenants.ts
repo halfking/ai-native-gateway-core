@@ -43,6 +43,12 @@ export default {
     close: "إغلاق"
   },
   detail: {
+    estimatedRevenue: 'الإيراد التقديري',
+    estimatedMargin: 'إجمالي الربح التقديري',
+    estimatedMarginRate: 'نسبة الهامش التقديرية',
+    creditReferenceNotice: 'تستخدم التقديرات سعر الرصيد الحالي. تظهر الخصومات المسجلة في دفتر الأرصدة.',
+    cancellationCoverage: '{n} من الطلبات المخصومة تفتقر إلى أدلة الإلغاء',
+    usdCoverage: '{n} من تكاليف الطلبات خارج الإجمالي بالدولار',
     loadUsersFailed: 'تعذّر تحميل قائمة المستخدمين. أعد المحاولة.',
     loadKeysFailed: 'تعذّر تحميل قائمة المفاتيح. أعد المحاولة.',
     loadStatsFailed: 'تعذّر تحميل إحصائيات الاستهلاك. أعد المحاولة.',

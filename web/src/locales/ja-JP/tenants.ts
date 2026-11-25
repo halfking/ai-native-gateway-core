@@ -43,6 +43,12 @@ export default {
     close: "閉じる"
   },
   detail: {
+    estimatedRevenue: '推定収益',
+    estimatedMargin: '推定粗利益',
+    estimatedMarginRate: '推定粗利率',
+    creditReferenceNotice: '推定には現在のクレジット単価を使用します。実際の引き落としはクレジット台帳に記録されます。',
+    cancellationCoverage: 'クレジットを消費したリクエストのうち {n} 件でキャンセルの記録がありません',
+    usdCoverage: 'USD 合計の対象外のリクエスト費用 {n} 件',
     loadUsersFailed: 'ユーザー一覧の読み込みに失敗しました。再試行してください。',
     loadKeysFailed: 'API キー一覧の読み込みに失敗しました。再試行してください。',
     loadStatsFailed: '使用量統計の読み込みに失敗しました。再試行してください。',

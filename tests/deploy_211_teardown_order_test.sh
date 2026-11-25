@@ -14,7 +14,7 @@
 #   拆旧容器，而是：
 #     守卫 → 构建 → 起**候选槽**（旧槽全程在服务）→ 验收候选
 #     → 切 nginx upstream → 复验公网版本身份 → 停旧槽（停而不删）
-#   任一步失败 ⇒ abort：丢候选槽 + 把 upstream 切回旧槽 + 旧槽若已停则拉回。
+#   任一步失败 ⇒ abort：旧槽若已停则拉回，入口确认切回旧槽后清理候选。
 #
 # 本门三层：
 #   ① 行为层：把被测脚本里抽出来的**真函数**用 docker/nginx 替身驱动，证明
@@ -64,7 +64,7 @@ extract_fn() {
 
 FNS="dd_web_dist_newer_source dd_check_web_dist dd_preflight_web_dist
      dd_slot_port dd_container_name dd_active_slot dd_write_active_slot
-     dd_upstream_port dd_switch_upstream dd_abort_deploy dd_fail
+     dd_upstream_port dd_switch_upstream dd_ready_state dd_restore_old_upstream dd_abort_deploy dd_fail
      dd_public_version dd_switch_and_verify"
 # 引擎按**自身所在目录**解析 upstream 端口判定脚本（scripts/ops/…）；
 # 本门把函数抽到 $TMP/lib.sh 里 source ⇒ 解析到 $TMP/ops/ ⇒ 把**真脚本**放那。
@@ -106,6 +106,7 @@ docker_stub() {
       mv "$DD_STUB_DIR/$1" "$DD_STUB_DIR/$2"
       ;;
     stop)
+      if [[ "${1:-}" == "-t" ]]; then shift 2; fi
       [[ -f "$DD_STUB_DIR/$1" ]] || return 1
       printf 'stopped\n' > "$DD_STUB_DIR/$1"
       ;;
@@ -202,6 +203,18 @@ run_stub() {
     die()  { printf '[die] %s\n' "$*" >&2; exit 9; }
     docker() { docker_stub "$@"; }
     nginx() { nginx_stub "$@"; }
+    curl() {
+      local url="${*: -1}" ready='{"status":"ready","database":{"connected":true},"redis":{"connected":true}}'
+      case "$url" in
+        http://127.0.0.1:8781/readyz)
+          [[ "$(container_state llm-gateway-211-a)" == running ]] || return 1
+          printf '%s' "${DD_STUB_OLD_READY:-$ready}"
+          ;;
+        http://127.0.0.1:8781/version) printf '{"git_sha":"old"}' ;;
+        http://127.0.0.1:8782/version) printf '{"git_sha":"candidate"}' ;;
+        *) return 1 ;;
+      esac
+    }
     # 每次调用都从空的调用流水开始（否则上一场景的 rename 会污染本场景的断言）
     : > "$DD_STUB_DIR/.calls"
     source "$TMP/lib.sh"
@@ -293,7 +306,21 @@ setup_docker_state
 printf 'stopped\n' > "$TMP/docker/llm-gateway-211-a"
 printf 'running\n' > "$TMP/docker/llm-gateway-211-b"
 make_nginx_conf 8782
-out="$(run_stub 'DD_SWITCHED=1; DD_OLD_STOPPED=1; dd_fail "公网验收失败"')"
+out="$(run_stub '
+  DD_SWITCHED=1; DD_OLD_STOPPED=1; DD_SWITCH_VERIFY_TRIES=2
+  dd_register_goacos() { return 0; }
+  dd_public_version() {
+    if [[ ! -f "$DD_STUB_DIR/.first-public" ]]; then
+      touch "$DD_STUB_DIR/.first-public"
+      printf "public candidate\n" >> "$DD_STUB_DIR/.calls"
+      printf "{\"git_sha\":\"candidate\"}"
+    else
+      printf "public old\n" >> "$DD_STUB_DIR/.calls"
+      printf "{\"git_sha\":\"old\"}"
+    fi
+  }
+  dd_fail "公网验收失败"
+')"
 rc=$?
 if [[ "$rc" == "9" ]]; then ok "切流后失败以非零退出（rc=9）"
 else bad "切流后失败未以非零退出（rc=${rc}）"; fi
@@ -302,6 +329,64 @@ check "abort 后旧槽被拉回服务" "running" "$(container_state llm-gateway-
 check "abort 后 upstream 切回旧槽" "8781" "$(upstream_port_now)"
 if grep -q 'upstream 已切回旧槽' <<<"$out"; then ok "切回动作有明确日志"
 else bad "看不到切回日志：$out"; fi
+check "先拉起旧槽并复验入口，再停止、清理候选" \
+  $'start llm-gateway-211-a\nnginx -t\nnginx -s reload\npublic candidate\npublic old\nstop -t 35 llm-gateway-211-b\nrm -f llm-gateway-211-b' \
+  "$(cat "$TMP/docker/.calls")"
+
+echo "== ③b 入口仍由候选应答：保留候选和活跃槽记录 =="
+setup_docker_state
+printf 'running\n' > "$TMP/docker/llm-gateway-211-a"
+printf 'running\n' > "$TMP/docker/llm-gateway-211-b"
+mkdir -p "$TMP/data/run"
+printf 'b\n' > "$TMP/data/run/active-slot"
+make_nginx_conf 8782
+out="$(run_stub '
+  DD_SWITCHED=1; DD_SWITCH_VERIFY_TRIES=1
+  dd_register_goacos() { return 0; }
+  dd_public_version() { printf "{\"git_sha\":\"candidate\"}"; }
+  dd_fail "公网验收失败"
+')"
+check "入口未证实切回时仍报告部署失败" "9" "$?"
+check "已提交切回配置，再复验入口" "8781" "$(upstream_port_now)"
+check "入口仍指向候选时保留候选" "running" "$(container_state llm-gateway-211-b)"
+check "入口未证实切回时保留活跃槽记录" "b" "$(cat "$TMP/data/run/active-slot")"
+
+echo "== ③c 旧槽仅有 lite 就绪：入口继续由候选服务 =="
+setup_docker_state
+printf 'running\n' > "$TMP/docker/llm-gateway-211-a"
+printf 'running\n' > "$TMP/docker/llm-gateway-211-b"
+make_nginx_conf 8782
+out="$(run_stub '
+  DD_SWITCHED=1; DD_SWITCH_VERIFY_TRIES=1
+  DD_STUB_OLD_READY="{\"status\":\"ready\",\"mode\":\"lite\"}"
+  dd_fail "公网验收失败"
+')"
+check "旧槽 lite 时仍报告部署失败" "9" "$?"
+check "旧槽 lite 时保留候选" "running" "$(container_state llm-gateway-211-b)"
+check "旧槽 lite 时 nginx 仍指向候选" "8782" "$(upstream_port_now)"
+if grep -q '尚未就绪，保留候选槽' <<<"$out"; then ok "旧槽 lite 时报告未就绪"
+else bad "没看到旧槽未就绪：$out"; fi
+
+echo "== ③d 正向 reload 失败后仍恢复原 upstream =="
+setup_docker_state
+printf 'running\n' > "$TMP/docker/llm-gateway-211-a"
+printf 'running\n' > "$TMP/docker/llm-gateway-211-b"
+make_nginx_conf 8781
+out="$(run_stub '
+  dd_register_goacos() { return 0; }
+  dd_public_version() { printf "{\"git_sha\":\"old\"}"; }
+  nginx() {
+    if [[ "$1" == "-s" && ! -f "$DD_STUB_DIR/.first-reload" ]]; then
+      touch "$DD_STUB_DIR/.first-reload"
+      return 1
+    fi
+    nginx_stub "$@"
+  }
+  dd_switch_and_verify || dd_fail "正向 reload 失败"
+')"
+check "正向 reload 失败以非零退出" "9" "$?"
+check "正向 reload 失败后恢复 upstream 配置" "8781" "$(upstream_port_now)"
+check "入口证实是旧槽后才清理候选" "absent" "$(container_state llm-gateway-211-b)"
 
 echo "== ④ 切流本身：改主 server 行，backup 行不动，且先 nginx -t =="
 make_web_fixture fresh no
@@ -554,12 +639,12 @@ else
 fi
 # abort 里必须有「把 upstream 切回旧槽」这一腿（没有它 = 半切换态留在线上）
 abort_body="$(sed -n "/^dd_abort_deploy()/,/^}/p" "$SCRIPT")"
-if grep -qF 'dd_switch_upstream "$(dd_slot_port "$DD_ACTIVE_SLOT")"' <<<"$abort_body"; then
+if grep -qF 'dd_restore_old_upstream "$(dd_slot_port "$DD_ACTIVE_SLOT")"' <<<"$abort_body"; then
   ok "abort 里有把 upstream 切回旧槽的一腿"
 else
   bad "abort 里没有切回旧槽 —— 失败后线上停在半切换态"
 fi
-if grep -qF 'docker rm -f "$(dd_container_name "$DD_CANDIDATE_SLOT")"' <<<"$abort_body"; then
+if grep -qF 'docker rm -f "$_candidate_container"' <<<"$abort_body"; then
   ok "abort 会丢弃候选槽容器"
 else
   bad "abort 不丢弃候选槽 —— 端口被占，下一轮候选槽起不来"
@@ -575,9 +660,9 @@ fi
 #     教训（锚在文案上会被变异绕过）在这里同样适用。
 if grep -qF 'dd_stop_container "$DD_ACTIVE_CONTAINER"' "$SCRIPT" \
    && ! grep -qF 'docker rm -f "$DD_ACTIVE_CONTAINER"' "$SCRIPT"; then
-  ok "旧槽是「停而不删」（保留容器与镜像，可 docker start 回滚）"
+  ok "旧槽以 35 秒关闭预算停而不删，保留容器与镜像供回滚"
 else
-  bad "旧槽不是停而不删 —— 回滚材料被删了"
+  bad "旧槽关闭预算不足或容器未保留"
 fi
 # ★ 2026-11-17：停旧槽**必须带等待预算**（不能是裸 docker stop）。
 #   这条与 tests/deploy_stop_budget_test.sh 互补：那边对拍「预算够不够」，

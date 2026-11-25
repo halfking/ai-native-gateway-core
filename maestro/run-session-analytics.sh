@@ -181,7 +181,7 @@ pick_free_port() {
   return 1
 }
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$(date +%Y%m%d-%H%M%S)-session-analytics"
 DRIVER_PORT="$(pick_free_port "${DRIVER_PORT}")" || { echo "!! ${DRIVER_PORT} 起的 20 个端口都被占用。" >&2; exit 2; }
 
 start_chrome() {
@@ -238,14 +238,18 @@ if [ -z "${TOKEN}" ]; then
 fi
 END_DATE="$(date +%Y-%m-%d)"
 START_DATE="$(date -v-6d +%Y-%m-%d 2>/dev/null || date -d '6 days ago' +%Y-%m-%d)"
-SESSION_OWNER="${SESSION_OWNER:-$(curl -s --max-time 20 -H "Authorization: Bearer ${TOKEN}" \
-  "${BASE_URL}/api/admin/session-analytics/user-ranking?start_date=${START_DATE}&end_date=${END_DATE}&limit=1" \
-  | python3 -c "
+if [ -z "${SESSION_OWNER:-}" ]; then
+  personnel_row="$(curl -fsS --max-time 25 -H "Authorization: Bearer ${TOKEN}" \
+    "${BASE_URL}/api/admin/session-analytics/v2/user-ranking?start_date=${START_DATE}&end_date=${END_DATE}&limit=1" \
+    | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
-u=(d.get('users') or [])
-print(u[0]['owner'] if u and u[0].get('owner') else '')
-" 2>/dev/null)}"
+users=d.get('users') or []
+if users: print(users[0]['owner'], users[0]['tenant_id'], sep='\t')
+" 2>/dev/null)"
+  IFS=$'\t' read -r SESSION_OWNER SESSION_TENANT <<< "${personnel_row}"
+fi
+SESSION_TENANT="${SESSION_TENANT:-}"
 # ★★ 2026-11-23（L8 轮）：★ **允许调用方指定 owner**（`SESSION_OWNER=xxx bash maestro/run-session-analytics.sh`）
 #   ⇒ 用途：**覆盖某个 owner 名下的数据形态**（★ 例：任务层「**有数据**」分支
 #   只有 `asm-session-agent` 名下有真值 ⇒ 想验那条分支就得指定它）。
@@ -256,6 +260,7 @@ if [ -z "${SESSION_OWNER}" ]; then
   exit 2
 fi
 echo "== 动态段 owner = ${SESSION_OWNER}（窗口 ${START_DATE}~${END_DATE}）"
+SESSION_OWNER_URL="$(python3 -c 'import sys; from urllib.parse import quote, urlencode; print(quote(sys.argv[1], safe="") + "?" + urlencode({"tenant_id": sys.argv[2], "start_date": sys.argv[3], "end_date": sys.argv[4]}))' "${SESSION_OWNER}" "${SESSION_TENANT}" "${START_DATE}" "${END_DATE}")"
 
 # ── 5. 第一层：Maestro flow ─────────────────────────────────────────────
 # （STAMP 已在上面算好——端口分配要靠它做每轮唯一的 profile 名）
@@ -274,7 +279,7 @@ maestro test \
   -e "ADMIN_USER=${ADMIN_USER}" \
   -e "ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
   -e "ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME}" \
-  -e "SESSION_OWNER=${SESSION_OWNER}" \
+  -e "SESSION_OWNER=${SESSION_OWNER_URL}" \
   "${FLOW}" 2>&1 | tee "${OUT}/16-session-analytics-system.log"
 FLOW_RC=${PIPESTATUS[0]}
 FLOW_FAILED="$(grep -c 'FAILED' "${OUT}/16-session-analytics-system.log" || true)"
@@ -288,6 +293,7 @@ node "${ROOT}/maestro/tools/assert-session-analytics.mjs" \
   --url "${BASE_URL}" \
   --user "${ADMIN_USER}" \
   --owner "${SESSION_OWNER}" \
+  --tenant "${SESSION_TENANT}" \
   --start-date "${START_DATE}" \
   --end-date "${END_DATE}" \
   2>&1 | tee "${OUT}/assert-session-analytics.txt"

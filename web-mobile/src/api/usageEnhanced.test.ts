@@ -479,7 +479,7 @@ describe('usage / period-compare', () => {
     stub(periodCompareFixture())
     await fetchPeriodCompare({})
     // 两个参数都发成空串，让后端按「缺参数」报 400
-    expect(arg().path).toBe('/api/admin/usage/period-compare?current=&previous=')
+    expect(arg().path).toBe('/api/admin/usage/v2/period-compare?current=&previous=')
   })
 
   it('by_dimension 元素缺子键 ⇒ 抛错并带维度名', () => {
@@ -562,6 +562,6 @@ describe('usage / cache-economics', () => {
     stub(cacheEconomicsFixture())
     await fetchCacheEconomics()
     expect(arg().method).toBe('GET')
-    expect(arg().path).toBe('/api/admin/usage/cache-economics?days=30')
+    expect(arg().path).toBe('/api/admin/usage/v2/cache-economics?days=30')
   })
 })

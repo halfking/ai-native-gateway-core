@@ -255,70 +255,18 @@ type docEvidence struct {
 //	main_pipeline.go 启动日志 :1290、D09 合成/写回窗口 829-840（合成点 :837）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		// ★★ 2026-11-24 第二十四次重钉（★ 合并轮二十一）：★ 原锚 [9144,9163]
-		// ★ ⇒ ★ 上游在 `func main()` 早期插了约 62 行（★ 含 request_reconciliation
-		// ★ 与 provider_invoice_evidence 两族接线）⇒ ★ Recovery 构造从 9144 漂到
-		// ★ **9206** ⇒ ★ 本门按现状重钉为 [9206,9225] ★。
-		// ★ 漂移归属：★ 上游那 22 笔改 cmd/gateway/main.go ⇒ ★ 我方只改对拍表、
-		// ★ 不动上游代码（★ 与历次同款处置）。
-		file: "cmd/gateway/main.go", from: 9206, to: 9225,
-		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
-		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
-		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
-		// ★（★ 覆盖链体起点 `middleware.NewBuilder()` 到 SecurityHeaders 那一行）★。
-		// ★ 漂移归属（★ 实测、★ 不是推断）：★ ★★ `cmd/gateway/main.go` 与
-		// ★ `cmd/gateway/main_pipeline.go` 在**基线 cd288ad0c 的隔离 worktree 上
-		// ★ 与我方树逐字相同**（diff 无输出）⇒ ⇒ ⇒ 这段漂移**完全是上游带进来的**
-		// ★ ⇒ ★ **上游未同步本对拍表** ⇒ ★ 我方只改对拍表、★ 不动上游代码。
-		// ★ 同款自查（★ 逐锚点实测、★ 不按位移量推算）：
-		// ★ Recovery 9206 / Logging 注释 9208 / maintain 注释 9161 /
-		// ★ main_pipeline 启动日志 1523 ⇒ 四条锚点在两棵树上**完全同位**。
-		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
-		// ★★★ 其区间写作 **[9205,9225]**（★ 把链体起点 `middleware.NewBuilder()`
-		// ★★★ 那行也算了进去）★★ ⇒ ★★ **本门保留 [9206,9225]**（★ 逐字实测：
-		// ★★ `Add(middleware.NewRecoveryMiddleware())` 在 **9206**、
-		// ★★ `Add(middleware.NewSecurityHeadersMiddleware())` 在 **9225**）★★
-		// ★★★ ⇒ ★★ 且与设计页 `docs/subsystems/request-surface.md` 引用的
-		// ★★★ 「9206-9225」**逐字一致**（★ 两处必须同口径）★★★ ★★★
+		file: "cmd/gateway/main.go", from: 9190, to: 9210,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		// ★★ 2026-11-24 第二十四次重钉（★ 合并轮二十一）：★ 原锚 [9147,9154]
-		// ★ ⇒ ★ 同上 ⇒ ★ 「Logging 必须排在 Auth」自陈注释漂到 **9208** ⇒
-		// ★ 本门按现状重钉为 [9208,9215] ★。
-		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9147,9154] ⇒ ★ 现状 9208-9215
-		// ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了）★。
-		file: "cmd/gateway/main.go", from: 9208, to: 9215,
+		file: "cmd/gateway/main.go", from: 9193, to: 9200,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		// ★★ 2026-11-23（合并轮六）重钉：★ 原锚 [9086,9091] ⇒ ★ 上游在
-		// ★ 「Middleware stack」注释块里插了 2 行（★ SecurityHeadersMiddleware
-		// ★ 那段说明变长）⇒ ★ R49-A1 那条自陈注释从 9091 漂到 **9093** ⇒
-		// ★ 本门按现状重钉为 [9091,9098]（★ 覆盖注释块 9093-9098 六行）★。
-		// ★ 漂移归属：★ 上游 aac6602ab 轮改 cmd/gateway/main.go ⇒ ★ **上游
-		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 dd89c6bb6 上就在（★ 上游基线
-		// ★ 自带红）⇒ ★ 我方只改对拍表、★ 不动上游代码。
-		// ★★ 2026-11-24 第二十三次重钉：★ 原锚 [9091,9098] ⇒ ★ 上游
-		// ★ `41d1eca87`（request_metrics 集成轮）在 `func main()` **早期**插了
-		// ★ 18 行 ⇒ ★ R49-A1 那条自陈注释从 9091 漂到 **9111** ⇒
-		// ★ 本门按现状重钉为 [9109,9116]（★ 覆盖注释块 9111-9116 六行）★。
-		// ★ 漂移归属：★ 上游 `41d1eca87` 轮改 cmd/gateway/main.go ⇒ ★ **上游
-		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 `41d1eca87` 上就在（★ ★★ 基线
-		// ★ 隔离 worktree 上逐字复现、★ 同 4 个子例、★ RC=1）⇒ ★ 我方只改
-		// ★ 对拍表、★ 不动上游代码。
-		// ★★ 2026-11-24 第二十四次重钉（★ 合并轮二十一）：★ 原锚 [9109,9116]
-		// ★ ⇒ ★ 同上 ⇒ ★ R49-A1 那条自陈注释漂到 **9161** ⇒ ★ 本门按现状重钉为
-		// ★ [9161,9168]（★ 覆盖注释块 9161-9166 六行）★。
-		file: "cmd/gateway/main.go", from: 9161, to: 9168,
-		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
-		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
-		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页
-		// ★★★ `docs/subsystems/request-surface.md` 引用的「9161-9168」**逐字一致**
-		// ★★★ ⇒ ★★ 两处必须同口径）★★★ ★★★
+		file: "cmd/gateway/main.go", from: 9146, to: 9151,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

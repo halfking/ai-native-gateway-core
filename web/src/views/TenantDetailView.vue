@@ -48,6 +48,28 @@ const billingDays = ref(7)
 const billingOwnerUser = ref('')
 const billing = ref<MaasConsumptionDetail | null>(null)
 const billingLoading = ref(false)
+const projectedBilling = computed(() => billing.value?.source === 'request_metrics')
+
+function billingSum(values: (number | null | undefined)[]): number | null {
+  let sum = 0
+  for (const value of values) {
+    if (value == null) return null
+    sum += value
+  }
+  return sum
+}
+
+const billingTotals = computed(() => {
+  const rows = billing.value?.rows ?? []
+  return {
+    upstream: rows.length === 0 ? 0 : rows.every(row => row.upstream_cost_usd == null)
+      ? null : rows.reduce((sum, row) => sum + (row.upstream_cost_usd ?? 0), 0),
+    revenue: billingSum(rows.map(row => projectedBilling.value ? row.estimated_revenue_usd : row.tenant_revenue_usd)),
+    margin: billingSum(rows.map(row => projectedBilling.value ? row.estimated_margin_usd : row.gross_margin_usd)),
+    missingCost: rows.reduce((sum, row) => sum + (row.cost_rows_without_usd_evidence ?? 0), 0),
+    missingCancellation: rows.reduce((sum, row) => sum + (row.billed_without_cancellation_evidence ?? 0), 0),
+  }
+})
 
 // 使用 useSpanDaysRange 管理账单时间范围与天数的双向绑定
 const { presets: billingPresets, rangeValue: billingDateRange, applyRange: applyBillingRange } = useSpanDaysRange(billingDays, [
@@ -517,12 +539,12 @@ function fmtNum(n?: number | null) {
   return n.toLocaleString()
 }
 
-function fmtCost(n?: number) {
+function fmtCost(n?: number | null) {
   if (n == null) return '-'
   return '$' + n.toFixed(2)
 }
 
-function fmtRate(value?: number) {
+function fmtRate(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return '—'
   return `${(value * 100).toFixed(1)}%`
 }
@@ -730,7 +752,7 @@ watch(() => route.params.tenantId, loadTenant)
               @click="statsDays = d; loadStats()"
             >近 {{ d }} 天</button>
           </div>
-          <span class="text-muted stats-asof">数据截至 {{ fmtTime(new Date().toISOString()) }}</span>
+          <span class="text-muted stats-asof">数据截至 {{ fmtTime(stats?.updated_at ?? stats?.window_end ?? '') }}</span>
         </div>
 
         <div v-if="stats" class="stat-cards stat-cards--kpi">
@@ -748,7 +770,7 @@ watch(() => route.params.tenantId, loadTenant)
                 <FeeCostCell inline :credits="stats.total_credits" :cost-usd="stats.total_cost_usd" :show-cost="showCost" />
               </span>
             </template>
-            <template #sub>积分 {{ fmtNum(stats.total_credits) }}<template v-if="showCost"> · 成本 {{ fmtCost(stats.total_cost_usd) }}</template></template>
+            <template #sub>积分 {{ fmtNum(stats.total_credits) }}<template v-if="showCost"> · 成本 {{ fmtCost(stats.total_cost_usd) }}<template v-if="stats.cost_rows_outside_usd"> · {{ $t('tenants.detail.usdCoverage', { n: stats.cost_rows_outside_usd }) }}</template></template></template>
           </StatCard>
           <StatCard label="日均请求">
             <template #value>{{ fmtNum(statsDailyAvg) }}</template>
@@ -866,20 +888,23 @@ watch(() => route.params.tenantId, loadTenant)
         <div v-if="billing" class="stat-cards">
           <div class="stat-card"><div class="stat-label">计费组合</div><div class="stat-value">{{ billing.rows.length }}</div></div>
           <div class="stat-card"><div class="stat-label">积分消耗</div><div class="stat-value">{{ fmtNum(billing.rows.reduce((sum, row) => sum + row.credits_charged, 0)) }}</div></div>
-          <div class="stat-card"><div class="stat-label">上游成本</div><div class="stat-value">{{ fmtCost(billing.rows.reduce((sum, row) => sum + row.upstream_cost_usd, 0)) }}</div></div>
-          <div class="stat-card"><div class="stat-label">租户收入</div><div class="stat-value">{{ fmtCost(billing.rows.reduce((sum, row) => sum + row.tenant_revenue_usd, 0)) }}</div></div>
-          <div class="stat-card"><div class="stat-label">毛利</div><div class="stat-value" :class="{ 'negative-value': billing.rows.reduce((sum, row) => sum + row.gross_margin_usd, 0) < 0 }">{{ fmtCost(billing.rows.reduce((sum, row) => sum + row.gross_margin_usd, 0)) }}</div></div>
+          <div class="stat-card"><div class="stat-label">上游成本（USD）</div><div class="stat-value">{{ fmtCost(billingTotals.upstream) }}</div></div>
+          <div class="stat-card"><div class="stat-label">{{ projectedBilling ? $t('tenants.detail.estimatedRevenue') : '租户收入' }}</div><div class="stat-value">{{ fmtCost(billingTotals.revenue) }}</div></div>
+          <div class="stat-card"><div class="stat-label">{{ projectedBilling ? $t('tenants.detail.estimatedMargin') : '毛利' }}</div><div class="stat-value" :class="{ 'negative-value': (billingTotals.margin ?? 0) < 0 }">{{ fmtCost(billingTotals.margin) }}</div></div>
           <div class="stat-card"><div class="stat-label">取消后计费</div><div class="stat-value">{{ fmtNum(billing.rows.reduce((sum, row) => sum + row.cancelled_billed_requests, 0)) }}</div></div>
         </div>
+        <p v-if="projectedBilling" class="text-muted billing-note">{{ $t('tenants.detail.creditReferenceNotice') }}</p>
+        <p v-if="billingTotals.missingCost" class="text-muted billing-note">{{ $t('tenants.detail.usdCoverage', { n: billingTotals.missingCost }) }}</p>
+        <p v-if="billingTotals.missingCancellation" class="text-muted billing-note">{{ $t('tenants.detail.cancellationCoverage', { n: billingTotals.missingCancellation }) }}</p>
 
         <div class="billing-table-wrap">
           <table class="table billing-table">
-            <thead><tr><th>{{ $t('common.terms.user') }}</th><th>{{ $t('common.terms.provider') }}</th><th>{{ $t('common.credentialFallback') }}</th><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.request') }}</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>{{ $t('common.unit.credits') }}</th><th>{{ $t('common.terms.cost') }}</th><th>收入</th><th>毛利率</th><th>取消计费</th></tr></thead>
+            <thead><tr><th>{{ $t('common.terms.user') }}</th><th>{{ $t('common.terms.provider') }}</th><th>{{ $t('common.credentialFallback') }}</th><th>{{ $t('common.terms.model') }}</th><th>{{ $t('common.terms.request') }}</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>{{ $t('common.unit.credits') }}</th><th>{{ $t('common.terms.cost') }}</th><th>{{ projectedBilling ? $t('tenants.detail.estimatedRevenue') : '收入' }}</th><th>{{ projectedBilling ? $t('tenants.detail.estimatedMarginRate') : '毛利率' }}</th><th>取消计费</th></tr></thead>
             <tbody>
-              <tr v-for="row in billing?.rows || []" :key="`${row.provider_id}-${row.credential_id}-${row.canonical_id}-${row.owner_user}`">
+              <tr v-for="row in billing?.rows || []" :key="JSON.stringify([row.provider_id, row.credential_id, row.canonical_id, row.owner_user, row.model])">
                 <td>{{ row.owner_user || '未标记' }}</td><td>{{ row.provider_name || '未标记' }}</td><td><code>{{ row.credential_label || row.credential_id || '未标记' }}</code></td><td><code>{{ row.model }}</code></td>
                 <td>{{ fmtNum(row.requests) }}</td><td class="mono">{{ fmtNum(row.prompt_tokens) }} / {{ fmtNum(row.completion_tokens) }}</td><td class="mono">{{ fmtNum(row.cache_read_tokens) }} / {{ fmtNum(row.cache_write_tokens) }}</td><td class="mono">{{ fmtNum(row.credits_charged) }}</td>
-                <td>{{ fmtCost(row.upstream_cost_usd) }}</td><td>{{ fmtCost(row.tenant_revenue_usd) }}</td><td :class="{ 'negative-value': row.gross_margin_rate < 0 }">{{ fmtRate(row.gross_margin_rate) }}</td>
+                <td>{{ fmtCost(row.upstream_cost_usd) }}</td><td>{{ fmtCost(projectedBilling ? row.estimated_revenue_usd : row.tenant_revenue_usd) }}</td><td :class="{ 'negative-value': ((projectedBilling ? row.estimated_margin_rate : row.gross_margin_rate) ?? 0) < 0 }">{{ fmtRate(projectedBilling ? row.estimated_margin_rate : row.gross_margin_rate) }}</td>
                 <td><span v-if="row.cancelled_billed_requests" class="badge badge-yellow">{{ row.cancelled_billed_requests }}</span><span v-else>—</span></td>
               </tr>
               <tr v-if="!billingLoading && (!billing || billing.rows.length === 0)"><td colspan="12" class="table-empty">暂无已计费明细</td></tr>

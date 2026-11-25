@@ -66,7 +66,6 @@ function mountToolbar(props: Partial<{
       dimsLoading: false,
       loading: false,
       exporting: false,
-      rerunning: false,
       coverage: '',
       ...props,
     },

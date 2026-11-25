@@ -75,6 +75,7 @@ func PlatformSpecs() []*Spec {
 	// 2026-09-25: 对账报表每日聚合钟点（reports.daily_rollup.hour，
 	// 默认凌晨 02:00 UTC，HotReload）。
 	out = append(out, ReportRollupSpecs()...)
+	out = append(out, ReconciliationCalendarSpec())
 	// 2026-10-14: P0-2 交互等待预算分级下调——生存协调器 deadline 的
 	// settings_kv 热加载覆盖（survival.interactive_deadline_seconds）。
 	out = append(out, SurvivalSpecs()...)

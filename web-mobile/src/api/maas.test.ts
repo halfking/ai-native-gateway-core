@@ -1127,7 +1127,7 @@ describe('★★★★★★ tenants 前缀：路径拼法与 404/500 边界', (
     expect(urls).toEqual([
       '/api/admin/maas/tenants/acme/wallet',
       '/api/admin/maas/tenants/acme/account',
-      '/api/admin/maas/tenants/acme/usage/summary?days=7&limit=10',
+      '/api/admin/maas/v2/tenants/acme/usage/summary?days=7&limit=10',
       '/api/admin/maas/tenants/acme/ledger?limit=50',
     ])
   })

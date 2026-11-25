@@ -4447,39 +4447,21 @@ func main() {
 		materializedViewRefresher.Start()
 	}
 
-	// 2026-11-24: request_metrics processor — 统计专用数据表填充
-	//
-	// 从 usage_facts 读取并填充 request_metrics 表，支持多维度快速聚合查询。
-	// 这是阶段一（双写验证）：数据异步填充到新表，原有查询不受影响。
-	//
-	// 设计文档: /tmp/request_metrics_design.md
-	// 迁移: 983_request_metrics.sql
-	// 部署验证计划: /tmp/request_metrics_deployment_plan.md
+	// The shared projection serializes backfill across gateway instances.
+	var requestMetricsDB *sql.DB
 	if dbConn != nil && dbConn.Enabled() {
-		metricsProcessor := metricsstore.NewProcessor(dbConn.Stdlib())
-		// ★ 用**可取消**的 ctx（与仓内其它后台 worker 同款写法）：
-		//   context.Background() ⇒ 这个 goroutine 在进程内**永远不可停**
-		//   ⇒ 优雅停机后它仍在跑，而此时连接池已关
-		//   ⇒ 每 5 分钟刷一批「连接已关闭」错误，且批次里的维度永远补不回来。
-		metricsProcessorCtx, metricsProcessorCancel := context.WithCancel(context.Background())
-		// ★ 2026-11-24 吞吐优化轮：参数**可配**（环境变量），不再硬编码。
-		//
-		//   旧形态（硬编码 5m/100）：「每 5 分钟 100 条」是**占位常量**，不是容量测算。
-		//   生产实测写入速率约 1,100 条/小时（近 1 小时均值 18.1 条/分钟，
-		//   峰值 63 条/分钟），而「5 分钟 100 条」的上限只有 **1,200 条/小时**
-		//   ⇒ 余量仅 7% ⇒ 实测 61/61 个批次全部处理满 100 条
-		//   ⇒ 处理器**长期贴着天花板跑** ⇒ 流量一涨就变成数据滞后。
-		//
-		//   新形态：间隔/批量/追平轮数三项可配，且每轮**自适应追平**
-		//   （持续处理直到本批不满）⇒ 积压时自动加速，空闲时自动降频。
-		metricsCfg := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
-		go metricsProcessor.Run(metricsProcessorCtx, metricsCfg)
-		defer metricsProcessorCancel()
+		requestMetricsDB = dbConn.Stdlib()
+		metricsProcessor := metricsstore.NewProcessor(requestMetricsDB)
+		metricsCtx, cancelMetrics := context.WithCancel(context.Background())
+		defer cancelMetrics()
+		metricsConfig := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
+		go metricsProcessor.Run(metricsCtx, metricsConfig)
+
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
-			"interval", metricsCfg.Interval.String(),
-			"batch_size", metricsCfg.BatchSize,
-			"max_rounds_per_tick", metricsCfg.MaxRoundsPerTick)
+			"interval", metricsConfig.Interval.String(),
+			"batch_size", metricsConfig.BatchSize,
+			"max_rounds_per_tick", metricsConfig.MaxRoundsPerTick)
 	}
 
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
@@ -7147,6 +7129,8 @@ func main() {
 	//   /readyz  严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
 	//   /version 仅暴露 build metadata（version + git_sha + build_seq + build_date），无敏感信息。
 	mux.Handle("/readyz", healthHandler)
+	mux.Handle("/readyz/request-metrics",
+		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(metricsstore.ProjectionReadinessHandler(requestMetricsDB)))
 	mux.Handle("/version", healthHandler)
 	// 2026-07-14: 30s system-health JSON for the GDRT H badge on the
 	// homepage. CORS open (no auth) so the SPA login page can show
@@ -8759,6 +8743,7 @@ func main() {
 		if adminHandler != nil {
 			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
 			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))
 			mux.HandleFunc("/api/admin/session-clusters/", wrapSessionAnalytics(adminHandler.RouteSessionClusters))
 			// Task T1.1: 时间序列分析端点 (2026-07-06)

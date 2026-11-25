@@ -176,7 +176,7 @@ export const REPORT_ROLLUP_VIEWS = ['provider', 'internal', 'credential', 'key']
 export const REPORT_ROLLUP_DEFAULT_VIEW = 'provider'
 
 /** `grainreport.go` 行内注释的三个来源值。见 (14)。 */
-export const REPORT_ROLLUP_SOURCES = ['grain', 'mixed', 'legacy'] as const
+export const REPORT_ROLLUP_SOURCES = ['grain', 'mixed', 'legacy', 'request_metrics'] as const
 
 /** `:144` `range cannot exceed 366 days`。见 (6)。 */
 export const REPORT_ROLLUP_MAX_RANGE_DAYS = 366
@@ -273,15 +273,19 @@ export interface ReportTotals {
   cache_read_tokens: number
   cache_write_tokens: number
   total_tokens: number
-  estimated_cost_cents: number
+  estimated_cost_cents: number | null
   currency: string
   credits_charged: number
-  /** ★ 无 omitempty ⇒ internal 视角以外也是 0（恒在键）。 */
-  internal_cost_cents: number
+  /** Projected reports leave actual postings to the credit ledger. */
+  internal_cost_cents: number | null
+  usd_measured_requests?: number
+  usd_unmeasured_requests?: number
+  cache_measured_requests?: number
+  latency_measured_requests?: number
   /** ★ 恒在，但**分母为 0 时是 `null`**。见 (12)。 */
   cache_hit_ratio: number | null
-  latency_p50_ms: number
-  latency_p95_ms: number
+  latency_p50_ms: number | null
+  latency_p95_ms: number | null
   /** ★ 条件键（仅 internal 视角）。 */
   internal_currency?: string
 }
@@ -312,6 +316,7 @@ export interface ReportGrainReport {
   coverage: { grain_dates?: string[] | null; legacy_dates?: string[] | null }
   /** ★ 封闭三值枚举，**且可从 `coverage` 两个数组重新算出来**。见 (14)。 */
   source: string
+  projection?: { from: string; through: string; timezone: string; updated_at: string | null; pending_since: string | null }
 
   top_error_kind?: string
   top_error_count?: number
@@ -374,8 +379,11 @@ export interface ReportRollupParams {
   /** `YYYY-MM-DD`，闭区间。缺省 = 昨日往前 7 天。见 (5)(6)。 */
   start?: string
   end?: string
+  /** Number of completed calendar dates in the gateway timezone. */
+  days?: number
   /** 四值枚举，**大小写与空格不敏感**。见 (7)。 */
   view?: string
+  trafficScope?: 'business'
   /** 三个数字维度。**带空格也接受**（后端先 TrimSpace）。见 (8)。 */
   providerId?: number | string
   credentialId?: number | string
@@ -397,7 +405,7 @@ export function fetchReportRollupSummary(
 ): Promise<ReportRollupSummaryBody> {
   return req<unknown>(
     'GET',
-    `/api/admin/report-rollup/summary${queryOf(params)}`,
+    `/api/admin/report-rollup/v2/summary${queryOf(params)}`,
     undefined,
     options,
   ).then(unwrapReportRollupSummary)
@@ -410,7 +418,7 @@ export function fetchReportRollupDimensions(
 ): Promise<ReportRollupDimensionsBody> {
   return req<unknown>(
     'GET',
-    `/api/admin/report-rollup/dimensions${queryOf(params)}`,
+    `/api/admin/report-rollup/v2/dimensions${queryOf(params)}`,
     undefined,
     options,
   ).then(unwrapReportRollupDimensions)
@@ -421,8 +429,10 @@ function queryOf(p: ReportRollupParams): string {
   // ★ start/end 只在**严格 YYYY-MM-DD** 时才发 —— 非法值会被后端 400 拒掉。
   if (p.start != null) qs.set('start', p.start)
   if (p.end != null) qs.set('end', p.end)
+  if (p.days != null) qs.set('days', String(p.days))
   // ★ view 大小写不敏感 ⇒ 这里直接规范化后再发（发原文后端也会归一）。
   if (p.view != null) qs.set('view', normalizeReportView(p.view))
+  if (p.trafficScope) qs.set('traffic_scope', p.trafficScope)
   for (const [param, v] of [
     ['provider_id', p.providerId],
     ['credential_id', p.credentialId],
@@ -505,7 +515,7 @@ function requireGrainReport(v: unknown, where: string): void {
       throw new Error(`${where} 的 source 不是已知来源（${val}）`)
     }
   }
-  requireTotals(d['totals'], `${where} 的 totals`)
+  requireTotals(d['totals'], `${where} 的 totals`, d['source'] === 'request_metrics')
   // ★ `error_breakdown` 无 omitempty ⇒ nil 时是**裸 null** ⇒ 两种都要接受。见 (11)。
   if (d['error_breakdown'] !== null && !isPlainObject(d['error_breakdown'])) {
     throw new Error(`${where} 的 error_breakdown 不是对象也不是 null`)
@@ -525,9 +535,18 @@ function requireGrainReport(v: unknown, where: string): void {
     }
   }
   requireObject(d['coverage'], `${where} 的 coverage`)
+  if (d['source'] === 'request_metrics') {
+    const p = requireObject(d['projection'], `${where} 的 projection`)
+    for (const k of ['from', 'through', 'timezone'] as const) {
+      if (typeof p[k] !== 'string') throw new Error(`${where} 的 projection.${k} 不是字符串`)
+    }
+    for (const k of ['updated_at', 'pending_since'] as const) {
+      if (p[k] !== null && typeof p[k] !== 'string') throw new Error(`${where} 的 projection.${k} 类型不对`)
+    }
+  }
 }
 
-function requireTotals(v: unknown, where: string): void {
+function requireTotals(v: unknown, where: string, projected: boolean): void {
   const d = requireObject(v, where)
   requireKeys(d, REPORT_TOTALS_KEYS, where)
   for (const k of [
@@ -539,13 +558,13 @@ function requireTotals(v: unknown, where: string): void {
     'cache_read_tokens',
     'cache_write_tokens',
     'total_tokens',
-    'estimated_cost_cents',
     'credits_charged',
+    'error_rate',
   ] as const) {
     if (typeof d[k] !== 'number') throw new Error(`${where} 的 ${k} 不是数字`)
   }
-  for (const k of ['error_rate', 'internal_cost_cents', 'latency_p50_ms', 'latency_p95_ms'] as const) {
-    if (typeof d[k] !== 'number') throw new Error(`${where} 的 ${k} 不是数字`)
+  for (const k of ['estimated_cost_cents', 'internal_cost_cents', 'latency_p50_ms', 'latency_p95_ms'] as const) {
+    if (typeof d[k] !== 'number' && !(projected && d[k] === null)) throw new Error(`${where} 的 ${k} 不是数字`)
   }
   if (typeof d['currency'] !== 'string') throw new Error(`${where} 的 currency 不是字符串`)
   // ★★ `cache_hit_ratio` 是指针且**无 omitempty** ⇒ 分母 0 时是**裸 null**。见 (12)。
@@ -791,6 +810,7 @@ export function reportRollupIsMixed(r: ReportGrainReport): boolean {
 export function reportCoverageDeriveSource(r: ReportGrainReport): string {
   const legacy = (r.coverage.legacy_dates ?? []).length
   const grain = (r.coverage.grain_dates ?? []).length
+  if (r.projection && legacy === 0) return 'request_metrics'
   if (legacy > 0 && grain > 0) return 'mixed'
   if (legacy > 0) return 'legacy'
   return 'grain'

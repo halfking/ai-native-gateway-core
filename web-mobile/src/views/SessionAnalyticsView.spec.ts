@@ -172,16 +172,15 @@ describe('★★★★★★ 数据新鲜度（本族头号问题）', () => {
     expect(w.text()).toContain('2026-10-07T09:00:00Z')
   })
 
-  it('★★★★★★ 明说「物化视图 + 刷新只在建表时跑过一次 + 没有定时调度」', async () => {
+  it('shows the projected natural-day source', async () => {
     const w = await mountView()
-    expect(w.text()).toContain('物化视图')
-    expect(w.text()).toContain('没有定时刷新它的调度器')
+    expect(w.text()).toContain('统计按自然日读取异步更新的请求统计')
   })
 
   it('★★★★★★ 空列表 ⇒ refreshed_at 是 Go 零值 ⇒ 要说「拿不到真实刷新时刻」，**不**把 0001 当时间显示', async () => {
     cMock.mockResolvedValue(clientsBody({ clients: [], total: 0, refreshed_at: ANALYTICS_ZERO_TIME }))
     const w = await mountView()
-    expect(w.text()).toContain('Go 零值')
+    expect(w.text()).toContain('暂未返回同步时间')
     // ★★ 这里**不能**写 `not.toContain('0001-01-01')`：说明文案本身就要解释
     //   「零值是 0001-01-01」，负向断言会把**正确的说明**判红（本会话第 5 次踩这条）。
     //   ⇒ 改判**结构**：那一格「数据截至 / 原始时间戳」**整个不渲染**。
@@ -195,13 +194,13 @@ describe('★★★★★★ 数据新鲜度（本族头号问题）', () => {
 
   it('★★★ 有数据时**不**显示零值那条说明', async () => {
     const w = await mountView()
-    expect(w.text()).not.toContain('Go 零值')
+    expect(w.text()).not.toContain('暂未返回同步时间')
   })
 
   it('★ 零值判定对空串/缺字段也成立（后端坏了也不能当正常时间显示）', async () => {
     cMock.mockResolvedValue(clientsBody({ clients: [], total: 0, refreshed_at: '' }))
     const w = await mountView()
-    expect(w.text()).toContain('Go 零值')
+    expect(w.text()).toContain('暂未返回同步时间')
   })
 })
 

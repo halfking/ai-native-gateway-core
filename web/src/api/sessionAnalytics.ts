@@ -36,19 +36,22 @@ export type SortOrder = 'asc' | 'desc'
 
 export interface OverviewSummary {
   total_sessions: number
-  total_sessions_growth: number
-  avg_tokens: number
-  avg_context_size: number
-  avg_duration_seconds: number
-  avg_turns: number
-  total_cost: number
-  total_cost_growth: number
+  total_sessions_growth: number | null
+  avg_tokens: number | null
+  avg_context_size: number | null
+  avg_duration_seconds: number | null
+  avg_turns: number | null
+  request_count: number
+  total_cost_usd: number | null
+  total_cost_usd_growth: number | null
+  credits_charged: number
+  usd_unmeasured_requests: number
   active_users: number
-  active_users_growth: number
+  active_users_growth: number | null
   active_projects: number
   active_tasks: number
-  overall_success_rate: number
-  overall_cache_rate: number
+  overall_success_rate: number | null
+  overall_cache_rate: number | null
 }
 
 export interface OverviewTopModel {
@@ -61,10 +64,10 @@ export interface OverviewTrendPoint {
   count: number
 }
 
-export interface OverviewCostTrendPoint {
+export interface SessionCostTrendPoint {
   date: string
-  internal: number
-  external: number
+  total_cost_usd: number | null
+  credits_charged: number
 }
 
 export interface OverviewTokenTrendPoint {
@@ -74,7 +77,7 @@ export interface OverviewTokenTrendPoint {
 
 export interface OverviewTrends {
   sessions: OverviewTrendPoint[] | null
-  cost: OverviewCostTrendPoint[] | null
+  cost: SessionCostTrendPoint[] | null
   tokens: OverviewTokenTrendPoint[] | null
 }
 
@@ -89,18 +92,22 @@ export interface OverviewTopUser {
    *   渲染；保留它只是为了向后兼容与排序键兼容。
    *   ⇒ 展示一律用 internal_cost / external_cost 分列两栏。
    */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
   external_cost: number
+  credits_charged?: number
+  usd_unmeasured_requests?: number
 }
 
 export interface OverviewTopProject {
   project: string
   session_count: number
   user_count: number
-  total_cost: number
+  total_cost: number | null
+  credits_charged?: number
+  usd_unmeasured_requests?: number
 }
 
 export interface SessionAnalyticsOverview {
@@ -114,6 +121,7 @@ export interface SessionAnalyticsOverview {
 export interface UserRankingRow {
   rank: number
   owner: string
+  tenant_id?: string
   display_name: string
   email: string
   session_count: number
@@ -121,19 +129,22 @@ export interface UserRankingRow {
   task_count: number
   total_tokens: number
   /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
   external_cost: number
   /** RFC3339, or "" when the row has no activity timestamp. */
   last_active_at: string
-  latest_task: string
+  latest_task: string | null
+  credits_charged?: number
+  usd_unmeasured_requests?: number
 }
 
 export interface UserRankingResponse {
   total: number
   users: UserRankingRow[] | null
+  pending_since?: string | null
 }
 
 export interface UserDetailInfo {
@@ -147,13 +158,15 @@ export interface UserDetailSummary {
   session_count: number
   task_count: number
   /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
   external_cost: number
-  rank: number
-  rank_change: number
+  rank: number | null
+  rank_change: number | null
+  usd_unmeasured_requests?: number
+  credits_charged?: number
 }
 
 export interface UserTrendPoint {
@@ -169,7 +182,7 @@ export interface UserRankTrendPoint {
 export interface UserDetailTrends {
   sessions: UserTrendPoint[] | null
   tasks: UserTrendPoint[] | null
-  cost: OverviewCostTrendPoint[] | null
+  cost: SessionCostTrendPoint[] | null
   rank: UserRankTrendPoint[] | null
 }
 
@@ -177,6 +190,7 @@ export interface UserDetailResponse {
   user: UserDetailInfo
   summary: UserDetailSummary
   trends: UserDetailTrends
+  pending_since?: string | null
 }
 
 export interface UserProjectRow {
@@ -185,7 +199,7 @@ export interface UserProjectRow {
   task_count: number
   total_tokens: number
   /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
@@ -203,7 +217,7 @@ export interface ProjectTaskRow {
   request_count: number
   total_tokens: number
   /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
@@ -223,17 +237,20 @@ export interface AgentRankingRow {
   task_count: number
   total_tokens: number
   /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
   external_cost: number
-  avg_duration_seconds: number
+  avg_duration_seconds: number | null
+  usd_unmeasured_requests?: number
+  credits_charged?: number
   last_used_at: string
 }
 
 export interface AgentRankingResponse {
   agents: AgentRankingRow[] | null
+  pending_since?: string | null
 }
 
 export interface ModelRankingRow {
@@ -246,19 +263,22 @@ export interface ModelRankingRow {
   total_tokens: number
   cache_hit_count: number
   cache_rate: number
-  avg_duration_ms: number
+  avg_duration_ms: number | null
   /** ★ 跨单位合计（美元 + 积分）⇒ 不可当作美元金额；只作向后兼容/排序键。 */
-  total_cost: number
+  total_cost: number | null
   /** 内部成本（美元）。 */
   internal_cost: number
   /** 外部成本（积分）。 */
   external_cost: number
+  usd_unmeasured_requests?: number
+  credits_charged?: number
   user_count: number
   last_used_at: string
 }
 
 export interface ModelRankingResponse {
   models: ModelRankingRow[] | null
+  pending_since?: string | null
 }
 
 /* ── provider ranking (2026-11-23 审计轮新增) ───────────────────────────── */
@@ -280,15 +300,16 @@ export interface ProviderRankingRow {
   success_count: number
   success_rate: number
   total_tokens: number
-  total_cost: number
-  internal_cost: number
-  external_cost: number
+  total_cost: number | null
+  credits_charged?: number
+  usd_unmeasured_requests?: number
   user_count: number
   last_used_at: string
 }
 
 export interface ProviderRankingResponse {
   providers: ProviderRankingRow[] | null
+  pending_since?: string | null
 }
 
 /* ── task ranking (2026-11-23 审计轮新增) ───────────────────────────────── */
@@ -306,14 +327,15 @@ export interface TaskRankingRow {
   session_count: number
   turn_count: number
   total_tokens: number
-  total_cost: number
-  internal_cost: number
-  external_cost: number
+  total_cost: number | null
+  credits_charged?: number
+  usd_unmeasured_requests?: number
   last_active_at: string
 }
 
 export interface TaskRankingResponse {
   tasks: TaskRankingRow[] | null
+  pending_since?: string | null
 }
 
 /* ── query option bags ─────────────────────────────────────────────────── */
@@ -330,14 +352,14 @@ export interface UserRankingQuery extends SessionAnalyticsRange, SessionAnalytic
   offset?: number
 }
 
-export interface UserDetailQuery extends SessionAnalyticsRange {}
+export interface UserDetailQuery extends SessionAnalyticsRange, SessionAnalyticsScope {}
 
-export interface UserProjectsQuery extends SessionAnalyticsRange {
+export interface UserProjectsQuery extends SessionAnalyticsRange, SessionAnalyticsScope {
   sort_by?: 'sessions' | 'cost' | 'last_active'
   order?: SortOrder
 }
 
-export interface ProjectTasksQuery extends SessionAnalyticsRange {
+export interface ProjectTasksQuery extends SessionAnalyticsRange, SessionAnalyticsScope {
   sort_by?: 'sessions' | 'cost' | 'last_active'
 }
 
@@ -440,14 +462,14 @@ export function toDateParam(d: Date): string {
 
 /* ── endpoints ─────────────────────────────────────────────────────────── */
 
-/** GET /api/admin/session-analytics/overview */
+/** GET /api/admin/session-analytics/v2/overview */
 export function getOverview(
   params: OverviewQuery,
   options?: RequestOptions,
 ): Promise<SessionAnalyticsOverview> {
   return req<SessionAnalyticsOverview>(
     'GET',
-    `${BASE}/overview${query({
+    `${BASE}/v2/overview${query({
       tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
@@ -457,14 +479,14 @@ export function getOverview(
   )
 }
 
-/** GET /api/admin/session-analytics/user-ranking */
+/** GET /api/admin/session-analytics/v2/user-ranking */
 export function getUserRanking(
   params: UserRankingQuery,
   options?: RequestOptions,
 ): Promise<UserRankingResponse> {
   return req<UserRankingResponse>(
     'GET',
-    `${BASE}/user-ranking${query({
+    `${BASE}/v2/user-ranking${query({
       tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
@@ -480,7 +502,7 @@ export function getUserRanking(
 }
 
 /**
- * GET /api/admin/session-analytics/user-ranking/{owner}
+ * GET /api/admin/session-analytics/v2/user-ranking/{owner}
  *
  * The owner is a path segment: it MUST be percent-encoded, otherwise an owner
  * containing "/" or "#" would silently address a different endpoint.
@@ -492,7 +514,8 @@ export function getUserDetail(
 ): Promise<UserDetailResponse> {
   return req<UserDetailResponse>(
     'GET',
-    `${BASE}/user-ranking/${encodeURIComponent(owner)}${query({
+    `${BASE}/v2/user-ranking/${encodeURIComponent(owner)}${query({
+      tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
     })}`,
@@ -501,7 +524,7 @@ export function getUserDetail(
   )
 }
 
-/** GET /api/admin/session-analytics/user-ranking/{owner}/projects */
+/** GET /api/admin/session-analytics/v2/user-ranking/{owner}/projects */
 export function getUserProjects(
   owner: string,
   params: UserProjectsQuery,
@@ -509,46 +532,7 @@ export function getUserProjects(
 ): Promise<UserProjectsResponse> {
   return req<UserProjectsResponse>(
     'GET',
-    `${BASE}/user-ranking/${encodeURIComponent(owner)}/projects${query({
-      start_date: params.start_date,
-      end_date: params.end_date,
-      sort_by: params.sort_by,
-      order: params.order,
-    })}`,
-    undefined,
-    options,
-  )
-}
-
-/** GET /api/admin/session-analytics/user-ranking/{owner}/projects/{project}/tasks */
-export function getProjectTasks(
-  owner: string,
-  project: string,
-  params: ProjectTasksQuery,
-  options?: RequestOptions,
-): Promise<ProjectTasksResponse> {
-  return req<ProjectTasksResponse>(
-    'GET',
-    `${BASE}/user-ranking/${encodeURIComponent(owner)}/projects/${encodeURIComponent(
-      project,
-    )}/tasks${query({
-      start_date: params.start_date,
-      end_date: params.end_date,
-      sort_by: params.sort_by,
-    })}`,
-    undefined,
-    options,
-  )
-}
-
-/** GET /api/admin/session-analytics/agent-ranking */
-export function getAgentRanking(
-  params: AgentRankingQuery,
-  options?: RequestOptions,
-): Promise<AgentRankingResponse> {
-  return req<AgentRankingResponse>(
-    'GET',
-    `${BASE}/agent-ranking${query({
+    `${BASE}/v2/user-ranking/${encodeURIComponent(owner)}/projects${query({
       tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
@@ -560,14 +544,55 @@ export function getAgentRanking(
   )
 }
 
-/** GET /api/admin/session-analytics/model-ranking */
+/** GET /api/admin/session-analytics/v2/user-ranking/{owner}/projects/{project}/tasks */
+export function getProjectTasks(
+  owner: string,
+  project: string,
+  params: ProjectTasksQuery,
+  options?: RequestOptions,
+): Promise<ProjectTasksResponse> {
+  return req<ProjectTasksResponse>(
+    'GET',
+    `${BASE}/v2/user-ranking/${encodeURIComponent(owner)}/projects/${encodeURIComponent(
+      project,
+    )}/tasks${query({
+      tenant_id: params.tenant_id,
+      start_date: params.start_date,
+      end_date: params.end_date,
+      sort_by: params.sort_by,
+    })}`,
+    undefined,
+    options,
+  )
+}
+
+/** GET /api/admin/session-analytics/v2/agent-ranking */
+export function getAgentRanking(
+  params: AgentRankingQuery,
+  options?: RequestOptions,
+): Promise<AgentRankingResponse> {
+  return req<AgentRankingResponse>(
+    'GET',
+    `${BASE}/v2/agent-ranking${query({
+      tenant_id: params.tenant_id,
+      start_date: params.start_date,
+      end_date: params.end_date,
+      sort_by: params.sort_by,
+      order: params.order,
+    })}`,
+    undefined,
+    options,
+  )
+}
+
+/** GET /api/admin/session-analytics/v2/model-ranking */
 export function getModelRanking(
   params: ModelRankingQuery,
   options?: RequestOptions,
 ): Promise<ModelRankingResponse> {
   return req<ModelRankingResponse>(
     'GET',
-    `${BASE}/model-ranking${query({
+    `${BASE}/v2/model-ranking${query({
       tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
@@ -581,14 +606,14 @@ export function getModelRanking(
 
 // ============= 用户模型用量 (2026-11-22) =============
 
-/** GET /api/admin/session-analytics/provider-ranking（2026-11-23 新增） */
+/** GET /api/admin/session-analytics/v2/provider-ranking */
 export function getProviderRanking(
   params: ProviderRankingQuery,
   options?: RequestOptions,
 ): Promise<ProviderRankingResponse> {
   return req<ProviderRankingResponse>(
     'GET',
-    `${BASE}/provider-ranking${query({
+    `${BASE}/v2/provider-ranking${query({
       tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
@@ -600,14 +625,14 @@ export function getProviderRanking(
   )
 }
 
-/** GET /api/admin/session-analytics/task-ranking（2026-11-23 新增） */
+/** GET /api/admin/session-analytics/v2/task-ranking */
 export function getTaskRanking(
   params: TaskRankingQuery,
   options?: RequestOptions,
 ): Promise<TaskRankingResponse> {
   return req<TaskRankingResponse>(
     'GET',
-    `${BASE}/task-ranking${query({
+    `${BASE}/v2/task-ranking${query({
       tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
@@ -622,12 +647,11 @@ export interface UserModelUsage {
   model: string
   request_count: number
   total_tokens: number
-  total_cost: number
-  internal_cost: number
-  external_cost: number
+  total_cost: number | null
+  credits_charged?: number
   success_rate: number
   cache_hit_rate: number
-  avg_response_time_ms: number
+  avg_response_time_ms: number | null
   last_used_at: string
 }
 
@@ -635,12 +659,9 @@ export interface UserModelUsageResponse {
   models: UserModelUsage[]
 }
 
-export interface UserModelUsageQuery {
-  start_date: string
-  end_date: string
-}
+export interface UserModelUsageQuery extends SessionAnalyticsRange, SessionAnalyticsScope {}
 
-/** GET /api/admin/session-analytics/user-ranking/:owner/models */
+/** GET /api/admin/session-analytics/v2/user-ranking/:owner/models */
 export function getUserModelUsage(
   owner: string,
   params: UserModelUsageQuery,
@@ -648,7 +669,8 @@ export function getUserModelUsage(
 ): Promise<UserModelUsageResponse> {
   return req<UserModelUsageResponse>(
     'GET',
-    `${BASE}/user-ranking/${encodeURIComponent(owner)}/models${query({
+    `${BASE}/v2/user-ranking/${encodeURIComponent(owner)}/models${query({
+      tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
     })}`,
@@ -664,9 +686,8 @@ export interface UserAPIKeyUsage {
   key_alias: string
   request_count: number
   total_tokens: number
-  total_cost: number
-  internal_cost: number
-  external_cost: number
+  total_cost: number | null
+  credits_charged?: number
   last_used_at: string
   project_count: number
   top_project: string
@@ -676,12 +697,9 @@ export interface UserAPIKeyUsageResponse {
   api_keys: UserAPIKeyUsage[]
 }
 
-export interface UserAPIKeyUsageQuery {
-  start_date: string
-  end_date: string
-}
+export interface UserAPIKeyUsageQuery extends SessionAnalyticsRange, SessionAnalyticsScope {}
 
-/** GET /api/admin/session-analytics/user-ranking/:owner/api-keys */
+/** GET /api/admin/session-analytics/v2/user-ranking/:owner/api-keys */
 export function getUserAPIKeyUsage(
   owner: string,
   params: UserAPIKeyUsageQuery,
@@ -689,7 +707,8 @@ export function getUserAPIKeyUsage(
 ): Promise<UserAPIKeyUsageResponse> {
   return req<UserAPIKeyUsageResponse>(
     'GET',
-    `${BASE}/user-ranking/${encodeURIComponent(owner)}/api-keys${query({
+    `${BASE}/v2/user-ranking/${encodeURIComponent(owner)}/api-keys${query({
+      tenant_id: params.tenant_id,
       start_date: params.start_date,
       end_date: params.end_date,
     })}`,

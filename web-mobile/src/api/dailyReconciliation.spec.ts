@@ -8,6 +8,7 @@ const query: DailyEvidenceQuery = {
   day: '2026-11-23', timezone: 'Asia/Shanghai', tenantId: 'tenant-one', section: 'internal', limit: 20, offset: 40,
 }
 const result = {
+  version: 'request-reconciliation-v2',
   day: query.day, timezone: query.timezone, tenant_id: query.tenantId, section: query.section, platform_scope: true,
   limit: query.limit, offset: query.offset, summary: { recorded_gross_debit_credits: 12 }, rows: [],
 }
@@ -24,13 +25,14 @@ describe('mobile reconciliation scope', () => {
     const [method, path, body, sentOptions] = call
     expect([method, body, sentOptions]).toEqual(['GET', undefined, options])
     const url = new URL(path, 'https://fixture.invalid')
-    expect(url.pathname).toBe('/api/admin/usage/request-reconciliation')
+    expect(url.pathname).toBe('/api/admin/usage/v2/request-reconciliation')
     expect(Object.fromEntries(url.searchParams)).toEqual({
       day: '2026-11-23', timezone: 'Asia/Shanghai', tenant_id: 'tenant-one', section: 'internal', limit: '20', offset: '40',
     })
   })
 
   it.each([
+    { version: 'request-reconciliation-v1' },
     { tenant_id: 'tenant-other' },
     { platform_scope: false },
     { day: '2026-11-24' },
@@ -40,6 +42,14 @@ describe('mobile reconciliation scope', () => {
   ])('rejects a response from another scope (%o)', async (different) => {
     vi.mocked(req).mockResolvedValue({ ...result, ...different })
     await expect(fetchDailyEvidence(query)).rejects.toThrow('unexpected daily reconciliation scope')
+  })
+
+  it('requires request projection provenance on terminal evidence sections', async () => {
+    const requested = { ...query, section: 'requests' } as const
+    vi.mocked(req).mockResolvedValueOnce({ ...result, section: 'requests' })
+      .mockResolvedValueOnce({ ...result, section: 'requests', projection: { source: 'request_metrics', updated_at: null, pending_since: null } })
+    await expect(fetchDailyEvidence(requested)).rejects.toThrow('unexpected daily reconciliation scope')
+    await expect(fetchDailyEvidence(requested)).resolves.toMatchObject({ projection: { source: 'request_metrics' } })
   })
 
   it('requires the invoice detail to match the original listed window', async () => {

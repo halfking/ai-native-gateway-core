@@ -1,4 +1,11 @@
-SELECT (SELECT count(*) FROM public.schema_migrations WHERE version IN ('982','984','985','986','987','988')) = 6
+SELECT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = '982')
+   AND (SELECT count(*) FROM public.schema_migrations WHERE (version, description) IN (
+       ('925', 'effective supplier contract rate evidence'),
+       ('985', 'client and internal request reconciliation links'),
+       ('986', 'measured supplier attempt media usage'),
+       ('987', 'normalized supplier invoice evidence'),
+       ('988', 'structured supplier invoice usage buckets')
+   )) = 5
    AND to_regclass('public.request_reconciliation_links') IS NOT NULL
    AND to_regclass('public.provider_invoices') IS NOT NULL
    AND to_regclass('public.supplier_contract_rates') IS NOT NULL

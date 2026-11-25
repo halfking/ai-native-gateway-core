@@ -1481,6 +1481,10 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 // days 回退按 now-N 截 UTC 零点 ⇒ 东8区用户选「今天」漏掉本地 00:00-08:00。
 // 统一改走 settings.ParseSystemDate / SystemDayStart（系统时区日切）。
 func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Time, err error) {
+	return resolveUsageTimeRangeInLocation(r, defaultDays, settings.SystemTimezoneLocation())
+}
+
+func resolveUsageTimeRangeInLocation(r *http.Request, defaultDays int, location *time.Location) (start, end time.Time, err error) {
 	now := time.Now()
 	startStr := queryString(r, "start")
 	endStr := queryString(r, "end")
@@ -1493,7 +1497,8 @@ func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Ti
 		if days > 366 {
 			days = 366
 		}
-		todayStart := settings.SystemDayStart(now)
+		year, month, day := now.In(location).Date()
+		todayStart := time.Date(year, month, day, 0, 0, 0, 0, location)
 		return todayStart.AddDate(0, 0, -(days - 1)), now, nil
 	}
 
@@ -1501,11 +1506,11 @@ func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Ti
 		return time.Time{}, time.Time{}, fmt.Errorf("start and end must both be provided when using a custom range")
 	}
 
-	startDay, err1 := settings.ParseSystemDate(startStr)
+	startDay, err1 := time.ParseInLocation(time.DateOnly, startStr, location)
 	if err1 != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date: expected YYYY-MM-DD")
 	}
-	endDay, err2 := settings.ParseSystemDate(endStr)
+	endDay, err2 := time.ParseInLocation(time.DateOnly, endStr, location)
 	if err2 != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date: expected YYYY-MM-DD")
 	}

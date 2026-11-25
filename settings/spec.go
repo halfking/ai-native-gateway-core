@@ -115,6 +115,8 @@ type Spec struct {
 	DangerLevel   DangerLevel
 	HotReload     bool   // false = 必须重启才能生效
 	Observability string // 反映此设置效果的查询 URL
+
+	validateString func(string) error
 }
 
 // EnvNameAuto derives the canonical env-var name from Key.
@@ -188,8 +190,12 @@ func (s *Spec) Validate(v any) error {
 			return fmt.Errorf("value %q not in options %v", str, s.Options)
 		}
 	case TypeString, TypeURL, TypeDuration:
-		if _, ok := v.(string); !ok {
+		str, ok := v.(string)
+		if !ok {
 			return fmt.Errorf("expected string, got %T", v)
+		}
+		if s.validateString != nil {
+			return s.validateString(str)
 		}
 	default:
 		return fmt.Errorf("unknown type %q", s.Type)

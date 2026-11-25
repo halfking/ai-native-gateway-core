@@ -265,6 +265,7 @@ export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-120}"
 # 211 主机信息（引擎的全部主机相关输入都在这里）
 # =====================================================================
 export DD_TARGET="211"
+export DD_REQUIRE_REQUEST_METRICS=1
 # ssh 目标与探测 IP 分开：ssh 走别名（~/.ssh/config 里带 User/Port/密钥），
 # 探测 IP 用于切流后的公网复验（--resolve 到 211 的 LAN 443 监听）。
 # ★ DD_SSH_TARGET / DD_SSH_MESH_TARGET / DD_HOST 三个通道变量**已定义在文件头**

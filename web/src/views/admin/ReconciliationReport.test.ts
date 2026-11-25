@@ -154,7 +154,7 @@ beforeEach(() => {
   vi.mocked(isSuperAdmin).mockReturnValue(false)
   vi.mocked(readDailyReconciliationDefault).mockReset().mockResolvedValue(null)
   vi.mocked(readDailyReport).mockReset().mockImplementation(async (query: DailyQuery) => ({
-    ...query, version: 'request-reconciliation-v1', platform_scope: true, coverage: 'retained',
+    ...query, version: 'request-reconciliation-v2', platform_scope: true, coverage: 'retained',
     start: '2026-11-21T08:00:00Z', end: '2026-11-22T08:00:00Z', read_at: '2026-11-23T00:00:00Z',
     summary: { received_requests: 12 }, rows: [],
   }))
@@ -163,6 +163,19 @@ beforeEach(() => {
 })
 
 describe('ReconciliationReport', () => {
+  it('labels projected counts as terminal executions', async () => {
+    getReportSummaryMock.mockResolvedValue({
+      ...providerReport(),
+      source: 'request_metrics',
+      request_count_basis: 'terminal_execution',
+      projection: { from: '2026-09-21T00:00:00Z', through: '2026-09-28T00:00:00Z', timezone: 'UTC', updated_at: null, pending_since: null },
+    })
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-testid="primary-dist"]').text()).toContain('终态执行数')
+    expect(wrapper.text()).toContain('编排子调用分别计入')
+    wrapper.unmount()
+  })
+
   it('opens the platform day without requesting snapshots and allows a manual rollback', async () => {
     vi.mocked(isSuperAdmin).mockReturnValue(true)
     vi.mocked(readDailyReconciliationDefault).mockResolvedValue({ day: '2026-11-21', timezone: 'America/Los_Angeles' })

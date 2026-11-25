@@ -12,13 +12,13 @@
 //
 // 覆盖：
 //   A. API 层：9 个端点的状态码与关键字段（并断言**陈旧门未触发**）
-//      ① /api/admin/session-analytics/overview
+//      ① /api/admin/session-analytics/v2/overview
 //      ② /api/admin/session-analytics/user-ranking
 //      ③ /api/admin/session-analytics/user-ranking/:owner
 //      ④ /api/admin/session-analytics/user-ranking/:owner/projects
 //      ⑤ /api/admin/session-analytics/user-ranking/:owner/projects/:project/tasks
-//      ⑥ /api/admin/session-analytics/agent-ranking
-//      ⑦ /api/admin/session-analytics/model-ranking
+//      ⑥ /api/admin/session-analytics/v2/agent-ranking
+//      ⑦ /api/admin/session-analytics/v2/model-ranking
 //      ⑧ /api/admin/session-analytics/user-ranking/:owner/models（2026-11-21 新增）
 //      ⑨ /api/admin/session-analytics/user-ranking/:owner/api-keys（2026-11-21 新增）
 //   B. 页面层：5 个页面的数据卡 / 区块标题 / 全部表头（含右侧列）/ 行数
@@ -252,7 +252,7 @@ const apiGet = async (path) => {
   return { status, body, raw: String(raw) }
 }
 
-const ov = await apiGet(`/api/admin/session-analytics/overview?${RANGE}`)
+const ov = await apiGet(`/api/admin/session-analytics/v2/overview?${RANGE}`)
 if (ov.status !== 200) {
   check('端点① overview 200（陈旧门未触发）', false, `status=${ov.status}${String(ov.raw).slice(0, 160)}`)
   skipped.push({ name: '5 个页面的页面层断言与全部对拍', detail: `overview 不通（status=${ov.status}）⇒ 页面层未评估` })
@@ -260,56 +260,71 @@ if (ov.status !== 200) {
   console.log(`\n${early.line}`)
   process.exit(early.exitCode)
 }
-check('端点① overview 200（陈旧门未触发）', true, 'status=200')
+check('端点① overview 来自请求投影', ov.body.source === 'request_metrics', 'status=200')
 const S = ov.body.summary || {}
-// ★ 断言覆盖 OverviewSummary 的**全部 14 个字段**（`admin/session_analytics/queries.go:22`）。
-//   旧版名字写「15 个」而实际只查 10 个 ⇒ 标签与断言不符、契约覆盖不足（门禁绿 ≠ 断言到位）。
-const SUMMARY_FIELDS = ['total_sessions', 'total_sessions_growth', 'avg_tokens', 'avg_context_size',
-  'avg_duration_seconds', 'avg_turns', 'total_cost', 'total_cost_growth', 'active_users',
-  'active_users_growth', 'active_projects', 'active_tasks', 'overall_success_rate', 'overall_cache_rate']
-const missingSummary = SUMMARY_FIELDS.filter(k => typeof S[k] !== 'number')
-check(`overview 带 summary 全部 ${SUMMARY_FIELDS.length} 个指标字段`,
+const requiredSummary = ['total_sessions', 'request_count', 'credits_charged', 'usd_unmeasured_requests',
+  'active_users', 'active_projects', 'active_tasks']
+const nullableSummary = ['total_sessions_growth', 'avg_tokens', 'avg_context_size', 'avg_duration_seconds',
+  'avg_turns', 'total_cost_usd', 'total_cost_usd_growth', 'active_users_growth', 'overall_success_rate', 'overall_cache_rate']
+const missingSummary = requiredSummary.filter(key => !Number.isFinite(S[key]))
+  .concat(nullableSummary.filter(key => S[key] !== null && !Number.isFinite(S[key])))
+check(`overview 带 summary 全部 ${requiredSummary.length + nullableSummary.length} 个指标字段`,
   missingSummary.length === 0,
   missingSummary.length ? '缺 ' + missingSummary.join('/') : `total_sessions=${S.total_sessions} active_users=${S.active_users}`)
 check('overview 带 trends 三序列（sessions/tokens/cost）',
-  !!(ov.body.trends && ov.body.trends.sessions && ov.body.trends.tokens && ov.body.trends.cost),
+  ['sessions', 'tokens', 'cost'].every(key => Array.isArray(ov.body.trends?.[key])),
   `sessions=${(ov.body.trends?.sessions || []).length} tokens=${(ov.body.trends?.tokens || []).length} cost=${(ov.body.trends?.cost || []).length}`)
+const dailyCosts = ov.body.trends?.cost ?? []
+const trendUSD = dailyCosts.map(day => day.total_cost_usd)
+const measuredUSD = trendUSD.filter(amount => amount !== null)
+const totalUSD = measuredUSD.length || S.request_count === 0
+  ? measuredUSD.reduce((total, amount) => total + amount, 0) : null
+const totalCredits = dailyCosts.reduce((total, day) => total + day.credits_charged, 0)
+check('overview 逐日成本和积分分别对平汇总',
+  trendUSD.every(amount => amount === null || Number.isFinite(amount)) &&
+  (totalUSD === null ? S.total_cost_usd === null : Number.isFinite(S.total_cost_usd) && Math.abs(totalUSD - S.total_cost_usd) < 1e-7) &&
+  totalCredits === S.credits_charged,
+  `USD=${totalUSD}, credits=${totalCredits}`)
 
-const ur = await apiGet(`/api/admin/session-analytics/user-ranking?${RANGE}&limit=50`)
+const ur = await apiGet(`/api/admin/session-analytics/v2/user-ranking?${RANGE}&limit=50`)
 check('端点② user-ranking 200', ur.status === 200, `status=${ur.status}`)
 const users = (ur.body && ur.body.users) || []
 check('端点② user-ranking 带人员行', Array.isArray(users) && users.length > 0, `rows=${users.length}`)
 const owner = (args.owner || (users[0] && users[0].owner) || '')
+const ownerPath = encodeURIComponent(owner)
+const tenant = args.tenant || users.find(row => row.owner === owner)?.tenant_id || ''
+const ownerRange = tenant ? `${RANGE}&tenant_id=${encodeURIComponent(tenant)}` : RANGE
+const ownerEndpoint = `/api/admin/session-analytics/v2/user-ranking/${ownerPath}`
 
-const ud = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}?${RANGE}`)
+const ud = await apiGet(`${ownerEndpoint}?${ownerRange}`)
 check(`端点③ user-ranking/:owner 200（owner=${owner}）`, ud.status === 200, `status=${ud.status}`)
 
-const up = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}/projects?${RANGE}`)
+const up = await apiGet(`${ownerEndpoint}/projects?${ownerRange}`)
 check('端点④ user-ranking/:owner/projects 200', up.status === 200, `status=${up.status}`)
 const projects = (up.body && up.body.projects) || []
 
 let pt = { status: 0, body: null }
 if (projects.length) {
   const proj = projects[0].project
-  pt = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}/projects/${encodeURIComponent(proj)}/tasks?${RANGE}`)
+  pt = await apiGet(`${ownerEndpoint}/projects/${encodeURIComponent(proj)}/tasks?${ownerRange}`)
   check(`端点⑤ …/projects/:project/tasks 200（project=${proj}）`, pt.status === 200, `status=${pt.status}`)
 } else {
   gauge('端点⑤ …/projects/:project/tasks', `该 owner 在窗口内没有项目行（projects=${projects.length}）`)
 }
 
-const ar = await apiGet(`/api/admin/session-analytics/agent-ranking?${RANGE}`)
+const ar = await apiGet(`/api/admin/session-analytics/v2/agent-ranking?${RANGE}`)
 check('端点⑥ agent-ranking 200', ar.status === 200, `status=${ar.status}`)
 const agents = (ar.body && ar.body.agents) || []
 
-const mr = await apiGet(`/api/admin/session-analytics/model-ranking?${RANGE}`)
+const mr = await apiGet(`/api/admin/session-analytics/v2/model-ranking?${RANGE}`)
 check('端点⑦ model-ranking 200', mr.status === 200, `status=${mr.status}`)
 const models = (mr.body && mr.body.models) || []
 
-const um = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}/models?${RANGE}`)
+const um = await apiGet(`${ownerEndpoint}/models?${ownerRange}`)
 check(`端点⑧ user-ranking/:owner/models 200（owner=${owner}）`, um.status === 200, `status=${um.status}`)
 const userModels = (um.body && um.body.models) || []
 
-const uak = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}/api-keys?${RANGE}`)
+const uak = await apiGet(`${ownerEndpoint}/api-keys?${ownerRange}`)
 check(`端点⑨ user-ranking/:owner/api-keys 200（owner=${owner}）`, uak.status === 200, `status=${uak.status}`)
 const userApiKeys = (uak.body && uak.body.api_keys) || []
 
@@ -323,7 +338,7 @@ if (!users.length || !agents.length || !models.length) {
 //   · 错误横幅 = `SaStateBanner` 的 `.sa-banner--error`
 //   · 陈旧横幅 = `SaStateBanner` 的 `.sa-banner--stale`
 //   · 加载占位 = `.sa-loading`
-//   · 口径说明 = `.sa-note`
+//   · 缺失 USD 证据提示 = `sa-usd-coverage`
 //   · 空态     = `EmptyState` 的 `.app-empty-state`
 //   ⇒ 文案只是**展示层**，会随 locale 变；类名是**契约层**，不会。
 //     （旧版按 `body.includes('没能加载出来')` 判错误 ⇒ 换语种后找不到 ⇒ 假绿。）
@@ -344,7 +359,7 @@ const PAGE_PROBE = `(() => {
     hasError: !!document.querySelector('.sa-banner--error'),
     hasStale: !!document.querySelector('.sa-banner--stale'),
     isLoading: !!document.querySelector('.sa-loading'),
-    hasCostNote: !!document.querySelector('.sa-note'),
+    hasMissingUSDNote: !!document.querySelector('[data-testid="sa-usd-coverage"]'),
     hasEmptyState: !!document.querySelector('.app-empty-state'),
     title: document.querySelector('h1')?.textContent?.trim() || document.title,
   })
@@ -477,7 +492,7 @@ const loadPage = async (url) => {
   check('人员排行页：11 列表头齐全（含右侧列「查看详情」）', !!t && need.every(h => t.headers.includes(h)),
     t ? (need.filter(h => !t.headers.includes(h)).length ? '缺 ' + need.filter(h => !t.headers.includes(h)).join('/') : '11 列全在') : '未找到表')
   check('人员排行页：有数据行', !!t && t.rows.length > 0, t ? `rows=${t.rows.length}` : '')
-  const urCap = sameSource('/user-ranking?')
+  const urCap = sameSource('/v2/user-ranking?')
   const urBaselineOk = !!(urCap && Array.isArray(urCap.users) && urCap.users.length)
   check('对拍基准：已捕获页面自己的 user-ranking 响应', urBaselineOk,
     urBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
@@ -502,7 +517,7 @@ const loadPage = async (url) => {
 if (!owner) {
   gauge('人员详情页：页面层与对拍', `窗口内没有人员行 ⇒ 动态段无真值（owner=''）⇒ 未评估`)
 } else {
-  const p = await loadPage(`/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}`)
+  const p = await loadPage(`/admin/session-analytics/user-ranking/${ownerPath}?${ownerRange}`)
   check('人员详情页：无错误横幅', !p.hasError)
   check('人员详情页：无陈旧横幅', !p.hasStale)
   // ★ N9（2026-11-25）：成本卡由「一张『总花费』」拆成**两张**（内部成本美元 /
@@ -515,7 +530,9 @@ if (!owner) {
   const needTitles = ['会话趋势', '任务趋势', '花费趋势', '排名变化']
   const missingT = needTitles.filter(t => !p.titles.includes(t))
   check('人员详情页：4 个趋势段齐全', missingT.length === 0, missingT.length ? '缺 ' + missingT.join('/') : '4 段全在')
-  check('人员详情页：跨单位口径说明在屏（costNote）', p.hasCostNote === true)
+  const detailAPI = sameSource('/v2/user-ranking/' + ownerPath + '?')
+  check('人员详情页：USD 缺失提示与当前响应一致',
+    !!detailAPI && p.hasMissingUSDNote === (detailAPI.summary.usd_unmeasured_requests > 0))
   check('人员详情页：项目列表表头齐全',
     p.tables.some(t => t.headers.includes('项目') && t.headers.includes('任务数')),
     p.tables.map(t => t.headers.join('|')).join(' || '))
@@ -565,7 +582,7 @@ if (!owner) {
         `hasEmptyState=${drill.hasEmptyState} tables=${drill.tables.length}`)
     }
   }
-  const udCap = sameSource(`/user-ranking/${owner}?`)
+  const udCap = sameSource(`${ownerEndpoint}?`)
   const udBaselineOk = !!(udCap && udCap.summary)
   check('对拍基准：已捕获页面自己的 user-detail 响应', udBaselineOk,
     udBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
@@ -614,7 +631,7 @@ if (!owner) {
       check('人员详情页：模型用量无数据时显示空态', modelsTab.hasEmptyState === true,
         `hasEmptyState=${modelsTab.hasEmptyState} tables=${modelsTab.tables.length}`)
     }
-    const modelsCap = sameSource(`/user-ranking/${owner}/models?`)
+    const modelsCap = sameSource(`${ownerEndpoint}/models?`)
     check('对拍基准：已捕获页面自己的 models 响应', !!modelsCap,
       modelsCap ? '同源基准可用' : '未捕获')
     if (modelsCap && modelsCap.models && modelsCap.models.length > 0 && modelsTable && modelsTable.rows.length > 0) {
@@ -653,7 +670,7 @@ if (!owner) {
     // ★★★ 2026-11-23（L16）：**先按 HTTP 状态码定性，再按页面定性** ★★★
     // ★ 旧写法只断「空态 vs 有表」⇒ ★ 把「端点 500」误判成「前端没渲染空态」
     //   ⇒ 归因完全错位（真因在后端）。⇒ 现在先看状态码。
-    const apiKeysResp = capturedApiWithStatus(`/user-ranking/${owner}/api-keys?`)
+    const apiKeysResp = capturedApiWithStatus(`${ownerEndpoint}/api-keys?`)
     const apiKeysStatus = apiKeysResp ? apiKeysResp.status : null
     const endpointFailed = apiKeysStatus !== null && apiKeysStatus >= 400
     // ★ 提到分支外：下面的行级对拍段也要用它（端点失败时它为 undefined ⇒ 对拍自然跳过）
@@ -682,7 +699,7 @@ if (!owner) {
           `hasEmptyState=${apiKeysTab.hasEmptyState} tables=${apiKeysTab.tables.length}`)
       }
     }
-    const apiKeysCap = sameSource(`/user-ranking/${owner}/api-keys?`)
+    const apiKeysCap = sameSource(`${ownerEndpoint}/api-keys?`)
     check('对拍基准：已捕获页面自己的 api-keys 响应', !!apiKeysCap,
       apiKeysCap ? '同源基准可用' : '未捕获')
     if (apiKeysCap && apiKeysCap.api_keys && apiKeysCap.api_keys.length > 0 && apiKeysTable && apiKeysTable.rows.length > 0) {
@@ -699,7 +716,7 @@ if (!owner) {
   const p = await loadPage('/admin/session-analytics/agent-ranking')
   check('智能体排行页：无错误横幅', !p.hasError)
   check('智能体排行页：无陈旧横幅', !p.hasStale)
-  const need = ['排名', '智能体', '使用人数', '会话数', '任务数', 'Token 数', '花费', '平均时长', '最近使用']
+  const need = ['排名', '智能体', '使用人数', '会话数', '任务数', 'Token 数', '费用 (USD)', '平均时长', '最近使用']
   const t = p.tables.find(x => x.headers.includes('智能体'))
   check('智能体排行页：9 列表头齐全', !!t && need.every(h => t.headers.includes(h)),
     t ? (need.filter(h => !t.headers.includes(h)).length ? '缺 ' + need.filter(h => !t.headers.includes(h)).join('/') : '9 列全在') : '未找到表')
@@ -723,7 +740,7 @@ if (!owner) {
   const p = await loadPage('/admin/session-analytics/model-ranking')
   check('模型排行页：无错误横幅', !p.hasError)
   check('模型排行页：无陈旧横幅', !p.hasStale)
-  const need = ['排名', '模型', '供应商', '请求数', '成功率', 'Token 数', '缓存命中率', '平均时长', '花费', '使用人数', '最近使用']
+  const need = ['排名', '模型', '供应商', '请求数', '成功率', 'Token 数', '缓存命中率', '平均时长', '费用 (USD)', '使用人数', '最近使用']
   const t = p.tables.find(x => x.headers.includes('模型'))
   check('模型排行页：11 列表头齐全', !!t && need.every(h => t.headers.includes(h)),
     t ? (need.filter(h => !t.headers.includes(h)).length ? '缺 ' + need.filter(h => !t.headers.includes(h)).join('/') : '11 列全在') : '未找到表')

@@ -366,16 +366,16 @@ export const enUS = {
       //   with one extra layer — auth is dual-mode and the other branch DOES check
       //   the `session:read` scope, though that is the service-to-service door,
       //   which browser users never reach.
-      why: 'This layer is the only door outside the server: for browser users the backend only checks that you are logged in, never your role, so an ordinary account could read this tenant’s full model and provider list.',
+      why: 'Administrators see candidates for authorized tenants. Ordinary accounts can query candidates from their own requests through the API.',
     },
-    gate: { note: 'This page is the only thing blocking ordinary accounts (the backend only checks login, not role).' },
+    gate: { note: 'Candidate values are filtered by the signed-in identity and tenant scope.' },
     readonly: { note: 'Read-only: the filtering itself is done by the session analytics list endpoint; this page only fetches the candidate values.' },
     load: { title: 'Fetch', btn: 'Refresh options' },
     state: { title: 'Filter options' },
     badge: { nonEmpty: 'Has options' },
-    empty: 'This gateway has not seen any session in the last 30 days (not a failure).',
+    empty: 'No model or provider candidates were observed in the selected calendar days.',
     // ★★ Half-empty only: exactly one of the two lists has no value. The sibling has no such state.
-    halfEmpty: '★ Only half of the filter options have values, the other half is empty: {list}. This is a normal state here (the models column and the providers column of a session summary can have values independently).',
+    halfEmpty: 'No candidates for these dimensions: {list}.',
     emptyDims: 'No candidate values for: {list}',
     dim: {
       models: 'Models',
@@ -386,12 +386,12 @@ export const enUS = {
     },
     // ★ (9) Order and de-duplication are observable in the response, so show them instead of assuming.
     sortedUnique: 'Ascending·unique',
-    dimNote: 'Aggregated from session_summaries.{column}, last {days} days.',
+    dimNote: 'Candidates from request_metrics.{column} over the last {days} calendar days.',
     // ★★ BOTH dimensions are windowed here (the sibling has only 3 of 8) — do not copy that wording.
     windowNote: '★ This page has only {n} dimensions, and **all** of them are limited to the last {days} days.',
     // ★★ (4) The super_admin case sees the aggregate across ALL tenants, with no way to narrow it.
     crossTenant: {
-      note: '★ You are viewing this as a super administrator: these are the models and providers aggregated across **all** tenants over the last 30 days, and this endpoint has **no** parameter to narrow by tenant.',
+      note: 'This list covers model and provider candidates across all tenants over the last 30 calendar days.',
     },
     tenant: { agnostic: 'This page shows an aggregate candidate list (it carries no tenant identifier field).' },
   },
@@ -400,10 +400,7 @@ export const enUS = {
     title: 'Usage & cost',
     nope: {
       msg: 'Only admins can view usage and cost data.',
-      // ★★ Unlike the families where the server middleware is a real gate, these
-      //   three endpoints DO filter by tenant — but `h.admin` has **no role floor**,
-      //   so the server hands all-tenant totals to a plain user. This page blocks first.
-      why: 'The server sets no role floor on these endpoints, so a plain account would receive every tenant’s costs.',
+      why: 'Tenant administrators see costs for their tenant. Super admins see costs for all tenants.',
     },
     load: {
       title: 'Fetch',
@@ -414,10 +411,13 @@ export const enUS = {
       ownTenant: 'You are viewing costs for **your own tenant**.',
     },
     estimate: {
+      unavailable: 'Savings require contract rates or itemized bills.',
       note: 'The three savings figures below are **estimates** derived from hard-coded assumptions, not billing data.',
       badge: 'est.',
     },
     cache: {
+      ratio: 'Cached-read share of input tokens',
+      coverage: 'Requests with known coverage {known} / {total}',
       title: 'Cache & compression economics',
       ok: 'Server confirmed: not degraded',
       degraded: 'Server degraded: the figures below are all zero and do not mean nothing was spent.',
@@ -427,15 +427,16 @@ export const enUS = {
       degraded: 'Period comparison is degraded.',
     },
     check: {
-      hitRatioMeaningless: 'A 0% hit ratio only means the denominator is zero, not that nothing hit.',
+      hitRatioMeaningless: 'This window has no eligible input tokens for the hit-rate calculation.',
       compressedSuspect: 'The compressed-request count may have failed to load (the server only logs a warning).',
       compressionUnreliable: 'Compression savings are unreliable: their only input may have failed to load.',
-      periodMeaningless: 'A 0% period change means both periods are empty, not that nothing changed.',
+      periodMeaningless: 'Relative change is unavailable when the previous period cost is zero.',
       threshold: 'Significant change threshold: {pct}%.',
     },
     field: {
       totalRequests: 'Total requests',
       cacheReadTokens: 'Cache-read tokens',
+      compressedRequests: 'Requests with recorded compression',
       dollars_saved: 'Cache savings',
       compression_saved: 'Compression savings',
       total_saved: 'Total savings',
@@ -1479,6 +1480,20 @@ export const enUS = {
       active: 'Active sessions',
       new24h: 'New in 24h',
       closed24h: 'Closed in 24h',
+      newSessions: 'Created in period',
+      closedSessions: 'Closed in period',
+      tokens: 'Total tokens',
+      cost: 'Cost (USD)',
+      attribution: {
+        title: "Session attribution",
+        noSession: "No session link (excluded from session costs)",
+        missingRecord: "Missing session record",
+        missingOwner: "Session owner missing",
+        unknownStart: "Session start unknown",
+        openedBeforeWindow: "Session opened before the window",
+        otherSessions: "Other linked sessions",
+        measures: "{requests} requests · {usd}",
+      },
       generatedAt: 'Generated at',
       period: 'Period',
     },
@@ -2172,10 +2187,10 @@ export const enUS = {
     navTitle: 'Session analytics',
     // ★★ data freshness (the headline problem for this family)
     freshness: 'Data freshness',
-    staleSourceNote: 'This page reads a materialized view, and the function that refreshes it only ran once when the view was created. Nothing in this repo schedules it periodically. The "data as of" line below is the real age of these numbers.',
+    staleSourceNote: 'Request statistics are updated asynchronously and grouped by calendar day.',
     refreshedAt: 'Data as of',
     refreshedRaw: 'Raw timestamp',
-    refreshedZero: 'This page is empty and the backend returned Go\u0027s zero time (0001-01-01), so there is nothing to show and no real refresh moment is available.',
+    refreshedZero: 'No sync timestamp is available.',
     // ↓ filters
     filters: 'Filters',
     dimensionLabel: 'Switch dimension',
@@ -2434,6 +2449,13 @@ export const enUS = {
     emptyModels: 'No per-model usage in this window.',
     detail: 'Consumption detail',
     centsPerCredit: 'Price per credit',
+    projectedSource: 'Requests and attributed credits use the same request statistics source for all date ranges.',
+    estimatedMarginUnavailable: '{n} rows have insufficient data for an estimated margin rate.',
+    estimatedMarginNA: 'Insufficient data',
+    estimatedRevenue: 'Estimated revenue',
+    estimatedMarginRate: 'Estimated margin rate',
+    creditReferenceNotice: 'Estimates use the current credit price. Posted debits appear in the credit ledger.',
+    cancellationCoverage: '{n} charged requests lack cancellation evidence',
     cpcNote: '★ The unit price is read straight from `maas_settings` and **echoed**, so every revenue figure can be independently recomputed and checked.',
     marginUndefined: '★★ {n} row(s) have **no revenue**, so their margin rate is **undefined** (the backend leaves it at 0). Do not read that as "zero margin".',
     cancelledBilled: '★★ {n} request(s) in this window were **charged but cancelled by the client** (stream interrupted with code client_cancel / client_disconnected). That is a known revenue leak.',
@@ -2508,6 +2530,7 @@ export const enUS = {
   },
   // ↓ Tenant detail (2026-10-08, superAdmin tier)
   tnd: {
+    usdCoverage: '{n} request costs excluded from the USD total',
     dailyTitle: 'Daily usage details',
     title: 'Tenant Detail',
     needCode: 'The tenant code is empty.',
@@ -4010,8 +4033,15 @@ sctx: {
   rr: {
     // ★★ A **different feature** from the existing `reconciliation` (cost reconciliation)
     title: 'Reconciliation report',
+    projectedView: 'Historical request statistics',
+    projectedDays: 'Observed requests on {n} days',
+    projectedBasis: 'Days use {zone}. The credit ledger records postings, and daily reconciliation shows supplier sends and invoices.',
+    projectedPending: 'Some requests in this period are still being processed.',
+    projectedMissingUSD: '{n} requests have no USD amount or use another currency.',
     legacySnapshotView: 'Historical snapshots',
     evidence: {
+      terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection.',
+      terminalProjectionPending: 'Terminal usage is still syncing. The oldest queued record is from {at}. Revisions from another day can affect this report.',
       title: 'Daily reconciliation evidence', date: 'Reconciliation date', load: 'Load evidence',
       scope: 'Legacy usage keys are counted once per tenant and request per day. The total number of historical supplier sends is unknown.',
       fields: {
@@ -4038,6 +4068,7 @@ sctx: {
         traffic_class: 'Traffic class',
         status: 'Request status',
         admission_rejection: 'Admission rejection',
+        total_tokens: 'Retained terminal tokens', measured_total_requests: 'Requests with a measured token total', usage_source: 'Usage source',
         input_tokens: 'Input tokens',
         output_tokens: 'Output tokens',
         recorded_supplier_sends: 'Recorded supplier sends',
@@ -4182,11 +4213,12 @@ sctx: {
       title: 'Query',
       view: 'View',
       window: 'Window',
+      businessOnly: "Business traffic only",
       windowDays: '{n} days',
       detail: 'Daily detail',
       // ★★ Closed interval, today excluded: aggregation is T+1
       range: 'Range (inclusive): {start} to {end}',
-      t1: 'This endpoint aggregates T+1 and has no snapshot for today; the default window is "the 7 days up to yesterday".',
+      t1: 'The gateway timezone determines which calendar days have ended. The default is 7 days.',
     },
     summary: {
       title: 'Range summary',

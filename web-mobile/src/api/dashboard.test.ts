@@ -428,7 +428,7 @@ describe('dashboard / fetch 与逐键钉住', () => {
     await fetchSessionOverview({ days: 14, tenantId: 'acme', refresh: true })
     const { url, init } = lastCall()
     expect(init.method).toBe('GET')
-    expect(url).toContain('/api/admin/dashboard/session-overview?')
+    expect(url).toContain('/api/admin/dashboard/v2/session-overview?')
     expect(url).toContain('days=14')
     expect(url).toContain('tenant_id=acme')
     // ★ 后端判 `== "true"`，所以必须发字面量
@@ -438,7 +438,17 @@ describe('dashboard / fetch 与逐键钉住', () => {
   it('无参数时不带问号', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(okEnv(TREND_DATA)))
     await fetchSessionTrend()
-    expect(lastCall().url).toBe('/api/admin/dashboard/session-trend')
+    expect(lastCall().url).toBe('/api/admin/dashboard/v2/session-trend')
+  })
+
+  it('routes health and active sessions through V2 with the same natural-day scope', async () => {
+    const scope = { startDate: '2026-11-23', endDate: '2026-11-23', includeProbes: false }
+    fetchMock.mockResolvedValueOnce(jsonResponse(okEnv(HEALTH_DATA)))
+    await fetchSessionHealth(scope)
+    expect(lastCall().url).toBe('/api/admin/dashboard/v2/session-health?start_date=2026-11-23&end_date=2026-11-23&include_probes=false')
+    fetchMock.mockResolvedValueOnce(jsonResponse(okEnv(ACTIVE_DATA)))
+    await fetchSessionActive({ ...scope, page: 2 })
+    expect(lastCall().url).toBe('/api/admin/dashboard/v2/session-active?start_date=2026-11-23&end_date=2026-11-23&include_probes=false&page=2')
   })
 
   it('★ 每个端点的必填键逐个钉住（删一个就抛错）', async () => {

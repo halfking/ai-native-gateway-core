@@ -43,6 +43,12 @@ export default {
     close: "關閉"
   },
   detail: {
+    estimatedRevenue: '估算收入',
+    estimatedMargin: '估算毛利',
+    estimatedMarginRate: '估算毛利率',
+    creditReferenceNotice: '估算使用目前積分參考價，實際扣費以積分帳本為準。',
+    cancellationCoverage: '{n} 筆有積分消耗的請求缺少取消證據',
+    usdCoverage: '{n} 筆請求的費用幣別未納入 USD 合計',
     loadUsersFailed: '使用者列表沒能載入出來，請重試',
     loadKeysFailed: '金鑰列表沒能載入出來，請重試',
     loadStatsFailed: '用量統計沒能載入出來，請重試',

@@ -42,7 +42,7 @@ import {
 //          degraded?}          ← **没有 days 字段**（days 是请求参数，不是响应字段）
 //   GET /api/admin/usage/cost-trend?group_by=model
 //       → {group_by, date_from, date_to, total_cost, entries[], other_cost, other_count, degraded?}
-//   GET /api/admin/usage/period-compare?current=YYYY-MM&previous=YYYY-MM
+//   GET /api/admin/usage/v2/period-compare?current=YYYY-MM&previous=YYYY-MM
 //       → {current:PeriodStats, previous:PeriodStats, change_pct, change_abs,
 //          trend, significant, by_dimension, degraded?}
 //   GET /api/admin/usage/cache-economics
@@ -103,13 +103,15 @@ export async function getUsageEnhancedData(
   const topN = params.topN ?? 10
   const current = params.currentPeriod ?? currentMonthPeriod()
   const previous = params.previousPeriod ?? previousMonthPeriod()
+  const time = params.dateFrom && params.dateTo ? { start: params.dateFrom, end: params.dateTo } : days
+  const economicsTime = { days, date_from: params.dateFrom, date_to: params.dateTo }
 
   const [summary, costTrend, periodCompare, cacheEcon, hotKeys] = await Promise.all([
-    getUsageSummary(days),
-    getCostTrend('model', { date_from: params.dateFrom, date_to: params.dateTo }),
+    getUsageSummary(time),
+    getCostTrend('model', economicsTime),
     getPeriodCompare(current, previous),
-    getCacheEconomics({ date_from: params.dateFrom, date_to: params.dateTo }),
-    getHotApiKeys(days, topN),
+    getCacheEconomics(economicsTime),
+    getHotApiKeys(time, topN),
   ])
 
   return {

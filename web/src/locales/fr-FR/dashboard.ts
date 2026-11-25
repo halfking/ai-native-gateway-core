@@ -81,7 +81,7 @@ v2: {
         probeExclude: 'Sans test',
         probeInclude: 'Avec test',
         probeIncludeBadge: ' trafic de test inclus',
-        probeScopeTitle: 'Calibre des totaux : sans test = réconciliation interne ; avec test = réconciliation fournisseur (la facturation externe inclut le trafic de test).',    modelDistTitle: 'Répartition des modèles',
+        probeScopeTitle: 'Le filtre du trafic de test s’applique au résumé, aux graphiques et au détail des erreurs.',    modelDistTitle: 'Répartition des modèles',
     modelTop: 'Top {n} de la période',
     colShare: 'Part',
     distTitle: 'Analyse de répartition',

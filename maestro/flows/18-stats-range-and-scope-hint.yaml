@@ -140,6 +140,10 @@ url: ${BASE_URL}
 - openLink: ${BASE_URL}/dashboard?tab=stats
 - extendedWaitUntil:
     visible:
+      id: "stats-request-metrics"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
       id: "stats-date-range-picker"
     timeout: 30000
 - assertVisible:

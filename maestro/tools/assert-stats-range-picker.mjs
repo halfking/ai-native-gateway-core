@@ -345,7 +345,7 @@ async function probeHint(label) {
   const after = await js(PROBE_HINT)
   check(
     `${label}3 **点击后**说明正文可见且有实质内容`,
-    after.bodyVisible && after.bodyText.length > 10,
+    after.bodyVisible && after.bodyText.includes('request_metrics'),
     `bodyVisible=${after.bodyVisible}  正文前 80 字：${(after.bodyText || '').slice(0, 80)}`,
   )
   check(

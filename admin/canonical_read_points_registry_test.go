@@ -561,9 +561,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	"internal/metricsstore/processor.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "请求指标维增强：按 request_id 取会话/任务/协议/附件维度（读双腿 canonical 视图 request_logs_with_current_month —— 迁移 890 已删 v1 母表，裸读 FROM request_logs 在生产上 42P01）",
+		Note:  "请求投影按租户、请求 ID 与日志时间窗口补充会话、归属、模型、协议和错误维度。",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"attachment_count:base", "client_protocol:base", "egress_protocol:base", "gw_session_id:expr", "gw_task_id:detail", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "请求指标维增强读点：读 attachment_count:base,client_protocol:base,egress_protocol:base,gw_session_id:expr,gw_task_id:detail,request_id:base,ts:base ⇒ 引用了 734 details 腿的列（gw_task_id）与视图里的 CASE 表达式列（gw_session_id）⇒ 窄投影须带上 details LEFT JOIN；★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
+			{Kind: "read", Columns: []string{
+				"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base",
+				"client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base", "egress_protocol:base",
+				"error_kind:base", "failure_detail_code:base", "gw_session_id:expr", "gw_task_id:detail", "identity_hash:base",
+				"outbound_model:base", "request_id:base", "stream_interrupted:base", "task_type:base", "tenant_id:base", "ts:base", "work_type:base",
+			}, Class: classNeedsDetailsLeg, Note: "任务、密钥与客户端模型来自 details 腿，会话标识和客户端 IP 来自视图表达式。"},
 		},
 	},
 	"admin/providers.go": {
@@ -2639,6 +2644,7 @@ func canonicalTimeWindowedReadPointFiles(t *testing.T, root string) map[string]b
 // ★   ⇒ 那是**登记错误**（★ 口径是文件级）⇒ ⇒ 要么改口径、要么把它移出清单 ⇒
 // ★   ⇒ ★★ **不许用「例外」把它藏起来**：★ 藏起来就等于门看不见它。★★
 var canonicalTimeWindowedReadPoints = map[string]string{
+	"internal/metricsstore/processor.go":     "请求投影按租户、请求 ID 和事实时间前后一天的 ts 范围读取 canonical 视图，视图不提供分区键。",
 	"admin/compression_stats.go":             "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/credential_monitor.go":            "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/credential_monitor_heatmap.go":    "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

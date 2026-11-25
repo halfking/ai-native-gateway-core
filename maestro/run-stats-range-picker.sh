@@ -168,7 +168,7 @@ pick_free_port() {
   return 1
 }
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$(date +%Y%m%d-%H%M%S)-stats-range"
 DRIVER_PORT="$(pick_free_port "${DRIVER_PORT}")" || { echo "!! ${DRIVER_PORT} 起的 20 个端口都被占用。" >&2; exit 2; }
 
 start_chrome() {

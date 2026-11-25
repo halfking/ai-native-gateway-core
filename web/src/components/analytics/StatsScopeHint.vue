@@ -12,9 +12,7 @@
 //   · 会话分析·用户页（SessionAnalyticsUsersView 的刷新按钮旁）
 //   ⇒ 两页的说明文字、措辞、口径完全一致（同一份 i18n 键）。
 //
-// ★ days 传的是**当前生效窗口**的日历日跨度（含首尾）：
-//   正文那句「首次请求在近{days}天内」必须与实际取数窗口一致，
-//   否则提示符自己就在说假话。
+// days 表示实际生效窗口覆盖的自然日数。
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElIcon, ElPopover } from 'element-plus'

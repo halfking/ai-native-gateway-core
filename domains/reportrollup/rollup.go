@@ -151,22 +151,21 @@ const personUnknown = "unknown"
 // maas_settings 缺表/缺行时按此冻结，避免快照 price_snapshot 落空。
 const defaultCentsPerCredit = 0.1
 
-// RollupDay 聚合 day（UTC 日，[00:00, +24h)）的 usage_facts 写入
-// report_snapshots 六个 scope；可重入（ON CONFLICT 幂等回填）。
-// 迟到数据次日重跑昨日即可修正——worker 启动时先补跑昨日即依赖此语义。
-//
-// R69 口径注记：本函数日桶是 UTC 日，而 usage_facts 的物理日分区边界
-// （750/751）是上海日历日——一个 UTC 日窗横跨两个物理分区，partition
-// pruning 仍生效（扫 2 个分区而非 1 个），数据正确性无损。消费
-// report_snapshots.report_date 的新读面（仪表盘等）请勿把它解读为
-// "上海日"，口径差异 8 小时。
-func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, error) {
-	// 时区轮 2026-11-20：start/end 按 day 自带的时区字段构造（调用方传
-	// settings.SystemDayStart 的产物即系统时区零点 ⇒ 聚合窗口 = 系统时区的
-	// 这个日历日）。传 UTC 午夜时行为与旧版一致。
-	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+// RollupDay rebuilds the named calendar date in the system timezone. The
+// caller owns the transaction so all eight scopes become visible together.
+func RollupDay(ctx context.Context, q pgx.Tx, day time.Time) (RollupStats, error) {
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, settings.SystemTimezoneLocation())
 	end := start.AddDate(0, 0, 1)
 	stats := RollupStats{Date: start}
+
+	var locked bool
+	if err := q.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(
+		hashtext('report_rollup'), $1::date - date '2000-01-01')`, start).Scan(&locked); err != nil {
+		return stats, fmt.Errorf("lock rollup day: %w", err)
+	}
+	if !locked {
+		return stats, fmt.Errorf("rollup already running for %s", start.Format(time.DateOnly))
+	}
 
 	centsPerCredit, err := loadCentsPerCredit(ctx, q)
 	if err != nil {
@@ -232,11 +231,25 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 	buckets = append(buckets, dailyGrain...)
 	buckets = append(buckets, internalGrain...)
 
+	scopes, keys, models := make([]string, len(buckets)), make([]string, len(buckets)), make([]string, len(buckets))
 	for i := range buckets {
 		if err := upsertBucket(ctx, q, start, &buckets[i]); err != nil {
 			return stats, fmt.Errorf("upsert %s/%s/%s: %w", buckets[i].Scope, buckets[i].ScopeKey, buckets[i].RawModelName, err)
 		}
+		scopes[i], keys[i], models[i] = string(buckets[i].Scope), buckets[i].ScopeKey, buckets[i].RawModelName
 		stats.RowsWritten++
+	}
+	_, err = q.Exec(ctx, `DELETE FROM report_snapshots s
+		WHERE s.report_date=$1::date AND s.scope=ANY($2::text[]) AND NOT EXISTS (
+			SELECT 1 FROM unnest($3::text[],$4::text[],$5::text[]) AS b(scope, scope_key, raw_model_name)
+			WHERE (b.scope,b.scope_key,b.raw_model_name)=(s.scope,s.scope_key,s.raw_model_name)
+		)`, start, []string{
+		string(ScopeDailyTotal), string(ScopeDailyByProvider), string(ScopeDailyByModel),
+		string(ScopeInternalTenant), string(ScopeInternalPerson), string(ScopeInternalModel),
+		string(ScopeDailyGrain), string(ScopeInternalGrain),
+	}, scopes, keys, models)
+	if err != nil {
+		return stats, fmt.Errorf("remove stale rollup buckets: %w", err)
 	}
 	return stats, nil
 }
@@ -743,7 +756,7 @@ func mergeBreakdown(dst, src map[string]int64) map[string]int64 {
 }
 
 // MissingRollupDates 返回 (now-lookback, now) 开区间内没有 daily_total
-// 快照行的日期（UTC，升序）。daily_total 在 RollupDay 里无条件写一行
+// 快照行的日期（系统时区，升序）。daily_total 在 RollupDay 里无条件写一行
 // （零流量日也是一行 COUNT=0），因此「无行」=「该日聚合从未发生」——
 // worker 停机跨过钟点、单轮失败后靠本函数做有界追赶；早于部署日的
 // 历史不在追赶范围（超出 lookback），需要时走管理端手动 /run。
@@ -770,7 +783,7 @@ func MissingRollupDates(ctx context.Context, q Querier, lookbackDays int, now ti
 		if err := rows.Scan(&d); err != nil {
 			return nil, err
 		}
-		out = append(out, d)
+		out = append(out, time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, today.Location()))
 	}
 	return out, rows.Err()
 }

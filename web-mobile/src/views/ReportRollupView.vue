@@ -77,6 +77,7 @@ useHyperPage({ title: () => t('rr.title') })
 
 const mode = ref<'pending' | 'legacy' | 'daily'>('pending')
 const primaryCalendar = ref<DailyReconciliationCalendar | null>(null)
+const initialEvidenceDay = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
 const policyRequest = new AbortController()
 let policyTimer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
@@ -105,34 +106,12 @@ onMounted(async () => {
 
 const view = ref<string>(REPORT_ROLLUP_DEFAULT_VIEW)
 const detailOn = ref(false)
+const businessOnly = ref(false)
+const trafficScope = computed(() => view.value === 'provider' && businessOnly.value ? 'business' as const : undefined)
 
-// ★★ 窗口档位：缺省 7 天，上界 366 天（`report.go:143-145` 的 `> 366*24h`）。
-//   ★ 不提供「今天」：聚合是 T+1 的，`start === end`（单日）是合法的。
-// ★ 含 **1 天**（单日）：`report_rollup.go:143-145` 判的是 `end.Sub(start) > 366*24h`
-//   ⇒ `start === end` 是**合法**的单日区间，而单日对账是很常用的一种看法。
+// The server resolves these lengths using its own calendar and timezone.
 const WINDOW_CHOICES = [1, 7, 30, 90, 366] as const
 const windowDays = ref<number>(7)
-
-/**
- * ★★★ T+1 语义：区间是**闭区间**且**不含今日** ——
- *   后端 `reportRange`（`report_rollup.go:122-147`）：`end = 昨日`、`start = 昨日 − (n−1)`。
- *   注释自陈原因：「聚合语义是 **T+1** 凌晨出昨日报表」⇒ **今日快照尚不存在**。
- *   ⇒ 客户端**不要**自己拼「今天到今天」——那会得到一个恒空的结果。
- */
-function isoDay(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-function rangeFor(days: number): { start: string; end: string } {
-  // ★ 用 UTC：后端是 `time.ParseInLocation("2006-01-02", raw, time.UTC)`，
-  //   本地时区算出来的日期可能整体偏一天。
-  const now = new Date()
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1))
-  const start = new Date(end.getTime() - (days - 1) * 86400000)
-  return { start: isoDay(start), end: isoDay(end) }
-}
-
-const range = computed(() => rangeFor(windowDays.value))
 
 // ══ summary ═════════════════════════════════════════════════════════════
 
@@ -145,9 +124,9 @@ async function loadSummary(): Promise<void> {
   summaryError.value = null
   try {
     summary.value = await fetchReportRollupSummary({
-      start: range.value.start,
-      end: range.value.end,
+      days: windowDays.value,
       view: view.value,
+      ...(trafficScope.value && { trafficScope: trafficScope.value }),
       // ★ 真值集合是 `1`/`true`/`yes`/`daily`（`:194-200`）⇒ 恒发 `1` 或 `0`。
       //   ⚠️ export 用的是**正好相反**的一组（`:207-213`），本页不碰 export。
       detail: detailOn.value ? '1' : '0',
@@ -170,7 +149,8 @@ const totals = computed<ReportTotals | null>(() => report.value?.totals ?? null)
 
 /** ★★ 等式不成立 = 载荷被换过，不是「后端口径变了」。 */
 const errorCountBad = computed(() => (totals.value ? !reportTotalsErrorCountMatches(totals.value) : false))
-const totalTokensBad = computed(() => (totals.value ? !reportTotalsTotalTokensMatches(totals.value) : false))
+const totalTokensBad = computed(() => !report.value?.projection && !!totals.value && !reportTotalsTotalTokensMatches(totals.value))
+const usdUnavailable = computed(() => totals.value?.usd_measured_requests === 0 && totals.value.request_count > 0)
 /**
  * ★★★★ `request_count === 0` 时 `error_rate` **必须是 0**。
  *   服务端把除法包在 `if RequestCount > 0` 里、而字段是值类型 ⇒ 零请求时给的是 `0`。
@@ -252,9 +232,9 @@ async function loadDims(): Promise<void> {
   dimsError.value = null
   try {
     dims.value = await fetchReportRollupDimensions({
-      start: range.value.start,
-      end: range.value.end,
+      days: windowDays.value,
       view: view.value,
+      ...(trafficScope.value && { trafficScope: trafficScope.value }),
     })
   } catch (err) {
     dims.value = null
@@ -265,6 +245,12 @@ async function loadDims(): Promise<void> {
 }
 
 const dimsDegraded = computed(() => (dims.value ? reportRollupIsDegraded(dims.value) : false))
+
+function applyTrafficScope() {
+  void loadSummary()
+  if (dims.value) void loadDims()
+}
+
 const dimGroups = computed(() => {
   if (!dims.value || reportRollupIsDegraded(dims.value)) return []
   const d = dims.value.dimensions
@@ -308,12 +294,12 @@ onBeforeUnmount(() => {
   <div class="rr">
     <div v-if="primaryCalendar" class="rr__chips">
       <button type="button" class="rr__chip-btn" :class="{ 'rr__chip-btn--on': mode === 'daily' }" data-testid="rr-mode-daily" :aria-pressed="mode === 'daily'" @click="mode = 'daily'">{{ t('rr.evidence.title') }}</button>
-      <button type="button" class="rr__chip-btn" :class="{ 'rr__chip-btn--on': mode === 'legacy' }" data-testid="rr-mode-legacy" :aria-pressed="mode === 'legacy'" @click="mode = 'legacy'">{{ t('rr.legacySnapshotView') }}</button>
+      <button type="button" class="rr__chip-btn" :class="{ 'rr__chip-btn--on': mode === 'legacy' }" data-testid="rr-mode-legacy" :aria-pressed="mode === 'legacy'" @click="mode = 'legacy'">{{ t('rr.projectedView') }}</button>
     </div>
     <p v-if="mode === 'pending'" role="status">{{ t('common.loading') }}</p>
     <DailyReconciliationEvidence
       v-if="mode === 'daily' || (mode === 'legacy' && !primaryCalendar)"
-      :initial-day="range.end"
+      :initial-day="initialEvidenceDay"
       :primary-calendar="mode === 'daily' ? primaryCalendar ?? undefined : undefined"
     />
     <template v-if="mode === 'legacy'">
@@ -357,16 +343,17 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="rr__row">
+        <label v-if="view === 'provider'" class="rr__label rr__label--inline">
+          <input v-model="businessOnly" type="checkbox" data-testid="rr-business-scope"
+            :disabled="loadingSummary || loadingDims" @change="applyTrafficScope" />
+          <span>{{ t('rr.query.businessOnly') }}</span>
+        </label>
         <label class="rr__label rr__label--inline">
           <input v-model="detailOn" type="checkbox" data-testid="rr-detail" @change="loadSummary()" />
           <span>{{ t('rr.query.detail') }}</span>
         </label>
       </div>
 
-      <!-- ★★★ T+1：区间是闭区间且**不含今日**，页面据实说明而不是让用户以为漏了今天 -->
-      <p class="rr__msg" data-testid="rr-range">
-        {{ t('rr.query.range', { start: range.start, end: range.end }) }}
-      </p>
       <p class="rr__msg" data-testid="rr-t1">{{ t('rr.query.t1') }}</p>
 
       <p v-if="summaryError" class="rr__msg rr__msg--err" data-testid="rr-summary-error">{{ summaryError }}</p>
@@ -420,8 +407,11 @@ onBeforeUnmount(() => {
         </p>
         <!-- ★★ 两个日期数组可以是**裸 null**（不是 []、不是键缺） -->
         <p v-if="coverageText" class="rr__msg" data-testid="rr-coverage">
-          {{ t('rr.summary.coverage', { grain: coverageText.grain, legacy: coverageText.legacy }) }}
+          {{ report.projection ? t('rr.projectedDays', { n: coverageText.grain }) : t('rr.summary.coverage', { grain: coverageText.grain, legacy: coverageText.legacy }) }}
         </p>
+        <p v-if="report.projection" class="rr__msg">{{ t('rr.projectedBasis', { zone: report.projection.timezone }) }}</p>
+        <p v-if="report.projection?.pending_since" class="rr__msg rr__msg--err">{{ t('rr.projectedPending') }}</p>
+        <p v-if="totals?.usd_unmeasured_requests" class="rr__msg">{{ t('rr.projectedMissingUSD', { n: totals.usd_unmeasured_requests }) }}</p>
 
         <!-- ★ Totals：十六条恒在 + 一个 internal 视角条件键 -->
         <dl class="rr__kv">
@@ -480,22 +470,22 @@ onBeforeUnmount(() => {
           <div class="rr__kv-row">
             <dt>{{ t('rr.col.cacheHitRatio') }}</dt>
             <dd :data-testid="'rr-t-cache_hit_ratio'">
-              {{ cacheRatioNull ? t('rr.summary.ratioNull') : totals?.cache_hit_ratio }}
+              {{ cacheRatioNull ? (report.projection ? '—' : t('rr.summary.ratioNull')) : totals?.cache_hit_ratio }}
             </dd>
           </div>
           <div class="rr__kv-row">
             <dt>{{ t('rr.col.estimatedCost') }}</dt>
-            <dd :data-testid="'rr-t-estimated_cost_cents'">{{ totals?.estimated_cost_cents }}</dd>
+            <dd :data-testid="'rr-t-estimated_cost_cents'">{{ usdUnavailable ? '—' : totals?.estimated_cost_cents }}</dd>
           </div>
           <div class="rr__kv-row">
             <dt>{{ t('rr.col.currency') }}</dt>
-            <dd :data-testid="'rr-t-currency'">{{ totals?.currency }}</dd>
+            <dd :data-testid="'rr-t-currency'">{{ usdUnavailable ? '—' : totals?.currency }}</dd>
           </div>
           <div class="rr__kv-row">
             <dt>{{ t('rr.col.creditsCharged') }}</dt>
             <dd :data-testid="'rr-t-credits_charged'">{{ totals?.credits_charged }}</dd>
           </div>
-          <div class="rr__kv-row">
+          <div v-if="!report.projection" class="rr__kv-row">
             <dt>{{ t('rr.col.internalCost') }}</dt>
             <dd :data-testid="'rr-t-internal_cost_cents'">{{ totals?.internal_cost_cents }}</dd>
           </div>
@@ -506,11 +496,11 @@ onBeforeUnmount(() => {
           </div>
           <div class="rr__kv-row">
             <dt>{{ t('rr.col.latencyP50') }}</dt>
-            <dd :data-testid="'rr-t-latency_p50_ms'">{{ totals?.latency_p50_ms }}</dd>
+            <dd :data-testid="'rr-t-latency_p50_ms'">{{ totals?.latency_measured_requests === 0 ? '—' : totals?.latency_p50_ms }}</dd>
           </div>
           <div class="rr__kv-row">
             <dt>{{ t('rr.col.latencyP95') }}</dt>
-            <dd :data-testid="'rr-t-latency_p95_ms'">{{ totals?.latency_p95_ms }}</dd>
+            <dd :data-testid="'rr-t-latency_p95_ms'">{{ totals?.latency_measured_requests === 0 ? '—' : totals?.latency_p95_ms }}</dd>
           </div>
         </dl>
       </template>

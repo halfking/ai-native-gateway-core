@@ -5,14 +5,14 @@
 //   Maestro 2.11.0 的 **web 驱动不支持 evalScript**（`CdpWebDriver` 没有
 //   `evaluateScript` 方法）⇒ 没法在 flow 里读 DOM 数值、也没法把页面里的
 //   API 响应与页面上的数字**逐字对拍**。
-//   而「统计口径与 /api/admin/dashboard/board 逐字一致」恰恰**必须在页面内做**：
+//   而「统计口径与 /api/admin/dashboard/v2/board 逐字一致」恰恰**必须在页面内做**：
 //   同一页面、同一时刻、同一份响应 ⇒ 口径天然一致；在外面用 curl 对拍会
 //   因为「两次请求之间流量在涨」而假红。
 //
 // ★ 本脚本做什么（全部在页面里一次求值）：
 //   1. 统计卡恰好 6 张、快捷操作恰好 4 个（结构计数）
 //   2. 六张卡的 label / value 逐字抓出
-//   3. 与 /api/admin/dashboard/board 的 summary **同页同刻**对拍：
+//   3. 与 /api/admin/dashboard/v2/board 的 summary **同页同刻**对拍：
 //      今日请求 ↔ total_requests；活跃密钥 ↔ active_api_keys；
 //      可用模型 ↔ active_models
 //   4. 「读不到 ≠ 0」：统计源不可读时，卡片必须是占位符而不是 0
@@ -102,7 +102,7 @@ const PAGE_PROBE = `(() => {
   let boardError = ''
   try {
     const x = new XMLHttpRequest()
-    x.open('GET', '/api/admin/dashboard/board?days=1', false)
+    x.open('GET', '/api/admin/dashboard/v2/board?days=1', false)
     x.send()
     if (x.status >= 200 && x.status < 300) board = JSON.parse(x.responseText)
     else boardError = 'HTTP ' + x.status
@@ -110,6 +110,7 @@ const PAGE_PROBE = `(() => {
     boardError = (e && e.name) || 'xhr-failed'
   }
   out.facts.boardError = boardError
+  check('今日统计使用 request_metrics', board?.source === 'request_metrics', board?.source || boardError || '未报告来源')
   const summary = (board && board.summary) || null
   out.facts.boardSummary = summary
 
@@ -294,7 +295,7 @@ const PAGE_PROBE = `(() => {
   let b7Error = ''
   try {
     const x = new XMLHttpRequest()
-    x.open('GET', '/api/admin/dashboard/board?days=7', false)
+    x.open('GET', '/api/admin/dashboard/v2/board?days=7', false)
     x.send()
     if (x.status >= 200 && x.status < 300) b7 = JSON.parse(x.responseText)
     else b7Error = 'HTTP ' + x.status
@@ -302,6 +303,7 @@ const PAGE_PROBE = `(() => {
     b7Error = (e && e.name) || 'xhr-failed'
   }
   out.facts.board7Error = b7Error
+  check('七日统计使用 request_metrics', b7?.source === 'request_metrics', b7?.source || b7Error || '未报告来源')
   const b7Degraded =
     !b7 || b7.degraded_trends === true || (b7.summary && b7.summary.degraded_summary === true)
 

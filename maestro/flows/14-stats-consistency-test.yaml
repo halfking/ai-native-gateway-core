@@ -32,11 +32,11 @@ url: ${BASE_URL}
     timeout: 10000
 
 # ══════════════════════════════════════════════════════════
-# 测试2: 会话分析列表 - 验证新增的积分和TTFT字段
+# 测试2: 用户画像列表 - 等待请求投影来源和统计列
 # （原 /admin/session-analytics 本体路由已不存在，现存入口为 /users 子页）
 # ══════════════════════════════════════════════════════════
 - evalScript: "${output.t0_session_analytics = Date.now()}"
-- openLink: "${BASE_URL}/admin/session-analytics/users"
+- openLink: "${BASE_URL}/admin/session-analytics/user-profiles"
 - extendedWaitUntil:
     visible: '用户画像'
     timeout: 20000
@@ -44,12 +44,14 @@ url: ${BASE_URL}
 - assertTrue:
     condition: "${output.ms_session_analytics < 5000}"
     optional: true
-    label: 'slow-check:/admin/session-analytics/users'
+    label: 'slow-check:/admin/session-analytics/user-profiles'
 
 # 验证页面已加载完成
 - extendedWaitUntil:
-    visible: '会话列表|暂无会话|用户画像'
+    visible: '.*request_metrics.*'
     timeout: 10000
+- assertVisible: '请求数（窗口内）'
+- assertVisible: '积分'
 
 # ══════════════════════════════════════════════════════════
 # 测试3: 用量趋势页面 - 验证趋势数据包含成本分解

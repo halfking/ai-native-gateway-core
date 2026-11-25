@@ -47,6 +47,12 @@ export default {
     close: 'Close',
   },
   detail: {
+    estimatedRevenue: 'Estimated revenue',
+    estimatedMargin: 'Estimated gross margin',
+    estimatedMarginRate: 'Estimated margin rate',
+    creditReferenceNotice: 'Estimates use the current credit price. Posted debits appear in the credit ledger.',
+    cancellationCoverage: '{n} charged requests lack cancellation evidence',
+    usdCoverage: '{n} request costs excluded from the USD total',
     loadUsersFailed: 'The user list could not be loaded. Please retry.',
     loadKeysFailed: 'The API key list could not be loaded. Please retry.',
     loadStatsFailed: 'The usage stats could not be loaded. Please retry.',

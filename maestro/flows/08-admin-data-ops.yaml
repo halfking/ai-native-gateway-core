@@ -50,6 +50,10 @@ url: ${BASE_URL}
     condition: "${output.ms__admin_usage_enhanced < 2000}"
     optional: true
     label: 'slow-check:/admin/usage-enhanced'
+- extendedWaitUntil:
+    visible:
+      id: 'usage-enhanced-projection-source'
+    timeout: 20000
 
 # ── /admin/board-operational ─────────────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"
@@ -185,17 +189,36 @@ url: ${BASE_URL}
 
 # ── /admin/reconciliation ─────────────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"
-- openLink: "${BASE_URL}/admin/reconciliation"
+- openLink: "${BASE_URL}/admin/reconciliation?view=provider"
 - extendedWaitUntil:
     # ★ 对帐页的真实标题是「供应商对帐」（locale reports.providerView）；
     #   '按供应商' 是用量成本页的维度标签，在这页不存在。
     visible: '供应商对帐'
     timeout: 20000
+- extendedWaitUntil:
+    visible: '.*自然日统计。实际过账见积分账本.*'
+    timeout: 30000
 - evalScript: "${output.ms__admin_reconciliation = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__admin_reconciliation < 2000}"
     optional: true
     label: 'slow-check:/admin/reconciliation'
+- tapOn:
+    id: reconciliation-mode-daily
+    optional: true
+- runFlow:
+    when:
+      notVisible:
+        id: daily-load
+    commands:
+      - tapOn: '日对账证据'
+- tapOn:
+    id: daily-load
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: daily-terminal-source
+    timeout: 30000
 
 # ── /admin/proxy ─────────────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"

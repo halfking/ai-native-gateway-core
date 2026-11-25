@@ -134,6 +134,11 @@ onMounted(() => {
       </div>
     </header>
 
+    <p v-if="data?.cost_trend.source === 'request_metrics' && data.cache_economics.source === 'request_metrics' && !data.cost_trend.degraded && !data.cache_economics.degraded"
+       data-testid="usage-enhanced-projection-source">
+      <code>request_metrics</code> · {{ data.cost_trend.date_from }} ~ {{ data.cost_trend.date_to }}
+    </p>
+
     <p v-if="error" class="enhanced-error">{{ error }}</p>
 
     <div v-if="loading && !data" class="enhanced-loading">{{ t('dataLifecycle.usageEnhanced.loading') }}</div>

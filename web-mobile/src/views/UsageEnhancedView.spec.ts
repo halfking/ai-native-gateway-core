@@ -282,18 +282,10 @@ describe('① 权限档 admin（本仓第一个「有租户维度但缺角色下
     }
   })
 
-  it('①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，经 `:1297`（批153）、`:1332`（12h-audit 20261017）再漂至 `:1339`（2026-10-21 views 行号订正轮）→ 实为 `:1342`（2026-10-26 行号漂移订正轮）', () => {
+  it('①-8 注册旧版用量路由和新版同期对比路由', () => {
     const src = goSrc('admin/handler.go')
-    const lines = src.split('\n')
-    const at = lines.findIndex((l) => l.includes('"/api/admin/usage/"'))
-    expect(at, '找不到 /api/admin/usage/ 的注册行').toBeGreaterThan(-1)
-    // ★ 12h-audit 20261017：a18db7b84/c286e505a/eb0aee4ec 三笔再推 35 行 ⇒ :1332；
-    //   2026-10-21 views 行号订正轮：再推 7 行 ⇒ :1339；
-    //   2026-10-26 行号漂移订正轮：再推 3 行 ⇒ 真实行号 :1342。
-    expect(at + 1).toBe(1342)
-    expect(lines[at]).toMatch(/h\.admin\(h\.HandleUsageAdmin\)/)
-    // ★★ 反向护栏：原行号那行必须**不是**本族注册处（它其实是 errorsTrend 相关）。
-    expect(lines[1266]).not.toMatch(/usage/i)
+    expect(src).toContain('mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))')
+    expect(src).toContain('mux.HandleFunc("/api/admin/usage/v2/period-compare", h.admin(h.handleUsagePeriodCompareV2))')
   })
 
   it('①-9 ★★★★ 角色判别 helper 随 role 变（不是恒真）', () => {
@@ -354,6 +346,23 @@ describe('② degraded：恒发字段 ⇒ 「服务端确认过没降级」可�
 // ══════════════════════════════════════════════════════════════════════════
 
 describe('③ 三个「节省」数字是**估算**，不是账单', () => {
+  it('V2 明确显示缺失节省额和缓存口径的覆盖率', async () => {
+    mCache.mockResolvedValue(cache({
+      source: 'request_metrics', total_requests: 10, cache_scope_requests: 6,
+      cache_input_tokens: 100, cache_hit_ratio: 0.25, compression_scope_requests: 5,
+      compressed_requests: 0, dollars_saved: null, compression_saved: null, total_saved: null,
+    }))
+    mCompare.mockResolvedValue(compare())
+    const w = await mountView()
+    await load(w)
+    expect(textOf(w, 'ue-estimate-note')).toBe(t('ue.estimate.unavailable'))
+    expect(textOf(w, 'ue-dollars_saved')).toBe('—')
+    expect(w.findAll('[data-testid^="ue-badge-"]')).toHaveLength(0)
+    expect(w.text()).toContain('25.0%')
+    expect(w.text()).toContain('6 / 10')
+    expect(w.text()).toContain('5 / 10')
+  })
+
   it('③-1 ★★★★★ 三个节省字段都必须**逐个**带「估算」标记', async () => {
     const w = await mountView()
     await load(w)

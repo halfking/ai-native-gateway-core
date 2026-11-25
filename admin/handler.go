@@ -24,10 +24,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"      //nolint:depguard // attachment download/list routes live in the admin mux
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"    //nolint:depguard // 数据库降级模块
-	"github.com/kaixuan/llm-gateway-go/domains/memory"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
+	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/metrics"
 	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // model-credibility backend interface (modelCredibilityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"     // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"     // 对账报表读面/导出（2026-09-25）
@@ -1135,6 +1136,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/model-integrity/", h.modelIntegrityTenantAdmin(h.handleModelIntegrity))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
+	mux.HandleFunc("/api/admin/tenants/v2/{code}/stats", h.superAdmin(h.handleTenantStatsV2))
 	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
@@ -1271,18 +1273,29 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// 2026-07-10: Dashboard API v2 - 6个新接口
 	mux.HandleFunc("/api/admin/dashboard/session-trend", admin(h.handleDashboardSessionTrend))
+	mux.HandleFunc("/api/admin/dashboard/v2/session-overview", admin(h.dashboardSessionV2(metrics.SessionDashboardOverview)))
+	mux.HandleFunc("/api/admin/dashboard/v2/session-trend", admin(h.dashboardSessionV2(metrics.SessionDashboardTrend)))
+	mux.HandleFunc("/api/admin/dashboard/v2/session-health", admin(h.dashboardSessionV2(metrics.SessionDashboardHealth)))
+	mux.HandleFunc("/api/admin/dashboard/v2/session-active", admin(h.dashboardSessionV2(metrics.SessionDashboardActive)))
 	mux.HandleFunc("/api/admin/dashboard/session-health", admin(h.handleDashboardSessionHealth))
 	mux.HandleFunc("/api/admin/dashboard/session-active", admin(h.handleDashboardSessionActive))
 	mux.HandleFunc("/api/admin/dashboard/module-stats", admin(h.handleDashboardModuleStats))
 	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
 	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
+	mux.HandleFunc("/api/admin/dashboard/v2/board", admin(h.handleDashboardBoardV2))
+	mux.HandleFunc("/api/admin/dashboard/v2/board/error-drill", admin(h.handleDashboardBoardErrorDrillV2))
 	// 2026-11-20: 分析详情端点 —— 为运营看板详情分析系统提供后端支持
 	// 支持4个维度: model/provider/client/tenant
 	// 权限: superAdmin / admin_key (与 /dashboard/board 保持一致)
 	mux.HandleFunc("/api/admin/analytics/{dimension}/{identifier}", admin(h.handleAnalyticsDetail))
+	mux.HandleFunc("/api/admin/analytics/v2/{dimension}/{identifier}", admin(h.handleAnalyticsDetailV2))
 	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
+	mux.HandleFunc(requestStatsV2Path+"/summary", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(requestStatsV2Path+"/trend", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(requestStatsV2Path+"/breakdown", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(requestStatsV2Path+"/errors", admin(h.handleRequestStatsV2))
 	// 2026-10-16: 实时拓扑首页左栏「供应商当天请求/token 统计」只读投影。
 	// 与 /api/admin/stats/* 同源（stats_usage_daily），租户隔离走 statsTenantScope；
 	// 聚合表未迁移时返回 200 + degraded 信络而不是零行。
@@ -1305,6 +1318,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
 	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
 	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
+	mux.HandleFunc("/api/admin/report-rollup/v2/{section}", h.superAdmin(h.handleReportRollupV2))
 	// ★★ 2026-11-04 12h 审计轮（D-1）：dashboard/operational 是平台级聚合，
 	//   三条子查询**都不按调用方租户隔离**：
 	//   · model_discovery_runs —— 硬编码 tenant_id = 'default'（别的租户）；
@@ -1371,6 +1385,25 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// 2026-07-07: P2会话分析 - 用户画像（三层隔离：super_admin/tenant_admin/user）
 	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/users", admin(h.handleUserProfilesV2))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/users/usage-matrix", admin(h.handleUserProfilesV2))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/users/{owner}", admin(h.handleUserProfileDetailV2))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/users/{owner}/projects", admin(h.handleUserProfileDetailV2))
+	mux.HandleFunc("/api/admin/session-analytics/v2/model-ranking", admin(h.handleSessionRequestRankingV2))
+	mux.HandleFunc("/api/admin/session-analytics/v2/provider-ranking", admin(h.handleSessionRequestRankingV2))
+	mux.HandleFunc("/api/admin/session-analytics/v2/agent-ranking", admin(h.handleSessionRequestRankingV2))
+	mux.HandleFunc("/api/admin/session-analytics/v2/task-ranking", admin(h.handleSessionRequestRankingV2))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/user-ranking", admin(h.sessionPeopleV2("ranking")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/user-ranking/{owner}", admin(h.sessionPeopleV2("detail")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/user-ranking/{owner}/projects", admin(h.sessionPeopleV2("projects")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/user-ranking/{owner}/projects/{project}/tasks", admin(h.sessionPeopleV2("tasks")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/user-ranking/{owner}/models", admin(h.sessionPeopleV2("models")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/user-ranking/{owner}/api-keys", admin(h.sessionPeopleV2("api_keys")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/clients", admin(h.sessionDimensionV2("clients")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/clients/{id}", admin(h.sessionDimensionV2("clients")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/tasks", admin(h.sessionDimensionV2("tasks")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/tasks/{id}", admin(h.sessionDimensionV2("tasks")))
+	mux.HandleFunc("GET /api/admin/session-analytics/v2/overview", admin(h.sessionPeopleV2("overview")))
 	// 2026-11-20 数字出处轮：员工×模型用量矩阵（一行 = owner×model）。
 	// 精确路径注册在 /users/ 前缀路由之前 —— 列表页展开行与「分模型看每个
 	// 员工」的数据源；成本/模型名表达式与 /users/{owner}/models 逐字一致。
@@ -1382,6 +1415,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	//   详见 admin/user_usage_stats.go 头注）。注意精确路径必须在
 	// /api/admin/users/ 前缀路由之前注册。
 	mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
+	mux.HandleFunc("/api/admin/users/v2/usage-summary", admin(h.handleUserUsageSummaryV2))
+	mux.HandleFunc("/api/admin/users/v2/{id}/stats", admin(h.handleUserStatsV2))
 	mux.HandleFunc("/api/admin/users/", admin(h.handleUserStatsDispatcher))
 
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
@@ -1552,9 +1587,29 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/client-configs/featured", admin(h.handleClientConfigFeatured))
 	mux.HandleFunc("/api/usage", admin(h.handleUsageSummary))
 	mux.HandleFunc("/api/usage/", admin(h.handleUsage))
+	mux.HandleFunc(usageV2Path+"/summary", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/by-model", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/by-provider", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/hot-keys", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/keys/{api_key_id}", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/keys/{api_key_id}/models", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/keys/{api_key_id}/trend", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/providers/export", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/providers/{provider_id}", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/providers/{provider_id}/trend", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/providers/{provider_id}/models", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/providers/{provider_id}/daily-models", admin(h.handleRequestStatsV2))
+	mux.HandleFunc(usageV2Path+"/providers/{provider_id}/export", admin(h.handleRequestStatsV2))
 	// T1.4 用量成本增强端点 (2026-07-06)
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
+	mux.HandleFunc("/api/admin/usage/v2/trend-series", h.admin(h.handleUsageTrendV2))
+	mux.HandleFunc("/api/admin/usage/v2/trend-models", h.admin(h.handleUsageTrendV2))
+	mux.HandleFunc("/api/admin/usage/v2/top-rankings", h.admin(h.handleUsageTrendV2))
+	mux.HandleFunc("/api/admin/usage/v2/period-compare", h.admin(h.handleUsagePeriodCompareV2))
+	mux.HandleFunc("/api/admin/usage/v2/cost-trend", h.admin(h.handleUsageEconomicsV2))
+	mux.HandleFunc("/api/admin/usage/v2/cache-economics", h.admin(h.handleUsageEconomicsV2))
 	mux.HandleFunc("/api/admin/usage/request-reconciliation", h.admin(h.handleRequestReconciliation))
+	mux.HandleFunc("/api/admin/usage/v2/request-reconciliation", h.admin(h.handleRequestReconciliationV2))
 	mux.HandleFunc("/api/admin/provider-cost-reconciliation/invoices", h.superAdmin(h.handleProviderInvoices))
 	mux.HandleFunc("/api/admin/provider-cost-reconciliation/rates", h.superAdmin(h.handleSupplierContractRates))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))

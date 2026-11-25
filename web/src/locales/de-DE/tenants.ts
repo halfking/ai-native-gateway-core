@@ -43,6 +43,12 @@ export default {
     close: "Schließen"
   },
   detail: {
+    estimatedRevenue: 'Geschätzter Umsatz',
+    estimatedMargin: 'Geschätzter Bruttogewinn',
+    estimatedMarginRate: 'Geschätzte Marge',
+    creditReferenceNotice: 'Die Schätzung nutzt den aktuellen Guthabenpreis. Tatsächliche Abbuchungen stehen im Guthabenbuch.',
+    cancellationCoverage: 'Für {n} berechnete Anfragen fehlen Angaben zum Abbruch',
+    usdCoverage: '{n} Anfragekosten sind nicht in der USD-Summe enthalten',
     loadUsersFailed: 'Benutzerliste konnte nicht geladen werden. Bitte erneut versuchen.',
     loadKeysFailed: 'Schlüsselliste konnte nicht geladen werden. Bitte erneut versuchen.',
     loadStatsFailed: 'Nutzungsstatistik konnte nicht geladen werden. Bitte erneut versuchen.',
