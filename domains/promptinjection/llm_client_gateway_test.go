@@ -46,8 +46,8 @@ func TestGatewayLLMClient_SendsAnalyzerMaxTokens(t *testing.T) {
 	if got["max_tokens"] != float64(analyzerMaxTokens) {
 		t.Errorf("请求体的输出额度应为 analyzerMaxTokens=%d，实得 %v", analyzerMaxTokens, got["max_tokens"])
 	}
-	if analyzerMaxTokens < 8000 {
-		t.Errorf("输出额度不该低于 8000（211 实测 4000 时约 1/3 的回答被截断），实得 %d", analyzerMaxTokens)
+	if analyzerMaxTokens < 6000 || analyzerMaxTokens > 8000 {
+		t.Errorf("输出额度应在 6000–8000 之间（211 实测 4000 时约 1/3 的回答被截断；越大单次生成越久），实得 %d", analyzerMaxTokens)
 	}
 	if got["temperature"] != 0.3 || got["model"] != "glm-5.3-flash" {
 		t.Errorf("温度 / 模型不该被这次改动碰到：%v / %v", got["temperature"], got["model"])
