@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/httpwrite"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/storage/sqlite"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -100,7 +101,7 @@ func TestStreamingTransportRetryPreservesBothAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outbox, err := reconciliation.OpenAttemptOutbox(ctx, t.TempDir(), db)
+	outbox, err := reconciliation.OpenAttemptOutbox(ctx, t.TempDir(), db, sqlite.OpenJournal)
 	if err != nil {
 		t.Fatal(err)
 	}

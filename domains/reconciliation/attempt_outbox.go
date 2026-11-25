@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var errAttemptMissing = errors.New("provider attempt intent is missing")
@@ -41,9 +39,22 @@ type AttemptOutbox struct {
 	cancel                 context.CancelFunc
 }
 
-func OpenAttemptOutbox(ctx context.Context, backupDir string, pool *pgxpool.Pool) (*AttemptOutbox, error) {
+// AttemptJournalOpener 打开日志型 outbox 用的磁盘日志（一个 SQLite 文件）。
+//
+// ★ 本包**不**导入任何 SQLite 驱动：mattn/go-sqlite3 只能从 storage/sqlite 进入依赖图
+//
+//	（tests/verify_cgo_convention_test.sh 登记的 cgo 边界）。这里此前无条件空导入它
+//	（cdd155fff 带入）⇒ cgo=1 闭包里能到达 go-sqlite3 的包由 6 个涨到 39 个、cgo=0 的
+//	网关依赖图里也重新出现它。⇒ 改为由调用方（cmd/gateway）注入 sqlite.OpenJournal。
+type AttemptJournalOpener func(ctx context.Context, path string) (*sql.DB, error)
+
+// OpenAttemptOutbox 打开日志型 outbox：磁盘日志由 openJournal 提供（见 AttemptJournalOpener）。
+func OpenAttemptOutbox(ctx context.Context, backupDir string, pool *pgxpool.Pool, openJournal AttemptJournalOpener) (*AttemptOutbox, error) {
 	if pool == nil {
 		return nil, errors.New("provider attempt projection database is unavailable")
+	}
+	if openJournal == nil {
+		return nil, errors.New("provider attempt journal opener is unavailable")
 	}
 	store := NewAttemptRecorder(pool)
 	// A shared backup volume may serve multiple databases. A queue belongs to
@@ -51,7 +62,7 @@ func OpenAttemptOutbox(ctx context.Context, backupDir string, pool *pgxpool.Pool
 	config := pool.Config().ConnConfig
 	target := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s", config.Host, config.Port, config.Database)))
 	path := filepath.Join(backupDir, "provider-attempts", fmt.Sprintf("%x.db", target[:16]))
-	outbox, err := openAttemptOutbox(ctx, path, store.applyEvent)
+	outbox, err := openAttemptOutbox(ctx, path, openJournal, store.applyEvent)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +72,11 @@ func OpenAttemptOutbox(ctx context.Context, backupDir string, pool *pgxpool.Pool
 	return outbox, nil
 }
 
-func openAttemptOutbox(ctx context.Context, path string, apply func(context.Context, attemptEvent) error) (*AttemptOutbox, error) {
+func openAttemptOutbox(ctx context.Context, path string, openJournal AttemptJournalOpener, apply func(context.Context, attemptEvent) error) (*AttemptOutbox, error) {
+	if openJournal == nil {
+		// 内部入口也自卫：空 opener 若一路走到调用处会 panic（nil 函数调用）。
+		return nil, errors.New("provider attempt journal opener is unavailable")
+	}
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -69,7 +84,7 @@ func openAttemptOutbox(ctx context.Context, path string, apply func(context.Cont
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	journal, err := openAttemptSQLite(ctx, path)
+	journal, err := openJournal(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -81,34 +96,13 @@ func openAttemptOutbox(ctx context.Context, path string, apply func(context.Cont
 	}
 	// A separate SQLite file serializes projectors on the same volume without
 	// holding the journal write lock during a PostgreSQL operation.
-	projectorLock, err := openAttemptSQLite(ctx, path+".projector")
+	projectorLock, err := openJournal(ctx, path+".projector")
 	if err != nil {
 		_ = journal.Close()
 		return nil, err
 	}
 	return &AttemptOutbox{journal: journal, projectorLock: projectorLock, apply: apply,
 		wake: make(chan struct{}, 1), done: make(chan struct{})}, nil
-}
-
-func openAttemptSQLite(ctx context.Context, path string) (*sql.DB, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := file.Close(); err != nil {
-		return nil, err
-	}
-	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "_busy_timeout=75&_synchronous=FULL&_txlock=immediate"}
-	db, err := sql.Open("sqlite3", dsn.String())
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
 }
 
 func (o *AttemptOutbox) Close() error {
