@@ -45,6 +45,7 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
 	mux.HandleFunc("/api/admin/maas/topup-packages", h.superAdmin(h.handleMaasTopupPackages))
 	mux.HandleFunc("/api/admin/maas/tenants/", h.superAdmin(h.handleMaasTenantAdmin))
+	mux.HandleFunc("/api/admin/maas/v2/tenants/{code}/usage/{section}", h.superAdmin(h.handleMaaSUsageV2))
 	mux.HandleFunc("/api/admin/maas/orders", h.superAdmin(h.handleAdminMaasOrders))
 	mux.HandleFunc("/api/admin/maas/orders/", h.superAdmin(h.handleAdminMaasOrderByID))
 
@@ -58,6 +59,9 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/maas/orders", h.admin(h.handleMaasOrders))
 	mux.HandleFunc("/api/maas/orders/", h.admin(h.handleMaasOrderByID))
 	mux.HandleFunc("/api/maas/usage/summary", h.admin(h.handleMaasUsageSummary))
+	mux.HandleFunc("/api/maas/v2/usage/summary", h.admin(h.handleMaaSUsageV2))
+	mux.HandleFunc("/api/maas/v2/usage/requests", h.admin(h.handleMaaSUsageV2))
+	mux.HandleFunc("/api/maas/v2/my/{section}", h.admin(h.handleMaaSUsageV2))
 
 	h.registerMaasBillingRoutes(mux)
 	h.registerMaasMyRoutes(mux)

@@ -1,4 +1,5 @@
 import { req } from './_core'
+import type { ProviderUsageRow, UsageTrendModelSeries } from './usage'
 
 export interface BoardPieItem {
   key: string
@@ -14,6 +15,7 @@ export interface BoardTrendPoint {
   tokens: number
   credits: number
   cost_usd: number
+  success?: number
 }
 
 export interface BoardSummary {
@@ -25,6 +27,9 @@ export interface BoardSummary {
   total_credits_charged?: number
   success_rate?: number
   avg_latency_ms?: number
+  failed_count?: number
+  cost_rows_outside_usd?: number
+  usd_evidence_requests?: number
   active_api_keys?: number
   active_models?: number
   providers?: number
@@ -122,6 +127,13 @@ export interface BoardPayload {
     providers: BoardPieItem[]
   }
   trends: BoardTrendPoint[]
+  model_series?: UsageTrendModelSeries[]
+  bucket_minutes?: number
+  provider_rows?: ProviderUsageRow[]
+  window_start?: string
+  window_end?: string
+  tenant_id?: string
+  provider_id?: number | null
   /**
    * 恒发（服务端无 omitempty）。`false` + 空对象 = 一切正常。
    * 用 `?.` 而不是 `?? {}` 兜底成 false：那会把「服务端没这个字段」
@@ -142,10 +154,7 @@ export interface BoardPayload {
   source?: 'postgresql_baseline' | 'redis_baseline_delta' | 'live_sse_delta' | string
   /**
    * 2026-11-20 口径对齐轮：英雄区汇总的探测口径。
-   * 'excluded'（缺省，兼容旧载荷 undefined）= 内部对账口径（traffic_class='business'）；
-   * 'included' = 供应商对账口径（usage_facts 全量）。
-   * ⚠ include 模式下 pies/trends 仍是业务口径（分钟表），英雄区数字会大于
-   * 趋势图各桶之和——这是有意的：两种口径各自的真源不同。
+   * The v2 board applies this traffic scope to its summary, trends and distributions.
    */
   probe_scope?: 'included' | 'excluded'
   cache_meta?: {
@@ -173,7 +182,7 @@ export interface BoardQuery {
   end?: string
   tenant_id?: string
   provider_id?: number
-  /** 2026-11-20：true → 服务端英雄区汇总切到供应商对账口径（绕过 Redis 缓存）。 */
+  /** 含探测流量，同时作用于看板的全部请求统计。 */
   include_probes?: boolean
 }
 
@@ -190,7 +199,7 @@ export function fetchDashboardBoard(params: BoardQuery = {}, signal?: AbortSigna
   if (params.include_probes) qs.set('include_probes', '1')
   const q = qs.toString()
   const suffix = q ? `?${q}&include_operational=1` : '?include_operational=1'
-  return req<BoardPayload>('GET', `/api/admin/dashboard/board${suffix}`, undefined, { signal })
+  return req<BoardPayload>('GET', `/api/admin/dashboard/v2/board${suffix}`, undefined, { signal })
 }
 
 export function fetchBoardOperational(): Promise<BoardOperationalPayload> {
@@ -202,13 +211,23 @@ export function fetchBoardErrorDrill(params: {
   days?: number
   dimension?: 'model' | 'provider' | 'client'
   tenant_id?: string
+  provider_id?: number | null
+  include_probes?: boolean
+  window_start?: string
+  window_end?: string
 }): Promise<{ error_kind: string; dimension: string; items: BoardPieItem[] }> {
   const qs = new URLSearchParams()
   qs.set('error_kind', params.error_kind)
   if (params.days != null) qs.set('days', String(params.days))
   if (params.dimension) qs.set('dimension', params.dimension)
+  if (params.provider_id != null) qs.set('provider_id', String(params.provider_id))
+  if (params.include_probes) qs.set('include_probes', '1')
+  if (params.window_start && params.window_end) {
+    qs.set('window_start', params.window_start)
+    qs.set('window_end', params.window_end)
+  }
   if (params.tenant_id) qs.set('tenant_id', params.tenant_id)
-  return req('GET', `/api/admin/dashboard/board/error-drill?${qs}`)
+  return req('GET', `/api/admin/dashboard/v2/board/error-drill?${qs}`)
 }
 
 /**
@@ -276,6 +295,7 @@ export interface AnalyticsQuery {
   start?: string
   end?: string
   tenant_id?: string
+  include_probes?: boolean
 }
 
 /**
@@ -299,9 +319,10 @@ export function fetchAnalyticsDetail(
   if (params.tenant_id) {
     qs.set('tenant_id', params.tenant_id)
   }
+  if (params.include_probes) qs.set('include_probes', 'true')
   
   const query = qs.toString()
-  const url = `/api/admin/analytics/${dimension}/${encodeURIComponent(identifier)}${query ? '?' + query : ''}`
+  const url = `/api/admin/analytics/v2/${dimension}/${encodeURIComponent(identifier)}${query ? '?' + query : ''}`
   
   return req<AnalyticsDetailPayload>('GET', url, undefined, { signal })
 }

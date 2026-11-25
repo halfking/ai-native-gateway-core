@@ -105,10 +105,10 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="u in sortedRows" :key="u.owner">
+          <tr v-for="u in sortedRows" :key="JSON.stringify([u.tenant_id, u.owner])">
             <td>{{ u.rank }}</td>
             <td>
-              <button class="sa-link" type="button" @click="openDetail(u.owner)">
+              <button class="sa-link" type="button" :title="u.tenant_id" @click="openDetail(u)">
                 {{ u.display_name || u.owner }}
               </button>
             </td>
@@ -118,12 +118,12 @@
             <td>{{ fmt(u.task_count) }}</td>
             <td>{{ fmt(u.total_tokens) }}</td>
             <td>
-              <SaCostCell :internal-cost="u.internal_cost" :external-cost="u.external_cost" />
+              <SaCostCell :internal-cost="u.total_cost" :external-cost="u.credits_charged" projected />
             </td>
             <td>{{ formatTime(u.last_active_at) }}</td>
             <td>{{ u.latest_task || '—' }}</td>
             <td>
-              <button class="sa-link" type="button" @click="openDetail(u.owner)">
+              <button class="sa-link" type="button" @click="openDetail(u)">
                 {{ t('sessionAnalytics.action.viewDetail') }}
               </button>
             </td>
@@ -300,8 +300,12 @@ function onApplyRange(next: KxDateRange): void {
   void load()
 }
 
-function openDetail(owner: string): void {
-  void router.push({ name: 'session-analytics-user-detail', params: { owner } })
+function openDetail(user: UserRankingRow): void {
+  void router.push({
+    name: 'session-analytics-user-detail',
+    params: { owner: user.owner },
+    query: { tenant_id: user.tenant_id, start_date: range.value.start, end_date: range.value.end },
+  })
 }
 
 onMounted(load)

@@ -1,5 +1,13 @@
 # Calculation Standards for the Board and Session Statistics
 
+## Current V2 definitions
+
+The Board reads the asynchronously updated `request_metrics` table by request occurrence time. Session statistics count linked requests in the same window and deduplicate sessions by tenant and session ID. Session creation and closure use the actual first request and closure timestamps. Probes are excluded by default and can be included in the relevant dashboard. USD costs, credits and other currencies are separate. The interface shows pending updates and missing cost evidence.
+
+Historical reports cover completed calendar days in the system time zone. Daily reconciliation assigns receipts by gateway receipt time, uses the request projection for terminal usage, and checks supplier sends, invoices and internal postings independently.
+
+## Historical measurements (V1)
+
 The "Board", "Session & Statistics" and "Provider Reconciliation" are three summaries of the same stream of model calls under **three different calculation rules**. This page spells out how every number is produced, where its data comes from and which time window it covers, and gives an **item-by-item breakdown** of why the three modules' numbers do not match — for aligning data and tracing deviations.
 
 > Measured basis: 2026-11-23 21:05 (Asia/Shanghai) in production. All numbers were taken at the **same instant** (completed within a single SQL statement), window = `NOW()-7 days`; the provider reconciliation side was measured separately over the closed calendar-day range `2026-11-17 ~ 2026-11-23` and cross-checked against the fact table day by day.

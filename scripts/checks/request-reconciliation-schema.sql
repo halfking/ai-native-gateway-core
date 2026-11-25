@@ -1,4 +1,4 @@
-SELECT (SELECT count(*) FROM public.schema_migrations WHERE version IN ('982','984','985','986','987','988')) = 6
+SELECT (SELECT count(*) FROM public.schema_migrations WHERE version IN ('925','982','985','986','987','988')) = 6
    AND to_regclass('public.request_reconciliation_links') IS NOT NULL
    AND to_regclass('public.provider_invoices') IS NOT NULL
    AND to_regclass('public.supplier_contract_rates') IS NOT NULL

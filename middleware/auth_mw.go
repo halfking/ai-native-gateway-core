@@ -90,6 +90,8 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 				// 或改放 /assets/（前缀已豁免）；**勿将任何敏感文件放进 web/public 根**。
 				ExactPaths: []string{
 					"/healthz", "/healthz/full", "/readyz", "/version", "/metrics",
+					// The projection readiness handler validates the ops token.
+					"/readyz/request-metrics",
 					"/", "/index.html", "/m", "/maintain", "/maintain-api",
 					"/logo-icon.png", "/logo-icon-dark.png", "/favicon.png",
 					// 2026-10-19：应用图标标准（开轩 icon）落地——favicon.svg +

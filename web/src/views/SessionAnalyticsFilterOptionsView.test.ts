@@ -11,8 +11,10 @@ vi.mock('../api/sessionAnalyticsFilterOptions', () => ({
   listSessionAnalyticsFilterOptions: vi.fn(async () => ({
     clients: ['cli-A', 'cli-B'],
     tasks: ['task-X', 'task-Y', 'task-Z'],
-    users: ['user-1'],
+    users: [{ owner: 'user-1', tenant_id: 'tenant-b' }],
     refreshedAt: '2026-10-17T00:00:00.000Z',
+    startDate: '2026-10-17',
+    endDate: '2026-10-17',
   })),
 }))
 
@@ -23,7 +25,7 @@ function makeRouter() {
       { path: '/admin/session-analytics/filter-options', component: SessionAnalyticsFilterOptionsView },
       { path: '/admin/session-analytics/clients/:id', component: { template: 'cli' } },
       { path: '/admin/session-analytics/tasks/:id', component: { template: 'task' } },
-      { path: '/admin/session-analytics/users/:id', component: { template: 'user' } },
+      { path: '/admin/session-analytics/user-ranking/:owner', name: 'session-analytics-user-detail', component: { template: 'user' } },
     ],
   })
 }
@@ -55,6 +57,21 @@ describe('SessionAnalyticsFilterOptionsView', () => {
     await btns[0].trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/admin/session-analytics/clients/cli-A')
+    expect(router.currentRoute.value.query).toEqual({ start_date: '2026-10-17', end_date: '2026-10-17' })
+  })
+
+  it('keeps the tenant and selected day when opening a user', async () => {
+    const router = makeRouter()
+    await router.push('/admin/session-analytics/filter-options')
+    await router.isReady()
+    const wrapper = mount(SessionAnalyticsFilterOptionsView, {
+      global: { plugins: [testI18n, router] },
+    })
+    await flushPromises()
+    await wrapper.findAll('button.filter-options-link').at(-1)!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/admin/session-analytics/user-ranking/user-1')
+    expect(router.currentRoute.value.query).toEqual({ tenant_id: 'tenant-b', start_date: '2026-10-17', end_date: '2026-10-17' })
   })
 
   it('加载失败显示 error', async () => {

@@ -1,6 +1,6 @@
 import { req, type RequestOptions } from './client'
 
-// usage.ts — /api/usage/summary + by-model（形状对齐 web/src/api/usage.ts）。
+// usage.ts — /api/usage/v2/summary + by-model（形状对齐 web/src/api/usage.ts）。
 // by-model 可能被 DegradedListEnvelope 包装：{degraded, missing_view, items}。
 
 export interface UsageSummary {
@@ -31,11 +31,11 @@ export interface DegradedListEnvelope<T> {
 }
 
 export function fetchUsageSummary(days = 7, options?: RequestOptions): Promise<UsageSummary> {
-  return req<UsageSummary>('GET', `/api/usage/summary?days=${days}`, undefined, options)
+  return req<UsageSummary>('GET', `/api/usage/v2/summary?days=${days}`, undefined, options)
 }
 
 export function fetchUsageByModel(days = 7, options?: RequestOptions): Promise<DegradedListEnvelope<ModelUsage> | ModelUsage[]> {
-  return req<DegradedListEnvelope<ModelUsage> | ModelUsage[]>('GET', `/api/usage/by-model?days=${days}`, undefined, options)
+  return req<DegradedListEnvelope<ModelUsage> | ModelUsage[]>('GET', `/api/usage/v2/by-model?days=${days}`, undefined, options)
 }
 
 /** 兼容两种形态（envelope 或裸数组）。 */
@@ -65,8 +65,8 @@ export interface CostTrendEntry {
   dimension_value: string
   request_count: number
   total_cost_usd: number
-  input_cost_usd: number
-  output_cost_usd: number
+  input_cost_usd: number | null
+  output_cost_usd: number | null
   prompt_tokens: number
   completion_tokens: number
   avg_latency_ms: number
@@ -96,7 +96,7 @@ export function fetchCostTrend(
   options?: RequestOptions,
 ): Promise<CostTrendResponse> {
   const qs = new URLSearchParams({ group_by: groupBy, days: String(Math.max(1, Math.trunc(days) || 7)) })
-  return req<CostTrendResponse>('GET', `/api/usage/cost-trend?${qs}`, undefined, options)
+  return req<CostTrendResponse>('GET', `/api/admin/usage/v2/cost-trend?${qs}`, undefined, options)
 }
 
 /**

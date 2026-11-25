@@ -40,6 +40,10 @@ const creditsDegraded = computed(() => !!summary.value?.credits_missing_view)
  * 于是首屏把「没算出来」显示成「这个时段没有流量」。
  */
 const summaryDegraded = computed(() => summary.value?.degraded_summary === true)
+const missingUsdEvidence = computed(() => {
+  const count = summary.value?.usd_evidence_requests
+  return count == null ? 0 : Math.max(0, (summary.value?.total_requests ?? 0) - count)
+})
 
 const totalTokens = computed(() => {
   const s = summary.value
@@ -48,6 +52,7 @@ const totalTokens = computed(() => {
 })
 
 const errorCount = computed(() => {
+  if (summary.value?.failed_count != null) return summary.value.failed_count
   const pies = props.board?.pies?.errors
   if (pies?.length) return pies.reduce((acc, p) => acc + (p.requests ?? 0), 0)
   const s = summary.value
@@ -123,12 +128,7 @@ function fmtTokensCompact(n: number | undefined) {
              Maestro 的 text: 断言是「元素完整文本相等」，混排会让文本节点
              变成 '总请求数␣'（尾随空白）⇒ 精确断言永远失配（2026-11-20 实测踩坑）。 -->
         <span class="hero-card__label-text">{{ t('dashboard.stat.totalRequests') }}</span>
-        <!-- 2026-11-20 口径对齐轮：含探测模式下英雄区数字是供应商对账口径，
-             徽标把这个差异显式说出来，不让用户对着「英雄区 > 趋势各桶之和」猜原因。
-             ★★ 2026-11-24 真源统一轮订正：★ 原文写的是「与下方业务口径的趋势/分布图不同源」
-             ★★ ⇒ ★★ **这句已过期**：★ 现在英雄区与趋势同读 usage_facts（同一张表、同一
-             ★★ 探测谓词）、饼图读请求级日志 ⇒ ★★ 三者都随 include_probes 联动
-             ★★ ⇒ ★★ 徽标现在的含义是「**整个看板**都是含探测口径」，而不再是「只有英雄区是」。 -->
+        <!-- Show the applied request scope beside the summary. -->
         <span
           v-if="props.board?.probe_scope === 'included'"
           class="hero-card__probe-badge"
@@ -159,8 +159,13 @@ function fmtTokensCompact(n: number | undefined) {
     </div>
     <div class="hero-card">
       <div class="hero-card__label">{{ t('dashboard.stat.totalCost') }}</div>
-      <div class="hero-card__value">{{ fmtCost(summary.total_cost_usd) }}</div>
+      <div class="hero-card__value">
+        {{ fmtCost(missingUsdEvidence > 0 && summary.usd_evidence_requests === 0 ? undefined : summary.total_cost_usd) }}
+      </div>
       <div class="hero-card__sub">
+        <span v-if="missingUsdEvidence > 0">
+          {{ t('reports.projectedMissingUSD', { n: missingUsdEvidence }) }}
+        </span>
         <span>{{ t('dashboard.board.heroCreditsEq', { n: fmt(summary.total_credits_charged) }) }}</span>
       </div>
     </div>

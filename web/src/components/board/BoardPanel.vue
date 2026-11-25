@@ -65,8 +65,18 @@ function onProbeScopeChange(next: boolean) {
   if (!boardState) return
   boardState.setIncludeProbes?.(next)
 }
-// 用量卡走日历日。看板汇总仍由 useDashboardBoard 用 days 预设，两套不要合成一个数。
-const timeQuery = computed(() => usageQueryForBoardRange(timeRange.value))
+const timeQuery = computed(() => {
+  const current = board.value
+  if (current?.source === 'request_metrics' && current.window_start && current.window_end) {
+    return {
+      start: current.window_start,
+      end: current.window_end,
+      tenant_id: current.tenant_id,
+      include_probes: current.probe_scope === 'included',
+    }
+  }
+  return usageQueryForBoardRange(timeRange.value)
+})
 const days = computed(() => boardState.days?.value ?? 1)
 const loading = computed(() => boardState.loading?.value ?? false)
 

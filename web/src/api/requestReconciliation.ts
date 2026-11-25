@@ -27,6 +27,8 @@ export interface DailyQuery {
 
 export type EvidenceFields = Record<string, unknown>
 
+const dailyVersion = 'request-reconciliation-v2'
+
 export interface DailyReport {
   version: string
   section: DailySection
@@ -42,6 +44,7 @@ export interface DailyReport {
   offset: number
   summary: EvidenceFields
   rows: EvidenceFields[]
+  projection?: { source: 'request_metrics'; updated_at: string | null; pending_since: string | null }
 }
 
 export type EvidenceExport = 'csv' | 'csv-summary'
@@ -101,11 +104,19 @@ function dailyPath(q: DailyQuery, format?: EvidenceExport): string {
     limit: String(q.limit), offset: String(q.offset) })
   if (q.tenantId) params.set('tenant_id', q.tenantId)
   if (format) params.set('format', format)
-  return `/api/admin/usage/request-reconciliation?${params}`
+  return `/api/admin/usage/v2/request-reconciliation?${params}`
 }
 
-export function readDailyReport(q: DailyQuery, options?: RequestOptions): Promise<DailyReport> {
-  return req<DailyReport>('GET', dailyPath(q), undefined, options)
+export async function readDailyReport(q: DailyQuery, options?: RequestOptions): Promise<DailyReport> {
+  const report = await req<DailyReport>('GET', dailyPath(q), undefined, options)
+  if (report?.version !== dailyVersion || (needsTerminalUsage(q.section) && report.projection?.source !== 'request_metrics')) {
+    throw new Error('unexpected daily reconciliation source')
+  }
+  return report
+}
+
+function needsTerminalUsage(section: DailySection) {
+  return section === 'requests' || section === 'sessions' || section === 'coverage'
 }
 
 export async function exportDailyReport(q: DailyQuery, format: EvidenceExport, options?: RequestOptions): Promise<void> {
@@ -115,8 +126,10 @@ export async function exportDailyReport(q: DailyQuery, format: EvidenceExport, o
     headers: { ...headers('GET'), Accept: 'text/csv' },
     signal: options?.signal,
   })
-  if (!response.ok || response.headers.get('X-Report-Export') !== scope
-    || response.headers.get('X-Report-Day') !== q.day || response.headers.get('X-Report-Timezone') !== q.timezone) {
+  if (!response.ok || response.headers.get('X-Report-Version') !== dailyVersion || response.headers.get('X-Report-Export') !== scope
+    || response.headers.get('X-Report-Day') !== q.day || response.headers.get('X-Report-Timezone') !== q.timezone
+    || response.headers.get('X-Report-Limit') !== String(q.limit) || response.headers.get('X-Report-Offset') !== String(q.offset)
+    || (needsTerminalUsage(q.section) && response.headers.get('X-Report-Terminal-Usage-Source') !== 'request_metrics')) {
     throw new Error('reconciliation CSV unavailable')
   }
   const blob = await readExportBlob(response)

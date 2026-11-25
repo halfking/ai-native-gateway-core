@@ -154,7 +154,7 @@ beforeEach(() => {
   vi.mocked(isSuperAdmin).mockReturnValue(false)
   vi.mocked(readDailyReconciliationDefault).mockReset().mockResolvedValue(null)
   vi.mocked(readDailyReport).mockReset().mockImplementation(async (query: DailyQuery) => ({
-    ...query, version: 'request-reconciliation-v1', platform_scope: true, coverage: 'retained',
+    ...query, version: 'request-reconciliation-v2', platform_scope: true, coverage: 'retained',
     start: '2026-11-21T08:00:00Z', end: '2026-11-22T08:00:00Z', read_at: '2026-11-23T00:00:00Z',
     summary: { received_requests: 12 }, rows: [],
   }))

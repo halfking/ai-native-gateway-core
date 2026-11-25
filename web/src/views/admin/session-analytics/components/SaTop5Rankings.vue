@@ -6,10 +6,10 @@
  *
  * ★ 口径纪律（四维全部来自 session-analytics 物化视图，与 /admin/session-analytics
  *   总览页**同一实现**）：
- *   · 模型   → model-ranking   → model_usage_aggregates（请求级）
- *   · 供应商 → provider-ranking → model_usage_aggregates（请求级，按 provider 聚合）
+ *   · 模型   → v2/model-ranking   → request_metrics（请求级）
+ *   · 供应商 → v2/provider-ranking → request_metrics（请求级，按 provider 聚合）
  *   · 用户   → user-ranking     → user_session_aggregates（会话级）
- *   · 任务   → task-ranking     → project_task_aggregates（会话级）
+ *   · 任务   → v2/task-ranking  → request_metrics（请求量与去重会话数）
  *   ⇒ 请求级（模型/供应商）与会话级（用户/任务）**不可相加**（framework §3.2）。
  *
  * ★ 为什么供应商必须由后端聚合：model_usage_aggregates 的 model 列是纯模型名
@@ -96,10 +96,10 @@ function openProvider(provider: string) {
   })
 }
 
-function openUser(owner: string) {
+function openUser(owner: string, tenant?: string) {
   void router.push({
     path: `/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}`,
-    query: { start_date: props.startDate, end_date: props.endDate },
+    query: { tenant_id: tenant, start_date: props.startDate, end_date: props.endDate },
   })
 }
 
@@ -168,7 +168,7 @@ function openTask(task: string) {
                 <td>{{ row.provider || '—' }}</td>
                 <td class="num">{{ fmt(row.request_count) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>
@@ -225,7 +225,7 @@ function openTask(task: string) {
                 <td class="num">{{ fmt(row.model_count) }}</td>
                 <td class="num">{{ fmt(row.request_count) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>
@@ -265,19 +265,19 @@ function openTask(task: string) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in users" :key="row.owner">
+              <tr v-for="row in users" :key="JSON.stringify([row.tenant_id, row.owner])">
                 <td>
                   <button
                     type="button"
                     class="sa-top5__link"
                     data-testid="sa-top5-user-link"
-                    @click="openUser(row.owner)"
+                    @click="openUser(row.owner, row.tenant_id)"
                   >{{ row.display_name || row.owner }}</button>
                 </td>
                 <td class="num">{{ fmt(row.session_count) }}</td>
                 <td class="num">{{ fmt(row.total_tokens) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>
@@ -334,7 +334,7 @@ function openTask(task: string) {
                 <td class="num">{{ fmt(row.session_count) }}</td>
                 <td class="num">{{ fmt(row.owner_count) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>

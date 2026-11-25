@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RangeReport, ReportView } from '../../api/reportrollup'
 import StatCard from '../ui/StatCard.vue'
-import { fmtCny, fmtCompact, fmtDuration, fmtInt, fmtPct, fmtUsd, weightedQuality } from './format'
+import { fmtCompact, fmtInt, fmtPct, fmtReportInternal, fmtReportLatency, fmtReportUsd, weightedQuality } from './format'
 
 const props = defineProps<{
   report: RangeReport
@@ -35,8 +35,8 @@ const cards = computed(() => {
     {
       tone: 'warning' as const,
       label: t('reports.kpiLatency'),
-      value: fmtDuration(row.latency_p50_ms),
-      sub: `P95 ${fmtDuration(row.latency_p95_ms)}`,
+      value: fmtReportLatency(row, 'p50'),
+      sub: `P95 ${fmtReportLatency(row, 'p95')}`,
     },
     {
       tone: 'neutral' as const,
@@ -56,7 +56,7 @@ const cards = computed(() => {
         tone: 'success' as const,
         label: t('reports.internalCredits'),
         value: fmtInt(row.credits_charged),
-        sub: `${t('reports.internalCost')} ${fmtCny(row.internal_cost_cents)}`,
+        sub: props.report.projection ? undefined : `${t('reports.internalCost')} ${fmtReportInternal(row)}`,
       },
       {
         tone: 'neutral' as const,
@@ -83,7 +83,7 @@ const cards = computed(() => {
     ? {
         tone: 'success' as const,
         label: t('reports.providerCost'),
-        value: fmtUsd(row.estimated_cost_cents),
+        value: fmtReportUsd(row),
         sub: `${t('reports.cacheHit')} ${fmtPct(row.cache_hit_ratio)} · ${t('reports.cacheRead')} ${fmtCompact(row.cache_read_tokens)}`,
       }
     : {

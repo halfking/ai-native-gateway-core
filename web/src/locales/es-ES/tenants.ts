@@ -43,6 +43,12 @@ export default {
     close: "Cerrar"
   },
   detail: {
+    estimatedRevenue: 'Ingresos estimados',
+    estimatedMargin: 'Margen bruto estimado',
+    estimatedMarginRate: 'Tasa de margen estimada',
+    creditReferenceNotice: 'La estimación usa el precio actual del crédito. Los débitos registrados figuran en el libro de créditos.',
+    cancellationCoverage: '{n} solicitudes cobradas carecen de constancia de cancelación',
+    usdCoverage: '{n} costes de solicitud excluidos del total en USD',
     loadUsersFailed: 'No se pudo cargar la lista de usuarios. Vuelva a intentarlo.',
     loadKeysFailed: 'No se pudo cargar la lista de claves. Vuelva a intentarlo.',
     loadStatsFailed: 'No se pudo cargar las estadísticas de uso. Vuelva a intentarlo.',

@@ -86,7 +86,7 @@ export default {
         probeExclude: 'Exclude probes',
         probeInclude: 'Include probes',
         probeIncludeBadge: 'probe traffic included',
-        probeScopeTitle: 'Hero summary caliber: excluding probes matches internal reconciliation; including probes matches provider reconciliation (external bills include probe traffic).',    modelDistTitle: 'Model distribution',
+        probeScopeTitle: 'The summary, charts and error breakdown use the same probe traffic filter.',    modelDistTitle: 'Model distribution',
     modelTop: 'Top {n} in window',
     colShare: 'Share',
     distTitle: 'Distribution analysis',

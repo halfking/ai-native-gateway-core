@@ -16,15 +16,15 @@ import { useRouter } from 'vue-router'
 //   ③ 供应商维度必须由 SQL 按 provider 列聚合，前端 split('/') 会把模型名
 //      当 provider（见 api/sessionAnalytics.ts 的 ProviderRankingRow 注释）。
 const props = withDefaults(defineProps<{
-  topClients: Array<{ client_id: string; session_count: number; total_cost: number; avg_health?: number | null }>
-  topTasks: Array<{ task_id: string; session_count: number; total_cost: number; avg_health?: number | null }>
+  topClients: Array<{ client_id: string; session_count: number; total_cost: number | null; avg_health?: number | null }>
+  topTasks: Array<{ task_id: string; session_count: number; total_cost: number | null; avg_health?: number | null }>
   modelUsage?: Array<{
     model: string
     session_count: number
     request_count: number
-    total_cost: number
+    total_cost: number | null
     success_rate: number
-    avg_latency_ms: number
+    avg_latency_ms: number | null
   }>
   /** 趋势窗口（YYYY-MM-DD 日历日），模型行跳 usage-trends 时自动带上。 */
   trendWindow?: { start: string; end: string }
@@ -38,6 +38,7 @@ const props = withDefaults(defineProps<{
   modelUsageExpanded?: boolean
   /** ★ F1：后端给出的展开原因（可读文案），有则一并显示。 */
   modelUsageExpansionReason?: string
+  includeProbes?: boolean
 }>(), {
   modelUsageExpanded: true,
   modelUsageExpansionReason: '',
@@ -56,8 +57,8 @@ function openModelTrend(model: string) {
   void router.push({ path: '/admin/usage-trends', query })
 }
 
-function formatUsd(value: number) {
-  return `$${value.toFixed(4)}`
+function formatUsd(value: number | null) {
+  return value == null ? '—' : `$${Number(value).toFixed(4)}`
 }
 
 function healthClass(score: number) {
@@ -66,11 +67,12 @@ function healthClass(score: number) {
   return 'danger'
 }
 
-function openClient(id: string) {
-  router.push(`/admin/session-analytics/clients/${id}`)
-}
-function openTask(id: string) {
-  router.push(`/admin/session-analytics/tasks/${id}`)
+function openDimension(dimension: 'clients' | 'tasks', id: string) {
+  void router.push({
+    path: `/admin/session-analytics/${dimension}/${encodeURIComponent(id)}`,
+    query: { start_date: props.trendWindow?.start, end_date: props.trendWindow?.end,
+      include_probes: props.includeProbes ? 'true' : undefined },
+  })
 }
 </script>
 
@@ -116,9 +118,9 @@ function openTask(id: string) {
               </td>
               <td class="num">{{ row.session_count }}</td>
               <td class="num">{{ row.request_count }}</td>
-              <td class="num">{{ formatUsd(row.total_cost ?? 0) }}</td>
+              <td class="num">{{ formatUsd(row.total_cost) }}</td>
               <td class="num">{{ ((row.success_rate ?? 0) * 100).toFixed(1) }}%</td>
-              <td class="num">{{ Math.round(row.avg_latency_ms ?? 0) }}ms</td>
+              <td class="num">{{ row.avg_latency_ms == null ? '—' : Math.round(row.avg_latency_ms) + 'ms' }}</td>
             </tr>
           </tbody>
         </table>
@@ -142,9 +144,9 @@ function openTask(id: string) {
           </thead>
           <tbody>
             <tr v-for="row in topClients" :key="row.client_id">
-              <td><button type="button" class="link-btn" @click="openClient(String(row.client_id))">{{ row.client_id }}</button></td>
+              <td><button type="button" class="link-btn" @click="openDimension('clients', String(row.client_id))">{{ row.client_id }}</button></td>
               <td class="num">{{ row.session_count }}</td>
-              <td class="num">{{ formatUsd(Number(row.total_cost ?? 0)) }}</td>
+              <td class="num">{{ formatUsd(row.total_cost) }}</td>
               <td class="num">{{ row.avg_health != null ? row.avg_health : '—' }}</td>
             </tr>
           </tbody>
@@ -166,9 +168,9 @@ function openTask(id: string) {
           </thead>
           <tbody>
             <tr v-for="row in topTasks" :key="row.task_id">
-              <td><button type="button" class="link-btn" @click="openTask(String(row.task_id))">{{ row.task_id }}</button></td>
+              <td><button type="button" class="link-btn" @click="openDimension('tasks', String(row.task_id))">{{ row.task_id }}</button></td>
               <td class="num">{{ row.session_count }}</td>
-              <td class="num">{{ formatUsd(Number(row.total_cost ?? 0)) }}</td>
+              <td class="num">{{ formatUsd(row.total_cost) }}</td>
               <td class="num">
                 <span v-if="row.avg_health != null" :class="'health-pill health-pill--' + healthClass(Number(row.avg_health))">
                   {{ row.avg_health }}/100

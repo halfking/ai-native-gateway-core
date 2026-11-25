@@ -558,6 +558,20 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	// ★ 分类核定依据：该读点读 gw_task_id（734 **details 腿**列）与 gw_session_id
 	//   （视图里的 **CASE 表达式**列）⇒ 与 admin/request_trace.go 的读点1 同形态
 	//   ⇒ 归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
+	"internal/metricsstore/projection.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "请求投影按租户、请求 ID 和日志时间补充维度。",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{
+				"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base",
+				"client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base",
+				"egress_protocol:base", "error_kind:base", "failure_detail_code:base", "gw_session_id:expr",
+				"gw_task_id:detail", "identity_hash:base", "outbound_model:base", "request_id:base", "stream_interrupted:base",
+				"task_type:base", "tenant_id:base", "ts:base", "work_type:base",
+			}, Class: classNeedsDetailsLeg, Note: "会话键与客户端 IP 来自视图表达式，任务与模型等字段来自详情腿。"},
+		},
+	},
 	"internal/metricsstore/processor.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
@@ -2639,6 +2653,7 @@ func canonicalTimeWindowedReadPointFiles(t *testing.T, root string) map[string]b
 // ★   ⇒ 那是**登记错误**（★ 口径是文件级）⇒ ⇒ 要么改口径、要么把它移出清单 ⇒
 // ★   ⇒ ★★ **不许用「例外」把它藏起来**：★ 藏起来就等于门看不见它。★★
 var canonicalTimeWindowedReadPoints = map[string]string{
+	"internal/metricsstore/projection.go":    "按租户和请求 ID 补充维度，限制在发生时刻前后 24 小时。",
 	"admin/compression_stats.go":             "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/credential_monitor.go":            "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/credential_monitor_heatmap.go":    "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

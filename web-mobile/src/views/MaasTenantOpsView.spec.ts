@@ -313,6 +313,25 @@ describe('★★★ cost_usd 键缺失 ⇒ 显示 0 而不是「—」', () => {
     expect(cells.at(-1)).not.toBe('—')
     expect(cells.at(-1)).not.toContain('NaN')
   })
+
+  it('投影缺少 USD 金额和取消证据时显示覆盖缺口', async () => {
+    sMock.mockResolvedValue(summary({
+      source: 'request_metrics',
+      total_cost_usd: undefined,
+      cost_rows_without_usd_evidence: 1,
+      by_model: [{ model: 'm', requests: 1, credits: 0 }],
+    }))
+    dMock.mockResolvedValue({
+      ...detail([consumptionRow({ upstream_cost_usd: null, estimated_margin_rate: null, billed_without_cancellation_evidence: 1 })]),
+      source: 'request_metrics',
+    })
+    const w = await mountView()
+    expect(w.findAll('.mt__table tbody tr')[0]!.findAll('.mt__td-v').at(-1)!.text()).toBe('—')
+    expect(w.text()).toContain('统一请求统计')
+    expect(w.text()).toContain('缺少取消证据')
+    expect(w.text()).toContain('缺少测算依据')
+    expect(w.text()).not.toContain('request_logs_hot')
+  })
 })
 
 // ────────────────────────────────────────────────────────────────────────

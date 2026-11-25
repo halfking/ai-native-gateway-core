@@ -26,31 +26,32 @@ const props = defineProps<{
   internalCost?: number | null
   /** 外部成本（积分）。 */
   externalCost?: number | null
+  projected?: boolean
 }>()
 
 const { t } = useI18n()
 
-const externalPlaceholder = computed(() => externalCostIsPlaceholder(props.externalCost))
+const externalPlaceholder = computed(() => externalCostIsPlaceholder(props.externalCost, props.projected))
 
 /** 内部成本（美元）：缺值 ⇒ 纯占位符；否则带单位。 */
 const internalText = computed(() => usdCostText(props.internalCost, t))
 
 /** 外部成本（积分）：占位符形态 ⇒ 纯 '—'；否则带单位。 */
-const externalText = computed(() => creditsCostText(props.externalCost, t))
+const externalText = computed(() => creditsCostText(props.externalCost, t, props.projected))
 </script>
 
 <template>
   <div class="sa-cost-cell" data-testid="sa-cost-cell">
     <div class="sa-cost-cell__row">
-      <span class="sa-cost-cell__label">{{ t('sessionAnalytics.metric.internalCost') }}</span>
+      <span class="sa-cost-cell__label">{{ t(projected ? 'sessions.userProfile.projectCostUsd' : 'sessionAnalytics.metric.internalCost') }}</span>
       <span class="sa-cost-cell__value">{{ internalText }}</span>
     </div>
     <div class="sa-cost-cell__row">
-      <span class="sa-cost-cell__label">{{ t('sessionAnalytics.metric.externalCost') }}</span>
+      <span class="sa-cost-cell__label">{{ t(projected ? 'sessions.userProfile.projectCredits' : 'sessionAnalytics.metric.externalCost') }}</span>
       <span
         class="sa-cost-cell__value"
         :class="{ 'sa-cost-cell__value--placeholder': externalPlaceholder }"
-        :title="externalPlaceholder ? t('sessionAnalytics.externalCostNotCarried') : undefined"
+        :title="externalPlaceholder && !projected ? t('sessionAnalytics.externalCostNotCarried') : undefined"
         >{{ externalText }}</span
       >
     </div>

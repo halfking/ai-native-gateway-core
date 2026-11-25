@@ -22,6 +22,7 @@ export interface SessionAnalyticsLoader {
   loading: Ref<boolean>
   error: Ref<string>
   stale: Ref<boolean>
+  reset(): void
   /**
    * 跑一次加载。成功返回数据；失败返回 null 并把状态写进 error/stale。
    * @param fn 实际的数据获取函数
@@ -34,14 +35,25 @@ export function useSessionAnalyticsLoader(): SessionAnalyticsLoader {
   const loading = ref(false)
   const error = ref('')
   const stale = ref(false)
+  let generation = 0
+
+  function reset(): void {
+    generation++
+    loading.value = false
+    error.value = ''
+    stale.value = false
+  }
 
   async function run<T>(fn: () => Promise<T>, errKey: string): Promise<T | null> {
+    const request = ++generation
     loading.value = true
     error.value = ''
     stale.value = false
     try {
-      return await fn()
+      const result = await fn()
+      return request === generation ? result : null
     } catch (e) {
+      if (request !== generation) return null
       if (isViewStaleError(e)) {
         // 陈旧 ⇒ 不写 error：交给 stale 横幅说「正在刷新」
         stale.value = true
@@ -50,9 +62,9 @@ export function useSessionAnalyticsLoader(): SessionAnalyticsLoader {
       }
       return null
     } finally {
-      loading.value = false
+      if (request === generation) loading.value = false
     }
   }
 
-  return { loading, error, stale, run }
+  return { loading, error, stale, reset, run }
 }

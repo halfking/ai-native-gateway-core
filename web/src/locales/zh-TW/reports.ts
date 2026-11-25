@@ -1,7 +1,16 @@
 // reports.ts — 對帳報表頁（供應商/內部雙視角，R65 i18n 補齊）。
 export default {
+  projectedView: '歷史請求統計',
+  projectedDays: '有請求記錄的日期共 {n} 天',
+  projectedBasis: '按 {zone} 自然日統計。實際過帳請查積分帳本，供應商逐次發送和帳單請查每日對帳。',
+  projectedPending: '所選日期仍有請求待同步。',
+  projectedMissingUSD: '{n} 筆請求缺少 USD 金額或使用其他幣別。',
+  projectedEmpty: '所選日期與篩選條件下沒有可用的請求記錄。',
+  projectedToday: '（今天尚未結束）',
   legacySnapshotView: '歷史快照',
   daily: {
+    terminalProjection: '以收件時間判定日期。終態用量來自請求統計。',
+    terminalProjectionPending: '終態用量同步中，最早待處理的記錄來自 {at}。其他日期的更正也可能影響此報表。',
     title: '每日對帳證據',
     section: '證據類型',
     day: '對帳日期',
@@ -111,6 +120,9 @@ export default {
       internal: '分別列出當日的扣款積分毛額、沖正後的淨積分與用量桶。',
     },
     fields: {
+      total_tokens: '保留的終態 Token',
+      measured_total_requests: '總 Token 已實測的請求',
+      usage_source: '用量來源',
       requests: '用戶端請求',
       success: '成功',
       failure: '失敗',

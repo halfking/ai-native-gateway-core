@@ -13,7 +13,7 @@ import (
 
 func testInvoiceEvidence(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	migration, err := os.ReadFile("../../sql/migrations/startup/986_provider_invoice_evidence.sql")
+	migration, err := os.ReadFile("../../sql/migrations/startup/987_provider_invoice_evidence.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func testInvoiceEvidence(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 		'2026-10-01 00:00Z','2026-11-01 00:00Z',ARRAY[9999],0.01,repeat('0',64),'fixture');
 		INSERT INTO public.provider_invoice_lines (invoice_id,line_ref,kind,amount)
 		VALUES ('00000000-0000-4000-8000-000000000985','legacy','usage_bucket',0.01);`)
-	buckets, err := os.ReadFile("../../sql/migrations/startup/987_provider_invoice_usage_buckets.sql")
+	buckets, err := os.ReadFile("../../sql/migrations/startup/988_provider_invoice_usage_buckets.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

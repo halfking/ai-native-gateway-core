@@ -10,7 +10,9 @@ import type { EChartsOption } from 'echarts'
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import { ElAlert, ElButton, ElCard, ElCol, ElLink, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
+import { exactRangeFromQuery, rangeFromQuery } from './admin/session-analytics/saQueryParams'
+import { systemTzDateStr } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 const { t } = useI18n()
 const route = useRoute()
@@ -21,13 +23,23 @@ const loading = ref(false)
 const data = ref<ClientAnalyticsDetail | null>(null)
 const errorMessage = ref<string | null>(null)
 const days = ref(30)
-const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+const { presets: dayPresets, rangeValue, applyRange, setCustomRange } = useRangeDays(days, [
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
+const tenantId = computed(() => typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined)
+const includeProbes = computed(() => route.query.include_probes === 'true')
+const exactWindow = ref<KxDateRange>()
+function applyRouteWindow() {
+  const window = exactRangeFromQuery(route.query)
+  exactWindow.value = window
+  setCustomRange(window ? { start: systemTzDateStr(Date.parse(window.start)), end: systemTzDateStr(Date.parse(window.end) - 1) } : rangeFromQuery(route.query))
+}
+applyRouteWindow()
 
 function onRangeApply(range: KxDateRange) {
+  exactWindow.value = undefined
   applyRange(range)
   void load()
 }
@@ -59,7 +71,8 @@ onMounted(() => {
 //   ⇒ 换路由参数后图表还是上一个 client 的（标题已经变了、数据没变）。
 //   ⇒ 这里补 watch：换 id ⇒ 丢弃旧实例（旧 series 会被 setOption 按 index
 //   合并残留）⇒ 重新取数并重画。
-watch(clientId, () => {
+watch([clientId, tenantId, includeProbes, () => route.query.start_date, () => route.query.end_date, () => route.query.start_time, () => route.query.end_time], () => {
+  applyRouteWindow()
   disposeChart()
   data.value = null
   void load()
@@ -75,7 +88,7 @@ async function load() {
   loading.value = true
   errorMessage.value = null
   try {
-    const resp = await getClientAnalyticsDetail(clientId.value, days.value)
+    const resp = await getClientAnalyticsDetail(clientId.value, days.value, tenantId.value, exactWindow.value ? { ...exactWindow.value, exact: true } : rangeValue.value ?? undefined, includeProbes.value)
     // 已被更新的一轮取代 ⇒ 丢弃本次响应（不写任何状态）。
     if (token !== loadToken) return
     data.value = resp
@@ -87,6 +100,8 @@ async function load() {
     renderChart()
   } catch (e: any) {
     if (token !== loadToken) return
+    data.value = null
+    disposeChart()
     console.error('Failed to load client analytics:', e)
     errorMessage.value = e.message || t('sessions.clientAnalytics.loadError')
   } finally {
@@ -118,10 +133,7 @@ function renderChart() {
       data: dates,
       axisLabel: {
         rotate: 45,
-        formatter: (value: string) => {
-          const date = new Date(value)
-          return `${date.getMonth() + 1}/${date.getDate()}`
-        }
+        formatter: (value: string) => value.slice(5).replace('-', '/')
       }
     },
     yAxis: [
@@ -172,7 +184,12 @@ const healthGradeColor = (grade?: string) => {
 }
 
 function handleTaskClick(taskId: string) {
-  router.push(`/admin/session-analytics/tasks/${taskId}`)
+  if (!taskId || !rangeValue.value) return
+  void router.push({
+    path: `/admin/session-analytics/tasks/${encodeURIComponent(taskId)}`,
+    query: { tenant_id: tenantId.value, start_date: rangeValue.value.start, end_date: rangeValue.value.end,
+      start_time: exactWindow.value?.start, end_time: exactWindow.value?.end, include_probes: includeProbes.value ? 'true' : undefined },
+  })
 }
 
 function handleSessionClick(sessionId: string) {
@@ -195,7 +212,6 @@ function goBack() {
           :model-value="rangeValue"
           :presets="dayPresets"
           :max-span-days="90"
-          :presets-only="true"
           @apply="onRangeApply"
         />
       </div>
@@ -206,6 +222,8 @@ function goBack() {
     </el-alert>
 
     <div v-if="data">
+      <el-alert v-if="data.pending_since" type="warning" :closable="false" :title="t('reports.projectedPending')" />
+      <p v-if="data.usd_unmeasured_requests">{{ t('reports.projectedMissingUSD', { n: data.usd_unmeasured_requests }) }}</p>
       <!-- 统计卡片 -->
       <el-row :gutter="16" style="margin-bottom: 16px;">
         <el-col :span="6">
@@ -220,7 +238,7 @@ function goBack() {
           <el-card shadow="hover">
             <div class="stat-item">
               <div class="stat-label">{{ t('sessions.clientAnalytics.totalCost') }}</div>
-              <div class="stat-value">${{ data.total_cost_usd.toFixed(2) }}</div>
+              <div class="stat-value">{{ data.total_cost_usd == null ? '—' : '$' + data.total_cost_usd.toFixed(4) }}</div>
             </div>
           </el-card>
         </el-col>
@@ -272,7 +290,7 @@ function goBack() {
               <el-table-column prop="session_count" :label="t('sessions.stats.sessionCount')" width="100" align="right" />
               <el-table-column prop="total_cost_usd" :label="t('sessions.stats.totalCost')" width="100" align="right">
                 <template #default="scope">
-                  <span v-if="scope?.row?.total_cost_usd != null">${{ scope.row.total_cost_usd.toFixed(2) }}</span>
+                  {{ scope?.row?.total_cost_usd == null ? '—' : '$' + scope.row.total_cost_usd.toFixed(4) }}
                 </template>
               </el-table-column>
               <el-table-column prop="avg_health" :label="t('sessions.stats.avgHealth')" width="80" align="center">
@@ -300,7 +318,7 @@ function goBack() {
               <el-table-column prop="request_count" :label="t('sessions.clientAnalytics.requests')" width="80" align="right" />
               <el-table-column prop="cost_usd" :label="t('sessions.clientAnalytics.cost')" width="100" align="right">
                 <template #default="scope">
-                  <span v-if="scope?.row?.cost_usd != null">${{ scope.row.cost_usd.toFixed(4) }}</span>
+                  {{ scope?.row?.cost_usd == null ? '—' : '$' + scope.row.cost_usd.toFixed(4) }}
                 </template>
               </el-table-column>
               <el-table-column prop="health_grade" :label="t('sessions.clientAnalytics.health')" width="80" align="center">

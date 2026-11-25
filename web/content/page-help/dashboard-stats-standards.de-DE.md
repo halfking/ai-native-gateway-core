@@ -1,5 +1,13 @@
 # Berechnungsregeln für Board und Sitzungsstatistik
 
+## Aktuelle V2-Definitionen
+
+Das Dashboard liest die asynchron aktualisierte Tabelle `request_metrics` nach Anfragezeitpunkt. Die Sitzungsstatistik zählt verknüpfte Anfragen im selben Zeitraum und jede Kombination aus Mandant und Sitzungs-ID einmal. Beginn und Ende beruhen auf der ersten Anfrage beziehungsweise dem tatsächlichen Abschluss. Prüfverkehr ist standardmäßig ausgeschlossen. USD-Kosten, Credits und andere Währungen werden getrennt ausgewiesen. Ausstehende Aktualisierungen und fehlende Kostendaten werden angezeigt.
+
+Historische Berichte umfassen abgeschlossene Kalendertage in der Systemzeitzone. Der tägliche Abgleich verwendet den Eingang am Gateway und ergänzt die endgültige Nutzung aus der Anfrageprojektion. Lieferantenaufrufe, Rechnungen und interne Buchungen werden separat geprüft.
+
+## Historische Messungen (V1)
+
 Die Tabs „Board", „Sitzungsstatistik" und „Anbieter-Abgleich" fassen denselben Strom von Modellaufrufen unter **drei verschiedenen Berechnungsregeln** zusammen. Diese Seite beschreibt, wie jede Zahl berechnet wird, woher die Daten stammen und welches Zeitfenster sie abdeckt — samt **Aufschlüsselung nach Positionen** darüber, warum sich die Zahlen der drei Module nicht decken. Zweck: Daten abgleichen und Abweichungen selbst prüfen.
 
 > Messgrundlage: 2026-11-23 21:05 (Asia/Shanghai) im Produktivbetrieb gemessen. Alle Zahlen stammen aus **demselben Zeitpunkt** (innerhalb einer einzigen SQL-Abfrage), Fenster = `NOW()-7 Tage`; die Seite „Anbieter-Abgleich" wurde zusätzlich über den geschlossenen Kalendertagsbereich `2026-11-17 ~ 2026-11-23` gemessen und taggenau gegen die Faktentabelle abgeglichen.

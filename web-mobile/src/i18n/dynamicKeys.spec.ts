@@ -173,7 +173,7 @@ const OPEN_PREFIXES: readonly string[] = [
  * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
-const GENERATED_KEY_TOTAL = 295 // 2026-11-25 重测：191 + 104（日对账证据：sections 7 + fields 97）：50 个前缀 × 各自后缀数（原 191 = 48 个前缀，live 页 +6 那一版）
+const GENERATED_KEY_TOTAL = 298 // 2026-11-25 重测：191 + 107（日对账证据：sections 7 + fields 100）：50 个前缀 × 各自后缀数（原 191 = 48 个前缀，live 页 +6 那一版）
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {

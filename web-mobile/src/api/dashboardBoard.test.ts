@@ -489,7 +489,7 @@ describe('dashboardBoard / fetch', () => {
     await fetchErrorDrill({ errorKind: 'rate_limit' })
     const { url, init } = lastCall()
     expect(init.method).toBe('GET')
-    expect(url).toContain('/api/admin/dashboard/board/error-drill?')
+    expect(url).toContain('/api/admin/dashboard/v2/board/error-drill?')
     expect(url).toContain('error_kind=rate_limit')
     // ★ 不带 dimension ⇒ 后端用默认 "model"
     expect(url).not.toContain('dimension=')

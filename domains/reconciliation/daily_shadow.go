@@ -12,6 +12,7 @@ import (
 )
 
 const DailyShadowVersion = "request-reconciliation-shadow-v1"
+const ProjectedDailyShadowVersion = "request-reconciliation-shadow-v2"
 
 type DailyShadow struct {
 	Version         string                     `json:"version"`
@@ -22,6 +23,7 @@ type DailyShadow struct {
 	ReadAt          time.Time                  `json:"read_at"`
 	WindowState     string                     `json:"window_state"`
 	Coverage        string                     `json:"coverage"`
+	Projection      *ReportProjection          `json:"projection,omitempty"`
 	Summaries       map[string]json.RawMessage `json:"summaries"`
 	InternalTenants []json.RawMessage          `json:"internal_tenants"`
 	SupplierBills   []DailyShadowBill          `json:"exact_day_supplier_bills"`
@@ -44,6 +46,16 @@ type DailyShadowCountCheck struct {
 // read-only repeatable-read transaction. Use with an authorized platform
 // evidence connection. Bill summaries use the original exact day windows.
 func ReadDailyShadow(ctx context.Context, pool *pgxpool.Pool, day, zone string) (DailyShadow, error) {
+	return readDailyShadow(ctx, pool, day, zone, false)
+}
+
+// ReadProjectedDailyShadow compares V2 terminal usage, sends, supplier statements
+// and internal postings within one read-only database snapshot.
+func ReadProjectedDailyShadow(ctx context.Context, pool *pgxpool.Pool, day, zone string) (DailyShadow, error) {
+	return readDailyShadow(ctx, pool, day, zone, true)
+}
+
+func readDailyShadow(ctx context.Context, pool *pgxpool.Pool, day, zone string, projected bool) (DailyShadow, error) {
 	start, end, err := NaturalDay(day, zone)
 	if err != nil {
 		return DailyShadow{}, err
@@ -61,6 +73,14 @@ func ReadDailyShadow(ctx context.Context, pool *pgxpool.Pool, day, zone string) 
 		Version: DailyShadowVersion, Day: day, Timezone: zone, Start: start.UTC(), End: end.UTC(),
 		Coverage:  reportSections["coverage"].coverage,
 		Summaries: make(map[string]json.RawMessage),
+	}
+	if projected {
+		snapshot.Projection, err = readTerminalProjection(ctx, tx, scope.TenantID)
+		if err != nil {
+			return DailyShadow{}, err
+		}
+		snapshot.Version = ProjectedDailyShadowVersion
+		snapshot.Coverage = projectedReportSection("coverage", reportSections["coverage"]).coverage
 	}
 	if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&snapshot.ReadAt); err != nil {
 		return DailyShadow{}, err
@@ -80,7 +100,11 @@ func ReadDailyShadow(ctx context.Context, pool *pgxpool.Pool, day, zone string) 
 		if name == "internal" {
 			query.Limit = -1 // Whole-snapshot tenant comparisons, without request-level detail.
 		}
-		report, err := readReportSection(ctx, tx, scope, query, reportSections[name])
+		section := reportSections[name]
+		if projected {
+			section = projectedReportSection(name, section)
+		}
+		report, err := readReportSection(ctx, tx, scope, query, section)
 		if err != nil {
 			return DailyShadow{}, fmt.Errorf("read %s: %w", name, err)
 		}

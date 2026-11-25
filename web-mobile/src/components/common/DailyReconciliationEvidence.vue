@@ -131,6 +131,8 @@ function backToInvoices() {
     <p v-if="loading" role="status">{{ t('common.loading') }}</p>
     <p v-if="error" role="alert" class="day-evidence__error">{{ error }}</p>
     <p v-if="report" class="day-evidence__note">{{ report.timezone }} · {{ report.start }} – {{ report.end }}</p>
+    <p v-if="report?.projection" class="day-evidence__note">{{ t('rr.evidence.terminalProjection') }}</p>
+    <p v-if="report?.projection?.pending_since" class="day-evidence__note" role="status">{{ t('rr.evidence.terminalProjectionPending', { at: report.projection.pending_since }) }}</p>
     <template v-if="selectedInvoice">
       <button type="button" class="day-evidence__button" data-testid="rr-evidence-invoices-back" :disabled="loading" @click="backToInvoices">{{ t('rr.evidence.backToInvoices') }}</button>
       <p class="day-evidence__note">{{ selectedInvoice.invoice.invoice_ref }} · {{ selectedInvoice.invoice.currency }} · {{ selectedInvoice.invoice.window_start }} – {{ selectedInvoice.invoice.window_end }}</p>

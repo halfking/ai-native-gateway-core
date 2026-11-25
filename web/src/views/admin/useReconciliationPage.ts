@@ -9,7 +9,6 @@ import {
   downloadReportExport,
   getReportDimensions,
   getReportSummary,
-  runReportRollup,
   type DimensionOptions,
   type RangeReport,
   type ReportFilter,
@@ -36,10 +35,11 @@ function cleanFilters(input: ReportFilter): ReportFilter {
   if (input.tenant_id) next.tenant_id = input.tenant_id
   if (input.person) next.person = input.person
   if (input.model) next.model = input.model
+  if (input.traffic_scope === 'business') next.traffic_scope = input.traffic_scope
   return next
 }
 
-export const snapshotQueryKeys = ['view', 'provider_id', 'model', 'tenant_id', 'person'] as const
+export const snapshotQueryKeys = ['view', 'provider_id', 'model', 'tenant_id', 'person', 'traffic_scope'] as const
 
 export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   const { t } = useI18n()
@@ -49,7 +49,6 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   const loading = ref(false)
   const dimsLoading = ref(false)
   const exporting = ref(false)
-  const rerunning = ref(false)
   const errorText = ref('')
   const metric = ref<Metric>('token')
   const reasonFilter = ref<string | null>(null)
@@ -59,6 +58,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   const view = ref<ReportView>(route.query.view === 'internal' ? 'internal' : 'provider')
   const range = ref<[string, string]>(defaultSnapshotRange())
   const filters = ref<ReportFilter>({
+    traffic_scope: route.query.traffic_scope === 'business' ? 'business' : undefined,
     provider_id: numQuery(route.query.provider_id),
     model: typeof route.query.model === 'string' ? route.query.model : undefined,
     tenant_id: typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined,
@@ -75,7 +75,9 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   const kxRange = computed(() => ({ start: range.value[0], end: range.value[1] }))
   const coverageText = computed(() => {
     if (!report.value) return ''
-    const base = `${t('reports.coveragePrefix')} ${report.value.snapshot_dates.length} ${t('reports.daysCovered')}`
+    const base = report.value.source === 'request_metrics'
+      ? t('reports.projectedDays', { n: report.value.snapshot_dates.length })
+      : `${t('reports.coveragePrefix')} ${report.value.snapshot_dates.length} ${t('reports.daysCovered')}`
     // 2026-11-20 统一轮：预设改为「近 N 天含今天」后，区间含今天时今日必然
     // 没有快照（每日凌晨生成前一日）——「近 7 天只覆盖 6 天」不是丢数据，
     // 说出来，别让覆盖数又被读成口径错。
@@ -84,7 +86,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     const [start, end] = range.value
     const spanDays = Math.floor((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1
     if (end >= today && report.value.snapshot_dates.length < spanDays) {
-      return base + t('reports.todayPendingHint')
+      return base + t(report.value.projection ? 'reports.projectedToday' : 'reports.todayPendingHint')
     }
     return base
   })
@@ -147,7 +149,10 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     const gen = dimsRace.begin()
     dimsLoading.value = true
     try {
-      const next = await getReportDimensions({ start: range.value[0], end: range.value[1], view: view.value })
+      const next = await getReportDimensions({
+        start: range.value[0], end: range.value[1], view: view.value,
+        ...(filters.value.traffic_scope && { traffic_scope: filters.value.traffic_scope }),
+      })
       if (dimsRace.stale(gen)) return
       dims.value = next
     } catch {
@@ -167,7 +172,8 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   }
 
   function clearExtra() {
-    filters.value = cleanFilters({ provider_id: filters.value.provider_id, model: filters.value.model })
+    const { provider_id, model, traffic_scope } = filters.value
+    filters.value = cleanFilters({ provider_id, model, traffic_scope })
   }
 
   function onPrimaryRow(key: string) {
@@ -220,26 +226,13 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     }
   }
 
-  async function rerunEndDay() {
-    rerunning.value = true
-    try {
-      const res = await runReportRollup(range.value[1] ?? '')
-      ElMessage.success(`${t('reports.rerunDone')}: ${res.date} rows=${res.rows_written}`)
-      reload()
-    } catch (err: unknown) {
-      const message = surfaceError(err)
-      ElMessage.error(`${t('reports.rerunFailed')}: ${message}`)
-    } finally {
-      rerunning.value = false
-    }
-  }
-
   function currentQuery(): Record<string, string> {
     const query: Record<string, string> = { view: view.value }
     if (filters.value.provider_id != null) query.provider_id = String(filters.value.provider_id)
     if (filters.value.model) query.model = filters.value.model
     if (filters.value.tenant_id) query.tenant_id = filters.value.tenant_id
     if (filters.value.person) query.person = filters.value.person
+    if (filters.value.traffic_scope) query.traffic_scope = filters.value.traffic_scope
     return query
   }
 
@@ -260,11 +253,13 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     const nextModel = typeof route.query.model === 'string' ? route.query.model : undefined
     const nextTenant = typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined
     const nextPerson = typeof route.query.person === 'string' ? route.query.person : undefined
+    const nextTraffic = route.query.traffic_scope === 'business' ? 'business' : undefined
     const viewChanged = view.value !== nextView
     const filterChanged = filters.value.provider_id !== nextPid
       || (filters.value.model ?? undefined) !== nextModel
       || (filters.value.tenant_id ?? undefined) !== nextTenant
       || (filters.value.person ?? undefined) !== nextPerson
+      || filters.value.traffic_scope !== nextTraffic
     if (!viewChanged && !filterChanged) return
     applyingRoute = true
     if (viewChanged) {
@@ -278,6 +273,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
         model: nextModel,
         tenant_id: nextTenant,
         person: nextPerson,
+        traffic_scope: nextTraffic,
       })
     }
     applyingRoute = false
@@ -290,9 +286,10 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     reload()
     syncQuery()
   }, { flush: 'sync' })
-  watch(filters, () => {
+  watch(filters, (next, previous) => {
     if (applyingRoute) return
     void refresh()
+    if (next.traffic_scope !== previous.traffic_scope) void refreshDimensions()
     syncQuery()
   }, { deep: true, flush: 'sync' })
   watch(
@@ -312,10 +309,10 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   })
 
   return {
-    t, loading, dimsLoading, exporting, rerunning, errorText, metric, reasonFilter, daysOpen,
+    t, loading, dimsLoading, exporting, errorText, metric, reasonFilter, daysOpen,
     report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
     reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
     personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-    applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
+    applyRange, exportXlsx, reload, clearReason, setView, setMetric,
   }
 }

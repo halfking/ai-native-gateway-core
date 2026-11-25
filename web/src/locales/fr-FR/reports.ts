@@ -1,7 +1,16 @@
 // reports.ts — Page de rapport de rapprochement (double vue fournisseurs/interne, ajout i18n R65).
 export default {
+  projectedView: 'Statistiques historiques des requêtes',
+  projectedDays: 'Requêtes enregistrées sur {n} jours',
+  projectedBasis: 'Les jours sont calculés dans le fuseau {zone}. Les écritures figurent au registre des crédits, les envois et les factures au rapprochement quotidien.',
+  projectedPending: 'Des requêtes de la période sélectionnée sont en cours de traitement.',
+  projectedMissingUSD: '{n} requêtes sont sans montant en USD ou dans une autre devise.',
+  projectedEmpty: 'Aucune requête observée pour ces dates et filtres.',
+  projectedToday: ' (la journée en cours est encore ouverte)',
   legacySnapshotView: 'Instantanés historiques',
   daily: {
+    terminalProjection: 'La date dépend de l’heure de réception. L’usage final provient des statistiques des requêtes.',
+    terminalProjectionPending: 'La synchronisation de l’usage final est en cours. La plus ancienne entrée date de {at}. Les corrections d’un autre jour peuvent modifier ce rapport.',
     title: 'Preuves de rapprochement quotidien',
     section: 'Type de preuve',
     day: 'Date de rapprochement',
@@ -111,6 +120,9 @@ export default {
       internal: 'Les débits bruts, les crédits comptabilisés nets et les buckets de consommation sont affichés séparément pour cette date.',
     },
     fields: {
+      total_tokens: 'Jetons finaux conservés',
+      measured_total_requests: 'Requêtes avec un total de jetons mesuré',
+      usage_source: 'Source de l’usage',
       requests: 'Requêtes client',
       success: 'Succès',
       failure: 'Échec',

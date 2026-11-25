@@ -4452,17 +4452,16 @@ func main() {
 	// 从 usage_facts 读取并填充 request_metrics 表，支持多维度快速聚合查询。
 	// 这是阶段一（双写验证）：数据异步填充到新表，原有查询不受影响。
 	//
-	// 设计文档: /tmp/request_metrics_design.md
-	// 迁移: 983_request_metrics.sql
-	// 部署验证计划: /tmp/request_metrics_deployment_plan.md
+	// 迁移 983 提供旧槽读写，983d 提供终态请求投影和持久队列。
+	var requestMetricsDB *sql.DB
 	if dbConn != nil && dbConn.Enabled() {
-		metricsProcessor := metricsstore.NewProcessor(dbConn.Stdlib())
+		requestMetricsDB = dbConn.Stdlib()
+		metricsProcessor := metricsstore.NewProcessor(requestMetricsDB)
 		// ★ 用**可取消**的 ctx（与仓内其它后台 worker 同款写法）：
 		//   context.Background() ⇒ 这个 goroutine 在进程内**永远不可停**
 		//   ⇒ 优雅停机后它仍在跑，而此时连接池已关
 		//   ⇒ 每 5 分钟刷一批「连接已关闭」错误，且批次里的维度永远补不回来。
 		metricsProcessorCtx, metricsProcessorCancel := context.WithCancel(context.Background())
-		// ★ 2026-11-24 吞吐优化轮：参数**可配**（环境变量），不再硬编码。
 		//
 		//   旧形态（硬编码 5m/100）：「每 5 分钟 100 条」是**占位常量**，不是容量测算。
 		//   生产实测写入速率约 1,100 条/小时（近 1 小时均值 18.1 条/分钟，
@@ -4474,6 +4473,7 @@ func main() {
 		//   （持续处理直到本批不满）⇒ 积压时自动加速，空闲时自动降频。
 		metricsCfg := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
 		go metricsProcessor.Run(metricsProcessorCtx, metricsCfg)
+		go metricsstore.NewProjectionProcessor(requestMetricsDB).Run(metricsProcessorCtx, metricsCfg)
 		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
@@ -7143,10 +7143,10 @@ func main() {
 	mux.Handle("/healthz", healthHandler)
 	mux.Handle("/healthz/full",
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(healthHandler))
-	// 2026-08-29：/readyz + /version 端点，供 scripts/lifecycle/preflight.sh 三段检查。
-	//   /readyz  严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
-	//   /version 仅暴露 build metadata（version + git_sha + build_seq + build_date），无敏感信息。
+	// /readyz 用于网关基础健康检查，投影就绪单独由运维验证。
 	mux.Handle("/readyz", healthHandler)
+	mux.Handle("/readyz/request-metrics",
+		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(metricsstore.ProjectionReadinessHandler(requestMetricsDB)))
 	mux.Handle("/version", healthHandler)
 	// 2026-07-14: 30s system-health JSON for the GDRT H badge on the
 	// homepage. CORS open (no auth) so the SPA login page can show
@@ -8755,9 +8755,9 @@ func main() {
 		// annotation, etc.). Keeping both caused ServeMux panic at startup.
 
 		// Phase 4: Session Analytics API (会话全景分析)
-		// 350 迁移修复 session_summaries 聚合链路后启用。
 		if adminHandler != nil {
 			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
+			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
 			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))
 			mux.HandleFunc("/api/admin/session-clusters/", wrapSessionAnalytics(adminHandler.RouteSessionClusters))

@@ -140,8 +140,17 @@ func grainMetricRow(t Totals, score float64, br map[string]int64) []cell {
 	} else {
 		row = append(row, strCell(""))
 	}
-	row = append(row, numCell(centsToUnitsF(float64(t.EstimatedCostCents))), strCell(t.Currency))
-	row = append(row, intCell(t.CreditsCharged), numCell(centsToUnitsF(t.InternalCostCents)))
+	if t.USDMeasuredRequests != nil && *t.USDMeasuredRequests == 0 && t.RequestCount > 0 {
+		row = append(row, strCell(""), strCell(""))
+	} else {
+		row = append(row, numCell(centsToUnitsF(t.EstimatedCostCents)), strCell(t.Currency))
+	}
+	row = append(row, intCell(t.CreditsCharged))
+	if t.USDMeasuredRequests != nil {
+		row = append(row, strCell(""))
+	} else {
+		row = append(row, numCell(centsToUnitsF(t.InternalCostCents)))
+	}
 	kind, _ := topErrorKind(br)
 	if kind == "" {
 		row = append(row, strCell(""))
@@ -155,19 +164,39 @@ func grainMetricRow(t Totals, score float64, br map[string]int64) []cell {
 func grainSummaryRows(rep *GrainReport) [][]cell {
 	rows := make([][]cell, 0, 128)
 	title := "供应商对帐报表（汇总）"
+	caliber := caliberText(rep.View)
+	sourceLabel := "快照口径"
 	if rep.View == ViewInternal {
 		title = "内部对帐报表（汇总）"
+	}
+	if rep.Projection != nil {
+		sourceLabel = "统计来源"
+		title = "历史请求统计（汇总）"
+		caliber = "全部请求流量，含探测和自检"
+		if rep.View == ViewInternal || rep.View == ViewKey {
+			caliber = "业务请求流量，积分为请求归属"
+		}
 	}
 	rows = append(rows,
 		[]cell{boldStrCell(title)},
 		[]cell{
 			strCell("区间: " + rep.Start.Format("2006-01-02") + " ~ " + rep.End.Format("2006-01-02")),
 			strCell("生成时间: " + time.Now().UTC().Format("2006-01-02 15:04:05 UTC")),
-			strCell("口径: " + caliberText(rep.View)),
-			strCell("快照口径: " + rep.Source),
+			strCell("口径: " + caliber),
+			strCell(sourceLabel + ": " + rep.Source),
 		},
 		[]cell{},
 	)
+	if p := rep.Projection; p != nil {
+		rows = append(rows, []cell{strCell("请求统计，实际过账见积分账本，账单及逐次发送见日对账。"),
+			strCell(fmt.Sprintf("自然日时区 %s，数据截止 %s（不含该时刻）", p.Timezone, p.Through.Format(time.RFC3339)))})
+		if p.PendingSince != nil {
+			rows = append(rows, []cell{strCell("所选日期有尚未投影的记录。")})
+		}
+		if n := rep.Totals.USDUnmeasuredRequests; n != nil && *n > 0 {
+			rows = append(rows, []cell{strCell(fmt.Sprintf("%d 条请求缺少 USD 金额或使用其他币种。", *n))})
+		}
+	}
 
 	emit := func(dim string, rowsOut *[][]cell) {
 		*rowsOut = append(*rowsOut, []cell{boldStrCell(dim)})

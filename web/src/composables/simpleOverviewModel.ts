@@ -6,7 +6,7 @@
 //   可以被页面与测试共用，测试不需要 mount 组件。
 //
 // ★ 口径纪律（与专家面**完全一致**，简易模式不新造任何统计口径）：
-//   · 请求数 / 成功率 / Token / 费用 ⇒ /api/admin/dashboard/board 的 summary
+//   · 请求数 / 成功率 / Token / 费用 ⇒ /api/admin/dashboard/v2/board 的 summary
 //   · 近 7 日趋势 ⇒ 同一端点 days=7（专家面看板 7d 预设同款），
 //     trends 桶（15min）在前端聚合成每日 —— 只是换粒度，不换数字
 //   · 失败笔数 ⇒ pies.errors 求和，summary 兜底（专家面 BoardHeroRow.errorCount 同口径）
@@ -527,7 +527,7 @@ export function deriveFailureCount(
 //
 // ★ owner 需求＝「关心消耗情况，有点像专家模式看的总监+看板」。
 //   简易总览页原来只有「今日」一个口径 ⇒ 消耗走势完全不可见。
-//   修法＝复用专家面看板的**同一个端点**（/api/admin/dashboard/board?days=7），
+//   修法＝复用专家面看板的**同一个端点**（/api/admin/dashboard/v2/board?days=7），
 //   把它返回的 trends（15 分钟桶，见 admin/board_time_range.go trendBucketMinutes：
 //   today=5m / 7d=15m / 30d+=1h）在**前端**聚合成「每日」柱条。
 //   不新造口径：桶来自看板缓存载荷，聚合只是把同一份数字换一种粒度展示。

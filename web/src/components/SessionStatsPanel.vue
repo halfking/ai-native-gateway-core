@@ -49,6 +49,14 @@ import type { KxDateRange } from './ui/kx-date-types'
 import { boardRangeFromKxRange, boardRangeToKxRange, type BoardTimeRange } from '../utils/boardTimeRange'
 const { t } = useI18n()
 const router = useRouter()
+const attributionLabels = computed(() => ({
+  no_session: t('sessions.stats.attribution.no_session'),
+  missing_session_record: t('sessions.stats.attribution.missing_session_record'),
+  missing_session_owner: t('sessions.stats.attribution.missing_session_owner'),
+  unknown_session_start: t('sessions.stats.attribution.unknown_session_start'),
+  opened_before_window: t('sessions.stats.attribution.opened_before_window'),
+  other_session_requests: t('sessions.stats.attribution.other_session_requests'),
+}))
 
 // 2026-11-23 owner 图批（紧凑轮）：「统计标准」入口上移到仪表盘页头
 // （与「整站数据」同一行）。本页被两处复用：
@@ -68,16 +76,8 @@ const emit = defineEmits<{ 'update:range': [value: KxDateRange] }>()
 
 // 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
 //
-// ⚠️ 2026-11-23 生产实测（211，NOW-7 天，同瞬时点）已知偏差，**主因已改判**：
-//   · 主因＝会话宇宙的**探测剔除过宽**：被剔掉的 19,512 笔请求 / $7,021.91
-//     在请求日志里 100% 属于业务流量（origin_stage='business'），没有一笔是探测。
-//     ⇒ 会话统计比看板（排除探测口径）低约 $7,021.91（占看板费用 79%）。
-//   · 次因＝跨窗会话：18 个会话的首次请求早于窗口但窗口内仍活跃，被整体排除，
-//     漏算 3,191 笔 / $281.38（占 3.2%）。
-//   ⚠️ 早前版本把主因写成"跨窗会话漏算约13%费用"，那是在**旧测量口径**下得出的
-//     结论，已被本轮逐项拆解推翻（见正文「费用差的完整拆解」）。修正记录在此，
-//     避免下一个人按旧结论去改后端聚合逻辑。
-// 详见: docs/audit/2026-11-23-数据一致性验证最终报告-数据库实测.md
+// V2 按 request_metrics 的请求分类与完成时间取数。跨窗会话在窗口内的
+// 请求仍计入会话费用。无会话关联的请求单列，可与同窗口的看板求和对拍。
 const statsStandardsHelpId = 'dashboard-stats-standards'
 
 // ★ 2026-11-23 日期范围对齐轮：仪表盘页把**看板那份** BoardTimeRange 也提供出来
@@ -199,31 +199,33 @@ const dashboardStats = computed<DashboardStats>(() => {
   const fromTrend = ov?.cost_trend?.reduce((sum, p) => sum + (p.requests ?? 0), 0) ?? 0
   return {
     totalSessions: ov?.total_sessions ?? 0,
-    totalSessionsChange: (() => {
-      const g = trend.value?.summary?.growth_rate
-      return g != null && Math.abs(g) > 1e-9 ? g : null
-    })(),
+    totalSessionsChange: null,
     activeSessions: ov?.active_sessions ?? 0,
-    totalCost: cost?.total_cost_usd ?? 0,
+    totalCost: cost?.total_cost_usd ?? null,
     totalCostChange: (() => {
       const g = cost?.cost_growth_pct
       return g != null && Math.abs(g) > 1e-9 ? g : null
     })(),
-    complianceRate: ov?.compliance_stats?.compliance_rate ?? 0,
+    complianceRate: ov?.compliance_stats?.compliance_rate ?? null,
     complianceRateChange: null,
     avgHealthScore: ov?.health_distribution?.avg_score ?? null,
     avgHealthScoreChange: null,
-    avgLatency: cost?.avg_latency_ms ?? 0,
+    avgLatency: cost?.avg_latency_ms ?? null,
     avgLatencyChange: null,
     totalRequests: cost?.total_requests ?? fromTrend,
     totalRequestsChange: null,
-    totalTokens: 0,
+    totalTokens: cost?.total_tokens ?? 0,
     totalTokensChange: null,
   }
 })
 
 const pipelineLatency = computed(() => performanceStats.value?.summary ?? null)
 const errorSummary = computed(() => errorStats.value?.summary ?? null)
+const newSessionGrowth = computed(() => trend.value?.summary.growth_rate ?? null)
+const unmeasuredUSD = computed(() => {
+  const cost = overview.value?.cost_stats
+  return cost?.usd_requests === undefined ? 0 : (cost.total_requests ?? 0) - cost.usd_requests
+})
 
 const trendChartData = computed<TrendDataPoint[]>(() => {
   if (trend.value?.trend?.length) {
@@ -232,7 +234,7 @@ const trendChartData = computed<TrendDataPoint[]>(() => {
       new_sessions: p.new_sessions,
       active_sessions: p.active_sessions,
       closed_sessions: p.closed_sessions,
-      total_cost: p.total_cost ?? 0,
+      total_cost: p.total_cost,
       total_requests: p.total_requests ?? 0,
     }))
   }
@@ -243,17 +245,17 @@ const trendChartData = computed<TrendDataPoint[]>(() => {
     const cost = costByDate.get(st.date)
     return {
       date: st.date,
-      new_sessions: st.new_sessions,
-      active_sessions: st.active_count,
-      closed_sessions: st.closed_count,
-      total_cost: cost?.cost ?? 0,
+      new_sessions: st.new_sessions ?? 0,
+      active_sessions: st.active_count ?? 0,
+      closed_sessions: st.closed_count ?? 0,
+      total_cost: cost === undefined ? 0 : cost.cost,
       total_requests: cost?.requests ?? 0,
     }
   })
 })
 
-function formatUsd(value: number) {
-  return `$${value.toFixed(4)}`
+function formatUsd(value: number | null | undefined) {
+  return value == null ? '—' : `$${value.toFixed(4)}`
 }
 
 function formatPct(value: number) {
@@ -406,7 +408,16 @@ defineExpose({
         </div>
       </div>
 
-      <DashboardStatsRow :stats="dashboardStats" :loading="loading" :show-tokens="false" />
+      <p v-if="overview?.pending_since" data-testid="stats-projection-pending">
+        {{ t('reports.projectedPending') }}
+      </p>
+      <DashboardStatsRow
+        :data-testid="overview?.source === 'request_metrics' ? 'stats-request-metrics' : undefined"
+        :stats="dashboardStats"
+        :loading="loading"
+        :show-tokens="overview?.cost_stats?.total_tokens !== undefined"
+        :active-throughout-period="overview?.source === 'request_metrics'"
+      />
 
       <!-- 2026-11-21 统计口径对齐轮：会话分析对齐指标行。
            与 /admin/session-analytics 总览页同一实现（domains/analytics 单一真源，
@@ -485,22 +496,27 @@ defineExpose({
         <div class="mini-kpi">
           <div class="mini-kpi__icon mini-kpi__icon--new"><el-icon :size="24"><Plus /></el-icon></div>
           <div>
-            <div class="mini-kpi__label">{{ t('sessions.stats.newSessions24h') }}</div>
-            <div class="mini-kpi__value">{{ overview?.new_sessions_24h?.toLocaleString() ?? 0 }}</div>
+            <div class="mini-kpi__label">{{ t(overview?.new_sessions == null ? 'sessions.stats.newSessions24h' : 'dashboard.charts.newSessions') }}</div>
+            <div class="mini-kpi__value">
+              {{ (overview?.new_sessions ?? overview?.new_sessions_24h)?.toLocaleString() ?? 0 }}
+              <span v-if="newSessionGrowth != null && newSessionGrowth !== 0" class="growth-tag">
+                {{ formatPct(newSessionGrowth) }}
+              </span>
+            </div>
           </div>
         </div>
         <div class="mini-kpi">
           <div class="mini-kpi__icon mini-kpi__icon--closed"><el-icon :size="24"><Minus /></el-icon></div>
           <div>
-            <div class="mini-kpi__label">{{ t('sessions.stats.closedSessions24h') }}</div>
-            <div class="mini-kpi__value">{{ overview?.closed_sessions_24h?.toLocaleString() ?? 0 }}</div>
+            <div class="mini-kpi__label">{{ t(overview?.closed_sessions == null ? 'sessions.stats.closedSessions24h' : 'dashboard.charts.closedSessions') }}</div>
+            <div class="mini-kpi__value">{{ (overview?.closed_sessions ?? overview?.closed_sessions_24h)?.toLocaleString() ?? 0 }}</div>
           </div>
         </div>
         <div class="mini-kpi">
           <div class="mini-kpi__icon mini-kpi__icon--cost"><el-icon :size="24"><Money /></el-icon></div>
           <div>
             <div class="mini-kpi__label">{{ t('sessions.stats.avgCostPerSession') }}</div>
-            <div class="mini-kpi__value">{{ formatUsd(overview?.cost_stats?.avg_cost_per_session ?? 0) }}</div>
+            <div class="mini-kpi__value">{{ formatUsd(overview?.cost_stats?.avg_cost_per_session) }}</div>
           </div>
         </div>
         <div class="mini-kpi">
@@ -524,7 +540,7 @@ defineExpose({
         <div class="charts-row__health">
           <HealthGradeChart
             :distribution="overview?.health_distribution ?? null"
-            :avg-score="overview?.health_distribution?.avg_score"
+            :avg-score="overview?.health_distribution?.avg_score ?? undefined"
             :loading="loading"
           />
         </div>
@@ -537,7 +553,7 @@ defineExpose({
             <div class="kv-row">
               <dt>{{ t('sessions.stats.totalCost') }}</dt>
               <dd>
-                {{ formatUsd(overview?.cost_stats?.total_cost_usd ?? 0) }}
+                {{ formatUsd(overview?.cost_stats?.total_cost_usd) }}
                 <span
                   v-if="overview?.cost_stats?.cost_growth_pct != null"
                   class="growth-tag"
@@ -545,16 +561,26 @@ defineExpose({
                 >{{ formatPct(overview?.cost_stats?.cost_growth_pct ?? 0) }}</span>
               </dd>
             </div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.inputCost') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.input_cost_usd ?? 0) }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.outputCost') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.output_cost_usd ?? 0) }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.avgCostPerRequest') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.avg_cost_per_request ?? 0) }}</dd></div>
-            <div class="kv-row"><dt>{{ t('sessions.stats.maxCostSession') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.max_cost_session ?? 0) }}</dd></div>
+            <div v-if="overview?.cost_stats?.input_cost_usd != null" class="kv-row"><dt>{{ t('sessions.stats.inputCost') }}</dt><dd>{{ formatUsd(overview.cost_stats.input_cost_usd) }}</dd></div>
+            <div v-if="overview?.cost_stats?.output_cost_usd != null" class="kv-row"><dt>{{ t('sessions.stats.outputCost') }}</dt><dd>{{ formatUsd(overview.cost_stats.output_cost_usd) }}</dd></div>
+            <div class="kv-row"><dt>{{ t('sessions.stats.avgCostPerRequest') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.avg_cost_per_request) }}</dd></div>
+            <div class="kv-row"><dt>{{ t('sessions.stats.maxCostSession') }}</dt><dd>{{ formatUsd(overview?.cost_stats?.max_cost_session) }}</dd></div>
           </dl>
+          <p v-if="unmeasuredUSD > 0" class="empty-hint">{{ t('reports.projectedMissingUSD', { n: unmeasuredUSD }) }}</p>
+          <div v-if="overview?.session_attribution?.totals.length" data-testid="session-attribution">
+            <div class="detail-card__header">{{ t('sessions.stats.attribution.title') }}</div>
+            <dl class="kv-list">
+              <div v-for="row in overview.session_attribution.totals" :key="row.reason" class="kv-row" :data-testid="'session-attribution-' + row.reason">
+                <dt>{{ attributionLabels[row.reason] }}</dt>
+                <dd>{{ t('sessions.stats.attribution.measures', { requests: row.requests.toLocaleString(), usd: formatUsd(row.cost_usd) }) }}</dd>
+              </div>
+            </dl>
+          </div>
         </div>
         <div class="detail-card">
           <div class="detail-card__header">{{ t('sessions.stats.complianceBreakdown') }}</div>
           <dl class="kv-list">
-            <div class="kv-row"><dt>{{ t('sessions.stats.compliant') }}</dt><dd>{{ overview?.compliance_stats?.compliant?.toLocaleString() ?? 0 }}</dd></div>
+            <div class="kv-row"><dt>{{ t('sessions.stats.compliant') }}</dt><dd>{{ overview?.compliance_stats?.compliant?.toLocaleString() ?? '—' }}</dd></div>
             <div class="kv-row"><dt>{{ t('sessions.stats.warnings') }}</dt><dd>{{ overview?.compliance_stats?.warning?.toLocaleString() ?? 0 }}</dd></div>
             <div class="kv-row"><dt>{{ t('sessions.stats.violations') }}</dt><dd>{{ overview?.compliance_stats?.violation?.toLocaleString() ?? 0 }}</dd></div>
             <div class="kv-row"><dt>{{ t('sessions.stats.promptInjection') }}</dt><dd>{{ overview?.compliance_stats?.prompt_injection_detected ?? 0 }}</dd></div>
@@ -576,6 +602,7 @@ defineExpose({
         :model-usage-expanded="overview.model_usage_expanded"
         :model-usage-expansion-reason="overview.model_usage_expansion_reason"
         :trend-window="trendWindow"
+        :include-probes="includeProbes"
       />
     </div>
   </div>

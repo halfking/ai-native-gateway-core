@@ -166,3 +166,20 @@ func TestReportRange_SystemTimezoneCalendarLabel(t *testing.T) {
 		t.Errorf("缺省区间长度 = %v，期望 6 天", d)
 	}
 }
+
+func TestProjectedReportRange_UsesLatestCompletedSystemDay(t *testing.T) {
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	defer settings.SystemTimezoneLocationForTest("")
+	now := time.Date(2026, 11, 23, 17, 0, 0, 0, time.UTC)
+	r := httptest.NewRequest("GET", "/api/admin/report-rollup/v2/summary?days=7", nil)
+	start, end, err := projectedReportRange(r, now)
+	if err != nil || start.Format(time.DateOnly) != "2026-11-17" || end.Format(time.DateOnly) != "2026-11-23" {
+		t.Fatalf("unexpected range %s to %s: %v", start, end, err)
+	}
+	for _, qs := range []string{"days=0", "days=367", "days=2&start=2026-11-23"} {
+		r := httptest.NewRequest("GET", "/api/admin/report-rollup/v2/summary?"+qs, nil)
+		if _, _, err := projectedReportRange(r, now); err == nil {
+			t.Errorf("invalid projected range was accepted: %s", qs)
+		}
+	}
+}

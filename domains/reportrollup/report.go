@@ -55,12 +55,40 @@ type Totals struct {
 	// cents_per_credit)；仅 internal 视角有值。
 	InternalCostCents float64 `json:"internal_cost_cents"`
 	InternalCurrency  string  `json:"internal_currency,omitempty"`
+	// Projection measures apply to the request report. Posted amounts are read from the ledger.
+	USDMeasuredRequests     *int64 `json:"usd_measured_requests,omitempty"`
+	USDUnmeasuredRequests   *int64 `json:"usd_unmeasured_requests,omitempty"`
+	CacheMeasuredRequests   *int64 `json:"cache_measured_requests,omitempty"`
+	LatencyMeasuredRequests *int64 `json:"latency_measured_requests,omitempty"`
 	// CacheHitRatio = Σcache_read / (Σinput + Σcache_read)；分母 0 → nil。
 	CacheHitRatio *float64 `json:"cache_hit_ratio"`
 	// LatencyP50/P95 跨天折叠时按成功请求加权平均（分位数不可折叠，
 	// 近似值仅用于报表展示）。
 	LatencyP50Ms float64 `json:"latency_p50_ms"`
 	LatencyP95Ms float64 `json:"latency_p95_ms"`
+}
+
+// MarshalJSON keeps the legacy snapshot format while exposing unavailable
+// monetary amounts and latency measurements as null on projected reports.
+func (t Totals) MarshalJSON() ([]byte, error) {
+	type payload Totals
+	if t.USDMeasuredRequests == nil {
+		return json.Marshal(payload(t))
+	}
+	var cost, p50, p95 *float64
+	if *t.USDMeasuredRequests > 0 || t.RequestCount == 0 {
+		cost = &t.EstimatedCostCents
+	}
+	if t.LatencyMeasuredRequests != nil && *t.LatencyMeasuredRequests > 0 {
+		p50, p95 = &t.LatencyP50Ms, &t.LatencyP95Ms
+	}
+	return json.Marshal(struct {
+		payload
+		EstimatedCostCents *float64 `json:"estimated_cost_cents"`
+		InternalCostCents  *float64 `json:"internal_cost_cents"`
+		LatencyP50Ms       *float64 `json:"latency_p50_ms"`
+		LatencyP95Ms       *float64 `json:"latency_p95_ms"`
+	}{payload: payload(t), EstimatedCostCents: cost, LatencyP50Ms: p50, LatencyP95Ms: p95})
 }
 
 // ProviderRow 供应商汇总行。

@@ -3,8 +3,8 @@ import { req, type RequestOptions } from './client'
 /**
  * usageTrendSeries.ts — 用量趋势线两条**只读**端点（2026-10-08，第七十一批）。
  *
- * GET /api/admin/usage/trend-series
- * GET /api/admin/usage/trend-models
+ * GET /api/admin/usage/v2/trend-series
+ * GET /api/admin/usage/v2/trend-models
  *
  * 注册在 `admin/handler.go:1267` 的 `h.admin(h.HandleUsageAdmin)` 前缀子路由上，
  * 分派见 `admin/usage.go:60-64` 两个 case ⇒ **admin 档**，tenant_admin 可用
@@ -244,6 +244,7 @@ export function trendCustomRange(
  *   ⇒ **少 `_without_customer_id` 后缀**（见 `trendSourceRealTable`）。
  */
 export const TREND_SOURCES = [
+  'request_metrics',
   'request_logs_with_current_month',
   'request_stats_minute',
   'request_stats_dim_minute',
@@ -268,6 +269,7 @@ export function trendSourceValid(v: string): v is TrendSource {
  *   ⇒ 想拿真实表名必须走这个映射，**不能**直接拿 `source` 当表名用。
  */
 export function trendSourceRealTable(source: string): string | null {
+  if (source === 'request_metrics') return 'request_metrics'
   if (source === TREND_SOURCE_DETAIL) {
     return 'request_logs_with_current_month_without_customer_id'
   }
@@ -414,7 +416,7 @@ export function trendQuery(q?: TrendQuery): string {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * A. GET /api/admin/usage/trend-series
+ * A. GET /api/admin/usage/v2/trend-series
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /** admin/usage_trend_series.go:51-57。四指标并列，指标过滤由前端选列。 */
@@ -483,7 +485,7 @@ export function fetchTrendSeries(
 ): Promise<TrendSeriesResponse> {
   return req<unknown>(
     'GET',
-    `/api/admin/usage/trend-series${trendQuery(q)}`,
+    `/api/admin/usage/v2/trend-series${trendQuery(q)}`,
     undefined,
     options,
   ).then(unwrapTrendSeries)
@@ -518,7 +520,7 @@ export function unwrapTrendSeries(resp: unknown): TrendSeriesResponse {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * B. GET /api/admin/usage/trend-models
+ * B. GET /api/admin/usage/v2/trend-models
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /** admin/usage_trend_series.go:83-89。 */
@@ -562,7 +564,7 @@ export function fetchTrendModels(
 ): Promise<TrendModelsResponse> {
   return req<unknown>(
     'GET',
-    `/api/admin/usage/trend-models${trendQuery(q)}`,
+    `/api/admin/usage/v2/trend-models${trendQuery(q)}`,
     undefined,
     options,
   ).then(unwrapTrendModels)

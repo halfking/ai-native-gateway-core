@@ -81,12 +81,34 @@ export interface QueryParams {
 // 1. 会话总览 API
 // ════════════════════════════════════════════════════════════════
 
+export interface SessionAttributionRow {
+  reason: 'no_session' | 'missing_session_record' | 'missing_session_owner' | 'unknown_session_start' | 'opened_before_window' | 'other_session_requests'
+  requests: number
+  tokens: number
+  credits: number
+  cost_usd: number | null
+  usd_requests: number
+}
+
 export interface SessionOverviewData {
   // 核心指标
   total_sessions: number
   active_sessions: number
   new_sessions_24h: number
   closed_sessions_24h: number
+  new_sessions?: number
+  closed_sessions?: number
+  source?: 'request_metrics'
+  lifecycle_source?: 'session_dim'
+  pending_since?: string | null
+  updated_at?: string | null
+  requests_without_session?: number
+  session_attribution?: {
+    totals: SessionAttributionRow[]
+    daily: (SessionAttributionRow & { day: string })[]
+  }
+  period?: SessionTrendData['period']
+  trend_summary?: RawTrendPayload['summary']
 
   // 2026-11-21 统计口径对齐轮新增
   /** excluded | included | degraded_included —— 会话宇宙探测口径披露。 */
@@ -119,37 +141,42 @@ export interface SessionOverviewData {
     c: number
     d: number
     f: number
-    a_percent: number
-    b_percent: number
-    c_percent: number
-    d_percent: number
-    f_percent: number
-    avg_score: number
+    a_percent: number | null
+    b_percent: number | null
+    c_percent: number | null
+    d_percent: number | null
+    f_percent: number | null
+    avg_score: number | null
+    not_assessed?: number
   }
 
   // 合规状态
   compliance_stats: {
     total: number
-    compliant: number
+    compliant: number | null
     warning: number
     violation: number
     prompt_injection_detected: number
     pii_detected: number
     toxic_output_detected: number
-    compliance_rate: number
+    compliance_rate: number | null
+    not_assessed?: number
   }
 
   // 成本统计
   cost_stats: {
-    total_cost_usd: number
-    avg_cost_per_session: number
-    avg_cost_per_request: number
-    max_cost_session: number
-    input_cost_usd: number
-    output_cost_usd: number
-    cost_growth_pct: number
+    total_cost_usd: number | null
+    avg_cost_per_session: number | null
+    avg_cost_per_request: number | null
+    max_cost_session: number | null
+    input_cost_usd: number | null
+    output_cost_usd: number | null
+    cost_growth_pct: number | null
     total_requests?: number
-    avg_latency_ms?: number
+    total_tokens?: number
+    total_credits?: number
+    usd_requests?: number
+    avg_latency_ms?: number | null
   }
 
   // 模型使用
@@ -157,8 +184,8 @@ export interface SessionOverviewData {
     model: string
     session_count: number
     request_count: number
-    total_cost: number
-    avg_latency_ms: number
+    total_cost: number | null
+    avg_latency_ms: number | null
     success_rate: number
   }>
   /**
@@ -175,33 +202,28 @@ export interface SessionOverviewData {
   top_clients: Array<{
     client_id: string
     session_count: number
-    total_cost: number
-    avg_health?: number
+    total_cost: number | null
+    avg_health?: number | null
     last_activity: string
   }>
 
   top_tasks: Array<{
     task_id: string
     session_count: number
-    total_cost: number
-    avg_health?: number
+    total_cost: number | null
+    avg_health?: number | null
     last_activity: string
   }>
 
   // 趋势数据
   cost_trend: Array<{
     date: string
-    cost: number
+    cost: number | null
     sessions: number
     requests: number
   }>
 
-  session_trend: Array<{
-    date: string
-    new_sessions: number
-    active_count: number
-    closed_count: number
-  }>
+  session_trend: RawTrendPoint[]
 
   /** KPI ↔ turns 对拍；degraded 时面板必须提示，不得假绿 */
   turns_alignment?: {
@@ -232,7 +254,7 @@ export function getSessionOverview(params: QueryParams = {}) {
   })
   return req<ApiResponse<SessionOverviewData>>(
     'GET',
-    `/api/admin/dashboard/session-overview?${searchParams}`
+    `/api/admin/dashboard/v2/session-overview?${searchParams}`
   )
 }
 
@@ -246,7 +268,7 @@ export interface SessionTrendPoint {
   new_sessions: number
   active_sessions: number
   closed_sessions: number
-  total_cost: number
+  total_cost: number | null
   total_requests: number
 }
 
@@ -263,7 +285,7 @@ export interface SessionTrendData {
     total_closed: number
     avg_daily_new?: number
     avg_daily_cost?: number
-    growth_rate: number
+    growth_rate: number | null
   }
 }
 
@@ -275,7 +297,7 @@ type RawTrendPoint = {
   active_count?: number
   closed_sessions?: number
   closed_count?: number
-  total_cost?: number
+  total_cost?: number | null
   total_requests?: number
 }
 
@@ -288,7 +310,8 @@ type RawTrendPayload = {
     avg_daily_new?: number
     avg_daily_cost?: number
     growth_rate?: number
-    growth_rate_pct?: number
+    growth_rate_pct?: number | null
+    growth_rate_known?: boolean
   }
   period?: { start: string; end: string; days: number }
   period_start?: string
@@ -302,7 +325,7 @@ export function normalizeSessionTrendData(raw: RawTrendPayload, days = 7): Sessi
     new_sessions: p.new_sessions ?? 0,
     active_sessions: p.active_sessions ?? p.active_count ?? 0,
     closed_sessions: p.closed_sessions ?? p.closed_count ?? 0,
-    total_cost: p.total_cost ?? 0,
+    total_cost: p.total_cost === undefined ? 0 : p.total_cost,
     total_requests: p.total_requests ?? 0,
   }))
   const s = raw.summary ?? {}
@@ -319,7 +342,7 @@ export function normalizeSessionTrendData(raw: RawTrendPayload, days = 7): Sessi
       total_closed: s.total_closed ?? 0,
       avg_daily_new: s.avg_daily_new,
       avg_daily_cost: s.avg_daily_cost,
-      growth_rate: s.growth_rate ?? s.growth_rate_pct ?? 0,
+      growth_rate: s.growth_rate_known === false ? null : s.growth_rate ?? s.growth_rate_pct ?? 0,
     },
   }
 }
@@ -331,7 +354,7 @@ export function getSessionTrend(params: QueryParams = {}) {
   })
   return req<ApiResponse<SessionTrendData>>(
     'GET',
-    `/api/admin/dashboard/session-trend?${searchParams}`
+    `/api/admin/dashboard/v2/session-trend?${searchParams}`
   )
 }
 
@@ -341,26 +364,17 @@ export function getSessionTrend(params: QueryParams = {}) {
 
 export interface HealthDistributionData {
   distribution: {
+    total: number
+    not_assessed: number
+    avg_score: number | null
     a: number
     b: number
     c: number
     d: number
     f: number
   }
-  percentages: {
-    a: number
-    b: number
-    c: number
-    d: number
-    f: number
-  }
-  total: number
-  avg_score: number
-  by_tenant: Array<{
-    tenant_id: string
-    distribution: { a: number; b: number; c: number; d: number; f: number }
-    avg_score: number
-  }>
+  trend: Array<{ date: string; avg_score: number; grade_a: number; grade_f: number }>
+  top_issues: Array<{ issue: string; count: number; severity: string }>
 }
 
 export function getHealthDistribution(params: QueryParams = {}) {
@@ -370,7 +384,7 @@ export function getHealthDistribution(params: QueryParams = {}) {
   })
   return req<ApiResponse<HealthDistributionData>>(
     'GET',
-    `/api/admin/dashboard/session-health?${searchParams}`
+    `/api/admin/dashboard/v2/session-health?${searchParams}`
   )
 }
 
@@ -381,20 +395,22 @@ export function getHealthDistribution(params: QueryParams = {}) {
 export interface ActiveSessionItem {
   session_id: string
   tenant_id: string
-  last_activity: string
-  duration_seconds: number
+  last_active_at: string
+  created_at: string | null
   request_count: number
-  total_cost: number
-  primary_model: string
-  health_grade?: string
-  health_score?: number
-  client_id?: string
-  task_id?: string
+  total_cost: number | null
+  usd_requests: number
+  primary_model: string | null
+  health_grade: string | null
+  health_score: number | null
+  client_id: string | null
 }
 
 export interface ActiveSessionsData {
   sessions: ActiveSessionItem[]
-  total: number
+  total_active: number
+  page: number
+  size: number
 }
 
 export function getActiveSessions(params: QueryParams = {}) {
@@ -404,7 +420,7 @@ export function getActiveSessions(params: QueryParams = {}) {
   })
   return req<ApiResponse<ActiveSessionsData>>(
     'GET',
-    `/api/admin/dashboard/session-active?${searchParams}`
+    `/api/admin/dashboard/v2/session-active?${searchParams}`
   )
 }
 

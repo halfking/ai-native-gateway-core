@@ -1844,6 +1844,7 @@ var apiKeysTeamId973 []byte
 var apiKeysTeamId973Down []byte
 var teamBudgets986 []byte
 var teamBudgets986Down []byte
+
 // ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 //
 //	★ 2026-11-19 文档一致性轮补五点同步——并行车首提交只写了正典，
@@ -1980,6 +1981,12 @@ var addOccurredCursorIndex983c []byte
 //go:embed embeddata/startup/983c_add_occurred_cursor_index.down.sql
 var addOccurredCursorIndex983cDown []byte
 
+//go:embed embeddata/startup/983d_request_metrics_projection.sql
+var requestMetricsProjection983d []byte
+
+//go:embed embeddata/startup/983d_request_metrics_projection.down.sql
+var requestMetricsProjection983dDown []byte
+
 // ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 //
 //	★ 这四条**只建了 canonical + embeddata 双副本**，却没登记进任何通道
@@ -2008,10 +2015,8 @@ var teamBudgets058Down []byte
 //go:embed embeddata/startup/056_user_teams.sql
 var userTeams056 []byte
 
-
 //go:embed embeddata/startup/058_team_budgets.sql
 var teamBudgets058 []byte
-
 
 // ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」
 //
@@ -2748,17 +2753,19 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999_session_summary_layers.sql":                  sessionSummaryLayers999,
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
 	// ★ 999a（2026-11-24 数据维护手册轮；★ 编号取字母后缀空号：sqlguard migrationNumPrefix 钉死 ^[0-9]{3}_ ⇒ 四位数对守卫隐形；983b/983c 先例）：运维/数据维护手册条目六条。
-	"startup/999a_data_maintenance_playbook.sql":              dataMaintenancePlaybook999a,
-	"startup/999a_data_maintenance_playbook.down.sql":         dataMaintenancePlaybook999aDown,
-	"startup/983_request_metrics.sql":                         requestMetrics983,
-	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
+	"startup/999a_data_maintenance_playbook.sql":      dataMaintenancePlaybook999a,
+	"startup/999a_data_maintenance_playbook.down.sql": dataMaintenancePlaybook999aDown,
+	"startup/983_request_metrics.sql":                 requestMetrics983,
+	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
 	//   ★ 983 的补列件（主号+字母后缀）⇒ 必须排在 983 建表件之后。
 	"startup/983b_add_raw_model_name.sql":      addRawModelName983b,
 	"startup/983b_add_raw_model_name.down.sql": addRawModelName983bDown,
 	// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
-	"startup/983c_add_occurred_cursor_index.sql":      addOccurredCursorIndex983c,
-	"startup/983c_add_occurred_cursor_index.down.sql": addOccurredCursorIndex983cDown,
+	"startup/983c_add_occurred_cursor_index.sql":       addOccurredCursorIndex983c,
+	"startup/983c_add_occurred_cursor_index.down.sql":  addOccurredCursorIndex983cDown,
+	"startup/983d_request_metrics_projection.sql":      requestMetricsProjection983d,
+	"startup/983d_request_metrics_projection.down.sql": requestMetricsProjection983dDown,
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。

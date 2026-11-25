@@ -18,7 +18,7 @@ vi.mock('../api/admin', () => ({
   getUserProfileList: (...a: unknown[]) => getUserProfileListMock(...a),
   getUserUsageMatrix: (...a: unknown[]) => getUserUsageMatrixMock(...a),
 }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('element-plus', () => ({
   ElButton: { setup: (_: unknown, { slots }: any) => () => h('button', slots.default?.()) },
   ElCard: { setup: (_: unknown, { slots }: any) => () => h('div', [slots.header?.(), slots.default?.()]) },
@@ -50,7 +50,7 @@ async function render() {
   return w
 }
 
-const meta = { source_view: 'request_logs_with_current_month', window_start: '2026-11-13T00:00:00Z', window_end: '2026-11-20T00:00:00Z' }
+const meta = { source_view: 'request_metrics', window_start: '2026-11-13T00:00:00Z', window_end: '2026-11-20T00:00:00Z' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -65,24 +65,24 @@ describe('UserProfileListView 数字出处轮', () => {
     const w = await render()
     const line = w.find('[data-testid="user-profile-usage-meta"]')
     expect(line.exists()).toBe(true)
-    expect(line.text()).toContain('request_logs_with_current_month')
+    expect(line.text()).toContain('request_metrics')
   })
 
-  it('② 帮助按钮存在；抽屉内容引用 i18n（公式/出处/口径三段都在）', async () => {
+  it('② 帮助抽屉显示积分、USD 与投影来源', async () => {
     getUserProfileListMock.mockResolvedValue({ users: [], total: 0, limit: 20, offset: 0, usage_meta: meta })
     const w = await render()
     const btn = w.find('[data-testid="user-profile-list-help"]')
     expect(btn.exists()).toBe(true)
-    // 抽屉（stub 常显）内容：公式段引用 helpContent.tokenFormula，出处段含 source_view
     const drawer = w.find('.drawer-stub')
     expect(drawer.exists()).toBe(true)
-    expect(drawer.text()).toContain('总 Token 数 = 输入 Token + 输出 Token')
-    expect(drawer.text()).toContain('request_logs_with_current_month')
+    expect(drawer.text()).toContain('积分')
+    expect(drawer.text()).toContain('USD')
+    expect(drawer.text()).toContain('request_metrics')
   })
 
   it('③ 展开行把 owner 与当前窗口传给矩阵端点（分用户/模型下钻的数据面）', async () => {
     getUserProfileListMock.mockResolvedValue({
-      users: [{ owner_user: 'alice', session_count: 1, window_usage: { request_count: 5, total_tokens: 900, internal_cost_usd: 0.1, external_cost_usd: 0.2, session_count: 1, model_count: 2 } }],
+      users: [{ owner_user: 'alice', session_count: 1, window_usage: { request_count: 5, total_tokens: 900, internal_credits: 0.1, external_cost_usd: 0.2, session_count: 1, model_count: 2 } }],
       total: 1, limit: 20, offset: 0, usage_meta: meta,
     })
     getUserUsageMatrixMock.mockResolvedValue({ rows: [], start_date: meta.window_start, end_date: meta.window_end })

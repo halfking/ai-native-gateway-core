@@ -3,6 +3,7 @@ package reconciliation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -53,14 +54,14 @@ func TestRequestReconciliationPostgres(t *testing.T) {
 	up := strings.ReplaceAll(string(migration), `\set ON_ERROR_STOP on`, "")
 	exec(up)
 	exec(reportFixtureRows)
-	mediaMigration, err := os.ReadFile("../../sql/migrations/startup/985_provider_attempt_media_usage.sql")
+	mediaMigration, err := os.ReadFile("../../sql/migrations/startup/986_provider_attempt_media_usage.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mediaUp := strings.ReplaceAll(string(mediaMigration), `\set ON_ERROR_STOP on`, "")
 	exec(mediaUp)
 	exec(mediaUp)
-	rateMigration, err := os.ReadFile("../../sql/migrations/startup/988_supplier_contract_rates.sql")
+	rateMigration, err := os.ReadFile("../../sql/migrations/startup/925_supplier_contract_rates.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestRequestReconciliationPostgres(t *testing.T) {
 		t.Fatalf("migration replay rows=%d registrations=%d err=%v", rows, registrations, err)
 	}
 	verifyAttemptRecorder(t, ctx, pool)
-	linkMigration, err := os.ReadFile("../../sql/migrations/startup/984_request_reconciliation_links.sql")
+	linkMigration, err := os.ReadFile("../../sql/migrations/startup/985_request_reconciliation_links.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +179,143 @@ func TestRequestReconciliationPostgres(t *testing.T) {
 	t.Run("daily_statement_across_local_months", func(t *testing.T) { testDailyInvoiceAcrossLocalMonths(t, ctx, pool) })
 	t.Run("internal_hourly_evidence", func(t *testing.T) { testInternalHourlyEvidence(t, ctx, pool) })
 	t.Run("installed_schema", func(t *testing.T) { testReconciliationSchemaCheck(t, ctx, pool) })
+	t.Run("projected_closed_day", func(t *testing.T) { testProjectedClosedDay(t, ctx, pool) })
+}
+
+func testProjectedClosedDay(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	exec := func(sql string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`
+INSERT INTO request_wal_with_current_month (tenant_id, request_id, gw_session_id, status, stage, created_at) VALUES
+ ('projected-a','same-request','projection-session','pending',0,'2026-11-22 16:00Z'),
+ ('projected-a','moved','projection-session','success',17,'2026-11-22 15:59Z'),
+ ('projected-a','missing',NULL,'failure',17,'2026-11-23 01:00Z'),
+ ('projected-a','at-end',NULL,'success',17,'2026-11-23 16:00Z'),
+ ('projected-b','same-request','projection-session','success',17,'2026-11-22 16:00Z');
+INSERT INTO request_context_attrs (tenant_id,request_id,api_key_id) VALUES ('projected-a','missing',12);
+INSERT INTO api_keys VALUES (12,'projected-a',false),(12,'projected-b',false);
+INSERT INTO session_dim VALUES ('projected-a','projection-session','2026-11-22 16:00Z',NULL,'projected-client');
+INSERT INTO usage_facts (tenant_id,request_id,status,prompt_tokens,completion_tokens,usage_source,revision,finalized_at,fact_id,api_key_id,traffic_class,occurred_at) VALUES
+ ('projected-a','same-request','success',900,100,'llm',99,'2026-11-23 02:00Z',9001,12,'business','2026-11-22 16:00Z');
+INSERT INTO credit_ledger_with_current_month VALUES ('projected-a',9002,'request','same-request','consume','paid','fixture-user',-2,'2026-11-23 03:00Z');`)
+	exec(`CREATE TABLE public.session_turns_hot (request_id text, tenant_id text, ts timestamptz)`)
+	for _, filename := range []string{"983_request_metrics.sql", "983b_add_raw_model_name.sql", "983d_request_metrics_projection.sql"} {
+		ddl, err := os.ReadFile("../../sql/migrations/startup/" + filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(strings.ReplaceAll(string(ddl), `\set ON_ERROR_STOP on`, ""))
+	}
+	const tenantID = "projected-a"
+	day := "2026-11-23"
+	zone := "Asia/Shanghai"
+	start, end, err := NaturalDay(day, zone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := ReportQuery{Start: start, End: end, Day: day, Timezone: zone, Section: "requests", Limit: 20}
+	if _, err := ReadProjectedReport(ctx, pool, ReportScope{TenantID: tenantID}, q); !errors.Is(err, ErrTerminalProjectionBackfill) {
+		t.Fatalf("backfill must not report missing evidence: %v", err)
+	}
+	if _, err := ReadProjectedDailyShadow(ctx, pool, day, zone); !errors.Is(err, ErrTerminalProjectionBackfill) {
+		t.Fatalf("shadow must wait for the same backfill: %v", err)
+	}
+	read := func(scope ReportScope, section string) Report {
+		t.Helper()
+		query := q
+		query.Section = section
+		report, err := ReadProjectedReport(ctx, pool, scope, query)
+		if err != nil || report.Version != ProjectedReportVersion {
+			t.Fatalf("read projected %s: %+v %v", section, report, err)
+		}
+		return report
+	}
+	postings := read(ReportScope{TenantID: tenantID}, "postings")
+	if postings.Projection != nil {
+		t.Fatalf("ledger postings should be independent of projection: %+v", postings)
+	}
+	assertReportFields(t, postings.Summary, map[string]string{"postings": "1", "net_credits": "2", "internal_amount": "null"})
+	exec(`
+INSERT INTO request_metrics_projection (tenant_id,request_id,status,prompt_tokens,completion_tokens,total_tokens,usage_source,source_revision,
+ source_finalized_at,source_fact_id,api_key_id,traffic_class,occurred_at,occurred_date,billing_date)
+SELECT tenant,id,status,input_tokens,output_tokens,total_tokens,source,revision,
+ finalized_at::timestamptz,fact_id,key_id,traffic_class,occurred_at::timestamptz,occurred_date::date,billing_date::date
+FROM (VALUES
+ ('projected-a','same-request','success',7,13,20,'llm',1,'2026-11-22 16:10Z',9010,12,'business','2026-11-22 16:00Z','2026-11-22','2026-11-22'),
+ ('projected-a','same-request','success',100,30,149,'corrected',3,'2026-11-23 16:10Z',9011,12,'business','2026-11-23 16:01Z','2026-11-23','2026-11-23'),
+ ('projected-a','same-request','success',777,20,797,'llm',3,'2026-11-23 16:09Z',9012,12,'business','2026-11-23 16:02Z','2026-11-23','2026-11-23'),
+ ('projected-a','same-request','success',555,20,575,'llm',4,'2026-11-23 16:12Z',NULL,12,'business','2026-11-23 16:03Z','2026-11-23','2026-11-23'),
+ ('projected-a','moved','timeout',5,0,5,'estimated',1,'2026-11-22 16:15Z',9015,12,'business','2026-11-22 16:15Z','2026-11-22','2026-11-22'),
+ ('projected-a','orphan','success',50,30,80,'llm',1,'2026-11-22 16:00Z',9016,12,'business','2026-11-22 16:00Z','2026-11-22','2026-11-22'),
+ ('projected-a','at-end','success',6,6,12,'llm',1,'2026-11-23 16:00Z',9017,12,'business','2026-11-23 16:00Z','2026-11-23','2026-11-23'),
+ ('projected-b','same-request','success',1234,567,1801,'llm',7,'2026-11-22 16:01Z',9018,12,'business','2026-11-22 16:00Z','2026-11-22','2026-11-22')
+) rows(tenant,id,status,input_tokens,output_tokens,total_tokens,source,revision,
+ finalized_at,fact_id,key_id,traffic_class,occurred_at,occurred_date,billing_date);
+UPDATE request_metrics_projection_state SET backfill_complete=true,updated_at='2026-11-24 00:01Z';
+INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
+ ('projected-b','not-synced','success','2026-11-23 17:00Z',9019);`)
+	requests := read(ReportScope{TenantID: tenantID}, "requests")
+	if requests.Projection == nil || requests.Projection.Source != "request_metrics" || requests.Projection.PendingSince != nil {
+		t.Fatalf("scope includes another tenant's projection backlog: %+v", requests.Projection)
+	}
+	assertReportFields(t, requests.Summary, map[string]string{"requests": "2", "terminal": "2", "success": "1", "failure": "1", "total_tokens": "149", "measured_total_requests": "1"})
+	assertReportFields(t, requests.Rows[0], map[string]string{"input_tokens": "100", "output_tokens": "30", "total_tokens": "149", "usage_source": `"corrected"`})
+	assertReportFields(t, requests.Rows[1], map[string]string{"total_tokens": "null", "input_tokens": "null"})
+	assertReportFields(t, read(ReportScope{TenantID: tenantID}, "sessions").Summary, map[string]string{"sessions": "1", "active": "1"})
+	coverage := read(ReportScope{TenantID: tenantID, Platform: true}, "coverage")
+	assertReportFields(t, coverage.Summary, map[string]string{"received_requests": "2", "receipts_without_retained_terminal_usage": "1", "terminal_usage_requests": "3", "terminal_usage_without_retained_receipt": "1", "terminal_usage_receipt_outside_window": "1", "posted_entries": "1"})
+	peer := read(ReportScope{TenantID: "projected-b"}, "requests")
+	if peer.Projection.PendingSince == nil {
+		t.Fatal("a next-day revision in the caller's backlog must be visible")
+	}
+	v1, err := ReadReport(ctx, pool, ReportScope{TenantID: tenantID}, q)
+	if err != nil || v1.Version != ReportVersion || v1.Projection != nil {
+		t.Fatalf("legacy report must stay independent: %+v %v", v1, err)
+	}
+	assertReportFields(t, v1.Summary, map[string]string{"total_tokens": "1000"})
+	shadow, err := ReadProjectedDailyShadow(ctx, pool, day, zone)
+	if err != nil || shadow.Version != ProjectedDailyShadowVersion || shadow.Projection == nil ||
+		shadow.Projection.Source != "request_metrics" || shadow.Projection.PendingSince == nil ||
+		!shadow.Start.Equal(start) || !shadow.End.Equal(end) || len(shadow.Summaries) != 6 {
+		t.Fatalf("invalid projected shadow: %+v %v", shadow, err)
+	}
+	for _, section := range []string{"requests", "attempts", "postings", "coverage"} {
+		summary := read(ReportScope{Platform: true}, section).Summary
+		if string(shadow.Summaries[section]) != string(summary) {
+			t.Fatalf("shadow %s differs from the V2 section: %s, want %s", section, shadow.Summaries[section], summary)
+		}
+	}
+	billDay, err := ReadProjectedDailyShadow(ctx, pool, "2026-11-01", zone)
+	if err != nil || len(billDay.SupplierBills) != 4 {
+		t.Fatalf("projected shadow omitted exact-day supplier bills: %+v %v", billDay, err)
+	}
+	for _, bill := range billDay.SupplierBills {
+		var summary struct {
+			ReadAt time.Time `json:"read_at"`
+		}
+		if err := json.Unmarshal(bill.Summary, &summary); err != nil || !summary.ReadAt.Equal(billDay.ReadAt) {
+			t.Fatalf("invoice must report the enclosing snapshot time: %s (%v)", bill.Summary, err)
+		}
+	}
+	var openDay string
+	if err := pool.QueryRow(ctx, `SELECT to_char(timezone($1, now()), 'YYYY-MM-DD')`, zone).Scan(&openDay); err != nil {
+		t.Fatal(err)
+	}
+	openShadow, err := ReadProjectedDailyShadow(ctx, pool, openDay, zone)
+	if err != nil || openShadow.WindowState != "open" || openShadow.Projection == nil {
+		t.Fatalf("open day must expose provisional evidence: %+v %v", openShadow, err)
+	}
+	exec(`UPDATE api_keys SET is_system=true WHERE tenant_id='projected-a' AND id=12;
+		UPDATE request_metrics_projection SET traffic_class='probe' WHERE tenant_id='projected-b' AND request_id='same-request';`)
+	business := read(ReportScope{TenantID: tenantID, Platform: true}, "requests")
+	assertReportFields(t, business.Rows[0], map[string]string{"traffic_class": `"business"`})
+	probe := read(ReportScope{TenantID: "projected-b", Platform: true}, "requests")
+	assertReportFields(t, probe.Rows[0], map[string]string{"traffic_class": `"probe"`})
+	assertReportFields(t, probe.Summary, map[string]string{"business_requests": "0", "other_traffic_requests": "1"})
 }
 
 func testReconciliationSchemaCheck(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {

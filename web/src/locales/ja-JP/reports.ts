@@ -1,7 +1,16 @@
 // reports.ts — レポート照合ページ（プロバイダー/内部のデュアルビュー、R65 i18n 追加）。
 export default {
+  projectedView: '過去のリクエスト統計',
+  projectedDays: 'リクエストが記録された日数は {n} 日です',
+  projectedBasis: '{zone} の暦日で集計します。実際の転記はクレジット台帳、送信と請求書は日次照合で確認できます。',
+  projectedPending: '選択した期間には同期中のリクエストがあります。',
+  projectedMissingUSD: '{n} 件のリクエストに USD 金額がないか、別の通貨が使われています。',
+  projectedEmpty: '選択した期間と条件に該当するリクエスト記録がありません。',
+  projectedToday: '（本日は集計対象外）',
   legacySnapshotView: '過去のスナップショット',
   daily: {
+    terminalProjection: '受信時刻で対象日を決めます。確定した使用量はリクエスト統計から取得します。',
+    terminalProjectionPending: '確定使用量を同期しています。最も古い待機レコードは {at} のものです。別の日の訂正がこのレポートに反映される場合があります。',
     title: '日次照合エビデンス',
     section: 'エビデンス種別',
     day: '照合日',
@@ -111,6 +120,9 @@ export default {
       internal: '総デビット、差引記帳クレジット、消費バケットはこの日についてそれぞれ別に表示されます。',
     },
     fields: {
+      total_tokens: '保存された確定トークン数',
+      measured_total_requests: 'トークン総数を実測したリクエスト',
+      usage_source: '使用量の出典',
       requests: 'クライアントリクエスト',
       success: '成功',
       failure: '失敗',

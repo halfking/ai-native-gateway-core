@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { normalizeSessionTrendData } from './dashboard'
 
 describe('normalizeSessionTrendData', () => {
+  it('preserves a missing projected USD amount and a measured zero', () => {
+    const data = normalizeSessionTrendData({
+      trend: [
+        { date: '2026-11-23', total_cost: null, total_requests: 1 },
+        { date: '2026-11-24', total_cost: 0, total_requests: 1 },
+      ],
+      summary: { total_active: 1, growth_rate_known: false, growth_rate_pct: null },
+    })
+    expect(data.trend.map((point) => point.total_cost)).toEqual([null, 0])
+    expect(data.summary.growth_rate).toBeNull()
+    expect(data.summary.total_active).toBe(1)
+  })
+
   it('maps active_count / closed_count / growth_rate_pct from wire format', () => {
     const out = normalizeSessionTrendData(
       {

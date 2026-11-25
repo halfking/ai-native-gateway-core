@@ -297,6 +297,8 @@ BEGIN { inblock = 0 }
 {
 	code = strip_code($0)
 	if (match(code, /(^|[^A-Za-z0-9_])mux\.Handle(Func)?\("[^"]*"/)) {
+		# A literal prefix followed by concatenation is not a literal argument.
+		if (substr(code, RSTART + RLENGTH) !~ /^[[:space:]]*,/) next
 		m = substr(code, RSTART, RLENGTH)
 		q = substr(m, index(m, "\"") + 1)
 		q = substr(q, 1, length(q) - 1)

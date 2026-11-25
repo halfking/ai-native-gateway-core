@@ -20,7 +20,7 @@ export interface TrendDataPoint {
   new_sessions: number
   active_sessions: number
   closed_sessions: number
-  total_cost: number
+  total_cost: number | null
   total_requests: number
 }
 

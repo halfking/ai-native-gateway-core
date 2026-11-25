@@ -21,6 +21,7 @@ export interface DailyEvidenceQuery extends DayPage {
 }
 
 export interface DailyEvidence extends DayPage {
+  version: string
   section: DailySection
   timezone: string
   tenant_id?: string
@@ -30,6 +31,7 @@ export interface DailyEvidence extends DayPage {
   read_at: string
   summary: EvidenceFields
   rows: EvidenceFields[]
+  projection?: { source: 'request_metrics'; updated_at: string | null; pending_since: string | null }
 }
 
 export interface SupplierDayInvoice {
@@ -85,8 +87,10 @@ export async function fetchDailyEvidence(query: DailyEvidenceQuery, options?: Re
   const params = dayParams(query)
   params.set('section', query.section)
   if (query.tenantId) params.set('tenant_id', query.tenantId)
-  const result = await req<DailyEvidence>('GET', `/api/admin/usage/request-reconciliation?${params}`, undefined, options)
+  const result = await req<DailyEvidence>('GET', `/api/admin/usage/v2/request-reconciliation?${params}`, undefined, options)
+  const requiresTerminalUsage = query.section === 'requests' || query.section === 'sessions' || query.section === 'coverage'
   if (!result || !sameDay(result, query) || result.section !== query.section || result.platform_scope !== true
+    || result.version !== 'request-reconciliation-v2' || (requiresTerminalUsage && result.projection?.source !== 'request_metrics')
     || (result.tenant_id || undefined) !== query.tenantId || !evidenceObject(result.summary)
     || !Array.isArray(result.rows) || !result.rows.every(evidenceObject)
     || (query.tenantId && query.section !== 'coverage' && result.rows.some(row => row.tenant_id !== query.tenantId))) {

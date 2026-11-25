@@ -360,16 +360,16 @@ export const zhCN = {
       // ★★ 本族与兄弟端点(tfo)同为「服务端没有角色下限」这一类，但**多一层**：
       //   这里的鉴权是**双模式**的，另一条分支(session-service JWT)确实检了
       //   `session:read` scope —— 可那是**服务间调用**的门，浏览器用户走不到它。
-      why: '这一层是服务端之外唯一的门：后端对浏览器用户只校验登录、不校验角色，普通账号本来也能读到本租户的全部模型与提供商清单。',
+      why: '管理员可查看有权访问的租户候选，普通账号只能通过接口查询本人的请求候选。',
     },
-    gate: { note: '本页是这一族里唯一挡普通账号的地方（后端只校验登录，不校验角色）。' },
+    gate: { note: '候选值按登录身份及租户范围过滤。' },
     readonly: { note: '本页只读：会话筛选本身由会话分析列表端点执行，这里只取候选值。' },
     load: { title: '取数', btn: '刷新筛选项' },
     state: { title: '筛选项' },
     badge: { nonEmpty: '有筛选项' },
-    empty: '这台网关近 30 天还没有跑过任何会话（不是故障）。',
+    empty: '所选自然日内暂无模型或提供商候选。',
     // ★★ 半空形状专属文案：两个列表里恰好一个没值。兄弟端点**没有**这一档。
-    halfEmpty: '★ 只有一半的筛选项有值，另一半是空的：{list}。这在本网关是正常状态（会话摘要里的模型列与提供商列可以只有一个有值）。',
+    halfEmpty: '暂无这些维度的候选值：{list}。',
     emptyDims: '以下维度暂无候选值：{list}',
     dim: {
       models: '模型',
@@ -380,12 +380,12 @@ export const zhCN = {
     },
     // ★ (9) 顺序与去重在响应里可观测，所以能把它显示出来而不是默默假定。
     sortedUnique: '按值升序·无重复',
-    dimNote: '聚合自 session_summaries.{column}，近 {days} 天。',
+    dimNote: '从 request_metrics.{column} 统计近 {days} 个自然日的候选。',
     // ★★ 两个维度**都**有 30 天窗口（兄弟端点只有 3/8 有）——文案不能抄那边的。
     windowNote: '★ 本页只有 {n} 个维度，且**都**受近 {days} 天窗口约束。',
     // ★★ (4) super_admin 这一档看的是**全部租户**的聚合，且无法用参数收窄。
     crossTenant: {
-      note: '★ 你以超级管理员身份查看：这里是**全部租户**近 30 天的模型与提供商聚合，这个端点**没有**按租户收窄的参数。',
+      note: '当前列表汇总全部租户近 30 个自然日的模型和提供商候选。',
     },
     tenant: { agnostic: '本页展示的是聚合候选值清单（不含任何租户标识字段）。' },
   },
@@ -394,9 +394,7 @@ export const zhCN = {
     title: '用量成本',
     nope: {
       msg: '仅管理员可查看用量与成本数据。',
-      // ★★★ 本族与服务端中间件是「真门」那一类不同：三个端点**确实按租户隔离**，
-      //   但 `h.admin` **没有角色下限** ⇒ 服务端会把「查全部租户」的结果发给普通 user。
-      why: '服务端这三个端点没有角色下限，普通账号会读到全部租户的成本，所以本页提前挡住。',
+      why: '租户管理员查看本租户成本，超级管理员查看全部租户成本。',
     },
     load: {
       title: '取数',
@@ -407,10 +405,13 @@ export const zhCN = {
       ownTenant: '你正在查看**本租户**的成本。',
     },
     estimate: {
+      unavailable: '节省额待合同费率或账单明细。',
       note: '下面三个「节省」数字是按写死的假设推算出来的**估算值**，不是账单。',
       badge: '估算',
     },
     cache: {
+      ratio: '缓存读取 Token 占输入 Token 的比例',
+      coverage: '可确认口径的请求 {known} / {total}',
       title: '缓存与压缩经济性',
       ok: '服务端确认未降级',
       degraded: '服务端已降级：下面的数字是全 0，不代表真的没花钱。',
@@ -420,15 +421,16 @@ export const zhCN = {
       degraded: '环比已降级。',
     },
     check: {
-      hitRatioMeaningless: '命中率为 0% 只是因为分母为 0，不代表「一条都没命中」。',
+      hitRatioMeaningless: '本窗口缺少可用于计算命中率的输入 Token。',
       compressedSuspect: '压缩请求数可能取数失败（服务端只记了一条 warn 日志）。',
       compressionUnreliable: '压缩节省额不可信：它的唯一输入（压缩请求数）可能取数失败。',
-      periodMeaningless: '环比变化为 0 是因为两个周期都没有数据，不是「持平」。',
+      periodMeaningless: '上期成本为零，无法计算相对变化。',
       threshold: '显著变化的阈值是 {pct}%。',
     },
     field: {
       totalRequests: '总请求数',
       cacheReadTokens: '缓存命中 token',
+      compressedRequests: '已记录压缩的请求',
       dollars_saved: '缓存节省额',
       compression_saved: '压缩节省额',
       total_saved: '合计节省',
@@ -1513,6 +1515,20 @@ export const zhCN = {
       active: '活跃会话',
       new24h: '24 小时新增',
       closed24h: '24 小时关闭',
+      newSessions: '区间内新建',
+      closedSessions: '区间内关闭',
+      tokens: 'Token 总量',
+      cost: '费用（USD）',
+      attribution: {
+        title: "会话归属",
+        noSession: "无会话关联（未纳入会话费用）",
+        missingRecord: "缺少会话记录",
+        missingOwner: "会话缺少归属用户",
+        unknownStart: "会话开始时间未知",
+        openedBeforeWindow: "窗口前开启的会话",
+        otherSessions: "其他已关联会话",
+        measures: "{requests} 笔 · {usd}",
+      },
       generatedAt: '生成时间',
       period: '统计区间',
     },
@@ -2210,10 +2226,10 @@ export const zhCN = {
     navTitle: '会话分析',
     // ★★ 数据新鲜度（本族头号问题）
     freshness: '数据新鲜度',
-    staleSourceNote: '这一页读的是数据库里的**物化视图**，而刷新它的函数只在建表时执行过一次，仓里没有定时刷新它的调度器。下面显示的「数据截至」就是这份数据真正的年龄。',
+    staleSourceNote: '统计按自然日读取异步更新的请求统计。',
     refreshedAt: '数据截至',
     refreshedRaw: '原始时间戳',
-    refreshedZero: '这一页是空的，后端返回的刷新时间是 Go 零值（0001-01-01），说明这一页没有数据可显示，也拿不到真实的刷新时刻。',
+    refreshedZero: '暂未返回同步时间。',
     // ↓ 筛选
     filters: '筛选',
     dimensionLabel: '切换维度',
@@ -2439,6 +2455,13 @@ export const zhCN = {
     emptyModels: '这段时间没有按模型聚合的用量。',
     detail: '消费明细',
     centsPerCredit: '每积分单价',
+    projectedSource: '各日期范围的请求与归属积分均来自统一请求统计。',
+    estimatedMarginUnavailable: '{n} 行缺少测算毛利率所需的数据。',
+    estimatedMarginNA: '缺少测算依据',
+    estimatedRevenue: '测算收入',
+    estimatedMarginRate: '测算毛利率',
+    creditReferenceNotice: '测算使用当前积分参考价，实际扣费以积分账本为准。',
+    cancellationCoverage: '{n} 条有积分消耗的请求缺少取消证据',
     cpcNote: '★ 单价是后端从 `maas_settings` 直读后**回显**的，所以每一行的收入都可以独立复算核对。',
     marginUndefined: '★★ 有 {n} 行**没有收入**，它们的毛利率是**无定义**（后端保持 0）—— 不能当成「零毛利」读。',
     cancelledBilled: '★★ 这段时间有 {n} 次请求**已扣积分但被客户端取消**（流中断且失败码是 client_cancel / client_disconnected）—— 收入侧的已知漏点。',
@@ -2513,6 +2536,7 @@ export const zhCN = {
   },
   // ↓ 租户详情（2026-10-08，superAdmin 档）
   tnd: {
+    usdCoverage: '{n} 条请求的费用币种不在 USD 合计中',
     title: '租户详情',
     dailyTitle: '每日用量明细',
     needCode: '租户码为空。',
@@ -4042,8 +4066,14 @@ sctx: {
   rr: {
     // ★★ 与既有 `reconciliation`（费用对账 / costReconciliation）是**两个功能**
     title: '对账报表',
-    legacySnapshotView: '历史快照',
+    projectedView: '历史请求统计',
+    projectedDays: '有请求记录的日期共 {n} 天',
+    projectedBasis: '按 {zone} 自然日统计。实际过账见积分账本，供应商逐次发送和账单见日对账。',
+    projectedPending: '所选日期仍有请求待同步。',
+    projectedMissingUSD: '{n} 条请求缺少 USD 金额或使用其他币种。',
     evidence: {
+      terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。',
+      terminalProjectionPending: '终态用量仍在同步，最早排队于 {at}。跨日修订也可能影响结果。',
       title: '日对账证据', date: '对账日期', load: '查询证据',
       scope: '旧用量按租户和请求在每天去重，历史供应商发送总数未知。',
       fields: {
@@ -4070,6 +4100,7 @@ sctx: {
         traffic_class: '流量归属',
         status: '请求状态',
         admission_rejection: '准入拒绝原因',
+        total_tokens: '留存终态总 Token', measured_total_requests: '有终态总 Token 的请求', usage_source: '用量来源',
         input_tokens: '输入 Token',
         output_tokens: '输出 Token',
         recorded_supplier_sends: '已记录供应商发送',
@@ -4214,11 +4245,11 @@ sctx: {
       title: '查询条件',
       view: '视角',
       window: '窗口',
+      businessOnly: "仅业务流量",
       windowDays: '近 {n} 天',
       detail: '按天明细',
       // ★★ 闭区间、不含今日：聚合是 T+1 的
-      range: '区间（闭区间）：{start} 至 {end}',
-      t1: '本端点是 T+1 聚合，不含今日快照；缺省口径是「昨日往前 7 天」。',
+      t1: '按网关时区查询最近已结束的自然日，默认 7 天。',
     },
     summary: {
       title: '区间汇总',

@@ -23,6 +23,13 @@
           content-id="dashboard-stats-standards"
           :label="t('pageHelp.button.standards')"
         />
+        <router-link
+          class="sa-btn"
+          data-testid="sa-user-profiles-link"
+          :to="{ path: '/admin/session-analytics/user-profiles', query: { start_date: range.start, end_date: range.end } }"
+        >
+          {{ t('sessions.userProfile.title') }}
+        </router-link>
         <button
           class="sa-btn"
           type="button"
@@ -58,14 +65,13 @@
       />
     </div>
 
-    <!-- ★ 2026-11-23 审计轮：Top5 四件套（模型/供应商/用户/任务）——
-         口径与 /admin/session-analytics 总览页完全一致（同一物化视图族），
-         每行可点击直达对应详情列表。 -->
+    <!-- 模型、供应商和任务的请求用量来自请求投影。 -->
     <section class="top5-section" data-testid="sa-top5-section">
       <div class="section-header">
         <h2 class="section-title">{{ t('sessionAnalytics.top5.title') }}</h2>
       </div>
       <p class="sa-note">{{ t('sessionAnalytics.top5.scopeNote') }}</p>
+      <p v-if="requestRankingsPending" class="sa-note" role="status">{{ t('reports.projectedPending') }}</p>
       <!-- ★ 2026-11-23 审计轮（P1-3）：深链带来的任务过滤必须**可见**。
            「筛了但界面说没筛」与「点了 Top5 任务行跳过来却什么都没发生」同族。 -->
       <div v-if="taskFilter" class="sa-task-filter" data-testid="sa-task-filter">
@@ -143,10 +149,10 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="u in topUsers" :key="u.owner">
+            <tr v-for="u in topUsers" :key="JSON.stringify([u.tenant_id, u.owner])">
               <td>{{ u.rank }}</td>
               <td>
-                <button class="sa-link" type="button" @click="openDetail(u.owner)">
+                <button class="sa-link" type="button" :title="u.tenant_id" @click="openDetail(u)">
                   {{ u.display_name || u.owner }}
                 </button>
               </td>
@@ -156,11 +162,11 @@
               <td>{{ fmt(u.task_count) }}</td>
               <td>{{ fmt(u.total_tokens) }}</td>
               <td>
-                <SaCostCell :internal-cost="u.internal_cost" :external-cost="u.external_cost" />
+                <SaCostCell :internal-cost="u.total_cost" :external-cost="u.credits_charged" projected />
               </td>
               <td>{{ formatTime(u.last_active_at) }}</td>
               <td>
-                <button class="sa-link" type="button" @click="openDetail(u.owner)">
+                <button class="sa-link" type="button" @click="openDetail(u)">
                   {{ t('sessionAnalytics.action.viewDetail') }}
                 </button>
               </td>
@@ -251,14 +257,13 @@ function onApplyRange(newRange: KxDateRange) {
   void loadTop5()
 }
 
-// ★ 2026-11-23 审计轮：Top5 四件套（模型/供应商/用户/任务）全部取自
-//   session-analytics 物化视图 ⇒ 与本族其它页面同一口径、同一新鲜度。
-//   四次请求并行；任一失败不影响其它三个维度（各自独立 catch）。
+// 四类排行使用相同的请求投影范围，各自处理加载错误。
 const modelRows = ref<ModelRankingRow[]>([])
 const providerRows = ref<ProviderRankingRow[]>([])
 const userRows = ref<UserRankingRow[]>([])
 const taskRows = ref<TaskRankingRow[]>([])
 const top5Error = ref<string | null>(null)
+const requestRankingsPending = ref(false)
 
 /**
  * 每个维度的失败文案（键 = 维度）。
@@ -289,6 +294,9 @@ async function loadTop5() {
   // ★ 已被更新的一轮取代 ⇒ 丢弃本次响应（不写任何状态）。
   if (token !== seriesToken) return
   const [models, providers, users, tasks] = results
+  requestRankingsPending.value = (models.status === 'fulfilled' && !!models.value.pending_since) ||
+    (providers.status === 'fulfilled' && !!providers.value.pending_since) ||
+    (tasks.status === 'fulfilled' && !!tasks.value.pending_since)
   modelRows.value = models.status === 'fulfilled' ? models.value.models || [] : []
   providerRows.value = providers.status === 'fulfilled' ? providers.value.providers || [] : []
   userRows.value = users.status === 'fulfilled' ? users.value.users || [] : []
@@ -358,8 +366,12 @@ async function refreshAll() {
   ])
 }
 
-function openDetail(owner: string) {
-  void router.push(`/admin/session-analytics/user-ranking/${owner}`)
+function openDetail(user: UserRankingRow) {
+  void router.push({
+    name: 'session-analytics-user-detail',
+    params: { owner: user.owner },
+    query: { tenant_id: user.tenant_id, start_date: range.value.start, end_date: range.value.end },
+  })
 }
 
 function fmt(value: number | null | undefined): string {

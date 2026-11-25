@@ -50,6 +50,7 @@ const sourceKey = computed(() => {
   switch (props.source) {
     case 'redis_baseline_delta': return t('dashboard.board.sourceRedis')
     case 'live_sse_delta': return t('dashboard.board.sourceSse')
+    case 'request_metrics':
     case 'postgresql_baseline': return t('dashboard.board.sourcePg')
     default: {
       // 2026-11-20：直查路径的新真源（usage_facts[_custom_range|_degraded_no_redis]）

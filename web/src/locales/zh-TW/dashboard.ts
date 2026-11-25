@@ -76,7 +76,7 @@ tabs: {
         probeExclude: '不含探測',
         probeInclude: '含探測',
         probeIncludeBadge: '含探測流量',
-        probeScopeTitle: '英雄區彙總口徑：不含探測＝內部對帳口徑；含探測＝供應商對帳口徑（對外對帳因含探測流量會略多）',    modelDistTitle: '模型分佈',
+        probeScopeTitle: '彙總、圖表和錯誤下鑽使用相同的探測流量篩選條件。',    modelDistTitle: '模型分佈',
     modelTop: '視窗內 Top {n}',
     colShare: '佔比',
     distTitle: '分佈分析',

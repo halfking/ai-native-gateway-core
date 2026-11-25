@@ -1,5 +1,6 @@
 import { req } from './_core'
 import type { UserInfo } from './_core'
+import { fetchSessionOverview, type SessionOverviewData } from './dashboard'
 import type { DegradationMarker } from '../composables/useDegradationMarker'
 
 // admin.ts — v6.0 audit T12 (2026-06-22)
@@ -11,40 +12,11 @@ import type { DegradationMarker } from '../composables/useDegradationMarker'
 
 // ── Dashboard Session Stats (2026-07-07) ──
 
-export interface SessionOverviewResponse {
-  total_sessions: number
-  active_sessions: number
-  health_distribution: {
-    a: number
-    b: number
-    c: number
-    d: number
-    f: number
-  }
-  cost_trend: Array<{
-    date: string
-    cost: number
-    sessions: number
-  }>
-  top_clients: Array<{
-    client_id: string
-    session_count: number
-    total_cost: number
-    avg_health?: number
-  }>
-  top_tasks: Array<{
-    task_id: string
-    session_count: number
-    total_cost: number
-    avg_health?: number
-  }>
-  last_updated: string
-}
+export type SessionOverviewResponse = SessionOverviewData
 
-export function getSessionOverview(days = 7, tenantId?: string) {
-  const params = new URLSearchParams({ days: String(days) })
-  if (tenantId) params.set('tenant_id', tenantId)
-  return req<SessionOverviewResponse>('GET', `/api/admin/dashboard/session-overview?${params}`)
+export async function getSessionOverview(days = 7, tenantId?: string): Promise<SessionOverviewResponse> {
+  const { data } = await fetchSessionOverview({ days, tenant_id: tenantId })
+  return data
 }
 
 // ── Session Analytics - Client/Task Dimension (P2, 2026-07-07) ──
@@ -54,8 +26,10 @@ export interface ClientAnalyticsSummary {
   session_count: number
   active_sessions_24h: number
   total_requests: number
-  total_cost_usd: number
-  avg_cost_per_session: number
+  total_cost_usd: number | null
+  avg_cost_per_session: number | null
+  usd_unmeasured_requests?: number
+  pending_since?: string | null
   /** Average health score (0-100 integer range, nullable) */
   avg_health_score?: number
   health_distribution: {
@@ -77,23 +51,23 @@ export interface ClientAnalyticsDetail extends ClientAnalyticsSummary {
   related_tasks: Array<{
     task_id: string
     session_count: number
-    total_cost_usd: number
+    total_cost_usd: number | null
     /** Average health score (0-100 integer range, nullable) */
     avg_health?: number
     last_activity: string
   }>
   daily_cost_trend: Array<{
     date: string
-    cost: number
+    cost: number | null
     sessions: number
   }>
   recent_sessions: Array<{
     session_id: string
     request_count: number
-    cost_usd: number
+    cost_usd: number | null
     health_score?: number
     health_grade?: string
-    created_at: string
+    created_at: string | null
   }>
 }
 
@@ -102,8 +76,10 @@ export interface TaskAnalyticsSummary {
   session_count: number
   active_sessions_24h: number
   total_requests: number
-  total_cost_usd: number
-  avg_cost_per_session: number
+  total_cost_usd: number | null
+  avg_cost_per_session: number | null
+  usd_unmeasured_requests?: number
+  pending_since?: string | null
   /** Average health score (0-100 integer range, nullable) */
   avg_health_score?: number
   health_distribution: {
@@ -126,23 +102,23 @@ export interface TaskAnalyticsDetail extends TaskAnalyticsSummary {
   related_clients: Array<{
     client_id: string
     session_count: number
-    total_cost_usd: number
+    total_cost_usd: number | null
     /** Average health score (0-100 integer range, nullable) */
     avg_health?: number
     last_activity: string
   }>
   daily_cost_trend: Array<{
     date: string
-    cost: number
+    cost: number | null
     sessions: number
   }>
   recent_sessions: Array<{
     session_id: string
     request_count: number
-    cost_usd: number
+    cost_usd: number | null
     health_score?: number
     health_grade?: string
-    created_at: string
+    created_at: string | null
   }>
 }
 
@@ -162,14 +138,30 @@ export function getClientAnalyticsList(params?: {
     total: number
     limit: number
     offset: number
-    refreshed_at: string
-  }>('GET', `/api/admin/session-analytics/clients?${q}`)
+    refreshed_at: string | null
+  }>('GET', `/api/admin/session-analytics/v2/clients?${q}`)
 }
 
-export function getClientAnalyticsDetail(clientId: string, days = 30, tenantId?: string) {
-  const params = new URLSearchParams({ days: String(days) })
+type DimensionWindow = { start: string; end: string; exact?: boolean }
+
+function sessionDimensionParams(days: number, tenantId?: string, range?: DimensionWindow, includeProbes = false) {
+  const params = new URLSearchParams()
+  if (!range) params.set('days', String(days))
+  else if (range.exact) {
+    params.set('start_time', range.start)
+    params.set('end_time', range.end)
+  } else {
+    params.set('start_date', range.start)
+    params.set('end_date', range.end)
+  }
   if (tenantId) params.set('tenant_id', tenantId)
-  return req<ClientAnalyticsDetail>('GET', `/api/admin/session-analytics/clients/${clientId}?${params}`)
+  if (includeProbes) params.set('include_probes', 'true')
+  return params
+}
+
+export function getClientAnalyticsDetail(clientId: string, days = 30, tenantId?: string, range?: DimensionWindow, includeProbes = false) {
+  const params = sessionDimensionParams(days, tenantId, range, includeProbes)
+  return req<ClientAnalyticsDetail>('GET', `/api/admin/session-analytics/v2/clients/${encodeURIComponent(clientId)}?${params}`)
 }
 
 export function getTaskAnalyticsList(params?: {
@@ -188,35 +180,32 @@ export function getTaskAnalyticsList(params?: {
     total: number
     limit: number
     offset: number
-    refreshed_at: string
-  }>('GET', `/api/admin/session-analytics/tasks?${q}`)
+    refreshed_at: string | null
+  }>('GET', `/api/admin/session-analytics/v2/tasks?${q}`)
 }
 
-export function getTaskAnalyticsDetail(taskId: string, days = 30, tenantId?: string) {
-  const params = new URLSearchParams({ days: String(days) })
-  if (tenantId) params.set('tenant_id', tenantId)
-  return req<TaskAnalyticsDetail>('GET', `/api/admin/session-analytics/tasks/${taskId}?${params}`)
+export function getTaskAnalyticsDetail(taskId: string, days = 30, tenantId?: string, range?: DimensionWindow, includeProbes = false) {
+  const params = sessionDimensionParams(days, tenantId, range, includeProbes)
+  return req<TaskAnalyticsDetail>('GET', `/api/admin/session-analytics/v2/tasks/${encodeURIComponent(taskId)}?${params}`)
 }
 
 // ── User Profile / 用户画像 (2026-07-07) ──
 
 export interface UserProfileSummary {
   owner_user: string
+  tenant_id?: string
   session_count: number
   total_requests: number
-  total_cost_usd: number
-  avg_cost_per_session: number
+  total_cost_usd: number | null
+  avg_cost_per_session: number | null
   avg_health_score?: number
   total_success: number
   total_errors: number
-  first_seen_at: string
-  last_seen_at: string
+  first_seen_at: string | null
+  last_seen_at: string | null
   end_user_count: number
   models_used?: string[]
-  // 2026-11-20 数字出处轮：选定时间窗口内的用量聚合。
-  // 出处 = request_logs_with_current_month（后端 usage_meta 回传真源）；
-  // internal=SUM(cost_display)（内部核算价），external=SUM(cost_usd)（外部成本）。
-  // undefined = 窗口聚合降级（canonical 视图缺席），与 0 语义分家。
+  // 用户画像列表的选定窗口用量由 usage_meta 标明数据来源。
   window_usage?: UserWindowUsage
 }
 
@@ -227,8 +216,9 @@ export interface UserWindowUsage {
   input_tokens: number
   output_tokens: number
   total_tokens: number
-  internal_cost_usd: number
-  external_cost_usd: number
+  internal_credits: number
+  external_cost_usd: number | null
+  cost_rows_outside_usd: number
   session_count: number
   model_count: number
 }
@@ -243,24 +233,29 @@ export interface UserUsageMeta {
 // UserUsageMatrixRow 员工×模型一行（usage-matrix 端点）。
 export interface UserUsageMatrixRow {
   owner_user: string
+  tenant_id?: string
   model_name: string
   provider: string
   request_count: number
   input_tokens: number
   output_tokens: number
   total_tokens: number
-  internal_cost_usd: number
-  external_cost_usd: number
+  internal_credits: number
+  external_cost_usd: number | null
+  cost_rows_outside_usd: number
   first_used_at: string
   last_used_at: string
 }
 
 export interface UserProfileDetail extends UserProfileSummary {
-  daily_cost_trend: Array<{ date: string; cost: number; sessions: number }>
-  top_tasks: Array<{ task_id: string; session_count: number; total_cost: number; avg_health?: number }>
-  top_end_users: Array<{ end_user_id: string; session_count: number; total_cost_usd: number; avg_health?: number; last_activity: string }>
-  recent_sessions: Array<{ session_id: string; request_count: number; cost_usd: number; health_score?: number; health_grade?: string; created_at: string }>
+  daily_cost_trend: Array<{ date: string; cost: number | null; sessions: number }>
+  top_tasks: Array<{ task_id: string; session_count: number; total_cost: number | null; avg_health?: number }>
+  top_end_users: Array<{ end_user_id: string; session_count: number; total_cost_usd: number | null; avg_health?: number; last_activity: string }>
+  recent_sessions: Array<{ session_id: string; request_count: number; cost_usd: number | null; health_score?: number; health_grade?: string; created_at: string | null }>
   health_distribution: { a: number; b: number; c: number; d: number; f: number }
+  pending_since?: string | null
+  usd_unmeasured_requests?: number
+  usage_meta?: UserUsageMeta
 }
 
 export function getUserProfileList(params?: { limit?: number; offset?: number; search?: string; date_from?: string; date_to?: string }) {
@@ -268,7 +263,6 @@ export function getUserProfileList(params?: { limit?: number; offset?: number; s
   if (params?.limit) q.set('limit', String(params.limit))
   if (params?.offset) q.set('offset', String(params.offset))
   if (params?.search) q.set('search', params.search)
-  // 2026-11-19 时间范围统一轮：窗口内有活动的用户（后端过滤 so.last_seen_at）。
   if (params?.date_from) q.set('date_from', params.date_from)
   if (params?.date_to) q.set('date_to', params.date_to)
   // degraded / degraded_reason（2026-10-03）：后端在「schema 落后于代码」时
@@ -284,43 +278,57 @@ export function getUserProfileList(params?: { limit?: number; offset?: number; s
     usage_meta?: UserUsageMeta
   } & DegradationMarker>(
     'GET',
-    `/api/admin/session-analytics/users?${q}`,
+    `/api/admin/session-analytics/v2/users?${q}`,
   )
 }
 
-// UserProjectRow 员工×项目一行（projects 子路由）。★ 会话级口径：
-// total_cost_usd（USD 成本）与 total_credits_charged（积分）来自
-// session_summaries——与请求级 usage 的内部/外部成本**不同源不同义**。
+// 员工项目的请求数、使用量、USD 和积分来自同一请求范围。
 export interface UserProjectRow {
   project_id: string
   session_count: number
   task_count: number
   request_count: number
   total_tokens: number
-  total_cost_usd: number
+  total_cost_usd: number | null
   total_credits_charged: number
   last_activity_at: string
+}
+
+export type UserProfileReadScope = {
+  tenant_id?: string
+  start_date?: string
+  end_date?: string
+  start_time?: string
+  end_time?: string
+}
+
+function userProfileParams(days: number, scope?: UserProfileReadScope) {
+  const params = new URLSearchParams({ days: String(days) })
+  for (const [name, value] of Object.entries(scope ?? {})) {
+    if (value) params.set(name, value)
+  }
+  return params
 }
 
 // getUserProjects 员工→项目下钻（2026-11-20 逐层下钻轮 / L1 收口）。
 export function getUserProjects(
   owner: string,
   days = 30,
-): Promise<{ projects: UserProjectRow[]; owner_user: string; days: number; usage_meta?: UserUsageMeta } & DegradationMarker> {
-  const params = new URLSearchParams({ days: String(days) })
-  return req<{ projects: UserProjectRow[]; owner_user: string; days: number; usage_meta?: UserUsageMeta } & DegradationMarker>(
+  scope?: UserProfileReadScope,
+) {
+  const params = userProfileParams(days, scope)
+  return req<{ projects: UserProjectRow[]; owner_user: string; tenant_id: string; usage_meta?: UserUsageMeta } & DegradationMarker>(
     'GET',
-    `/api/admin/session-analytics/users/${encodeURIComponent(owner)}/projects?${params}`,
+    `/api/admin/session-analytics/v2/users/${encodeURIComponent(owner)}/projects?${params}`,
   )
 }
 
-// getUserUsageMatrix 员工×模型用量矩阵（2026-11-20 数字出处轮）。
-// 「每个员工在什么时间段用了哪些模型、各多少 token / 内部成本 / 外部成本」
-// 的数据端点；owner 缺省返回全可见范围，前端按 owner 分组展开。
+// 员工与模型用量矩阵。owner 缺省返回当前权限范围。
 export function getUserUsageMatrix(params?: {
   start_date?: string
   end_date?: string
   owner?: string
+  tenant_id?: string
   limit?: number
 }): Promise<{
   rows: UserUsageMatrixRow[]
@@ -332,47 +340,33 @@ export function getUserUsageMatrix(params?: {
   if (params?.start_date) q.set('start_date', params.start_date)
   if (params?.end_date) q.set('end_date', params.end_date)
   if (params?.owner) q.set('owner', params.owner)
+  if (params?.tenant_id) q.set('tenant_id', params.tenant_id)
   if (params?.limit) q.set('limit', String(params.limit))
   return req<{
     rows: UserUsageMatrixRow[]
     start_date: string
     end_date: string
     usage_meta?: UserUsageMeta
-  } & DegradationMarker>('GET', `/api/admin/session-analytics/users/usage-matrix?${q}`)
+  } & DegradationMarker>('GET', `/api/admin/session-analytics/v2/users/usage-matrix?${q}`)
 }
 
-export function getUserProfile(owner: string, days = 30) {
-  const params = new URLSearchParams({ days: String(days) })
-  return req<UserProfileDetail>('GET', `/api/admin/session-analytics/users/${owner}?${params}`)
+export function getUserProfile(owner: string, days = 30, scope?: UserProfileReadScope) {
+  const params = userProfileParams(days, scope)
+  return req<UserProfileDetail>('GET', `/api/admin/session-analytics/v2/users/${encodeURIComponent(owner)}?${params}`)
 }
 
 // ── User Model Usage (2026-11-19) ──
 
-export interface UserModelUsage {
-  model_name: string
-  provider: string
-  request_count: number
-  total_tokens: number
-  input_tokens: number
-  output_tokens: number
-  internal_cost_usd: number
-  external_cost_usd: number
-  first_used_at: string
-  last_used_at: string
-}
+export type UserModelUsage = UserUsageMatrixRow
 
-export function getUserModelUsage(
+export async function getUserModelUsage(
   owner: string,
   startDate?: string,
   endDate?: string,
-): Promise<{ models: UserModelUsage[]; start_date: string; end_date: string; degraded?: boolean; degraded_reason?: string }> {
-  const params = new URLSearchParams()
-  if (startDate) params.set('start_date', startDate)
-  if (endDate) params.set('end_date', endDate)
-  return req<{ models: UserModelUsage[]; start_date: string; end_date: string; degraded?: boolean; degraded_reason?: string }>(
-    'GET',
-    `/api/admin/session-analytics/users/${encodeURIComponent(owner)}/models?${params}`,
-  )
+  tenantId?: string,
+) {
+  const { rows, ...meta } = await getUserUsageMatrix({ owner, tenant_id: tenantId, start_date: startDate, end_date: endDate, limit: 200 })
+  return { ...meta, models: rows }
 }
 
 // ── User Management ──
@@ -594,6 +588,9 @@ export interface TenantStats {
   cache_read_tokens: number
   cache_write_tokens: number
   avg_latency_ms: number
+  cost_rows_outside_usd?: number
+  updated_at?: string | null
+  window_end?: string
   by_model: Array<{ model: string; requests: number; tokens: number; credits: number; cost_usd: number }>
   by_application: Array<{ application_code: string; requests: number; tokens: number; credits: number; cost_usd: number }>
   // 2026-09-30 统计 UI 优化轮：按天时序（无流量日已由后端 generate_series 补零）。
@@ -602,7 +599,7 @@ export interface TenantStats {
 
 export function getTenantStats(code: string, days?: number) {
   const qs = days ? '?days=' + days : ''
-  return req<TenantStats>('GET', `/api/admin/tenants/${code}/stats` + qs)
+  return req<TenantStats>('GET', `/api/admin/tenants/v2/${encodeURIComponent(code)}/stats` + qs)
 }
 
 // ── 2026-09-30 统计 UI 优化轮：/users 用户级用量统计 ────────────────
@@ -611,6 +608,7 @@ export function getTenantStats(code: string, days?: number) {
 
 export interface UserUsageSummaryItem {
   username: string
+  tenant_id: string
   requests: number
   tokens: number
   credits: number
@@ -620,10 +618,11 @@ export interface UserUsageSummaryItem {
 export interface UserUsageSummary {
   days: number
   items: UserUsageSummaryItem[]
+  degraded?: boolean
 }
 
 export function getUserUsageSummary(days = 30) {
-  return req<UserUsageSummary>('GET', `/api/admin/users/usage-summary?days=${days}`)
+  return req<UserUsageSummary>('GET', `/api/admin/users/v2/usage-summary?days=${days}`)
 }
 
 export interface UserStatsKpi {
@@ -657,17 +656,18 @@ export interface UserStats {
   user_id: number
   username: string
   days: number
-  kpi: UserStatsKpi
+  kpi: UserStatsKpi | null
   daily: TenantDailyStat[]
   top_models: UserStatsBucket[]
   top_apps: UserStatsBucket[]
   top_keys: UserStatsBucket[]
   key_count: number
   recent_requests: UserStatsRecentRequest[]
+  degraded?: boolean
 }
 
 export function getUserStats(userId: number, days = 30) {
-  return req<UserStats>('GET', `/api/admin/users/${userId}/stats?days=${days}`)
+  return req<UserStats>('GET', `/api/admin/users/v2/${userId}/stats?days=${days}`)
 }
 
 export const TENANT_STATUSES = ['active', 'trial', 'suspended', 'expired', 'disabled'] as const

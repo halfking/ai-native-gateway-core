@@ -46,6 +46,12 @@ export default {
     close: '关闭',
   },
   detail: {
+    estimatedRevenue: '测算收入',
+    estimatedMargin: '测算毛利',
+    estimatedMarginRate: '测算毛利率',
+    creditReferenceNotice: '测算使用当前积分参考价，实际扣费以积分账本为准。',
+    cancellationCoverage: '{n} 条有积分消耗的请求缺少取消证据',
+    usdCoverage: '{n} 条请求的费用币种不在 USD 合计中',
     loadUsersFailed: '用户列表没能加载出来，请重试',
     loadKeysFailed: '密钥列表没能加载出来，请重试',
     loadStatsFailed: '用量统计没能加载出来，请重试',

@@ -1,7 +1,16 @@
 // reports.ts — Seite „Abstimmungsbericht“ (Doppelansicht Anbieter/intern, i18n-Ergänzung R65).
 export default {
+  projectedView: 'Historische Anfragestatistik',
+  projectedDays: 'Anfragen an {n} Tagen erfasst',
+  projectedBasis: 'Kalendertage in {zone}. Buchungen stehen im Guthabenbuch, Sendungen und Lieferantenrechnungen im Tagesabgleich.',
+  projectedPending: 'Für den ausgewählten Zeitraum werden noch Anfragen verarbeitet.',
+  projectedMissingUSD: '{n} Anfragen haben keinen USD-Betrag oder verwenden eine andere Währung.',
+  projectedEmpty: 'Für diese Tage und Filter liegen keine Anfragen vor.',
+  projectedToday: ' (der heutige Tag ist noch offen)',
   legacySnapshotView: 'Historische Snapshots',
   daily: {
+    terminalProjection: 'Der Empfangszeitpunkt bestimmt den Tag. Der endgültige Verbrauch stammt aus der Anfragestatistik.',
+    terminalProjectionPending: 'Der endgültige Verbrauch wird noch synchronisiert. Der älteste Warteschlangeneintrag stammt von {at}. Korrekturen anderer Tage können diesen Bericht beeinflussen.',
     title: 'Tägliche Abgleichsbelege',
     section: 'Belegart',
     day: 'Abgleichsdatum',
@@ -111,6 +120,9 @@ export default {
       internal: 'Brutto-Abbuchungen, netto gebuchte Credits und Verbrauchsbuckets werden für dieses Datum getrennt ausgewiesen.',
     },
     fields: {
+      total_tokens: 'Gespeicherte endgültige Tokens',
+      measured_total_requests: 'Anfragen mit gemessener Token-Gesamtzahl',
+      usage_source: 'Verbrauchsquelle',
       requests: 'Client-Anfragen',
       success: 'Erfolgreich',
       failure: 'Fehlgeschlagen',

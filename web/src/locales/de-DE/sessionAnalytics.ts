@@ -130,8 +130,7 @@ export default {
     usd: '{value} USD',
     credits: '{value} Credits',
   },
-  costNote:
-    'Die Spalte „Kosten“ wird in zwei Einheiten ausgewiesen: interne Kosten (USD) und externe Credits. Die beiden Einheiten unterscheiden sich, daher eignet sich die Spalte nur für relative Vergleiche und nicht als ein einzelner Geldbetrag.',
+  costNote: 'USD-Kosten und Guthabenpunkte werden getrennt angezeigt. Ein Strich bedeutet, dass Nachweise fehlen.',
   // ★ N9：外部コストが 0 のとき「—」を出す理由（0 と測定されたわけではない）。
   externalCostNotCarried:
     'Diese Ansicht führt externe Credits noch nicht separat mit: Die Credit-Schreibseite ist nicht umgesetzt, „—“ bedeutet daher „nicht erfasst“ und nicht „als 0 gemessen“.',

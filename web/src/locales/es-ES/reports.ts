@@ -1,7 +1,16 @@
 // reports.ts — Página de conciliación de informes (doble vista proveedores/interna, i18n añadido en R65).
 export default {
+  projectedView: 'Estadísticas históricas de solicitudes',
+  projectedDays: 'Se registraron solicitudes en {n} días',
+  projectedBasis: 'Los días se calculan en {zone}. Las contabilizaciones figuran en el libro de créditos y los envíos y facturas en la conciliación diaria.',
+  projectedPending: 'Aún se están procesando solicitudes del período seleccionado.',
+  projectedMissingUSD: '{n} solicitudes carecen de un importe en USD o usan otra moneda.',
+  projectedEmpty: 'No hay solicitudes registradas para estas fechas y filtros.',
+  projectedToday: ' (el día actual sigue abierto)',
   legacySnapshotView: 'Instantáneas históricas',
   daily: {
+    terminalProjection: 'La hora de recepción determina el día. El uso final procede de las estadísticas de solicitudes.',
+    terminalProjectionPending: 'El uso final aún se está sincronizando. El registro en cola más antiguo es de {at}. Los ajustes de otro día pueden afectar a este informe.',
     title: 'Evidencia de conciliación diaria',
     section: 'Tipo de evidencia',
     day: 'Fecha de conciliación',
@@ -111,6 +120,9 @@ export default {
       internal: 'Los débitos brutos, los créditos contabilizados netos y los buckets de consumo se muestran por separado para esta fecha.',
     },
     fields: {
+      total_tokens: 'Tokens finales conservados',
+      measured_total_requests: 'Solicitudes con un total de tokens medido',
+      usage_source: 'Fuente del uso',
       requests: 'Solicitudes de cliente',
       success: 'Con éxito',
       failure: 'Con fallo',

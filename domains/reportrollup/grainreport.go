@@ -39,6 +39,7 @@ type GrainFilter struct {
 	TenantID     string
 	Person       string
 	Model        string
+	BusinessOnly bool // projected supplier and credential reports
 	// ModelNames 是 Model 展开后的 raw 名集合（canonical → 家族）。
 	//
 	// 为什么需要它：路由页的模型选择器发的是 **canonical 名**
@@ -149,9 +150,10 @@ type GrainReport struct {
 	DailyTenants     []DailyGroupRow `json:"daily_tenants,omitempty"`
 	DailyPersons     []DailyGroupRow `json:"daily_persons,omitempty"`
 
-	SnapshotDates []string `json:"snapshot_dates"`
-	Coverage      Coverage `json:"coverage"`
-	Source        string   `json:"source"` // "grain" | "mixed" | "legacy"
+	SnapshotDates []string            `json:"snapshot_dates"`
+	Coverage      Coverage            `json:"coverage"`
+	Source        string              `json:"source"` // "grain" | "mixed" | "legacy" | "request_metrics"
+	Projection    *ProjectionCoverage `json:"projection,omitempty"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -459,6 +461,7 @@ type grainScanRow struct {
 	// 度量走 (1-is_err) 只计一次，错误分布走这一列——两者分开才不会因
 	// jsonb explode 把请求数重复计（真库实测踩过：一度放大约 3 倍）。
 	errKindCount int64
+	projection   *projectedMeasures
 
 	gDate, gProvider, gCredential, gModel, gTenant, gPerson, gKey bool
 }
@@ -540,6 +543,7 @@ type grainAccumulator struct {
 	currency                   string
 	p50w, p95w, w              float64
 	br                         map[string]int64
+	projection                 *projectedMeasures
 }
 
 func (a *grainAccumulator) add(r grainScanRow) {
@@ -558,6 +562,12 @@ func (a *grainAccumulator) add(r grainScanRow) {
 	a.p50w += r.p50w
 	a.p95w += r.p95w
 	a.w += r.w
+	if r.projection != nil {
+		if a.projection == nil {
+			a.projection = &projectedMeasures{}
+		}
+		a.projection.add(r.projection)
+	}
 	if r.kind != "" && r.errKindCount > 0 {
 		a.br = mergeBreakdown(a.br, map[string]int64{r.kind: r.errKindCount})
 	}
@@ -586,6 +596,20 @@ func (a *grainAccumulator) finalize() Totals {
 	if denom := t.InputTokens + t.CacheReadTokens; denom > 0 {
 		r := float64(t.CacheReadTokens) / float64(denom)
 		t.CacheHitRatio = &r
+	}
+	if a.projection != nil {
+		p := a.projection
+		t.TotalTokens = p.tokens
+		t.CacheHitRatio = nil
+		if p.cacheInput > 0 {
+			rate := float64(p.cacheRead) / float64(p.cacheInput)
+			t.CacheHitRatio = &rate
+		}
+		t.USDMeasuredRequests = &p.usdMeasured
+		missing := a.requestCount - p.usdMeasured
+		t.USDUnmeasuredRequests = &missing
+		t.CacheMeasuredRequests = &p.cacheMeasured
+		t.LatencyMeasuredRequests = &p.latencyMeasured
 	}
 	if a.internalCents > 0 {
 		t.InternalCurrency = "CNY"
@@ -678,6 +702,10 @@ func runGrainAgg(ctx context.Context, q Querier, scopes []Scope, start, end time
 }
 
 func scanGrainRow(rows pgx.Rows) (grainScanRow, error) {
+	return scanGrainMeasures(rows, false)
+}
+
+func scanGrainMeasures(rows pgx.Rows, projected bool) (grainScanRow, error) {
 	var (
 		r                                     grainScanRow
 		date                                  sql.NullTime
@@ -688,14 +716,20 @@ func scanGrainRow(rows pgx.Rows) (grainScanRow, error) {
 		p50w, p95w, w, internalCents          float64
 		errKindCount                          int64
 	)
-	if err := rows.Scan(
+	columns := []any{
 		&gDate, &gProv, &gCred, &gModel, &gTenant, &gPerson, &gKey,
 		&date, &providerID, &credentialID, &model, &tenant, &person, &apiKeyID, &kind,
 		&r.requestCount, &r.successCount,
 		&r.inputTokens, &r.outputTokens, &r.cacheRead, &r.cacheWrite,
 		&r.costCents, &currency, &r.credits, &internalCents,
 		&p50w, &p95w, &w, &errKindCount,
-	); err != nil {
+	}
+	if projected {
+		r.projection = &projectedMeasures{}
+		p := r.projection
+		columns = append(columns, &p.tokens, &p.cacheRead, &p.cacheInput, &p.cacheMeasured, &p.usdMeasured, &p.latencyMeasured)
+	}
+	if err := rows.Scan(columns...); err != nil {
 		return r, fmt.Errorf("scan grain aggregate: %w", err)
 	}
 	r.gDate, r.gProvider, r.gCredential = gDate == 1, gProv == 1, gCred == 1
@@ -755,6 +789,10 @@ func legacyTotalScope(view View) Scope {
 // 默认走这条——响应行数与区间天数基本无关。daily=true 追加「按天 × 维度」
 // 明细行，供明细表格与明细导出。
 func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool) (*GrainReport, error) {
+	return buildGrainReport(ctx, q, start, end, view, filter, names, daily, nil)
+}
+
+func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool, projection *ProjectionCoverage) (*GrainReport, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("unknown view %q", view)
 	}
@@ -772,7 +810,7 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	//
 	// 展开失败**不阻断**报表，但必须降级成「只用原值精确匹配」——
 	// 静默丢掉模型过滤会让页面显示全量数据，用户以为筛过了。
-	if filter.Model != "" && len(filter.ModelNames) == 0 {
+	if projection == nil && filter.Model != "" && len(filter.ModelNames) == 0 {
 		if names, nerr := ResolveModelRawNames(ctx, q, filter.Model); nerr == nil && len(names) > 0 {
 			filter.ModelNames = names
 		} else if nerr != nil {
@@ -873,14 +911,18 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		}
 	}
 
-	// ① 最细粒度口径（迁移后的每日聚合）。
-	if err := runGrainAgg(ctx, q, []Scope{grainScope}, day0, end0, filter, daily, "", sink(true)); err != nil {
-		return nil, err
-	}
-	// ② 旧口径回落：区间内没有任何 grain 快照的日期，只贡献总计与按天。
-	if err := runGrainAgg(ctx, q, []Scope{legacyTotalScope(view)}, day0, end0, filter, false, grainScope,
-		legacySink(total, days, legacyDates)); err != nil {
-		return nil, err
+	if projection != nil {
+		if err := runProjectedGrain(ctx, q, view, filter, daily, *projection, sink(true)); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := runGrainAgg(ctx, q, []Scope{grainScope}, day0, end0, filter, daily, "", sink(true)); err != nil {
+			return nil, err
+		}
+		if err := runGrainAgg(ctx, q, []Scope{legacyTotalScope(view)}, day0, end0, filter, false, grainScope,
+			legacySink(total, days, legacyDates)); err != nil {
+			return nil, err
+		}
 	}
 
 	rep := &GrainReport{
@@ -892,6 +934,7 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		ErrorBreakdown: total.breakdown(),
 		SnapshotDates:  []string{},
 		Coverage:       Coverage{GrainDates: []string{}, LegacyDates: []string{}},
+		Projection:     projection,
 	}
 	rep.TopErrorKind, rep.TopErrorCount = topErrorKind(rep.ErrorBreakdown)
 
@@ -901,6 +944,9 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		a := days[key]
 		if a == nil {
 			a = &grainAccumulator{}
+			if projection != nil {
+				a.projection = &projectedMeasures{}
+			}
 		}
 		rep.Days = append(rep.Days, DayRow{Date: key, Totals: a.finalize(), ErrorBreakdown: a.breakdown()})
 		if grainDates[key] || legacyDates[key] {
@@ -1067,6 +1113,11 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	sort.Strings(rep.Coverage.GrainDates)
 	sort.Strings(rep.Coverage.LegacyDates)
 	switch {
+	case projection != nil:
+		rep.Source = ProjectedSource
+		if rep.Models == nil {
+			rep.Models = []ModelRow{}
+		}
 	case len(rep.Coverage.LegacyDates) > 0 && len(rep.Coverage.GrainDates) > 0:
 		rep.Source = "mixed"
 	case len(rep.Coverage.LegacyDates) > 0:
