@@ -10,6 +10,18 @@
 # 版本号默认取 git describe --tags（无 tag 时回退 git 短 SHA）。
 set -euo pipefail
 
+# ★ 专用构建缓存（门 scripts/ursmcheck/gocache_script_family_guard_test.go 判据①）：
+# 本脚本在宿主上 go build ⇒ 子进程会往用户全局构建缓存写产物 ⇒ 必须指向专用缓存
+# （目录约定与上限见 scripts/lib/gocache.sh；失败安全：找不到共享入口就不设）。
+__gocache_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || __gocache_dir=""
+while [ -n "$__gocache_dir" ] && [ ! -f "$__gocache_dir/scripts/lib/gocache.sh" ] && [ "$__gocache_dir" != "/" ]; do
+  __gocache_dir="$(dirname "$__gocache_dir")"
+done
+if [ -n "$__gocache_dir" ] && [ -f "$__gocache_dir/scripts/lib/gocache.sh" ]; then
+  . "$__gocache_dir/scripts/lib/gocache.sh"
+  gocache_use script
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${1:-$REPO_ROOT/dist}"
 OUT_DIR="${OUT_DIR#--out=}"
