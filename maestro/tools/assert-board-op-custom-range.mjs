@@ -168,6 +168,9 @@ if (!startOk || !endOk) {
   process.exit(out.exitCode)
 }
 
+const boardURLQuery = `performance.getEntriesByType('resource').map(e => e.name).filter(n => new URL(n).pathname === '/api/admin/dashboard/v2/board')`
+const beforeCustom = ((await js(boardURLQuery)) || []).length
+
 // 点「应用」（非 instant 模式 ⇒ 必须点应用才提交）
 const applyClicked = await js(
   `(() => { const b = document.querySelector('[data-testid="kx-dr-apply"]'); if (b) b.click(); return !!b })()`,
@@ -177,11 +180,8 @@ const applyClicked = await js(
 let customUrl = ''
 for (let i = 0; i < 40; i++) {
   await sleep(500)
-  const urls =
-    (await js(
-      `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
-    )) || []
-  const hit = urls.find((u) => u.includes('start='))
+  const urls = (await js(boardURLQuery)) || []
+  const hit = urls.slice(beforeCustom).at(-1)
   if (hit) {
     customUrl = hit
     break
@@ -279,7 +279,6 @@ const presetRows = []
 let presetWindowOk = true
 let presetHintOk = true
 let presetMeasured = 0
-let lastBoardUrl = ''
 
 for (const pid of PRESET_IDS) {
   const row = { id: pid }
@@ -300,24 +299,18 @@ for (const pid of PRESET_IDS) {
     continue
   }
   await sleep(400)
-  // 非 instant 模式 ⇒ 必须点「应用」才提交
+  const beforePreset = ((await js(boardURLQuery)) || []).length
+  // 非 instant 模式需要点击应用。按新条目计数，同一个窗口也可能重新发请求。
   await js(`(() => { const b = document.querySelector('[data-testid="kx-dr-apply"]'); if (b) b.click(); return !!b })()`)
-
-  // 等一条**新的**看板请求（performance 条目会累积 ⇒ 取最后一条且与上次不同）
   let url = ''
   for (let i = 0; i < 30; i++) {
     await sleep(500)
-    const urls =
-      (await js(
-        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
-      )) || []
-    const latest = urls[urls.length - 1] || ''
-    if (latest && latest !== lastBoardUrl) {
-      url = latest
+    const urls = (await js(boardURLQuery)) || []
+    if (urls.length > beforePreset) {
+      url = urls.at(-1)
       break
     }
   }
-  lastBoardUrl = url
   let q = {}
   try {
     q = Object.fromEntries(new URL(url).searchParams.entries())

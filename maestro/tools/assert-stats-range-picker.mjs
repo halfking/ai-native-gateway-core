@@ -423,7 +423,7 @@ function expectedWindowFromRangeText(text) {
   return { start: fmt(start), end: fmt(end), days: Math.round((end - start) / 86400000) + 1 }
 }
 const boReqUrls =
-  (await js(`(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`)) || []
+  (await js(`(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => new URL(n).pathname === '/api/admin/dashboard/v2/board'))()`)) || []
 const boReqUrl = boReqUrls[boReqUrls.length - 1] || ''
 let boQs = {}
 try {

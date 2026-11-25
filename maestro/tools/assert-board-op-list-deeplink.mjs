@@ -113,7 +113,7 @@ async function boardQueryFor(url, readyExpr) {
     await sleep(500)
     const urls =
       (await js(
-        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
+        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => new URL(n).pathname === '/api/admin/dashboard/v2/board'))()`,
       )) || []
     last = urls[urls.length - 1] || last
     if (last) break
@@ -200,9 +200,8 @@ const plain = await boardQueryFor(`${BASE}${LIST_PATH}`, TRIGGER_READY)
 const plainText = await shownRange()
 const plainShown = windowFromRangeText(plainText)
 const plainOk =
-  plain.q.days !== undefined
-    ? Number(plain.q.days) === 7
-    : !!plainShown && plainShown.days === 7
+  !!plainShown && plainShown.days === 7 &&
+  plain.q.start === plainShown.start && plain.q.end === plainShown.end
 check(
   'D4 ★ 无参进入列表页 ⇒ 默认 7 天窗口（⇒ 并入共享组件没改坏默认档位）',
   plainOk,
