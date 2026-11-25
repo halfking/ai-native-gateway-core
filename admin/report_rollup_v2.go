@@ -58,6 +58,13 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	daily := reportDailyDetail(r)
+	scope := reportrollup.ProjectedSummaryScope(r.URL.Query().Get("summary_scope"))
+	if scope != "" && (section != "summary" || daily ||
+		(scope != reportrollup.ProjectedSummaryTotals && scope != reportrollup.ProjectedSummaryDistribution)) {
+		writeError(w, http.StatusBadRequest, "summary_scope must be totals or distribution on a summary without daily detail")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
 	if section == "dimensions" {
@@ -78,14 +85,23 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rep *reportrollup.GrainReport
-	names := h.dimensionNames(ctx)
-	daily := reportDailyDetail(r)
 	if section == "export" {
 		daily = reportExportDetail(r)
 	}
+	var names reportrollup.Names
+	switch {
+	case scope == "":
+		names = h.dimensionNames(ctx)
+	case scope == reportrollup.ProjectedSummaryDistribution && (view == reportrollup.ViewProvider || view == reportrollup.ViewCredential):
+		names.Providers = h.providerNames(ctx)
+	}
 	err = h.readProjectedReport(ctx, start, end, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
 		var err error
-		rep, err = reportrollup.BuildProjectedReport(ctx, q, start, end, view, filter, names, daily, p)
+		if scope == "" {
+			rep, err = reportrollup.BuildProjectedReport(ctx, q, start, end, view, filter, names, daily, p)
+		} else {
+			rep, err = reportrollup.BuildProjectedSummary(ctx, q, start, end, view, filter, names, p, scope)
+		}
 		return err
 	})
 	if err != nil {

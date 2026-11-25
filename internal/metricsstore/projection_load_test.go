@@ -18,17 +18,29 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
 
+func requestMetricsFixtureConfig(t *testing.T, dsn string) *pgxpool.Config {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" ||
+		!strings.HasPrefix(cfg.ConnConfig.Database, "request_metrics_fixture_") {
+		t.Fatal("use an isolated loopback request_metrics_fixture_* database")
+	}
+	for _, fallback := range cfg.ConnConfig.Fallbacks {
+		if fallback.Host != "127.0.0.1" {
+			t.Fatal("requires loopback-only fallback hosts")
+		}
+	}
+	return cfg
+}
+
 // The opt-in load check runs against a local disposable restore after its
 // migration channel has applied through 983f. It writes only derived statistics.
 func TestRequestMetricsProjectionLoad(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_LOAD_DSN")
 	if dsn == "" {
-		t.Skip("set REQUEST_METRICS_LOAD_DSN to a migrated local disposable restore")
+		t.Skip("set REQUEST_METRICS_LOAD_DSN to a migrated loopback request_metrics_fixture_* restore")
 	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" {
-		t.Fatal("use a loopback PostgreSQL connection in the isolated environment")
-	}
+	cfg := requestMetricsFixtureConfig(t, dsn)
 	end, err := time.Parse(time.RFC3339, os.Getenv("REQUEST_METRICS_LOAD_END"))
 	if err != nil {
 		t.Fatal("set REQUEST_METRICS_LOAD_END to the historical window end in RFC3339")
@@ -152,11 +164,7 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set REQUEST_METRICS_POLL_TEST_DSN to an isolated migrated request_metrics_fixture_* database")
 	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil || cfg.ConnConfig.Host != "127.0.0.1" ||
-		!strings.HasPrefix(cfg.ConnConfig.Database, "request_metrics_fixture_") {
-		t.Fatal("use an isolated loopback request_metrics_fixture_* database")
-	}
+	cfg := requestMetricsFixtureConfig(t, dsn)
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

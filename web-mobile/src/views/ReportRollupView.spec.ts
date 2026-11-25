@@ -724,10 +724,12 @@ describe('⑧ 参数下发', () => {
     await byId(w, 'rr-load').trigger('click')
     await flushPromises()
     expect(mSum.mock.calls[0]![0].detail).toBe('0')
+    expect(mSum.mock.calls[0]![0].summaryScope).toBe('totals')
     await byId(w, 'rr-detail').setValue(true)
     await flushPromises()
     const last = mSum.mock.calls[mSum.mock.calls.length - 1]![0]
     expect(last.detail).toBe('1')
+    expect(last.summaryScope).toBeUndefined()
   })
 
   it('⑧-4 ★★ dimensions 只带区间与视角（不带 detail）', async () => {

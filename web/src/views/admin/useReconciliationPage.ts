@@ -129,6 +129,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
         end: range.value[1],
         view: view.value,
         detail: false,
+        summary_scope: 'distribution',
         ...cleanFilters(filters.value),
       })
       if (reportRace.stale(gen)) return

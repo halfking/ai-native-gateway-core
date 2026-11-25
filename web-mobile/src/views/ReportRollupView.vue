@@ -130,6 +130,7 @@ async function loadSummary(): Promise<void> {
       // ★ 真值集合是 `1`/`true`/`yes`/`daily`（`:194-200`）⇒ 恒发 `1` 或 `0`。
       //   ⚠️ export 用的是**正好相反**的一组（`:207-213`），本页不碰 export。
       detail: detailOn.value ? '1' : '0',
+      ...(detailOn.value ? {} : { summaryScope: 'totals' }),
     })
   } catch (err) {
     summary.value = null

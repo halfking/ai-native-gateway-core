@@ -213,7 +213,10 @@ func grainGroupSets(daily bool) []string {
 // 末尾多一个 kind。必须一一对应——classify() 靠 GROUPING() 标志把行派发到
 // 对应的层级，两者层级集合不一致会让「按供应商的主要错误」少一层或多半层。
 func grainErrGroupSets(daily bool) []string {
-	base := grainGroupSets(daily)
+	return grainErrorGroups(grainGroupSets(daily))
+}
+
+func grainErrorGroups(base []string) []string {
 	sets := make([]string, len(base))
 	for i, s := range base {
 		inner := strings.TrimSuffix(strings.TrimPrefix(s, "("), ")")
@@ -793,10 +796,10 @@ func legacyTotalScope(view View) Scope {
 // 默认走这条——响应行数与区间天数基本无关。daily=true 追加「按天 × 维度」
 // 明细行，供明细表格与明细导出。
 func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool) (*GrainReport, error) {
-	return buildGrainReport(ctx, q, start, end, view, filter, names, daily, nil)
+	return buildGrainReport(ctx, q, start, end, view, filter, names, daily, nil, "")
 }
 
-func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool, projection *ProjectionCoverage) (*GrainReport, error) {
+func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool, projection *ProjectionCoverage, scope ProjectedSummaryScope) (*GrainReport, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("unknown view %q", view)
 	}
@@ -916,7 +919,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	}
 
 	if projection != nil {
-		if err := runProjectedGrain(ctx, q, view, filter, daily, *projection, sink(true)); err != nil {
+		if err := runProjectedGrain(ctx, q, view, filter, daily, *projection, scope, sink(true)); err != nil {
 			return nil, err
 		}
 	} else {

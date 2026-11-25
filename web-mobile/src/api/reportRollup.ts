@@ -394,6 +394,7 @@ export interface ReportRollupParams {
   model?: string
   /** summary 专用：真值是 `1`/`true`/`yes`/`daily`。见 (9)。 */
   detail?: string
+  summaryScope?: 'totals'
 }
 
 // ── fetch ───────────────────────────────────────────────────────────────────
@@ -433,6 +434,7 @@ function queryOf(p: ReportRollupParams): string {
   // ★ view 大小写不敏感 ⇒ 这里直接规范化后再发（发原文后端也会归一）。
   if (p.view != null) qs.set('view', normalizeReportView(p.view))
   if (p.trafficScope) qs.set('traffic_scope', p.trafficScope)
+  if (p.summaryScope) qs.set('summary_scope', p.summaryScope)
   for (const [param, v] of [
     ['provider_id', p.providerId],
     ['credential_id', p.credentialId],

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -640,6 +641,30 @@ INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,traffi
 		if provider := read(reportrollup.ViewProvider, business); provider.Totals.RequestCount != totals.RequestCount ||
 			provider.Totals.TotalTokens != totals.TotalTokens || provider.Totals.EstimatedCostCents != totals.EstimatedCostCents {
 			t.Fatalf("provider business scope does not match the same projected day: %+v", provider.Totals)
+		}
+		for _, view := range []reportrollup.View{reportrollup.ViewProvider, reportrollup.ViewInternal, reportrollup.ViewCredential, reportrollup.ViewKey} {
+			for _, scope := range []reportrollup.ProjectedSummaryScope{reportrollup.ProjectedSummaryTotals, reportrollup.ProjectedSummaryDistribution} {
+				want, err := reportrollup.BuildProjectedReport(ctx, pool, start, today, view, filter, reportrollup.Names{}, false, coverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want.Models = []reportrollup.ModelRow{}
+				want.DailyModels, want.Credentials, want.APIKeys = nil, nil, nil
+				if scope == reportrollup.ProjectedSummaryTotals {
+					want.ModelTotals = nil
+				}
+				providerView := view == reportrollup.ViewProvider || view == reportrollup.ViewCredential
+				if scope == reportrollup.ProjectedSummaryTotals || !providerView {
+					want.Providers = nil
+				}
+				if scope == reportrollup.ProjectedSummaryTotals || providerView {
+					want.Tenants, want.Persons = nil, nil
+				}
+				got, err := reportrollup.BuildProjectedSummary(ctx, pool, start, today, view, filter, reportrollup.Names{}, coverage, scope)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s %s: scoped report differs from the full report: got %+v, want %+v, err %v", view, scope, got, want, err)
+				}
+			}
 		}
 		rankingQuery := metrics.SessionRequestRankingQuery{Start: start, End: today, Tenant: "tenant-report"}
 		for _, dimension := range []string{"models", "providers"} {

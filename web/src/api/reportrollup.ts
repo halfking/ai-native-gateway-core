@@ -196,6 +196,7 @@ export interface ReportQuery extends ReportFilter {
   view: ReportView
   /** true = 追加「按天 × 维度」明细行；false = 只要汇总（默认）。 */
   detail?: boolean
+  summary_scope?: 'distribution' | 'totals'
   /**
    * 导出时「按天×X」那张 sheet 按哪个维度拆。缺省 model。
    * 与页面上主表的 groupDim 是同一个维度：导出的口径必须和屏幕上看的那张表
@@ -214,6 +215,7 @@ function rangeQs(q: ReportQuery): string {
   // 参数——后端于是分不清「用户要汇总」和「调用方没指定」，导出的「汇总 ⇄ 按天
   // 明细」开关成了摆设（实测 detail=false / true 导出字节数完全相同）。
   p.set('detail', q.detail ? 'daily' : 'summary')
+  if (q.summary_scope) p.set('summary_scope', q.summary_scope)
   if (q.group) p.set('group', q.group)
   if (q.provider_id != null) p.set('provider_id', String(q.provider_id))
   if (q.credential_id != null) p.set('credential_id', String(q.credential_id))

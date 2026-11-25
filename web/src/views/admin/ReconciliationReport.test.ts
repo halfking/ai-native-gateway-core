@@ -256,7 +256,7 @@ describe('ReconciliationReport', () => {
     routeState.query = { provider_id: '2' }
     getReportSummaryMock.mockResolvedValue(providerReport())
     const wrapper = await mountView()
-    expect(getReportSummaryMock.mock.calls[0][0]).toEqual(expect.objectContaining({ provider_id: 2, view: 'provider' }))
+    expect(getReportSummaryMock.mock.calls[0][0]).toEqual(expect.objectContaining({ provider_id: 2, view: 'provider', summary_scope: 'distribution' }))
 
     const row = wrapper.get('[data-testid="primary-dist"]').findAll('tr.el-table__row')[0]
     await row.trigger('click')
