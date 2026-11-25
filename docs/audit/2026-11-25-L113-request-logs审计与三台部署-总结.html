@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L113 轮总结 · request-logs 批判式审计 ＋ 三台部署（2026-11-25）</title>
+<style>
+  :root { --ink:#1a2332; --sub:#5a6b82; --line:#dde5ef; --bg:#f6f8fb; --card:#ffffff;
+          --blue:#2f6fed; --green:#159957; --amber:#c77d0a; --red:#c0392b; --purple:#7b5cd6; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink);
+         background:var(--bg); line-height:1.65; padding:32px 16px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:26px; margin-bottom:4px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:24px; }
+  h2 { font-size:19px; margin:34px 0 12px; padding-left:10px; border-left:4px solid var(--blue); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:860px){ .grid{ grid-template-columns:1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th,td { border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#eef3fa; font-weight:600; white-space:nowrap; }
+  code { background:#eef2f8; border-radius:4px; padding:1px 5px; font-size:12.5px;
+         font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all; }
+  .tag { display:inline-block; border-radius:20px; padding:1px 10px; font-size:12px; font-weight:600; margin-right:6px; }
+  .t-green{ background:#e2f5ea; color:var(--green);} .t-red{ background:#fbe6e3; color:var(--red);}
+  .t-amber{ background:#fbf0da; color:var(--amber);} .t-blue{ background:#e3ecfd; color:var(--blue);}
+  .t-purple{ background:#efe9fc; color:var(--purple);}
+  .num { font-size:30px; font-weight:700; }
+  .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  @media (max-width:860px){ .kpi-row{ grid-template-columns:repeat(2,1fr);} }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:center; }
+  .kpi .label { color:var(--sub); font-size:12.5px; margin-top:2px; }
+  .note { color:var(--sub); font-size:12.5px; }
+  ul { padding-left:20px; } li { margin:4px 0; }
+  .verdict { border-left:4px solid var(--green); background:#f0faf4; }
+  .warnbox { border-left:4px solid var(--amber); background:#fdf9ef; }
+  svg text { font-family:inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>L113 轮总结 · request-logs 批判式审计 ＋ 三台部署</h1>
+<div class="meta">2026-11-25 15:2x–16:0x CST · 仓 <code>llm-gateway-go-5</code> · 尖端 <code>86e0fac6b</code>（双远端 0/0 同步）· 三台现役 <code>76e7b6ec</code></div>
+
+<!-- ═══════════ KPI ═══════════ -->
+<div class="kpi-row">
+  <div class="kpi"><div class="num" style="color:var(--red)">5</div><div class="label">审计失实（全部处置）</div></div>
+  <div class="kpi"><div class="num" style="color:var(--blue)">0</div><div class="label">合并冲突（66＋3＋2 笔上游）</div></div>
+  <div class="kpi"><div class="num" style="color:var(--green)">3/3</div><div class="label">三台部署成功验收</div></div>
+  <div class="kpi"><div class="num" style="color:var(--purple)">0</div><div class="label">本轮 Go 生产代码变更</div></div>
+</div>
+
+<!-- ═══════════ 一、结论 / 根因 ═══════════ -->
+<h2>一、结论与根因</h2>
+<div class="card verdict">
+  <b>结论：</b>今天 request-logs 工作链的<b>代码与部署本身是健康的</b>（真根修已在线上生效：昨天·含探测 115.6s→1.0s、页查询 ~150ms）；
+  失实集中在<b>「撤回方案的文字遗产」</b>：8 件仓外产物 ＋ 1 份已入库文档，仍在宣称已被撤销的「12h 自动截窗」彻底解决了问题。
+  已按「原文不动 ＋ 新增订正层」证据化处置；三台已对齐同一尖端并全项验收通过。
+</div>
+<div class="card">
+  <b>三层根因链（审计对象）：</b>
+  <table>
+    <tr><th style="width:190px">层</th><th>根因 / 事实</th></tr>
+    <tr><td>查询超时（真根因）</td><td>月分区（<code>session_turns_2026_11</code> 等）统计信息陈旧 45h ⇒ 冷分区基数估 3 行（实际 4,850）⇒ details 腿被规划成 Nested Loop＋Join Filter（单语句 ~1 亿次比较，26–38s）。修法：<code>c0dad181d</code> LATERAL 点查 ＋ <code>44df1219b</code> autovacuum analyze 巡检 ＋ <code>71af786f6</code> top-K 归并。</td></tr>
+    <tr><td>「切范围后没数据」</td><td>第一轮补丁的 12h 自动截窗以<b>未来时刻 end</b> 为锚推 start ⇒ 窗口整个落在未来 ⇒ 必然 0 行 —— <b>截窗补丁自己制造了第二个缺陷</b>。已由 <code>71af786f6</code> 撤销（现役 <code>admin/logs.go</code> 只剩动态超时 60s/120s，无截窗）。</td></tr>
+    <tr><td>本轮审出的失实</td><td>撤回（<code>ddc6aed19</code>）只撤了代码面；8 件仓外报告/测试产物与 1 份已入库文档继续宣称截窗「彻底解决」⇒ 文档与现役行为相反。</td></tr>
+  </table>
+</div>
+
+<!-- ═══════════ 二、审计发现（环形图 + 表） ═══════════ -->
+<h2>二、审计发现：5 处失实与处置</h2>
+<div class="grid">
+  <div class="card">
+    <svg viewBox="0 0 340 240" width="100%">
+      <!-- donut -->
+      <g transform="translate(110,120)">
+        <circle r="78" fill="none" stroke="#eef2f8" stroke-width="30"/>
+        <circle r="78" fill="none" stroke="#c0392b" stroke-width="30" stroke-dasharray="122 368" transform="rotate(-90)"/>
+        <circle r="78" fill="none" stroke="#c77d0a" stroke-width="30" stroke-dasharray="98 392" transform="rotate(52)"/>
+        <circle r="78" fill="none" stroke="#7b5cd6" stroke-width="30" stroke-dasharray="147 343" transform="rotate(128)"/>
+        <text text-anchor="middle" y="6" font-size="26" font-weight="700" fill="#1a2332">5</text>
+        <text text-anchor="middle" y="24" font-size="11" fill="#5a6b82">处失实</text>
+      </g>
+      <g font-size="12" fill="#1a2332">
+        <rect x="228" y="52" width="10" height="10" rx="2" fill="#c0392b"/><text x="244" y="61">结论相反 ×2</text>
+        <rect x="228" y="86" width="10" height="10" rx="2" fill="#c77d0a"/><text x="244" y="95">死测试/模板 ×2</text>
+        <rect x="228" y="120" width="10" height="10" rx="2" fill="#7b5cd6"/><text x="244" y="129">接口说明失实 ×1</text>
+      </g>
+      <text x="12" y="222" font-size="11" fill="#5a6b82">按严重度着色：红＝会误导结论；橙＝假信心；紫＝操作性误导</text>
+    </svg>
+  </div>
+  <div class="card">
+    <table>
+      <tr><th>#</th><th>失实</th><th>处置</th></tr>
+      <tr><td>①</td><td><span class="tag t-red">重</span>8 件仓外产物宣称「截窗<b>彻底解决</b>」，与真根因相反；截窗正是「切范围必 0 行」的制造者</td><td>原文一字不动移入 <code>docs/audit/evidence/2026-11-25-request-logs-withdrawn-attempt/</code> ＋ README 订正层（7 条对照表）</td></tr>
+      <tr><td>②</td><td><span class="tag t-red">重</span>已入库《超时优化总结》仍写「自动窗口限制·已完成／应限制到 12 小时」</td><td>文首追加 5 条订正头，原文正文不动</td></tr>
+      <tr><td>③</td><td><span class="tag t-amber">中</span>maestro 三件套断言已撤回行为；flow 14 五次执行均未跑通；tests 版 appId 错误</td><td>随证据目录归置，不再作为活量具（真量具＝<code>run-request-logs-time-ranges.sh</code>＋flow 19）</td></tr>
+      <tr><td>④</td><td><span class="tag t-amber">中</span>《手动测试验证报告》复选框全空、「实际结果」全空＝未执行的模板却顶着报告标题</td><td>证据化归置；通用式：模板要么补读数、要么改名「计划」</td></tr>
+      <tr><td>⑤</td><td><span class="tag t-purple">低</span>runner 声称支持 env var 凭据，实际委托 <code>run-local.sh</code> 只读仓根 <code>.env.local</code></td><td>README 对照表订正</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ═══════════ 三、改动 ═══════════ -->
+<h2>三、改动文件与关键行为</h2>
+<div class="card">
+  <table>
+    <tr><th style="width:44%">路径</th><th>关键行为</th></tr>
+    <tr><td><code>docs/audit/evidence/2026-11-25-request-logs-withdrawn-attempt/</code>（新增，9 文件）</td><td>8 件撤回轮产物按原层级原文件名归置（4 md＋1 html＋3 maestro）＋ README 订正层；<b>原文一字未改</b></td></tr>
+    <tr><td><code>docs/audit/2026-11-25-request-logs-超时优化总结.md</code></td><td>文首追加 5 条订正头（截窗已撤销／真根因／真修法／失效测试清单／证据目录指引），正文不动</td></tr>
+    <tr><td><code>AGENTS.md</code> ＋ <code>AGENTS-archive-20261031.md</code></td><td>登记 L113 审计轮（含部署读数回填）；L95 块逐字归档腾 15,338B（主档 521,738→513,867B，余量 10.4KB）</td></tr>
+    <tr><td><code>docs/audit/2026-11-25-L113-…-总结.html</code>（本文件）</td><td>本轮图表总结（结论/根因、改动、测试、遗留风险）</td></tr>
+  </table>
+  <p class="note" style="margin-top:10px">提交：<code>f18ca14fd</code>（审计＋归档）→ <code>76e7b6ece</code>（并上游 3 笔）→ <code>82b235aee</code>（L113 回填）→ <code>86e0fac6b</code>（并上游 cgo 修复）。零 Go 生产代码变更、零 schema、零迁移字节。</p>
+</div>
+
+<!-- ═══════════ 四、测试 ═══════════ -->
+<h2>四、测试命令与结果</h2>
+<div class="card">
+  <table>
+    <tr><th style="width:46%">命令</th><th>结果</th></tr>
+    <tr><td><code>go test ./scripts/ursmcheck/ -count=1 -timeout 1800s</code>（全量，推送前）</td><td><span class="tag t-green">绿</span> <code>ok 367.136s</code>，EXIT=0，零红</td></tr>
+    <tr><td><code>go test ./scripts/ursmcheck/ -run 'TestAgentsMd'</code>（体积棘轮/轮块标签/归档重复三门）</td><td><span class="tag t-green">绿</span> 合并前后各一次均 <code>ok</code></td></tr>
+    <tr><td><code>bash tests/scan_secrets_placeholder_privilege_test.sh</code></td><td><span class="tag t-green">绿</span> PASS=10 FAIL=0（runner 移出 maestro/ 后命中集不变）</td></tr>
+    <tr><td><code>go build ./... && go vet ./scripts/ursmcheck/</code></td><td><span class="tag t-green">绿</span> EXIT=0</td></tr>
+    <tr><td>211 登录冒烟 <code>POST /api/auth/token</code>（公网域，单次正确凭据）</td><td><span class="tag t-green">绿</span> HTTP 200 / role=super_admin（部署脚本「未验证登录路径」的 WARN 由直接证据闭合）</td></tr>
+    <tr><td>211 <code>GET /api/logs?page=1&page_size=5</code></td><td><span class="tag t-green">绿</span> HTTP 200，返回 5 行</td></tr>
+    <tr><td><code>BASE_URL=https://llm.itestu.cn MATRIX_ROUNDS=1 HEAVY=0 bash maestro/run-request-logs-time-ranges.sh</code>（对 211 新构建）</td><td><span class="tag t-green">行为层绿</span> flow rc=0 FAILED=0；探针实体断言全绿（见下图）；<span class="tag t-amber">量具失效（非产品缺陷）</span> 2 条依赖「窗口内真实请求」的断言未评估 ⇒ 按 <code>050e06131</code> 纪律判失效而非假绿。产物 <code>maestro/reports/20261125-155544</code></td></tr>
+  </table>
+</div>
+
+<!-- ═══════════ 五、量具延迟条形图 ═══════════ -->
+<h2>五、request-logs 行为级读数（211 ＠ 76e7b6ec）</h2>
+<div class="card">
+  <svg viewBox="0 0 760 300" width="100%">
+    <g font-size="12" fill="#1a2332">
+      <!-- scale: budget bars full width = 120s probe / 60s business; actual latencies tiny → annotate -->
+      <text x="20" y="24" font-weight="700">矩阵 F.r1（1 轮，五种状态过滤 × 第 1/2 页）实测最慢延迟 vs 预算</text>
+      <!-- budget guide lines -->
+      <line x1="330" y1="40" x2="330" y2="240" stroke="#dde5ef" stroke-width="1"/>
+      <text x="330" y="36" font-size="10.5" fill="#5a6b82">业务预算 60s</text>
+      <line x1="740" y1="40" x2="740" y2="240" stroke="#dde5ef" stroke-width="1"/>
+      <text x="700" y="36" font-size="10.5" fill="#5a6b82">含探测预算 120s</text>
+      <!-- rows: latency ms scaled: 1500ms → px = 1500/60000*410 ≈ 10px; 4484/120000*410 ≈ 15px -->
+      <text x="20" y="72">today · 业务（count 9,245）</text><rect x="330" y="60" width="7" height="14" rx="3" fill="#159957"/><text x="345" y="72" font-size="11.5" fill="#159957">最慢 156ms</text>
+      <text x="20" y="102">today · 含探测（count 25,113）</text><rect x="330" y="90" width="8" height="14" rx="3" fill="#159957"/><text x="346" y="102" font-size="11.5" fill="#159957">最慢 477ms</text>
+      <text x="20" y="132">last7d · 业务（count 75,088）</text><rect x="330" y="120" width="10" height="14" rx="3" fill="#159957"/><text x="348" y="132" font-size="11.5" fill="#159957">最慢 1,500ms</text>
+      <text x="20" y="162">last7d · 含探测（count 193,584）</text><rect x="330" y="150" width="15" height="14" rx="3" fill="#159957"/><text x="353" y="162" font-size="11.5" fill="#159957">最慢 4,484ms</text>
+      <text x="20" y="192">today · 含探测（E.today）</text><rect x="330" y="180" width="4" height="14" rx="3" fill="#159957"/><text x="342" y="192" font-size="11.5" fill="#159957">535ms</text>
+      <text x="20" y="228" font-size="11.5" fill="#5a6b82">全部 ≪ 预算（业务 60s／含探测 120s）；对比修复前：昨天·含探测单窗 115.6s → 1.0s（211 前后对拍）。</text>
+      <text x="20" y="252" font-size="11.5" fill="#5a6b82">其余实体断言全绿：窗口对齐（E.today 响应窗口==请求窗口）、触发器==点中档位、含探测 ≥ 业务、嵌套窗口计数单调、刷新恢复（D4）。</text>
+      <text x="20" y="280" font-size="11.5" fill="#c77d0a">未评估 ×2（量具失效，非产品缺陷）：依赖「页面窗口内真实请求」的断言——本轮窗口活流量不满足前置 ⇒ 判失效优于假绿。</text>
+    </g>
+  </svg>
+</div>
+
+<!-- ═══════════ 六、部署时间线 ═══════════ -->
+<h2>六、合并 → 推送 → 三台部署（时间线）</h2>
+<div class="card">
+  <svg viewBox="0 0 760 240" width="100%">
+    <line x1="30" y1="30" x2="30" y2="210" stroke="#dde5ef" stroke-width="3"/>
+    <g font-size="12.5" fill="#1a2332">
+      <circle cx="30" cy="40" r="6" fill="#2f6fed"/><text x="48" y="36" font-weight="600">15:0x　fetch ＋ 合并 origin/main：HEAD 为严格祖先 ⇒ <tspan fill="#159957" font-weight="700">快进 66 笔、零冲突</tspan></text>
+      <text x="48" y="53" fill="#5a6b82">期间实测：三台现役均已是 b36089b1（211=3271 / 245=3167 / 154=3168）</text>
+      <circle cx="30" cy="76" r="6" fill="#7b5cd6"/><text x="48" y="72" font-weight="600">15:2x　审计修正提交 ＋ 全量 ursmcheck ok 367s ＋ 扫描器 10/0 ⇒ 推送双远端</text>
+      <text x="48" y="89" fill="#5a6b82">推前又并上游 3 笔（k6 修复等）零冲突 → 两远端 76e7b6ece，0/0 同步</text>
+      <circle cx="30" cy="112" r="6" fill="#159957"/><text x="48" y="108" font-weight="600">15:39–15:5x　211 蓝绿部署（隔离 worktree，BASE_REF=b36089b1＝现役真实基线）</text>
+      <text x="48" y="125" fill="#5a6b82">槽 a 接管 @8781、旧槽 b 停止保留可回滚；3271→<tspan fill="#159957" font-weight="700">3272 @76e7b6ec</tspan>；登录冒烟 200/super_admin；listLogs 200</text>
+      <circle cx="30" cy="148" r="6" fill="#159957"/><text x="48" y="144" font-weight="600">15:5x　245 预发布（无缝，272s／切换 34s）：3167-b36089b1 → <tspan fill="#159957" font-weight="700">3167-76e7b6ec @8782</tspan></text>
+      <text x="48" y="161" fill="#5a6b82">nginx 仲裁 20 连接／DB 1s 就绪／密码同步＋登录 200／凭据解密 17 creds 0 失败</text>
+      <circle cx="30" cy="184" r="6" fill="#159957"/><text x="48" y="180" font-weight="600">16:0x　154 生产（无缝，300s／切换 39s）：3168-b36089b1 → <tspan fill="#159957" font-weight="700">3168-76e7b6ec @8782</tspan>　同口径验收全绿</text>
+      <text x="48" y="197" fill="#5a6b82">顺序说明：owner 指令列「154与245」，按本仓设计（245＝154 的预发布验证）以 245→154 安全序执行</text>
+      <circle cx="30" cy="212" r="6" fill="#c77d0a"/><text x="48" y="216" font-weight="600" fill="#c77d0a">部署后　并上行又并入 cgo 边界修复（86e0fac6b，owner「按建议执行」）⇒ tip 与三台现役出现版本差（见遗留）</text>
+    </g>
+  </svg>
+</div>
+
+<!-- ═══════════ 七、遗留风险 ═══════════ -->
+<h2>七、遗留风险与待办</h2>
+<div class="card warnbox">
+  <table>
+    <tr><th style="width:60px">级别</th><th>事项</th><th style="width:290px">建议 / 归属</th></tr>
+    <tr><td><span class="tag t-amber">中</span></td><td><b>版本差</b>：三台现役 <code>76e7b6ec</code>，主干尖端已前进到 <code>86e0fac6b</code>（并上行并入 cgo 边界注入式修法，含 Go 生产代码：<code>storage/sqlite/journal.go</code>、<code>cmd/gateway/attempt_journal.go</code>）⇒ cgo 修复<b>尚未部署</b></td><td>下一轮把三台拉齐到 <code>86e0fac6b</code>（211 蓝绿 ＋ 245→154）；诊断注明生产因影子台账开关默认关闭不受影响，但 cgo=0 二进制上 outbox 打不开的语义变化需部署后观察</td></tr>
+    <tr><td><span class="tag t-blue">低</span></td><td>request-logs 量具 2 条断言「未评估」（依赖窗口内真实请求）⇒ 本轮 VERDICT 停在「量具失效」而非全绿</td><td>有活流量窗口时复跑（可调 MATRIX_ROUNDS）；判失效优于假绿是 <code>050e06131</code> 的设计行为，不需修量具</td></tr>
+    <tr><td><span class="tag t-blue">低</span></td><td>残留 worktree：<code>llm-gateway-go-5-reqlogs</code>（detached @b36089b1d，撤回轮的工作树）与 <code>llm-gateway-go-5-l1l5</code>（feat 分支）</td><td>是否清理属 owner（第 28 轮已有同类登记；不代删）</td></tr>
+    <tr><td><span class="tag t-blue">低</span></td><td>并行车常规推进主干：本轮窗口内三次 +66／+3／+2 笔 ⇒ 「推送/部署后立刻落后」是常态</td><td>既有纪律沿用：推前必 fetch、部署验收看现役 ⊇ 自己的提交</td></tr>
+    <tr><td><span class="tag t-blue">低</span></td><td>扫描器 32 BLOCK 项、web-mobile 11 红（同一批）、两个本地分支去留（第 28 轮登记）</td><td>沿用第 28 轮登记，owner 轴，本轮无新增</td></tr>
+  </table>
+</div>
+
+<div class="meta" style="margin-top:26px">L113 轮 · 审计与部署证据：AGENTS.md L113 块 · 证据目录 <code>docs/audit/evidence/2026-11-25-request-logs-withdrawn-attempt/</code> · 量具产物 <code>maestro/reports/20261125-155544</code> · 报告侧副本 §9.30</div>
+
+</div>
+</body>
+</html>
