@@ -4473,7 +4473,9 @@ func main() {
 		//   （持续处理直到本批不满）⇒ 积压时自动加速，空闲时自动降频。
 		metricsCfg := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
 		go metricsProcessor.Run(metricsProcessorCtx, metricsCfg)
-		go metricsstore.NewProjectionProcessor(requestMetricsDB).Run(metricsProcessorCtx, metricsCfg)
+		projectionProcessor := metricsstore.NewProjectionProcessor(requestMetricsDB)
+		go projectionProcessor.Run(metricsProcessorCtx, metricsCfg)
+		go projectionProcessor.RunDailySummary(metricsProcessorCtx, metricsCfg)
 		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),

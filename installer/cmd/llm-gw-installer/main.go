@@ -1987,6 +1987,12 @@ var requestMetricsProjection983d []byte
 //go:embed embeddata/startup/983d_request_metrics_projection.down.sql
 var requestMetricsProjection983dDown []byte
 
+//go:embed embeddata/startup/983e_request_metrics_daily_summary.sql
+var requestMetricsDailySummary983e []byte
+
+//go:embed embeddata/startup/983e_request_metrics_daily_summary.down.sql
+var requestMetricsDailySummary983eDown []byte
+
 // ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 //
 //	★ 这四条**只建了 canonical + embeddata 双副本**，却没登记进任何通道
@@ -2762,10 +2768,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/983b_add_raw_model_name.sql":      addRawModelName983b,
 	"startup/983b_add_raw_model_name.down.sql": addRawModelName983bDown,
 	// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
-	"startup/983c_add_occurred_cursor_index.sql":       addOccurredCursorIndex983c,
-	"startup/983c_add_occurred_cursor_index.down.sql":  addOccurredCursorIndex983cDown,
-	"startup/983d_request_metrics_projection.sql":      requestMetricsProjection983d,
-	"startup/983d_request_metrics_projection.down.sql": requestMetricsProjection983dDown,
+	"startup/983c_add_occurred_cursor_index.sql":          addOccurredCursorIndex983c,
+	"startup/983c_add_occurred_cursor_index.down.sql":     addOccurredCursorIndex983cDown,
+	"startup/983d_request_metrics_projection.sql":         requestMetricsProjection983d,
+	"startup/983d_request_metrics_projection.down.sql":    requestMetricsProjection983dDown,
+	"startup/983e_request_metrics_daily_summary.sql":      requestMetricsDailySummary983e,
+	"startup/983e_request_metrics_daily_summary.down.sql": requestMetricsDailySummary983eDown,
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。

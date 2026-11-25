@@ -93,6 +93,8 @@ VALUES
  ('end','at-end',1,'2026-11-24 00:00Z','tenant-a','success',9,7,'raw-test',99,99,1,'USD',99);`)
 	apply("983d_request_metrics_projection.sql")
 	apply("983d_request_metrics_projection.sql")
+	apply("983e_request_metrics_daily_summary.sql")
+	apply("983e_request_metrics_daily_summary.sql")
 
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
@@ -1045,8 +1047,216 @@ UPDATE public.usage_facts SET canonical_id=NULL,raw_model_name='bob-model'
 		api(http.MethodGet, metrics.SessionDashboardOverview, "&tenant_id=session-b", http.StatusForbidden, `"code":"FORBIDDEN"`)
 		api(http.MethodPost, metrics.SessionDashboardOverview, "", http.StatusMethodNotAllowed)
 		exec(`UPDATE request_metrics_projection_state SET backfill_complete=false WHERE singleton`)
+		t.Cleanup(func() { exec(`UPDATE request_metrics_projection_state SET backfill_complete=true WHERE singleton`) })
 		api(http.MethodGet, metrics.SessionDashboardOverview, "", http.StatusServiceUnavailable, `"code":"DATA_NOT_READY"`)
 	})
+	t.Run("daily_summary_rebuild_keeps_exact_membership_and_measures", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection
+ (request_id, tenant_id, occurred_at, occurred_date, billing_date, session_id, outbound_model,
+  status, traffic_class, prompt_tokens, total_tokens, cached_tokens, cache_input_tokens,
+  cost_amount, cost_currency, latency_ms, ttft_ms, usage_source, source, source_fact_id)
+SELECT req, tenant, ts, (ts AT TIME ZONE 'UTC')::date, (ts AT TIME ZONE 'UTC')::date, session_id, model,
+       status, traffic, tokens, tokens, cached, cache_input, amount, currency, latency, ttft, measured, 'async_processor', n
+FROM (VALUES
+ (10001,'summary1','summary-a',timestamptz '2026-11-18 00:00+08','shared','model-a','success','business',11,3,11,0.2,'USD',100,10,'llm'),
+ (10002,'summary2','summary-a',timestamptz '2026-11-18 08:00+08','shared','model-a','timeout','business',17,0,NULL,0.2,'CNY',250,NULL,'estimated'),
+ (10003,'summary3','summary-b',timestamptz '2026-11-18 08:00+08','shared','model-b','success','business',5,2,5,0.2,'USD',NULL,3,'corrected'),
+ (10004,'summary4','summary-a',timestamptz '2026-11-19 12:00+08','shared','model-a','success','business',3,2,3,0.5,'USD',101,NULL,'llm'),
+ (10005,'summary5','summary-a',timestamptz '2026-11-19 14:00+08','probe-only','model-b','success','probe',7,0,7,0.4,'EUR',999,200,'llm'),
+ (10006,'summary6','summary-a',timestamptz '2026-11-20 12:00+08',NULL,NULL,'success','business',0,0,0,NULL,NULL,77,11,'llm'),
+ (10007,'summary7','summary-b',timestamptz '2026-11-21 00:00+08','at-end','model-c','success','business',99,0,99,9,'USD',123,12,'llm')
+) AS r(n,req,tenant,ts,session_id,model,status,traffic,tokens,cached,cache_input,amount,currency,latency,ttft,measured);`)
+		zone := time.FixedZone("UTC+8", 8*3600)
+		from := time.Date(2026, 11, 18, 0, 0, 0, 0, zone)
+		through := from.AddDate(0, 0, 3)
+		f := metrics.MetricsFilter{StartTime: from, EndTime: through}
+		stats := func(t *testing.T, filter metrics.MetricsFilter, detail bool) string {
+			t.Helper()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if detail {
+				if _, err := tx.Exec(ctx, "UPDATE public.request_metrics_daily_state SET dirty=true WHERE NOT dirty"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var jitBefore, jitAfter string
+			if err := tx.QueryRow(ctx, "SHOW jit").Scan(&jitBefore); err != nil {
+				t.Fatal(err)
+			}
+			result, err := metrics.ReadRequestStats(ctx, tx, metrics.RequestStatsQuery{MetricsFilter: filter, Group: "summary", Timezone: "Asia/Shanghai"})
+			if err != nil || !result.Ready || len(result.Items) != 1 {
+				t.Fatalf("summary result %+v, error %v", result, err)
+			}
+			if err := tx.QueryRow(ctx, "SHOW jit").Scan(&jitAfter); err != nil || jitAfter != jitBefore {
+				t.Fatalf("summary changed the caller's JIT setting from %q to %q: %v", jitBefore, jitAfter, err)
+			}
+			return string(result.Items[0])
+		}
+		assertParity := func(t *testing.T, filters ...metrics.MetricsFilter) {
+			t.Helper()
+			for _, filter := range filters {
+				got, want := stats(t, filter, false), stats(t, filter, true)
+				if got != want {
+					t.Fatalf("summary differs from detail for %+v:\ngot  %s\nwant %s", filter, got, want)
+				}
+			}
+		}
+		refresh := func() {
+			t.Helper()
+			for range 30 {
+				built, err := processor.RefreshDailySummary(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !built {
+					return
+				}
+			}
+			t.Fatal("daily refresh did not drain")
+		}
+
+		// Fail after writing the measures and membership but before publication.
+		exec(`
+CREATE FUNCTION public.reject_daily_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected daily publish failure'; END $$;
+CREATE TRIGGER reject_daily_publish BEFORE UPDATE ON public.request_metrics_daily_state
+FOR EACH ROW WHEN (OLD.dirty AND NOT NEW.dirty) EXECUTE FUNCTION public.reject_daily_publish();`)
+		if _, err := processor.RefreshDailySummary(ctx); err == nil || !strings.Contains(err.Error(), "injected daily publish failure") {
+			t.Fatalf("expected injected publication error, got %v", err)
+		}
+		var rows int
+		if err := pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM public.request_metrics_daily_summary) + (SELECT count(*) FROM public.request_metrics_daily_session_codes) + (SELECT count(*) FROM public.request_metrics_daily_session_masks)").Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("failed publication left %d derived rows: %v", rows, err)
+		}
+		exec("DROP TRIGGER reject_daily_publish ON public.request_metrics_daily_state; DROP FUNCTION public.reject_daily_publish()")
+		refresh()
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_daily_state
+		    WHERE day >= '2026-11-18' AND day < '2026-11-21' AND NOT dirty`).Scan(&rows); err != nil || rows != 3 {
+			t.Fatalf("expected three clean days, got %d: %v", rows, err)
+		}
+		tenant := f
+		tenant.TenantID = "summary-a"
+		probe := f
+		probe.IncludeProbes = true
+		explicitProbe := "probe"
+		probeOnly := probe
+		probeOnly.TrafficClass = &explicitProbe
+		split := f
+		split.StartTime = from.Add(time.Hour)
+		split.EndTime = through.Add(-time.Hour)
+		if got := stats(t, f, false); !strings.Contains(got, `"active_sessions": 2`) || !strings.Contains(got, `"total_requests": 5`) {
+			t.Fatalf("unexpected cross-day and tenant union: %s", got)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split)
+
+		// Move a request between two closed days. Replace a shared session
+		// association, delete the only copy for one tenant, and add a new session.
+		exec(`
+UPDATE public.request_metrics_projection
+SET occurred_at='2026-11-19 16:00+08', occurred_date='2026-11-19', session_id='replacement', total_tokens=42
+WHERE request_id='summary1';
+DELETE FROM public.request_metrics_projection WHERE request_id='summary3';
+UPDATE public.request_metrics_projection SET session_id='new-after-build', cost_currency='CNY'
+WHERE request_id='summary2';`)
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_daily_state
+		    WHERE day IN ('2026-11-18','2026-11-19') AND dirty`).Scan(&rows); err != nil || rows != 2 {
+			t.Fatalf("move left stale published days: dirty=%d, error=%v", rows, err)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split)
+
+		// Two slots can rebuild different days while preserving shared codes.
+		results := make(chan error, 2)
+		for range 2 {
+			go func() {
+				built, err := processor.RefreshDailySummary(ctx)
+				if err == nil && !built {
+					err = errors.New("daily rebuild did not claim work")
+				}
+				results <- err
+			}()
+		}
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_daily_state
+		    WHERE day IN ('2026-11-18','2026-11-19') AND dirty`).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("two-slot rebuild left %d dirty days: %v", rows, err)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split)
+		// Hold the worker just before publication, then have the real projector
+		// deliver a late fact for its locked day.
+		exec(`
+UPDATE public.request_metrics_daily_state SET dirty=true WHERE day='2026-11-20';
+CREATE FUNCTION public.wait_for_daily_publish_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(983220);
+    RETURN NEW;
+END $$;
+CREATE TRIGGER wait_for_daily_publish_fixture BEFORE UPDATE ON public.request_metrics_daily_state
+FOR EACH ROW WHEN (OLD.day='2026-11-20' AND OLD.dirty AND NOT NEW.dirty)
+EXECUTE FUNCTION public.wait_for_daily_publish_fixture();`)
+		barrier, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer barrier.Rollback(ctx)
+		if _, err := barrier.Exec(ctx, "SELECT pg_advisory_xact_lock(983220)"); err != nil {
+			t.Fatal(err)
+		}
+		waitFor := func(sql string) {
+			t.Helper()
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			for {
+				var waiting bool
+				if err := pool.QueryRow(waitCtx, sql).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		go func() {
+			_, err := processor.RefreshDailySummary(ctx)
+			results <- err
+		}()
+		waitFor("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=983220 AND NOT granted)")
+		exec(`
+INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,status,total_tokens)
+VALUES ('summary-late','summary-late','2026-11-20 18:00+08','summary-a','success',69);`)
+		go func() {
+			_, err := processor.ProcessBatch(ctx, 50)
+			results <- err
+		}()
+		waitFor(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+		    WHERE datname=current_database() AND wait_event_type='Lock' AND pid<>pg_backend_pid()
+		      AND query LIKE '%WITH state AS (%')`)
+		if err := barrier.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		var dirty bool
+		if err := pool.QueryRow(ctx, "SELECT dirty FROM public.request_metrics_daily_state WHERE day='2026-11-20'").Scan(&dirty); err != nil || !dirty {
+			t.Fatalf("concurrent projection failed to invalidate the rebuilt day: dirty=%v error=%v", dirty, err)
+		}
+		assertParity(t, f, tenant, split)
+		exec("DROP TRIGGER wait_for_daily_publish_fixture ON public.request_metrics_daily_state; DROP FUNCTION public.wait_for_daily_publish_fixture()")
+		refresh()
+		assertParity(t, f, tenant, split)
+	})
+
 	t.Run("coverage_and_schema_rollback_keep_legacy_watermark", func(t *testing.T) {
 		start := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
 		coverage, err := readProjectionCoverage(ctx, db, start, start.AddDate(0, 0, 1))
@@ -1061,6 +1271,8 @@ UPDATE public.usage_facts SET canonical_id=NULL,raw_model_name='bob-model'
 			state.PendingCount == 0 || state.OldestWaitSeconds < 300 {
 			t.Fatalf("stale backlog should block readiness: %+v", state)
 		}
+		apply("983e_request_metrics_daily_summary.down.sql")
+		apply("983e_request_metrics_daily_summary.down.sql")
 		apply("983d_request_metrics_projection.down.sql")
 		apply("983d_request_metrics_projection.down.sql")
 		var requestID string

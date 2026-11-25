@@ -110,3 +110,7 @@ embeddata/999a_data_maintenance_playbook.sql	installer	-	★ embeddata 宇宙里
 # ★★ `680b` / `682b` / `683b` / `706b` / `707b` / `983b` / `983c` / `341b` ★★）
 # ★★ ⇒ ★★ **⇒ 「没有空号」的准确表述是「【没有纯数字三位数空号】、★ 但【号段＋字母后缀】
 # ★★ 仍可开」★★ ⇒ ★★ ⇒ ★★ **⇒ 而 `999a` 正是上游把【999 号段】的后缀位开出来的第一个 ★★★**
+canonical/983d_request_metrics_projection.sql	both	-	终态请求投影及刷新队列，由部署序列和安装器 StartupFiles 交付。
+embeddata/983d_request_metrics_projection.sql	installer	-	983d 的安装器内嵌副本。
+canonical/983e_request_metrics_daily_summary.sql	both	-	从 983d 派生的可重算日汇总，由部署序列和安装器 StartupFiles 交付。
+embeddata/983e_request_metrics_daily_summary.sql	installer	-	983e 的安装器内嵌副本，顺序在 983d 之后。
