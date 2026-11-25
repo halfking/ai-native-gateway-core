@@ -240,11 +240,11 @@ describe('① 权限档 admin（两条独立理由，缺一不可）', () => {
   it('①-7 ★★★★★ 注册行随合并持续漂移（历史 ：982/:983 → :1009/:1010 → :1034/:1035 → :1038 → :1041）⇒ 2026-11-26 改结构锚点止漂：唯一存在性＋档位逐字，不再钉行号', () => {
     const lines = goSrc('admin/handler.go').split('\n')
     const needle = 'HandleFunc("/api/admin/data-lifecycle/storage",'
-    const hits = lines.map((l, i) => ({ l, i })).filter(({ l }) => l.includes(needle))
+    const hits = lines.filter((line) => line.includes(needle))
     // ★ 唯一存在性：注册行必须恰好一条（端点搬家/改名时这条红 ⇒ 重新对表）。
     //   ★ 不钉行号 —— 它已随合并漂了 5 次；唯一性＋档位才是要守的事实。
     expect(hits, `注册行必须恰好一条（实得 ${hits.length} 条）`).toHaveLength(1)
-    expect(hits[0].l).toMatch(/admin\(h\.handleDataLifecycleStorage\)/)
+    expect(hits[0]).toMatch(/admin\(h\.handleDataLifecycleStorage\)/)
     // ★ 同族相邻注册（storage/tables）同档：admin(...)，不许被顺手提到 superAdmin。
     const tables = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/data-lifecycle/storage/tables",'))
     expect(lines[tables]).toMatch(/admin\(h\.handleDataLifecycleTableSizes\)/)
