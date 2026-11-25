@@ -274,6 +274,20 @@ sha256_file() {
   fi
 }
 
+# Extract version number from migration filename (e.g., "392" from "392_name.sql",
+# "983" from "983b_name.sql"). Returns empty string if no numeric prefix found.
+# This matches the installer's migrationVersionOf logic in runner.go.
+extract_migration_version() {
+  local filename="$1"
+  # Match: start of string, 1+ digits, optional letter suffix, underscore
+  # Handles: 392_, 983b_, 361b_, etc.
+  if [[ "$filename" =~ ^([0-9]+)[a-z]?_ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf ''
+  fi
+}
+
 # Fixed order: 655 restores the canonical session_summaries columns; 560
 # supplies the tenant uniqueness guard; 572 must replace the bounded token
 # ratio before 563 performs its backfill; 563/564 then restore the hot trigger
@@ -3329,6 +3343,8 @@ END
 # fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
 # 产物必须真实在场」，不是「库里所有记账行」）。
 declare -a sha_matched_markers=()
+# 本轮识别为「安装器已应用」而跳过的文件（★ 方案 A：部署通道账本统一）
+declare -a installer_applied_markers=()
 
 # A fresh installer seals these receipts only after all of its SQL succeeds.
 # The version ledger cannot establish file identity or prove execution.
@@ -3427,6 +3443,28 @@ for file in "${files[@]}"; do
     fi
     continue
   fi
+  
+  # ★★ 方案 A：部署通道账本统一（2026-11-26）★★
+  # 部署通道权威台账里无记录 ⇒ 在应用前查询安装器台账 public.schema_migrations。
+  # 若版本已在安装器台账 ⇒ 跳过（该迁移已被安装器应用）+ 回填部署通道台账，
+  # 防止下次部署重复查询。这使得「安装器新装 → 部署通道升级」路径不再重放
+  # 已应用的迁移，解决 252 上 392 漂移风险 + 账本语义统一。
+  version="$(extract_migration_version "$base")"
+  installer_applied=""
+  if [[ -n "$version" ]]; then
+    # 查询时处理表不存在的情况（全新库 / 仅部署通道管理的库）
+    installer_applied="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='${version}' LIMIT 1" 2>/dev/null || true)"
+  fi
+  
+  if [[ "$installer_applied" == "1" ]]; then
+    # 安装器已应用：跳过 + 回填部署通道台账（INSERT ... ON CONFLICT DO NOTHING 幂等）
+    printf 'applied by installer (backfilling deployment ledger): %s\n' "${file#"$ROOT_DIR/"}"
+    installer_applied_markers+=("${base}")
+    psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${file_sha}', 'none') ON CONFLICT (sequence_name) DO NOTHING"
+    continue
+  fi
+  
+  # 部署通道与安装器台账均无记录：按全新迁移应用
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
   psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${execution_sha}', '${runtime_adaptation}') ON CONFLICT (sequence_name) DO NOTHING"
