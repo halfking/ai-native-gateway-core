@@ -579,30 +579,32 @@ function responseOk(r, win, status, probe) {
 function driftOk(a, b) {
   return Math.abs((a || 0) - (b || 0)) <= Math.max(100, Math.ceil(Math.max(a || 0, b || 0) * 0.001))
 }
-function page2Ok(r1, r2, win) {
-  const i1 = (r1.body && r1.body.items) || []
-  const i2 = (r2.body && r2.body.items) || []
-  // 第 2 页该有几行，以**第 2 页自己那次请求**的 count 为准（漂移只增不减）。
-  const count = r2.body ? r2.body.count : undefined
-  return (
-    r1.status === 200 &&
-    r2.status === 200 &&
-    r2.body &&
-    r2.body.count >= r1.body.count &&
-    driftOk(r1.body.count, r2.body.count) &&
-    Date.parse(r2.body.query_window_start) === Date.parse(win.from) &&
-    Date.parse(r2.body.query_window_end) === Date.parse(win.to) &&
-    i2.length === Math.min(50, Math.max(0, count - 50)) &&
-    i2.every((it, i) => {
-      const x = Date.parse(it.ts)
-      return (
-        x >= Date.parse(win.from) &&
-        x <= Date.parse(win.to) &&
-        (i === 0 || Date.parse(i2[i - 1].ts) >= x) &&
-        (i1.length === 0 || x <= Date.parse(i1[i1.length - 1].ts))
-      )
-    })
-  )
+// 第 2 页的对拍。★ 取数顺序必须是**先第 2 页、后第 1 页**（p2 早于 p1）：
+//   新请求总落在倒序的最前面 ⇒ 两个快照之间插入 k 行，会把后续行整体后移 k 位。
+//   若 p1 先取、p2 后取：后取的 p2（新快照的第 51–100 行）会包含先取的 p1 末行**之前**
+//   （更新）的若干行 ⇒「第 2 页不比第 1 页新」必然被活流量打破（2026-11-25 211 实测 8/8
+//   假红，漂移 +3 ~ +17）。反过来 p2 先取、p1 后取：p1 是更新快照的前 50 行，其末行只会
+//   更旧 ⇒ 纯漂移下该不变式**必然成立** ⇒ 此时再红就是真的分页缺陷。
+//   返回 null 表示成立，否则返回第一个不成立的子条件（进失败明细）。
+function page2Problem(p2Early, p1Late, win) {
+  const i1 = (p1Late.body && p1Late.body.items) || []
+  const i2 = (p2Early.body && p2Early.body.items) || []
+  const f = Date.parse(win.from)
+  const t = Date.parse(win.to)
+  if (p2Early.status !== 200 || p1Late.status !== 200 || !p2Early.body || !p1Late.body) return `status p1=${p1Late.status} p2=${p2Early.status}`
+  if (Date.parse(p2Early.body.query_window_start) !== f || Date.parse(p2Early.body.query_window_end) !== t) return 'p2 响应窗口 ≠ 请求窗口'
+  // 第 2 页该有几行，以**第 2 页自己那次请求**的 count 为准。
+  if (i2.length !== Math.min(50, Math.max(0, p2Early.body.count - 50))) return `p2 行数=${i2.length} count=${p2Early.body.count}`
+  if (!driftOk(p1Late.body.count, p2Early.body.count)) return `count 漂移超容差 p1=${p1Late.body.count} p2=${p2Early.body.count}`
+  for (let i = 0; i < i2.length; i++) {
+    const x = Date.parse(i2[i].ts)
+    if (x < f || x > t) return `p2 第 ${i} 行时间落在窗口外`
+    if (i > 0 && Date.parse(i2[i - 1].ts) < x) return `p2 第 ${i} 行比前一行新（未倒序）`
+  }
+  if (i1.length > 0 && i2.length > 0 && Date.parse(i2[0].ts) > Date.parse(i1[i1.length - 1].ts)) {
+    return `p2 首行比 p1 末行新（p2=${i2[0].ts} > p1末=${i1[i1.length - 1].ts}）`
+  }
+  return null
 }
 for (let round = 1; round <= MATRIX_ROUNDS; round++) {
   const counts = { 0: {}, 1: {} }
@@ -613,6 +615,9 @@ for (let round = 1; round <= MATRIX_ROUNDS; round++) {
       const details = []
       let slowest = 0
       let page1 = null
+      // ★ 先取第 2 页（见 page2Problem 头注）。
+      const page2 = await api({ from: win.from, to: win.to, include_probe: probe ? 1 : '', page: 2, page_size: 50 })
+      slowest = Math.max(slowest, page2.ms)
       for (const status of STATUSES) {
         const r = await api({ from: win.from, to: win.to, include_probe: probe ? 1 : '', request_status: status, page: 1, page_size: 50 })
         slowest = Math.max(slowest, r.ms)
@@ -623,11 +628,8 @@ for (let round = 1; round <= MATRIX_ROUNDS; round++) {
           details.push(`${status || 'all'}: status=${r.status} count=${b.count} items=${(b.items || []).length} ${r.ms}ms`)
         }
       }
-      const page2 = await api({ from: win.from, to: win.to, include_probe: probe ? 1 : '', page: 2, page_size: 50 })
-      slowest = Math.max(slowest, page2.ms)
-      if (!page2Ok(page1, page2, win)) {
-        details.push(`分页: p1=${(page1.body.items || []).length} p2=${(page2.body.items || []).length} count=${page1.body.count}/${page2.body.count}`)
-      }
+      const problem = page2Problem(page2, page1, win)
+      if (problem) details.push(`分页: ${problem}`)
       // 跨条件不变式：各状态计数之和 == 全量计数（口径完备、不重不漏；带活流量漂移容差）
       const statusSum = STATUSES.filter((k) => k).reduce((acc, k) => acc + byStatus[k], 0)
       const sumOk = driftOk(statusSum, byStatus.all)

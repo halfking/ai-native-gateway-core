@@ -9508,12 +9508,13 @@ func main() {
 
 	// Mock Probe runner 先停（设计 §二"先停 runner → 关 mux"）：先 cancel
 	// 运行 ctx 使在途探测（单次自带 probeTimeout 超时）即刻收敛，再以独立
-	// 5s 预算排空历史写入队列——正常毫秒级，5s 是 PG 停摆兜底上限；不与
-	// 下方 23s srv.Shutdown 预算混算（systemd TimeoutStopSec=35s 下两者
-	// 不叠加挤占，drain 典型远小于 1s）。
+	// 预算排空历史写入队列——正常毫秒级，5s 是 PG 停摆兜底上限；不与
+	// 下方 srv.Shutdown 预算混算（两者不叠加挤占，drain 典型远小于 1s）。
+	// ★ 2026-11-17：预算改引 shutdown_budget.go 的具名常量 ⇒ 部署侧与
+	//   systemd 侧的等待预算可以由同一个门对拍（见 shutdown_budget.go 抬头）。
 	if probeRunner != nil {
 		probeCancel()
-		probeDrainCtx, probeDrainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		probeDrainCtx, probeDrainCancel := context.WithTimeout(context.Background(), shutdownProbeDrainBudget)
 		probeRunner.Stop(probeDrainCtx)
 		probeDrainCancel()
 		slog.Info("mock probe runner stopped")
@@ -9550,10 +9551,19 @@ func main() {
 	//   按**较小**的那一面（25s）算，同步注销也放不下 ⇒ 并发发起是稳的那一边。
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
-	// 2026-08-19: 30s→23s. systemd TimeoutStopSec=35s (drop-in), srv.Shutdown 必须 ≤ 23s
+	// 2026-08-19: 30s→23s. srv.Shutdown 必须 ≤ 23s
 	// 留 12s 余量给 worker stop (stopCtx 5s + 启动新进程 ~3s + 系统开销 ~4s).
 	// 245 实测 in-flight drain < 5s, 23s 足够覆盖 (handoff changelog §3 B1-follow-up).
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 23*time.Second)
+	//
+	// ★★ 2026-11-17（切流窗口 502 的根修）：本段预算曾只写在**注释**里，
+	//   部署侧与 systemd 侧看不见它 ⇒ 两侧各自拍脑袋：
+	//     · 部署侧 `docker stop` 不带 -t ⇒ docker 默认 **10 秒**就 SIGKILL；
+	//     · systemd 单元 TimeoutStopSec=25s < 本段 23s + 前面的注销/探针排空。
+	//   ⇒ 进程在排空完成前被强杀 ⇒ 在途 SSE / 流式请求被硬切 ⇒ nginx 502
+	//     （llm.itestu.cn 的用户可见形态＝「打不开 / 一直转圈 / 登录失败」）。
+	//   ⇒ 现在预算集中到 shutdown_budget.go 的具名常量，且由
+	//     tests/deploy_stop_budget_test.sh 对拍「部署侧 ≥ 应用侧」。
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownHTTPDrainBudget)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("gateway shutdown error", "error", err)
@@ -9565,9 +9575,10 @@ func main() {
 	}
 
 	// ── Stop background services with a global timeout ──
-	// 2026-08-19: stopCtx 20s→5s. systemd TimeoutStopSec=35s 总预算下, srv.Shutdown 23s 后
-	// 仅剩 12s, worker stop 必须快速失败. 5s 足够让 in-flight workers drain, 超时则 SIGKILL.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 2026-08-19: stopCtx 20s→5s. srv.Shutdown 23s 之后
+	// worker stop 必须快速失败. 5s 足够让 in-flight workers drain, 超时则 SIGKILL.
+	// ★ 2026-11-17：预算改引 shutdown_budget.go 的具名常量（原因见上方抬头）。
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownWorkerBudget)
 	defer stopCancel()
 	stopDone := make(chan struct{}, 1)
 
