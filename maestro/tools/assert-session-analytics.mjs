@@ -457,7 +457,8 @@ const loadPage = async (url) => {
       panelTextLen: panel ? (panel.innerText || '').trim().length : 0,
     })
   })()`))
-  check('users 页：重定向落点是 /admin/session-analytics/users', struct.path === '/admin/session-analytics/users', `path=${struct.path}`)
+  check('users 页：重定向落点是 /admin/session-analytics/users/overview',
+    struct.path === '/admin/session-analytics/users/overview', `path=${struct.path}`)
   check('users 页：页根在（sa-page-users）', struct.page === true)
   check('users 页：会话统计面板已渲染（.stats-panel-wrapper 有内容）', struct.panelTextLen > 0, `面板文本长度=${struct.panelTextLen}`)
   check('users 页：Top5 四件套区块在（sa-top5-section + 4 张卡）',
