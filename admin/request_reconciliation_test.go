@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -187,17 +188,19 @@ func TestProjectedReconciliationRequiresCompletedCalendarDay(t *testing.T) {
 	}
 }
 
-func TestProjectedReconciliationCSVAddsMeasuredTotal(t *testing.T) {
+func TestProjectedReconciliationCSVAddsTerminalEvidence(t *testing.T) {
 	report := reconciliation.Report{Version: reconciliation.ProjectedReportVersion, Section: "requests", Rows: []json.RawMessage{
-		json.RawMessage(`{"request_id":"r","total_tokens":149,"input_tokens":100,"output_tokens":30}`),
+		json.RawMessage(`{"request_id":"r","total_tokens":149,"input_tokens":100,"output_tokens":30,"projected_status":"success"}`),
+		json.RawMessage(`{"request_id":"wal-only","status":"success","projected_status":null}`),
 	}}
 	data, err := requestReconciliationCSV(report)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rows, err := csv.NewReader(bytes.NewReader(data)).ReadAll()
-	if err != nil || len(rows) != 2 || rows[0][len(rows[0])-1] != "total_tokens" || rows[1][len(rows[1])-1] != "149" {
-		t.Fatalf("V2 export lost measured total: %q, %v", data, err)
+	if err != nil || len(rows) != 3 || !slices.Equal(rows[0][len(rows[0])-2:], []string{"total_tokens", "projected_status"}) ||
+		!slices.Equal(rows[1][len(rows[1])-2:], []string{"149", "success"}) || rows[2][len(rows[2])-1] != "" {
+		t.Fatalf("V2 export lost terminal evidence: %q, %v", data, err)
 	}
 	pending := time.Date(2026, 11, 23, 17, 0, 0, 0, time.UTC)
 	summary, err := requestReconciliationSummaryCSVWithProjection(json.RawMessage(`{"total_tokens":149}`),

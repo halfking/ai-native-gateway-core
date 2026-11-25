@@ -17,7 +17,7 @@ export default {
     details: '对账证据明细', amountBreakdown: '按币种和流量归属汇总的供应商金额',
     window: '{start} 至 {end}（不含结束时刻），{zone}', readAt: '读取时间 {at}', exactInCSV: '精确值见 CSV', yes: '是', no: '否',
     internalNote: '积分核对使用整小时用量桶，跨过日界线的桶单列。',
-    terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。',
+    terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。 请求状态与投影终态分别显示。投影终态为空时缺少终态证据。',
     terminalProjectionPending: '终态用量仍在同步，最早排队于 {at}。跨日修订也可能影响结果。',
     sections: { requests: '客户端请求', attempts: '供应商调用', sessions: '会话', postings: '积分过账', coverage: '证据覆盖', internal: '内部积分核对', supplier_invoices: '供应商日账单' },
     invoices: {
@@ -58,6 +58,7 @@ export default {
       internal: '分别列出当日毛扣费、冲正后净积分和用量桶。',
     },
     fields: {
+      projected_status: '投影终态', requests_with_terminal_projection: '有投影终态的收件',
       requests: '客户端请求', success: '成功', failure: '失败', rate_limited: '限流', cancelled: '取消', pending: '进行中',
       unknown_status: '终态未知', unassigned_session: '无会话归属', local_day: '当地日期', request_id: '请求 ID',
       admission_rejected_requests: '网关入口拒绝', admission_rejection: '入口拒绝原因',

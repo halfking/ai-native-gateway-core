@@ -4082,11 +4082,12 @@ sctx: {
       next: '下一页',
     },
     evidence: {
-      terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。',
+      terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。 请求状态与投影终态分别显示。投影终态为空时缺少终态证据。',
       terminalProjectionPending: '终态用量仍在同步，最早排队于 {at}。跨日修订也可能影响结果。',
       title: '日对账证据', date: '对账日期', load: '查询证据',
       scope: '旧用量按租户和请求在每天去重，历史供应商发送总数未知。',
       fields: {
+        projected_status: '投影终态', requests_with_terminal_projection: '有投影终态的收件',
         received_requests: '已接收客户端请求', terminal_usage_without_retained_receipt: '终态用量缺接收记录',
         orchestration_child_receipts: '已关联的内部编排请求', orchestration_dispatches_unlinked: '未关联的编排派发',
         recorded_sends: '已记录发送', recorded_sends_without_reported_amount: '缺返回金额的发送',

@@ -9,7 +9,7 @@ export default {
   projectedToday: ' (la journée en cours est encore ouverte)',
   legacySnapshotView: 'Instantanés historiques',
   daily: {
-    terminalProjection: 'La date dépend de l’heure de réception. L’usage final provient des statistiques des requêtes.',
+    terminalProjection: 'La date dépend de l’heure de réception. L’usage final provient des statistiques des requêtes. Le statut de la requête et le résultat final projeté sont affichés séparément. Un résultat final vide signale une preuve manquante.',
     terminalProjectionPending: 'La synchronisation de l’usage final est en cours. La plus ancienne entrée date de {at}. Les corrections d’un autre jour peuvent modifier ce rapport.',
     title: 'Preuves de rapprochement quotidien',
     section: 'Type de preuve',
@@ -120,6 +120,7 @@ export default {
       internal: 'Les débits bruts, les crédits comptabilisés nets et les buckets de consommation sont affichés séparément pour cette date.',
     },
     fields: {
+      projected_status: 'Résultat final projeté', requests_with_terminal_projection: 'Requêtes reçues avec un résultat final projeté',
       total_tokens: 'Jetons finaux conservés',
       measured_total_requests: 'Requêtes avec un total de jetons mesuré',
       usage_source: 'Source de l’usage',

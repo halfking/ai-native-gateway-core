@@ -9,7 +9,7 @@ export default {
   projectedToday: '（本日は集計対象外）',
   legacySnapshotView: '過去のスナップショット',
   daily: {
-    terminalProjection: '受信時刻で対象日を決めます。確定した使用量はリクエスト統計から取得します。',
+    terminalProjection: '受信時刻で対象日を決めます。確定した使用量はリクエスト統計から取得します。 リクエストの状態と投影された最終結果は別々に表示されます。最終結果が空欄の場合、確定結果の証跡がありません。',
     terminalProjectionPending: '確定使用量を同期しています。最も古い待機レコードは {at} のものです。別の日の訂正がこのレポートに反映される場合があります。',
     title: '日次照合エビデンス',
     section: 'エビデンス種別',
@@ -120,6 +120,7 @@ export default {
       internal: '総デビット、差引記帳クレジット、消費バケットはこの日についてそれぞれ別に表示されます。',
     },
     fields: {
+      projected_status: '投影された最終結果', requests_with_terminal_projection: '投影された最終結果がある受信記録',
       total_tokens: '保存された確定トークン数',
       measured_total_requests: 'トークン総数を実測したリクエスト',
       usage_source: '使用量の出典',

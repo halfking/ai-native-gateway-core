@@ -51,6 +51,7 @@ func readTerminalProjection(ctx context.Context, tx pgx.Tx, tenant string) (*Rep
 const projectedUsageColumns = `CASE WHEN f.usage_source IN ('llm','corrected') THEN NULLIF(f.prompt_tokens, 0) END AS input_tokens,
 		CASE WHEN f.usage_source IN ('llm','corrected') THEN NULLIF(f.completion_tokens, 0) END AS output_tokens,
 		CASE WHEN f.usage_source IN ('llm','corrected') THEN NULLIF(f.total_tokens, 0) END AS total_tokens,
+		CASE WHEN f.status IN ('success','failure','rate_limited','cancelled') THEN f.status END AS projected_status,
 		` + requestAdmissionColumns
 
 const projectedUsageSource = `LEFT JOIN LATERAL (
@@ -84,12 +85,13 @@ const projectedUsageReceiptJoin = `SELECT k.tenant_id, k.request_id, u.occurred_
 func projectedReportSection(name string, section reportSection) reportSection {
 	switch name {
 	case "requests":
-		section.base = projectedReceiptFacts + requestDetailColumns + " total_tokens, " + requestDetailSends
+		section.base = projectedReceiptFacts + requestDetailColumns + " total_tokens, projected_status, " + requestDetailSends
 		section.totals = requestTotals + `count(total_tokens) AS measured_total_requests, sum(total_tokens) AS total_tokens,
+			count(projected_status) AS requests_with_terminal_projection,
 			count(*) FILTER (WHERE traffic_class NOT IN ('business','platform','unknown')) AS other_traffic_requests
 			FROM facts`
 		section.coverage = "recorded_wal_and_projected_terminal_usage_legacy_zeros_unverified"
-		section.columns = append(append([]string(nil), section.columns...), "total_tokens")
+		section.columns = append(append([]string(nil), section.columns...), "total_tokens", "projected_status")
 	case "sessions":
 		section.base = projectedReceiptFacts + sessionReportRows
 		section.coverage = "canonical_session_dimension_and_recorded_activity_with_projected_terminal_usage"

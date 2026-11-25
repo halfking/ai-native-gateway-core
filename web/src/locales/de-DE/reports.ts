@@ -9,7 +9,7 @@ export default {
   projectedToday: ' (der heutige Tag ist noch offen)',
   legacySnapshotView: 'Historische Snapshots',
   daily: {
-    terminalProjection: 'Der Empfangszeitpunkt bestimmt den Tag. Der endgültige Verbrauch stammt aus der Anfragestatistik.',
+    terminalProjection: 'Der Empfangszeitpunkt bestimmt den Tag. Der endgültige Verbrauch stammt aus der Anfragestatistik. Anfragestatus und projiziertes Endergebnis werden getrennt angezeigt. Ein leeres Endergebnis weist auf einen fehlenden Nachweis hin.',
     terminalProjectionPending: 'Der endgültige Verbrauch wird noch synchronisiert. Der älteste Warteschlangeneintrag stammt von {at}. Korrekturen anderer Tage können diesen Bericht beeinflussen.',
     title: 'Tägliche Abgleichsbelege',
     section: 'Belegart',
@@ -120,6 +120,7 @@ export default {
       internal: 'Brutto-Abbuchungen, netto gebuchte Credits und Verbrauchsbuckets werden für dieses Datum getrennt ausgewiesen.',
     },
     fields: {
+      projected_status: 'Projiziertes Endergebnis', requests_with_terminal_projection: 'Empfangene Anfragen mit projiziertem Endergebnis',
       total_tokens: 'Gespeicherte endgültige Tokens',
       measured_total_requests: 'Anfragen mit gemessener Token-Gesamtzahl',
       usage_source: 'Verbrauchsquelle',

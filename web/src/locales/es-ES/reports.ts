@@ -9,7 +9,7 @@ export default {
   projectedToday: ' (el día actual sigue abierto)',
   legacySnapshotView: 'Instantáneas históricas',
   daily: {
-    terminalProjection: 'La hora de recepción determina el día. El uso final procede de las estadísticas de solicitudes.',
+    terminalProjection: 'La hora de recepción determina el día. El uso final procede de las estadísticas de solicitudes. El estado de la solicitud y el resultado final proyectado se muestran por separado. Un resultado final vacío indica que faltan evidencias del resultado.',
     terminalProjectionPending: 'El uso final aún se está sincronizando. El registro en cola más antiguo es de {at}. Los ajustes de otro día pueden afectar a este informe.',
     title: 'Evidencia de conciliación diaria',
     section: 'Tipo de evidencia',
@@ -120,6 +120,7 @@ export default {
       internal: 'Los débitos brutos, los créditos contabilizados netos y los buckets de consumo se muestran por separado para esta fecha.',
     },
     fields: {
+      projected_status: 'Resultado final proyectado', requests_with_terminal_projection: 'Solicitudes recibidas con resultado final proyectado',
       total_tokens: 'Tokens finales conservados',
       measured_total_requests: 'Solicitudes con un total de tokens medido',
       usage_source: 'Fuente del uso',

@@ -9,7 +9,7 @@ export default {
   projectedToday: '（今天尚未結束）',
   legacySnapshotView: '歷史快照',
   daily: {
-    terminalProjection: '以收件時間判定日期。終態用量來自請求統計。',
+    terminalProjection: '以收件時間判定日期。終態用量來自請求統計。 請求狀態與投影終態分別顯示。投影終態留白表示缺少終態證據。',
     terminalProjectionPending: '終態用量同步中，最早待處理的記錄來自 {at}。其他日期的更正也可能影響此報表。',
     title: '每日對帳證據',
     section: '證據類型',
@@ -120,6 +120,7 @@ export default {
       internal: '分別列出當日的扣款積分毛額、沖正後的淨積分與用量桶。',
     },
     fields: {
+      projected_status: '投影終態', requests_with_terminal_projection: '有投影終態的收件',
       total_tokens: '保留的終態 Token',
       measured_total_requests: '總 Token 已實測的請求',
       usage_source: '用量來源',

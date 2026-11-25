@@ -4049,11 +4049,12 @@ sctx: {
       next: 'Next',
     },
     evidence: {
-      terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection.',
+      terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection. The request status and projected outcome are shown separately. A blank projected outcome indicates missing terminal evidence.',
       terminalProjectionPending: 'Terminal usage is still syncing. The oldest queued record is from {at}. Revisions from another day can affect this report.',
       title: 'Daily reconciliation evidence', date: 'Reconciliation date', load: 'Load evidence',
       scope: 'Legacy usage keys are counted once per tenant and request per day. The total number of historical supplier sends is unknown.',
       fields: {
+        projected_status: 'Projected outcome', requests_with_terminal_projection: 'Receipts with a projected outcome',
         received_requests: 'Client requests received', terminal_usage_without_retained_receipt: 'Terminal usage missing a receipt',
         orchestration_child_receipts: 'Linked internal requests', orchestration_dispatches_unlinked: 'Unlinked orchestration dispatches',
         recorded_sends: 'Recorded sends', recorded_sends_without_reported_amount: 'Sends missing a reported amount',

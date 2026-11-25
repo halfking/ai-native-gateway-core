@@ -267,9 +267,9 @@ INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
 	if requests.Projection == nil || requests.Projection.Source != "request_metrics" || requests.Projection.PendingSince != nil {
 		t.Fatalf("scope includes another tenant's projection backlog: %+v", requests.Projection)
 	}
-	assertReportFields(t, requests.Summary, map[string]string{"requests": "2", "terminal": "2", "success": "1", "failure": "1", "total_tokens": "149", "measured_total_requests": "1"})
-	assertReportFields(t, requests.Rows[0], map[string]string{"input_tokens": "100", "output_tokens": "30", "total_tokens": "149", "usage_source": `"corrected"`})
-	assertReportFields(t, requests.Rows[1], map[string]string{"total_tokens": "null", "input_tokens": "null"})
+	assertReportFields(t, requests.Summary, map[string]string{"requests": "2", "terminal": "2", "success": "1", "failure": "1", "total_tokens": "149", "measured_total_requests": "1", "requests_with_terminal_projection": "1"})
+	assertReportFields(t, requests.Rows[0], map[string]string{"status": `"success"`, "projected_status": `"success"`, "input_tokens": "100", "output_tokens": "30", "total_tokens": "149", "usage_source": `"corrected"`})
+	assertReportFields(t, requests.Rows[1], map[string]string{"status": `"failure"`, "projected_status": "null", "total_tokens": "null", "input_tokens": "null"})
 	assertReportFields(t, read(ReportScope{TenantID: tenantID}, "sessions").Summary, map[string]string{"sessions": "1", "active": "1"})
 	coverage := read(ReportScope{TenantID: tenantID, Platform: true}, "coverage")
 	assertReportFields(t, coverage.Summary, map[string]string{"received_requests": "2", "receipts_without_retained_terminal_usage": "1", "terminal_usage_requests": "3", "terminal_usage_without_retained_receipt": "1", "terminal_usage_receipt_outside_window": "1", "posted_entries": "1"})

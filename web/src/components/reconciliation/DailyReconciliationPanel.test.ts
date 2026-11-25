@@ -42,6 +42,30 @@ describe('daily reconciliation evidence', () => {
     exportSupplierInvoice.mockReset().mockResolvedValue(undefined)
   })
 
+  it('shows the request status when terminal projection evidence is missing', async () => {
+    readDailyReport.mockImplementation(async (query: DailyQuery) => ({
+      ...response(query), summary: { requests: 2, requests_with_terminal_projection: 1 },
+      rows: [
+        { request_id: 'wal-only', status: 'success', projected_status: null },
+        { request_id: 'with-fact', status: 'success', projected_status: 'success' },
+      ],
+    }))
+    const wrapper = render()
+    await wrapper.get('[data-testid="selected-day"]').setValue('2026-11-23')
+    await wrapper.get('[data-testid="daily-section"]').setValue('requests')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Receipts with a projected outcome1')
+    const labels = wrapper.findAll('th').map(cell => cell.text())
+    const projectedStatus = labels.indexOf('Projected outcome')
+    expect(projectedStatus).toBeGreaterThan(0)
+    const rows = wrapper.findAll('tbody tr')
+    expect(rows[0].findAll('td')[projectedStatus].text()).toBe('—')
+    expect(rows[1].findAll('td')[projectedStatus].text()).toBe(en.daily.values.success)
+    expect(rows[0].findAll('td')[labels.indexOf('Status')].text()).toBe(en.daily.values.success)
+    wrapper.unmount()
+  })
+
   it('queries one date, pages the evidence, and exports the displayed query', async () => {
     readDailyReport.mockImplementation(async (query: DailyQuery) => ({
       ...response(query), summary: { recorded_attempts: 51, sent: 50 }, rows: Array.from({ length: query.offset === 0 ? 50 : 1 }, (_, index) => ({
