@@ -227,15 +227,18 @@ describe('① 权限档「admin」（第四个写下错话的模块）', () => {
     expect(sup).toMatch(/case "user"/)
   })
 
-  it('①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `:1342`（12h-audit 20261017）→ 实为 `:1349`（2026-10-21 views 行号订正轮）→ 实为 `:1352`（2026-10-26 行号漂移订正轮）且是 admin 档', () => {
+  it('①-6 ★★★★★★ 读 Go 源码：filter-options 注册行是 admin 档（历史 :1277 → :1307 → :1342 → :1349 → :1352，行号已漂 5 次 ⇒ 2026-11-26 起按结构锚点判，不钉行号）', () => {
     const lines = goSrc('admin/handler.go').split('\n')
-    const i = lines.findIndex((l) => l.includes('"/api/admin/turns/sessions/filter-options"'))
-    expect(i + 1, '模块头原写 :1277 → :1307 → :1342 → :1349 → 实为 :1352').toBe(1352)
+    const needle = 'HandleFunc("/api/admin/turns/sessions/filter-options",'
+    const hits = lines.filter((l) => l.includes(needle))
+    // ★ 唯一存在性：注册行必须恰好一条（搬家/改名时这条红 ⇒ 重新对表）。
+    expect(hits, `filter-options 注册行必须恰好一条（实得 ${hits.length} 条）`).toHaveLength(1)
     // ★★★ 逐字复核：这一行必须是 `admin(...)` 档，**不是** `superAdmin(...)`。
-    expect(lines[i]).toMatch(/admin\(h\.handleTurnsFilterOptions\)/)
-    expect(lines[i]).not.toMatch(/superAdmin/)
+    expect(hits[0]).toMatch(/admin\(h\.handleTurnsFilterOptions\)/)
+    expect(hits[0]).not.toMatch(/superAdmin/)
     // ★ 相邻的列表端点也是 admin 档（不是 superAdmin）⇒ 不能按前缀推
-    const j = lines.findIndex((l) => l.includes('"/api/admin/turns/sessions"'))
+    const j = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/turns/sessions",'))
+    expect(j, '找不到 turns/sessions 注册行').toBeGreaterThan(-1)
     expect(lines[j]).toMatch(/admin\(h\.handleTurnsSessions\)/)
   })
 

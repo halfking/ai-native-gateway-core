@@ -237,14 +237,17 @@ describe('① 权限档 admin（两条独立理由，缺一不可）', () => {
     }
   })
 
-  it('①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ `:1034`/`:1035`（12h-audit 20261017）→ 实为 `:1038`（2026-10-21 views 行号订正轮）→ 实为 `:1041`（2026-10-26 行号漂移订正轮）', () => {
+  it('①-7 ★★★★★ 注册行随合并持续漂移（历史 ：982/:983 → :1009/:1010 → :1034/:1035 → :1038 → :1041）⇒ 2026-11-26 改结构锚点止漂：唯一存在性＋档位逐字，不再钉行号', () => {
     const lines = goSrc('admin/handler.go').split('\n')
-    const at = lines.findIndex((l) => l.includes('"/api/admin/data-lifecycle/storage"'))
-    expect(at, '找不到注册行').toBeGreaterThan(-1)
-    expect(at + 1).toBe(1041)
-    expect(lines[at]).toMatch(/admin\(h\.handleDataLifecycleStorage\)/)
-    // ★★ 反向护栏：模块头原写的行号那行**不是**本族注册处。
-    expect(lines[981]).not.toMatch(/data-lifecycle/i)
+    const needle = 'HandleFunc("/api/admin/data-lifecycle/storage",'
+    const hits = lines.map((l, i) => ({ l, i })).filter(({ l }) => l.includes(needle))
+    // ★ 唯一存在性：注册行必须恰好一条（端点搬家/改名时这条红 ⇒ 重新对表）。
+    //   ★ 不钉行号 —— 它已随合并漂了 5 次；唯一性＋档位才是要守的事实。
+    expect(hits, `注册行必须恰好一条（实得 ${hits.length} 条）`).toHaveLength(1)
+    expect(hits[0].l).toMatch(/admin\(h\.handleDataLifecycleStorage\)/)
+    // ★ 同族相邻注册（storage/tables）同档：admin(...)，不许被顺手提到 superAdmin。
+    const tables = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/data-lifecycle/storage/tables",'))
+    expect(lines[tables]).toMatch(/admin\(h\.handleDataLifecycleTableSizes\)/)
   })
 })
 
