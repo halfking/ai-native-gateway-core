@@ -282,6 +282,9 @@ export default {
   byTenant: '按租戶',
   byPerson: '按人員',
   byModel: '依模型',
+  dimension: '維度',
+  dailyDetails: '按日明細',
+  exportDailyDetails: '匯出區間完整明細',
   byDay: '按日',
   // 欄位名稱
   provider: '供應商',

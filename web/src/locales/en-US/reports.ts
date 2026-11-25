@@ -136,6 +136,9 @@ export default {
   byTenant: 'By tenant',
   byPerson: 'By person',
   byModel: 'By model',
+  dimension: 'Dimension',
+  dailyDetails: 'Daily details',
+  exportDailyDetails: 'Export full range details',
   byDay: 'By day',
   // Column labels
   provider: 'Provider',

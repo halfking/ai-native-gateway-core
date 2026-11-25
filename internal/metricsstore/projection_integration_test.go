@@ -1782,6 +1782,81 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 		}
 	})
 
+	t.Run("daily_detail_pages_match_full_export_rows", func(t *testing.T) {
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(2026, 11, 5, 0, 0, 0, 0, loc)
+		start, now := day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		fullCoverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, day, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, day, day, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			view   reportrollup.View
+			filter reportrollup.GrainFilter
+		}{
+			{view: reportrollup.ViewInternal},
+			{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{TenantID: "page-a"}},
+			{view: reportrollup.ViewInternal, filter: reportrollup.GrainFilter{Person: "probe-only"}},
+		} {
+			full, err := reportrollup.BuildProjectedReport(ctx, tx, start, day, tc.view, tc.filter, reportrollup.Names{}, true, fullCoverage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			models := make([]reportrollup.DailyGroupRow, 0, len(full.DailyModels))
+			for _, model := range full.DailyModels {
+				models = append(models, reportrollup.DailyGroupRow{Date: model.Date, Key: model.RawModelName, Name: model.RawModelName,
+					Totals: model.Totals, ErrorBreakdown: model.ErrorBreakdown, QualityScore: model.QualityScore})
+			}
+			for group, daily := range map[reportrollup.GrainGroup][]reportrollup.DailyGroupRow{
+				reportrollup.GrainGroupModel: models, reportrollup.GrainGroupProvider: full.DailyProviders,
+				reportrollup.GrainGroupCredential: full.DailyCredentials, reportrollup.GrainGroupTenant: full.DailyTenants,
+				reportrollup.GrainGroupPerson: full.DailyPersons, reportrollup.GrainGroupAPIKey: full.DailyAPIKeys,
+			} {
+				want := []reportrollup.DailyGroupRow{}
+				for _, row := range daily {
+					if row.Date == day.Format(time.DateOnly) {
+						want = append(want, row)
+					}
+				}
+				sort.Slice(want, func(i, j int) bool { return want[i].Key < want[j].Key })
+				var combined = []reportrollup.DailyGroupRow{}
+				last := max(1, (len(want)+49)/50)
+				for number := 1; number <= last; number++ {
+					page, err := reportrollup.BuildProjectedDailyPage(ctx, tx, tc.view, tc.filter, coverage, group, number)
+					if err != nil || page.Number != number || page.PageSize != 50 || page.Total != len(want) {
+						t.Fatalf("%s page %d has unexpected metadata: %+v (%v)", group, number, page, err)
+					}
+					combined = append(combined, page.Rows...)
+				}
+				if !reflect.DeepEqual(want, combined) {
+					t.Fatalf("%s day detail differs from the full export results for %+v", group, tc)
+				}
+				page, err := reportrollup.BuildProjectedDailyPage(ctx, tx, tc.view, tc.filter, coverage, group, 1000)
+				if err != nil || page.Number != last || !reflect.DeepEqual(page.Rows, want[(last-1)*50:]) {
+					t.Fatalf("%s out-of-range page did not return the final page: %v", group, err)
+				}
+			}
+		}
+		open := coverage
+		open.Through = open.From
+		page, err := reportrollup.BuildProjectedDailyPage(ctx, tx, reportrollup.ViewInternal, reportrollup.GrainFilter{}, open, reportrollup.GrainGroupModel, 2)
+		if err != nil || page.Total != 0 || page.Number != 1 || len(page.Rows) != 0 {
+			t.Fatalf("open day unexpectedly had detail: %+v (%v)", page, err)
+		}
+	})
+
 	t.Run("history_percentiles_follow_the_displayed_group", func(t *testing.T) {
 		exec(`
 INSERT INTO public.request_metrics_projection (

@@ -10,7 +10,7 @@ export const enUS = {
       usage: { title: 'Usage metrics', context: 'This page is a usage-cost view. Gateway cost estimates are reconciled separately from internal postings and amounts returned by providers.' },
       usageEnhanced: { title: 'Enhanced usage', context: 'This page combines several endpoints with different sources and windows. Cards need not match each other or other reports. Missing or degraded data is not zero.' },
       usageTrendSeries: { title: 'Usage trends', context: 'This page shows aggregated trends. Compare using the selected interval and timezone, and account for aggregation delay and unclassified data.' },
-      reportRollup: { title: 'Daily reconciliation', context: 'Choose a natural day and evidence type to inspect requests, supplier attempts, sessions, credit postings or supplier invoices. Internal credit checks require a tenant. Historical snapshots contain gateway estimates.' },
+      reportRollup: { title: 'Daily reconciliation', context: 'Choose a date and evidence type to inspect requests, supplier attempts, sessions, credit postings or supplier invoices. Internal credit checks require a tenant. Historical snapshots contain gateway estimates. In historical request statistics, Daily detail shows one completed date and dimension at a time.' },
       reconciliation: { title: 'Provider monthly reconciliation', context: 'This page compares gateway monthly totals with imported bills. A total difference is not per-call matching evidence; align currency, billing period, and settlement account.' },
       cacheState: { title: 'Cache state', context: 'This page shows cache runtime state; cache status or hit counts are not billing facts. Cache tokens may overlap input and should be shown separately.' },
       logs: { title: 'Request logs', context: 'Count each inbound client request once by tenant and request ID. Count upstream calls by attempt; early rejects remain inbound requests.' },
@@ -4039,6 +4039,14 @@ sctx: {
     projectedBasis: 'Days use {zone}. The credit ledger records postings, and daily reconciliation shows supplier sends and invoices.',
     projectedPending: 'Some requests in this period are still being processed.',
     projectedMissingUSD: '{n} requests have no USD amount or use another currency.',
+    detailPage: {
+      date: 'Date',
+      dimension: 'Dimension',
+      empty: 'No requests for this date and dimension.',
+      unassigned: 'Unassigned',
+      previous: 'Previous',
+      next: 'Next',
+    },
     evidence: {
       terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection.',
       terminalProjectionPending: 'Terminal usage is still syncing. The oldest queued record is from {at}. Revisions from another day can affect this report.',

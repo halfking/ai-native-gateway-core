@@ -2,6 +2,10 @@
 
 Esta página resume el uso registrado por la pasarela durante el día anterior desde las perspectivas de proveedor, inquilino, persona, modelo y otras. Sirve para conciliar los registros de la pasarela; no es una factura del proveedor ni indica un importe confirmado como pagadero.
 
+## Estadísticas históricas de solicitudes
+
+Las estadísticas históricas consultan la proyección de solicitudes actualizada de forma asíncrona. Abra el detalle diario y seleccione una fecha y una dimensión. Los filtros del período también se aplican a la exportación, que incluye todas las filas del período y la dimensión seleccionados.
+
 ## Cómo se generan las instantáneas
 
 - La tarea de agregación diaria genera la instantánea del **día anterior** a la madrugada; los datos del día actual no están disponibles hasta la madrugada siguiente, cuando la página muestra el mensaje «La instantánea de hoy se generará a la madrugada del día siguiente».

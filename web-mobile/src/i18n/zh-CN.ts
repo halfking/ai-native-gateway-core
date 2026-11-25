@@ -10,7 +10,7 @@ export const zhCN = {
       usage: { title: '用量统计说明', context: '本页是用量成本读面。网关估算成本与内部实际过账、供应商返回金额分开核对。' },
       usageEnhanced: { title: '用量增强说明', context: '本页组合多个接口，窗口和来源不同；卡片之间或与其他报表不必逐项相等。缺失或降级不能当作零。' },
       usageTrendSeries: { title: '用量趋势说明', context: '本页展示聚合趋势。按当前页面的时间粒度和时区比较，并留意聚合延迟与未归类数据。' },
-      reportRollup: { title: '日对账说明', context: '选择自然日和证据类型，查看客户端请求、供应商调用、会话、积分过账或供应商账单。内部积分核对须填写租户。历史快照展示网关估算。' },
+      reportRollup: { title: '日对账说明', context: '选择自然日和证据类型，查看客户端请求、供应商调用、会话、积分过账或供应商账单。内部积分核对须填写租户。历史快照展示网关估算。历史请求统计中的按天明细每次查询一个已结束自然日和一个维度。' },
       reconciliation: { title: '供应商月对账说明', context: '本页对比网关月汇总与导入账单。汇总差异不能替代逐次调用匹配证据，币种、账期和结算账户须一致。' },
       cacheState: { title: '缓存状态说明', context: '本页展示缓存运行状态；缓存状态或命中数本身不是计费事实。缓存 Token 可能与输入重叠，按共享定义单列。' },
       logs: { title: '请求日志说明', context: '每个入站客户端请求按租户和 request ID 计一次；多次上游调用需按 attempt 分开，早拒请求仍保留为入站请求。' },
@@ -4072,6 +4072,14 @@ sctx: {
     projectedBasis: '按 {zone} 自然日统计。实际过账见积分账本，供应商逐次发送和账单见日对账。',
     projectedPending: '所选日期仍有请求待同步。',
     projectedMissingUSD: '{n} 条请求缺少 USD 金额或使用其他币种。',
+    detailPage: {
+      date: '日期',
+      dimension: '维度',
+      empty: '所选日期和维度没有请求记录。',
+      unassigned: '未分配',
+      previous: '上一页',
+      next: '下一页',
+    },
     evidence: {
       terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。',
       terminalProjectionPending: '终态用量仍在同步，最早排队于 {at}。跨日修订也可能影响结果。',

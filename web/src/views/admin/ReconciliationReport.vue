@@ -9,6 +9,7 @@ import ReconciliationCharts from '../../components/reconciliation/Reconciliation
 import ReconciliationKpiGrid from '../../components/reconciliation/ReconciliationKpiGrid.vue'
 import ReconciliationToolbar from '../../components/reconciliation/ReconciliationToolbar.vue'
 import DailyReconciliationPanel from '../../components/reconciliation/DailyReconciliationPanel.vue'
+import ReportDayDetails from '../../components/reconciliation/ReportDayDetails.vue'
 import { readDailyReconciliationDefault, type DailyReconciliationCalendar } from '../../api/requestReconciliation'
 import { isSuperAdmin } from '../../store'
 import { snapshotQueryKeys, useReconciliationPage } from './useReconciliationPage'
@@ -25,7 +26,7 @@ let disposed = false
 
 const {
   t, loading, dimsLoading, exporting, errorText, metric, reasonFilter, daysOpen,
-  report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
+  report, dims, view, filters, showCost, hasData, kxRange, dailyDetailQuery, coverageText, legacyDays,
   reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
   personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
   applyRange, exportXlsx, reload, clearReason, setView, setMetric, setPersonPage,
@@ -194,6 +195,14 @@ onBeforeUnmount(() => {
             :clickable="false"
             :name-header="t('reports.date')"
             :headers="dayHeaders"
+          />
+          <ReportDayDetails
+            v-if="daysOpen.includes('days') && report.projection"
+            :query="dailyDetailQuery"
+            :dates="report.days.map(row => row.date)"
+            :day-through="report.projection.through"
+            :show-cost="showCost"
+            :disabled="loading"
           />
         </el-collapse-item>
       </el-collapse>

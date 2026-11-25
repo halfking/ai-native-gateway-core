@@ -282,6 +282,9 @@ export default {
   byTenant: 'Por inquilino',
   byPerson: 'Por persona',
   byModel: 'Por modelo',
+  dimension: 'Dimensión',
+  dailyDetails: 'Detalle diario',
+  exportDailyDetails: 'Exportar detalles del período',
   byDay: 'Por día',
   // Encabezados de columna
   provider: 'Proveedor',

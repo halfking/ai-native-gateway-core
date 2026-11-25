@@ -1,6 +1,6 @@
 // reportrollup.ts — 对账报表 API（2026-09-25 落地轮；2026-09-29 多维筛选轮重写）。
 // 供应商/内部双视角 × 六维筛选（供应商/凭据/模型/租户/用户/apikey）× 汇总/按天明细。
-// 数据来自每日凌晨聚合的 report_snapshots 最细粒度（grain）快照，区间查询不回扫原始日志。
+// V2 reads the asynchronous request projection for summaries, daily details, and exports.
 import { req, BASE, headers } from './_core'
 import { exportFile } from '../utils/exportFile'
 import { readExportBlob } from '../utils/exportResponse'
@@ -232,6 +232,20 @@ function rangeQs(q: ReportQuery): string {
 export async function getReportSummary(q: ReportQuery): Promise<RangeReport> {
   const res = await req<{ report: RangeReport }>('GET', `/api/admin/report-rollup/v2/summary?${rangeQs(q)}`)
   return res.report
+}
+
+export interface ReportDailyPage {
+  day: string
+  group: GroupDim
+  page: { number: number; page_size: number; total: number; rows: DailyGroupRow[] }
+  projection: NonNullable<RangeReport['projection']>
+}
+
+export function getReportDailyPage(q: ReportQuery & { day: string; group: GroupDim; page: number }, signal?: AbortSignal): Promise<ReportDailyPage> {
+  const params = new URLSearchParams(rangeQs(q))
+  params.set('day', q.day)
+  params.set('page', String(q.page))
+  return req<ReportDailyPage>('GET', `/api/admin/report-rollup/v2/daily?${params}`, undefined, { signal })
 }
 
 export async function getReportDimensions(

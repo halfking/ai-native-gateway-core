@@ -282,6 +282,9 @@ export default {
   byTenant: 'حسب المستأجر',
   byPerson: 'حسب الشخص',
   byModel: 'حسب النموذج',
+  dimension: 'البُعد',
+  dailyDetails: 'التفاصيل اليومية',
+  exportDailyDetails: 'تصدير تفاصيل الفترة',
   byDay: 'حسب اليوم',
   // أسماء الأعمدة
   provider: 'المزوّد',

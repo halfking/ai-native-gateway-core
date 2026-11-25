@@ -9,6 +9,7 @@ import { fetchCapabilities } from '@/api/featureCapabilities'
 import {
   fetchReportRollupSummary,
   fetchReportRollupDimensions,
+  fetchReportDailyPage,
   REPORT_ROLLUP_DEGRADED_CODE,
   REPORT_ROLLUP_VIEWS,
   REPORT_ROLLUP_DEFAULT_VIEW,
@@ -138,7 +139,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => authState }))
 
 vi.mock('@/api/reportRollup', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/reportRollup')>()
-  return { ...actual, fetchReportRollupSummary: vi.fn(), fetchReportRollupDimensions: vi.fn() }
+  return { ...actual, fetchReportRollupSummary: vi.fn(), fetchReportRollupDimensions: vi.fn(), fetchReportDailyPage: vi.fn() }
 })
 
 vi.mock('@/api/dailyReconciliation', async (importOriginal) => {
@@ -717,19 +718,32 @@ describe('⑧ 参数下发', () => {
     expect(last.view).toBe('internal')
   })
 
-  it('⑧-3 ★★★ detail 恒发（true→`1`，false→`0`），且不发布尔字面量', async () => {
-    // ★ 真值集合是 `1`/`true`/`yes`/`daily`（`:194-200`）⇒ `true` 恰好也在集合里，
-    //   但 `0` 必须在**两个**端点上都是假 ⇒ 显式发 0 最稳。
+  it('loads a selected detail day independently of the range totals', async () => {
+    const projection = { from: '2026-09-30T16:00:00Z', through: '2026-10-07T16:00:00Z', timezone: 'Asia/Shanghai', updated_at: null, pending_since: null }
+    mSum.mockResolvedValue(summaryPayload({ source: 'request_metrics', projection, days: [{ date: '2026-10-01' }, { date: '2026-10-07' }] }))
+    const daily = vi.mocked(fetchReportDailyPage)
+    daily.mockClear()
+    daily.mockImplementation(async q => ({ day: q.day, group: q.group, projection, page: {
+      number: q.page, page_size: 50, total: 51, rows: [{ key: 'model-1', totals: totals() }],
+    } }))
     const w = await mountView()
     await byId(w, 'rr-load').trigger('click')
     await flushPromises()
     expect(mSum.mock.calls[0]![0].detail).toBe('0')
     expect(mSum.mock.calls[0]![0].summaryScope).toBe('totals')
+    const previous = mSum.mock.calls.length
     await byId(w, 'rr-detail').setValue(true)
     await flushPromises()
-    const last = mSum.mock.calls[mSum.mock.calls.length - 1]![0]
-    expect(last.detail).toBe('1')
-    expect(last.summaryScope).toBeUndefined()
+    expect(mSum).toHaveBeenCalledTimes(previous)
+    expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ start: '2026-10-01', end: '2026-10-07', day: '2026-10-07', group: 'model', page: 1 }), expect.anything())
+    expect(byId(w, 'rr-day-detail').text()).toContain('model-1')
+    await byId(w, 'rr-detail-next').trigger('click')
+    await flushPromises()
+    expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ day: '2026-10-07', group: 'model', page: 2 }), expect.anything())
+    await byId(w, 'rr-detail-date').setValue('2026-10-01')
+    await byId(w, 'rr-detail-group').setValue('tenant')
+    await flushPromises()
+    expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ day: '2026-10-01', group: 'tenant', page: 1 }), expect.anything())
   })
 
   it('⑧-4 ★★ dimensions 只带区间与视角（不带 detail）', async () => {

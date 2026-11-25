@@ -282,6 +282,9 @@ export default {
   byTenant: 'テナント別',
   byPerson: '担当者別',
   byModel: 'モデル別',
+  dimension: '集計軸',
+  dailyDetails: '日別明細',
+  exportDailyDetails: '期間全体の明細をエクスポート',
   byDay: '日別',
   // 列名
   provider: 'プロバイダー',

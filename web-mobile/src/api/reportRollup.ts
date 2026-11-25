@@ -397,6 +397,25 @@ export interface ReportRollupParams {
   summaryScope?: 'totals'
 }
 
+export type ReportDailyGroup = 'model' | 'provider' | 'credential' | 'tenant' | 'person' | 'apikey'
+
+export interface ReportDailyPage {
+  day: string
+  group: ReportDailyGroup
+  page: { number: number; page_size: number; total: number; rows: { key: string; name?: string; totals: ReportTotals }[] }
+  projection: NonNullable<ReportGrainReport['projection']>
+}
+
+export function fetchReportDailyPage(
+  p: ReportRollupParams & { day: string; group: ReportDailyGroup; page: number }, options?: RequestOptions,
+): Promise<ReportDailyPage> {
+  const params = new URLSearchParams(queryOf(p))
+  params.set('day', p.day)
+  params.set('group', p.group)
+  params.set('page', String(p.page))
+  return req<ReportDailyPage>('GET', `/api/admin/report-rollup/v2/daily?${params}`, undefined, options)
+}
+
 // ── fetch ───────────────────────────────────────────────────────────────────
 
 /** GET `/api/admin/report-rollup/summary`（**superAdmin 档**）。 */
