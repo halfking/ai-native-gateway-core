@@ -22,6 +22,7 @@ export default {
     operationsOverview: '运营总览',
     liveTopology: '实时拓扑',
     liveStageTree: '请求阶段树',
+    analyticsPlugin: '数据分析插件（示例）',
     overview: '总览',
     tenantModels: '标准模型',
     tenantAccount: '我的账户',

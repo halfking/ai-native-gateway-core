@@ -20,6 +20,7 @@ export default {
     activateActionTip: 'Allez activer cette instance',
     liveTopology: 'Topologie temps réel',
     liveStageTree: 'Arbre des étapes',
+    analyticsPlugin: 'Plugin d\u2019analyse (exemple)',
     overview: "Aperçu",
     tenantModels: "Modèles standards",
     tenantAccount: "Mon compte",

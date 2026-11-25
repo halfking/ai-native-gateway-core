@@ -21,6 +21,7 @@ export default {
     operationsOverview: 'Operations Overview',
     liveTopology: 'Live Topology',
     liveStageTree: 'Request Stage Tree',
+    analyticsPlugin: 'Analytics Plugin (example)',
     overview: 'Overview',
     tenantModels: 'Standard Models',
     tenantAccount: 'My Account',

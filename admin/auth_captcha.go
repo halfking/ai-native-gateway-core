@@ -73,6 +73,19 @@ const (
 	// 登录必须携带验证码。任何一次登录成功都会清零计数。
 	CaptchaFailureThreshold = 3
 
+	// CaptchaFailureTTL 是登录失败计数的**存活窗口**（滑动窗口）。
+	//
+	// ★ 2026-11-25（第 30 轮候选实现，★ **待 owner 放行** ★）：★ 在此之前计数
+	//   **永不过期** ⇒ 而 captcha_required 时**走不到密码校验**（闸门在 bcrypt 之前）
+	//   ⇒ **成功不可达** ⇒ 计数**永不清** ⇒ 连错到阈值后该 IP 被**永久锁死**
+	//   （直到进程重启；仓内无任何端点能重置它）。
+	// ⇒ 加了窗口 ⇒ 最近一次失败超出窗口 ⇒ 计数视为 0 ⇒ 闸门**会自愈**。
+	//
+	// ★ 取值 15 分钟：★ 足够让「误连错」的人自己恢复，★ 又短到暴力破解
+	//   仍受「窗口内 N 次」的速率限制（★ 每次失败都会把窗口起点往后推 ★）。
+	// ★ **对外契约零变化**：★ 不新增端点、★ 不改任何响应字段。
+	CaptchaFailureTTL = 15 * time.Minute
+
 	// captchaAlphabet 刻意剔除 0/O/1/I/L 等易混字符。
 	captchaAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 )
@@ -170,31 +183,72 @@ const (
 
 // loginFailureCounter 记录每个来源 IP 的连续登录失败次数。
 // 成功一次即清零。用途是决定验证码是否**强制**（见 CaptchaFailureThreshold）。
+//
+// ★★ 2026-11-25（第 30 轮候选实现，★ **待 owner 放行** ★）：★★ 加了**存活窗口**
+//   （CaptchaFailureTTL）★★ ⇒ 在此之前计数**永不过期** ⇒ 而 captcha 闸门挂在
+//   **任何 DB 查询与 bcrypt 之前**（admin/auth.go:229）⇒ captcha_required 时
+//   **走不到密码校验** ⇒ **成功不可达** ⇒ 计数**永不清** ⇒ 某个 IP 连错到阈值后
+//   被**永久锁死**（直到进程重启；仓内无任何端点能重置它）。
+//   ⇒ 加窗口后：最近一次失败超出窗口 ⇒ 计数视为 0 ⇒ 闸门**会自愈**。
+//
+// ★ 语义是**滑动窗口**（每来一次失败就重置窗口起点）⇒ 防爆破被弱化成
+//   「窗口内 N 次」的**速率限制** ⇒ ★ 这是**有意的取舍**、★ 不是 bug
+//   （要更强 ⇒ 改用「固定窗口」或加管理端点重置 ⇒ 属 owner 决策）。
 type loginFailureCounter struct {
 	mu     sync.Mutex
 	counts map[string]int
+	// last 记每个 key 的**最近一次失败时刻** ⇒ TTL 判据的来源。
+	last map[string]time.Time
+	// now 可注入（测试用假时钟）⇒ 不必真等 15 分钟就能验过期行为。
+	now func() time.Time
 }
 
 func newLoginFailureCounter() *loginFailureCounter {
-	return &loginFailureCounter{counts: make(map[string]int)}
+	return &loginFailureCounter{
+		counts: make(map[string]int),
+		last:   make(map[string]time.Time),
+		now:    time.Now,
+	}
 }
 
+// fail 记一次失败。★ 若上一轮失败已超出窗口 ⇒ 计数**归零重来**
+// （★ 不是接着旧计数加 ★★ ⇒ 否则「隔很久连错 3 次」也会被锁）。
 func (c *loginFailureCounter) fail(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	if ts, ok := c.last[key]; ok && now.Sub(ts) >= CaptchaFailureTTL {
+		delete(c.counts, key)
+	}
 	c.counts[key]++
+	c.last[key] = now
 }
 
 func (c *loginFailureCounter) reset(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.counts, key)
+	delete(c.last, key)
 }
 
-// consecutive 返回当前连续失败次数。
+// consecutive 返回当前连续失败次数（★ 过期即视为 0 ★）。
 func (c *loginFailureCounter) consecutive(key string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.countsLocked(key)
+}
+
+// countsLocked 是 consecutive 的**已持锁**版本（★ 顺带把过期条目清掉 ⇒ 内存有界 ★）。
+func (c *loginFailureCounter) countsLocked(key string) int {
+	ts, ok := c.last[key]
+	if !ok {
+		return 0
+	}
+	if c.now().Sub(ts) >= CaptchaFailureTTL {
+		delete(c.counts, key)
+		delete(c.last, key)
+		return 0
+	}
 	return c.counts[key]
 }
 
@@ -203,10 +257,17 @@ func (c *loginFailureCounter) required(key string) bool {
 	return c.consecutive(key) >= CaptchaFailureThreshold
 }
 
-// size 供测试断言内存有界。
+// size 供测试断言内存有界（★ 顺带剪掉过期条目 ★）。
 func (c *loginFailureCounter) size() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	for key, ts := range c.last {
+		if now.Sub(ts) >= CaptchaFailureTTL {
+			delete(c.last, key)
+			delete(c.counts, key)
+		}
+	}
 	return len(c.counts)
 }
 

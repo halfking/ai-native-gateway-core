@@ -201,14 +201,10 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   ★ 这是【登记表自身重复】的第一个实例 ⇒ 已补断言兜住
   //     （见「登记表自身不得有重复的 (文件, 行号)」那条）——
   //     此前登记集收进 `Set` 会被去重 ⇒ 重复项对既有断言**完全不可见**。
-  // ⚠ 行号锚点：2026-11-25 由  125 改为  128（+3）。
-  //   原因：cdd155fff（huangxt，2026-11-24 04:20，提交题「合并 origin/main 并解决迁移编号冲突」）
-  //   给本视图嵌入了日对账证据面板 <DailyReconciliationPanel> ⇒ <script setup> 段 +1 行
-  //   （该面板的 import）＋ 模板段在本调用点之前 +2 行（面板标签行与其后的空行）
-  //   ⇒ 其后行号整体位移 +3。
-  //   ★ 契约语义未变（仍是同一个调用点：只带 #table 插槽、无 clickable / @row-click；
-  //     本文件里 router.push / router.replace 仍为 0 次，路由表仍只有 /tenant/bills）
-  //   ⇒ 只重锁行号。
+  // ⚠ 行号锚点：2026-11-25 由 125 改为 128（+3）。
+  //   原因：DailyReconciliationPanel 接入轮在该文件的 <template> 头部插入了 3 行
+  //   （PageBackLink + DailyReconciliationPanel 三行）⇒ 其后行号整体 +3。
+  //   ★ 契约语义未变（月账单内嵌表仍无 compact 入口、无二级目的地）⇒ 只重锁行号。
   ['src/views/tenant/MaaSBillsView.vue', 128, '月账单内嵌表（账期聚合行，title-key=period_ym）：/tenant/bills 无账单详情页，本视图无二级目的地'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 354 改为 355。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()

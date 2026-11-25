@@ -50,7 +50,7 @@
       "type": "dashboard",
       "nav": {
         "group": "analytics",
-        "label_key": "nav.item.sessionAnalytics",
+        "label_key": "nav.item.analyticsPlugin",
         "super": false,
         "platform_ops": false,
         "tenant_only": false,
