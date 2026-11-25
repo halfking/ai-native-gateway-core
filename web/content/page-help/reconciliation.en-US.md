@@ -6,6 +6,8 @@ This page summarizes the gateway-recorded usage for the previous day from provid
 
 Historical request statistics use the asynchronously updated request projection. Expand By day, open Daily details, and choose a date and a dimension. The range filters apply to both the detail view and the export. Export full range details includes every row in the selected range and dimension.
 
+Your browser shows progress in its downloads list. If the data exceeds Excel’s row limit for a worksheet, the workbook keeps the remaining rows on numbered continuation sheets.
+
 ## How Snapshots Are Generated
 
 - The daily aggregation job generates a snapshot of the **previous day** in the early morning. A snapshot for the current day's data is not available until the early morning of the next day, when the page will display “Today's snapshot will be generated in the early morning tomorrow.”

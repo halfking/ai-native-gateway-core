@@ -113,14 +113,27 @@ async function tryShare(input: ExportFileInput): Promise<ExportOutcome | null> {
 /** ③兜底 blob + a[download] 四步（仓内既有正确形态，唯一实现点）。 */
 function downloadViaAnchor(input: ExportFileInput): void {
   const url = URL.createObjectURL(input.blob)
+  clickDownload(url, input.filename)
+  URL.revokeObjectURL(url)
+}
+
+/** Let the browser transfer an authenticated same-origin attachment directly. */
+export function downloadSameOriginFile(requestURL: string, filename: string): void {
+  const url = new URL(requestURL, window.location.href)
+  if (url.origin !== window.location.origin || !/^https?:$/.test(url.protocol)) {
+    throw new ExportChannelError()
+  }
+  clickDownload(url.href, filename)
+}
+
+function clickDownload(url: string, filename: string): void {
   const a = document.createElement('a')
   a.href = url
-  a.download = input.filename
+  a.download = filename
   a.style.display = 'none'
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
-  URL.revokeObjectURL(url)
 }
 
 export async function exportFile(input: ExportFileInput): Promise<ExportOutcome> {

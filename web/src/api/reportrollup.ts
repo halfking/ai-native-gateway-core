@@ -2,7 +2,7 @@
 // 供应商/内部双视角 × 六维筛选（供应商/凭据/模型/租户/用户/apikey）× 汇总/按天明细。
 // V2 reads the asynchronous request projection for summaries, daily details, and exports.
 import { req, BASE, headers } from './_core'
-import { exportFile } from '../utils/exportFile'
+import { downloadSameOriginFile, exportFile } from '../utils/exportFile'
 import { readExportBlob } from '../utils/exportResponse'
 
 export type ReportView = 'provider' | 'internal'
@@ -259,16 +259,22 @@ export async function getReportDimensions(
 }
 
 export async function downloadReportExport(q: ReportQuery): Promise<void> {
-  const res = await fetch(`${BASE}/api/admin/report-rollup/v2/export?${rangeQs(q)}`, {
-    headers: headers('GET'),
-  })
-  if (!res.ok) throw new Error(`export failed: ${res.status}`)
-  // 2026-10-06（UI规范 10 §4.6.18）：经 readExportBlob 取体。该端点显式设了
-  // Content-Length（report_rollup.go:441），故命中「读之前就能判」那条路径。
-  const blob = await readExportBlob(res)
-  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
+  const url = `${BASE}/api/admin/report-rollup/v2/export?${rangeQs(q)}`
+  const auth = headers('GET')
   const prefix = q.view === 'internal' ? 'reconciliation_internal' : 'reconciliation_provider'
-  await exportFile({ filename: `${prefix}_${q.start}_${q.end}.xlsx`, blob })
+  const filename = `${prefix}_${q.start}_${q.end}.xlsx`
+  if (!auth.Authorization) {
+    const ready = await fetch(url, { method: 'HEAD', credentials: 'same-origin', headers: auth })
+    if (ready.status === 204) {
+      downloadSameOriginFile(url, filename)
+      return
+    }
+    // An older gateway can still deliver a bounded workbook over GET.
+    if (ready.status !== 405) throw new Error(`export failed: ${ready.status}`)
+  }
+  const res = await fetch(url, { headers: auth })
+  if (!res.ok) throw new Error(`export failed: ${res.status}`)
+  await exportFile({ filename, blob: await readExportBlob(res) })
 }
 
 export async function runReportRollup(date?: string): Promise<{ date: string; rows_written: number; requests_seen: number }> {
