@@ -49,7 +49,6 @@ tests/deploy_network_test.sh	需 ssh（真实主机连通性）
 tests/deploy_nocgo_build_test.sh	在宿主上编译 Go（缓存 846MB 量级）⇒ 分钟级，不进 CI 快门预算
 tests/deploy_rollback_test.sh	需 ssh（真实主机回滚）
 tests/deploy_seamless_postcondition_test.sh	需 docker + 真 PG（镜像与库都要在）
-tests/deploy_ssh_retry_test.sh	需 ssh（真实重试退避）
 tests/deploy_via_identity_gates_iso_test.sh	需 ssh + 生产目标机
 tests/env_injector_test.sh	在宿主上编译 Go（缓存 846MB 量级）⇒ 分钟级，不进 CI 快门预算
 tests/migration_ledger_gate_test.sh	需 ssh（台账在目标机上）

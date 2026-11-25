@@ -503,7 +503,9 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #   ⇒ tests/gate_scripts_caller_registry_test.sh 报「只是脚本、不是门」（PASS=228 FAIL=2）。
 #   两条都零外部依赖、单独跑 PASS ⇒ 按惯例接进本快门，而不是登记成「接不上线」：
 #     · tests/deploy_stop_budget_test.sh —— 停机预算两侧对拍（部署侧强杀线 ≥ 应用侧最坏预算）；
-#     · scripts/checks/unified-ledger-contract-test.sh —— 账本统一（方案 A）契约测试。
+#     · scripts/checks/unified-ledger-contract-test.sh —— 账本统一（方案 A）契约测试；
+#     · tests/deploy_ssh_retry_test.sh —— ssh 重试库的单元测试（假 ssh 桩；夹具补上临时密钥文件后
+#       完全离线可跑，⇒ 同时从豁免表里删掉它的旧行「需 ssh（真实重试退避）」，棘轮）。
 .PHONY: guards-gate-scripts
 guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增隐形门；★ 条数由运行时实时数出，★ 不写死）
 	@echo "ℹ️ 门脚本接线门：$$(sed -n '/^guards-gate-scripts:/,/^$$/p' $(MAKEFILE_LIST) | grep -cE '^[[:space:]]*@bash') 条（★ 实时数出）"
@@ -535,6 +537,7 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/mcp_metrics_scrape_wiring_test.sh
 	@bash tests/deploy_stop_budget_test.sh
 	@bash scripts/checks/unified-ledger-contract-test.sh
+	@bash tests/deploy_ssh_retry_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 	@bash tests/anthropic_reasoning_trace_contract_test.sh
 	@bash tests/rate_limit_body_attribution_contract_test.sh

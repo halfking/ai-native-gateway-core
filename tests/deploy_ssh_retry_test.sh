@@ -66,6 +66,14 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 mkdir -p "$TMPDIR_TEST/bin"
 export PATH="$TMPDIR_TEST/bin:$PATH"
 
+# ★ 2026-11-25 第 28 轮（代上游收口）：被测库（scripts/deploy-lib 软链到同级 deploy-lib 仓库）
+#   自 ab0897b5（2026-11-05）起要求「注入的 SSH 密钥文件必须存在」，否则 _ssh_retry_key_args
+#   直接判失败 ⇒ 下面 7 条 ssh_run 断言在第一步就全红（14 过 7 败）。本测试用假 ssh 桩、
+#   从不真正连接 ⇒ 自己造一个空的临时密钥文件即可，不依赖开发机上有没有真实密钥。
+export SSH_KEY_FILE="$TMPDIR_TEST/fake_ssh_key"
+: > "$SSH_KEY_FILE"
+chmod 600 "$SSH_KEY_FILE"
+
 # fake ssh 行为受环境变量控制:
 #   FAKE_SSH_FAILS_LEFT=N: 前 N 次以 255 + timeout 退出, 然后 0 成功
 #   FAKE_SSH_AUTH_FAIL=1: 立即以 255 + Permission denied 退出
