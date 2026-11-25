@@ -130,8 +130,10 @@ func TestRotationProducesBackup(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "gateway.log")
 
-	// MaxSizeMB=1 (MB) → rotate after ~1 MB written. We write
-	// ~1.2 MB of structured lines to force at least one rotation.
+	// MaxSizeMB=1 (MB) → rotate once 1 MB has been written. A canonical JSON
+	// line (standard-layer fields included) is ~360 bytes, so the 12000 lines
+	// below are ~4.3 MB ⇒ 4 rotations (measured 2026-11-26; the old comment
+	// said "~1.2 MB" and assumed a single rotation).
 	if _, err := Init(Config{
 		File:       logFile,
 		MaxSizeMB:  1,
@@ -141,9 +143,16 @@ func TestRotationProducesBackup(t *testing.T) {
 	}, slog.LevelInfo); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	t.Cleanup(func() { _ = Shutdown() })
+	// 2026-11-26：收尾（LIFO）先关文件并把全局 logger 指回 stderr，**然后**才
+	// 轮到 TempDir 的 RemoveAll。留着一个指向临时目录的文件 logger 有两个后果：
+	// 任何后台协程打一条日志都会把日志文件重建出来——与 RemoveAll 相撞就是
+	// 「TempDir RemoveAll cleanup: … directory not empty」（把测试判红），或者
+	// 在目录被删之后把整棵临时目录重建出来。
+	t.Cleanup(func() {
+		_ = Shutdown()
+		InstallEarly(slog.LevelInfo)
+	})
 
-	// Each line ~120 bytes → ~10k lines per MB.
 	payload := strings.Repeat("x", 100)
 	for i := 0; i < 12000; i++ {
 		slog.Info("rotate-test", "i", i, "pad", payload)
@@ -154,28 +163,30 @@ func TestRotationProducesBackup(t *testing.T) {
 
 	// lumberjack names rotated files (Compress=true):
 	//   <base>-<timestamp>.log.gz
-	// The gzip step runs in a background mill goroutine; we
-	// wait up to 5s for it to materialise. Without the wait,
-	// the test would race the goroutine on fast machines.
+	// The gzip step runs in a background mill goroutine.
+	//
+	// 2026-11-26：必须等后台那一轮**压缩与清理都结束**再取列表，有两个窗口——
+	//  ① 魔数只证明文件头写出来了：读一个写到一半的 .gz 会得到 unexpected EOF；
+	//     压缩中途失败时 lumberjack 还会把刚建的 .gz 删掉。
+	//  ② 本测试写下的量足以轮转 4 次（约 4.3MB / 1MB，实测），而 MaxBackups=3
+	//     ⇒ 第 4 个备份出现时保留策略**必然淘汰最老的那个**——最老的恰好排在
+	//     列表第一位。平时压缩协程跑得快，取列表时它已经被淘汰；机器重负载时
+	//     协程慢半拍，列表里还留着它，等压缩结束再打开就是 ENOENT
+	//     （「Open rotated file: … no such file or directory」，观测到的偶发失败）。
+	// compressLogFile 只在 .gz 完整关闭之后才删未压缩的源文件，而同一轮清理里
+	// 淘汰又排在压缩之前 ⇒「未压缩的轮转文件都不在了」即整轮结束，此时列表稳定。
+	waitForCompressionDone(t, dir, 5*time.Second)
 	matches := waitForFiles(t, dir, "gateway-*.log.gz", 5*time.Second)
 	if len(matches) == 0 {
 		t.Fatalf("no rotated .log.gz file produced; dir contents: %v", readDir(t, dir))
 	}
+	t.Logf("rotated backups kept after retention (MaxBackups=3): %d", len(matches))
 
-	// First rotated file must start with the gzip magic number.
-	// If the mill goroutine is still running, the file may be
-	// partially written; we retry with a short backoff.
+	// First surviving rotated file must start with the gzip magic number.
 	magic := waitForGzipMagic(t, matches[0], 5*time.Second)
 	if magic[0] != 0x1f || magic[1] != 0x8b {
 		t.Fatalf("rotated file is not gzip; magic = %x", magic)
 	}
-
-	// 2026-11-26：魔数只证明**文件头**写出来了，正文可能还在流式写入。读一个
-	// 写到一半的 .gz 会得到 unexpected EOF；压缩中途失败时 lumberjack 还会把
-	// 刚建的 .gz 删掉（随后 Open 就是 ENOENT——磁盘满那次观测到的正是这个
-	// 形态；另一次在机器重负载下偶发，失败消息未被保留、成因未证实）⇒ 等
-	// 压缩**真正结束**再读，把这个窗口整个关掉。
-	waitForCompressionDone(t, dir, 5*time.Second)
 
 	// The gzipped payload must contain at least one of our records.
 	f, err := os.Open(matches[0])
@@ -254,7 +265,9 @@ func waitForGzipMagic(t *testing.T, path string, timeout time.Duration) []byte {
 // compressLogFile removes the source file only after the .gz was fully
 // written and closed (on failure it removes the .gz instead), so "no
 // gateway-*.log left" is the completion signal. The gzip magic alone only
-// proves that the header was written.
+// proves that the header was written. In each mill pass the retention
+// cleanup (MaxBackups / MaxAge) runs before compression, so once this
+// returns the backup listing is stable as well.
 func waitForCompressionDone(t *testing.T, dir string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
