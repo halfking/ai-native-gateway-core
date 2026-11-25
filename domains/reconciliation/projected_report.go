@@ -63,8 +63,10 @@ const projectedUsageSource = `LEFT JOIN LATERAL (
 	) f ON true
 	`
 
-const projectedReceiptFacts = requestClassificationStart + `coalesce(f.traffic_class, ` + receiptTrafficClass + `)` +
-	requestClassificationEnd + projectedUsageColumns + requestEvidenceDimensions + projectedUsageSource + requestScopeFilter
+const projectedPlatformTraffic = `traffic_class IN ('platform',` + operationalFactTrafficClasses + `)`
+
+var projectedReceiptFacts = requestClassificationStart + `coalesce(f.traffic_class, ` + receiptTrafficClass + `)` +
+	requestClassificationEnd + projectedUsageColumns + requestEvidenceDimensions + projectedUsageSource + requestScopeFilter(projectedPlatformTraffic)
 
 const projectedTerminalStatuses = `('success','failure','failed','timeout','rate_limited','cancelled')`
 
@@ -86,9 +88,9 @@ func projectedReportSection(name string, section reportSection) reportSection {
 	switch name {
 	case "requests":
 		section.base = projectedReceiptFacts + requestDetailColumns + " total_tokens, projected_status, " + requestDetailSends
-		section.totals = requestTotals + `count(total_tokens) AS measured_total_requests, sum(total_tokens) AS total_tokens,
+		section.totals = requestTotals(projectedPlatformTraffic) + `count(total_tokens) AS measured_total_requests, sum(total_tokens) AS total_tokens,
 			count(projected_status) AS requests_with_terminal_projection,
-			count(*) FILTER (WHERE traffic_class NOT IN ('business','platform','unknown')) AS other_traffic_requests
+			count(*) FILTER (WHERE NOT (` + projectedPlatformTraffic + `) AND traffic_class NOT IN ('business','unknown')) AS other_traffic_requests
 			FROM facts`
 		section.coverage = "recorded_wal_and_projected_terminal_usage_legacy_zeros_unverified"
 		section.columns = append(append([]string(nil), section.columns...), "total_tokens", "projected_status")

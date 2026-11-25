@@ -121,6 +121,7 @@ export default {
     },
     fields: {
       projected_status: '投影された最終結果', requests_with_terminal_projection: '投影された最終結果がある受信記録',
+      business_requests: '業務リクエストの受信', platform_requests: 'プラットフォーム運用リクエストの受信',
       total_tokens: '保存された確定トークン数',
       measured_total_requests: 'トークン総数を実測したリクエスト',
       usage_source: '使用量の出典',

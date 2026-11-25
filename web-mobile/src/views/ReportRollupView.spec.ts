@@ -242,7 +242,7 @@ it('keeps receipt status visible when the projected outcome is absent', async ()
     version: 'request-reconciliation-v2',
     section: 'requests', day: '2026-11-23', timezone: 'Asia/Shanghai', platform_scope: true,
     start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z',
-    summary: { requests: 1, requests_with_terminal_projection: 0 },
+    summary: { requests: 1, business_requests: 1, platform_requests: 0, requests_with_terminal_projection: 0 },
     limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z',
     rows: [{ request_id: 'wal-only', status: 'success', projected_status: null }],
   })
@@ -253,6 +253,7 @@ it('keeps receipt status visible when the projected outcome is absent', async ()
   await evidence.get('form').trigger('submit')
   await flushPromises()
   expect(evidence.text()).toContain('有投影终态的收件0')
+  expect(evidence.text()).toContain('平台运维收件0')
   expect(evidence.text()).toContain('请求状态成功')
   expect(evidence.text()).toContain('投影终态—')
   wrapper.unmount()

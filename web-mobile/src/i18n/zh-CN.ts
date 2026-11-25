@@ -4088,6 +4088,7 @@ sctx: {
       scope: '旧用量按租户和请求在每天去重，历史供应商发送总数未知。',
       fields: {
         projected_status: '投影终态', requests_with_terminal_projection: '有投影终态的收件',
+        business_requests: '业务收件', platform_requests: '平台运维收件',
         received_requests: '已接收客户端请求', terminal_usage_without_retained_receipt: '终态用量缺接收记录',
         orchestration_child_receipts: '已关联的内部编排请求', orchestration_dispatches_unlinked: '未关联的编排派发',
         recorded_sends: '已记录发送', recorded_sends_without_reported_amount: '缺返回金额的发送',

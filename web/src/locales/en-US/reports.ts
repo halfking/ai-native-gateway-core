@@ -59,6 +59,7 @@ export default {
     },
     fields: {
       projected_status: 'Projected outcome', requests_with_terminal_projection: 'Receipts with a projected outcome',
+      business_requests: 'Business receipts', platform_requests: 'Platform operations receipts',
       requests: 'Client requests', success: 'Successful', failure: 'Failed', rate_limited: 'Rate limited', cancelled: 'Cancelled', pending: 'Pending',
       unknown_status: 'Unknown outcome', unassigned_session: 'Without a session', local_day: 'Local date', request_id: 'Request ID',
       admission_rejected_requests: 'Gateway admission rejections', admission_rejection: 'Admission rejection reason',

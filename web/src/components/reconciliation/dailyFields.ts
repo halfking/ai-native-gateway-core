@@ -9,7 +9,7 @@ interface DailyFields {
 export const dailyFields: Record<DailySection, DailyFields> = {
   requests: {
     count: 'requests',
-    summary: ['requests', 'requests_with_terminal_projection', 'success', 'failure', 'rate_limited', 'cancelled', 'pending', 'unknown_status', 'admission_rejected_requests', 'unassigned_session', 'total_tokens', 'measured_total_requests'],
+    summary: ['requests', 'business_requests', 'platform_requests', 'requests_with_terminal_projection', 'success', 'failure', 'rate_limited', 'cancelled', 'pending', 'unknown_status', 'admission_rejected_requests', 'unassigned_session', 'total_tokens', 'measured_total_requests'],
     columns: ['local_day', 'request_id', 'tenant_id', 'session_id', 'traffic_class', 'status', 'projected_status', 'admission_rejection', 'input_tokens', 'output_tokens', 'total_tokens', 'usage_source', 'recorded_supplier_sends'],
   },
   attempts: {

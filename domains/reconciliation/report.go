@@ -77,7 +77,8 @@ const requestDetailSends = `
 			) sent_attempts WHERE current_setting('app.bypass_rls', true) = 'true'
 		) a ON true`
 
-const requestTotals = `SELECT count(*) AS requests,
+func requestTotals(platformTraffic string) string {
+	return `SELECT count(*) AS requests,
 			count(*) FILTER (WHERE status IN ('success','failure','rate_limited','cancelled')) AS terminal,
 			count(*) FILTER (WHERE status = 'success') AS success,
 			count(*) FILTER (WHERE status = 'failure') AS failure,
@@ -87,7 +88,7 @@ const requestTotals = `SELECT count(*) AS requests,
 			count(*) FILTER (WHERE status = 'unknown') AS unknown_status,
 			count(admission_rejection) AS admission_rejected_requests,
 			count(*) FILTER (WHERE traffic_class = 'business') AS business_requests,
-			count(*) FILTER (WHERE traffic_class = 'platform') AS platform_requests,
+			count(*) FILTER (WHERE ` + platformTraffic + `) AS platform_requests,
 			count(*) FILTER (WHERE traffic_class = 'unknown') AS unassigned_requests,
 			count(*) FILTER (WHERE session_id IS NULL) AS unassigned_session,
 			CASE WHEN current_setting('app.bypass_rls', true) = 'true' THEN
@@ -102,6 +103,7 @@ const requestTotals = `SELECT count(*) AS requests,
 			count(*) FILTER (WHERE input_tokens IS NULL AND output_tokens IS NULL) AS requests_without_measured_tokens,
 			sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
 			`
+}
 
 const sessionReportRows = `, active AS (
 			SELECT tenant_id, session_id, count(*) AS window_requests
@@ -128,7 +130,7 @@ const sessionReportRows = `, active AS (
 var reportSections = map[string]reportSection{
 	"requests": {
 		base:     requestFacts + requestDetailColumns + requestDetailSends,
-		totals:   requestTotals + `sum(input_tokens + output_tokens) AS total_tokens FROM facts`,
+		totals:   requestTotals(legacyPlatformTraffic) + `sum(input_tokens + output_tokens) AS total_tokens FROM facts`,
 		order:    `received_at, tenant_id, request_id`,
 		coverage: "recorded_wal_and_linked_terminal_usage_legacy_zeros_unverified",
 		columns:  []string{"tenant_id", "request_id", "received_at", "local_day", "status", "traffic_class", "session_id", "client_id", "application_id", "input_tokens", "output_tokens", "usage_source", "recorded_supplier_sends", "admission_rejection"},
@@ -230,7 +232,7 @@ const postingTotals = `SELECT count(*) AS postings, count(DISTINCT (tenant_id, r
 // Both the details and totals read from facts inside one database statement.
 // Terminal-only evidence is joined by tenant and server request ID. A WAL
 // session ID is provisional until it matches a canonical dimension row.
-const requestFacts = requestClassification + retainedUsageColumns + requestEvidenceDimensions + retainedUsageSource + requestScopeFilter
+var requestFacts = requestClassification + retainedUsageColumns + requestEvidenceDimensions + retainedUsageSource + requestScopeFilter(legacyPlatformTraffic)
 
 const requestClassificationStart = `WITH candidates AS (
 	SELECT DISTINCT tenant_id, request_id
@@ -252,9 +254,13 @@ const requestClassificationStart = `WITH candidates AS (
 		s.gw_session_id AS session_id,
 		`
 
+const operationalFactTrafficClasses = `'probe','self_check','system_health','admin_test'`
+
+const legacyPlatformTraffic = `traffic_class = 'platform'`
+
 const receiptTrafficClass = `CASE WHEN starts_with(w.error, 'gateway_admission:platform:') THEN 'platform'
 		     WHEN starts_with(w.error, 'gateway_admission:tenant:') THEN 'business'
-		     WHEN k.is_system AND (f.traffic_class IN ('probe','self_check','system_health','admin_test')
+		     WHEN k.is_system AND (f.traffic_class IN (` + operationalFactTrafficClasses + `)
 		       OR (c.source_channel = 'reconciliation_modality' AND c.origin_stage IN
 		           ('node_probe','probe_direct','probe_v2','model_probe','passive_probe','self_check','system_health','manual'))) THEN 'platform'
 		     WHEN k.is_system = false THEN 'business' ELSE 'unknown' END`
@@ -288,14 +294,16 @@ const retainedUsageSource = `LEFT JOIN LATERAL (
 	) f ON true
 	`
 
-const requestScopeFilter = `LEFT JOIN public.api_keys k ON k.id = COALESCE(c.api_key_id, f.api_key_id) AND k.tenant_id = w.tenant_id
+func requestScopeFilter(platformTraffic string) string {
+	return `LEFT JOIN public.api_keys k ON k.id = COALESCE(c.api_key_id, f.api_key_id) AND k.tenant_id = w.tenant_id
 	WHERE w.received_at >= $1 AND w.received_at < $2 AND l.child_request_id IS NULL
 	  AND (starts_with(w.error, 'gateway_admission:unassigned:') IS NOT TRUE
 	       OR ($3 = '' AND current_setting('app.bypass_rls', true) = 'true'))
 ), request_facts AS (
-	SELECT *, CASE WHEN traffic_class = 'platform' THEN 'platform-automation' ELSE observed_client_id END AS client_id
-	FROM classified_requests WHERE traffic_class <> 'platform' OR current_setting('app.bypass_rls', true) = 'true'
+	SELECT *, CASE WHEN ` + platformTraffic + ` THEN 'platform-automation' ELSE observed_client_id END AS client_id
+	FROM classified_requests WHERE NOT (` + platformTraffic + `) OR current_setting('app.bypass_rls', true) = 'true'
 )`
+}
 
 // ReportColumns is the common JSON/CSV detail column contract.
 func ReportColumns(section string) []string {

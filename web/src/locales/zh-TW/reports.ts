@@ -121,6 +121,7 @@ export default {
     },
     fields: {
       projected_status: '投影終態', requests_with_terminal_projection: '有投影終態的收件',
+      business_requests: '業務收件', platform_requests: '平台維運收件',
       total_tokens: '保留的終態 Token',
       measured_total_requests: '總 Token 已實測的請求',
       usage_source: '用量來源',

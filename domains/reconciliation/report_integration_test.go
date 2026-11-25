@@ -322,12 +322,27 @@ INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
 		t.Fatalf("open day must expose provisional evidence: %+v %v", openShadow, err)
 	}
 	exec(`UPDATE api_keys SET is_system=true WHERE tenant_id='projected-a' AND id=12;
-		UPDATE request_metrics_projection SET traffic_class='probe' WHERE tenant_id='projected-b' AND request_id='same-request';`)
+		INSERT INTO session_dim VALUES ('projected-b','projection-session','2026-11-22 15:59Z',NULL,'platform-client');`)
 	business := read(ReportScope{TenantID: tenantID, Platform: true}, "requests")
 	assertReportFields(t, business.Rows[0], map[string]string{"traffic_class": `"business"`})
-	probe := read(ReportScope{TenantID: "projected-b", Platform: true}, "requests")
-	assertReportFields(t, probe.Rows[0], map[string]string{"traffic_class": `"probe"`})
-	assertReportFields(t, probe.Summary, map[string]string{"business_requests": "0", "other_traffic_requests": "1"})
+	for _, trafficClass := range []string{"probe", "self_check", "system_health", "admin_test"} {
+		if _, err := pool.Exec(ctx, `UPDATE request_metrics_projection SET traffic_class=$1
+			WHERE tenant_id='projected-b' AND request_id='same-request'`, trafficClass); err != nil {
+			t.Fatal(err)
+		}
+		operator := read(ReportScope{TenantID: "projected-b", Platform: true}, "requests")
+		assertReportFields(t, operator.Rows[0], map[string]string{"traffic_class": `"` + trafficClass + `"`, "client_id": `"platform-automation"`})
+		assertReportFields(t, operator.Summary, map[string]string{"business_requests": "0", "platform_requests": "1", "other_traffic_requests": "0"})
+		tenant := read(ReportScope{TenantID: "projected-b"}, "requests")
+		assertReportFields(t, tenant.Summary, map[string]string{"requests": "0", "platform_requests": "0"})
+		if len(tenant.Rows) != 0 {
+			t.Fatalf("tenant report included %s rows: %v", trafficClass, tenant.Rows)
+		}
+		assertReportFields(t, read(ReportScope{TenantID: "projected-b", Platform: true}, "sessions").Summary,
+			map[string]string{"active": "1"})
+		assertReportFields(t, read(ReportScope{TenantID: "projected-b"}, "sessions").Summary,
+			map[string]string{"active": "0"})
+	}
 
 	exec(`INSERT INTO credit_ledger_with_current_month VALUES
 		('projected-a',9003,'request','same-request','refund','paid','fixture-user',0,'2026-11-23 03:01Z'),

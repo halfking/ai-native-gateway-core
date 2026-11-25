@@ -121,6 +121,7 @@ export default {
     },
     fields: {
       projected_status: 'النتيجة النهائية من الإسقاط', requests_with_terminal_projection: 'الطلبات المستلمة ذات نتيجة نهائية من الإسقاط',
+      business_requests: 'طلبات العمل المستلمة', platform_requests: 'طلبات تشغيل المنصة المستلمة',
       total_tokens: 'الرموز النهائية المحفوظة',
       measured_total_requests: 'الطلبات ذات الإجمالي المقاس للرموز',
       usage_source: 'مصدر الاستخدام',

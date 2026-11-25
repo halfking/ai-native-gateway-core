@@ -4055,6 +4055,7 @@ sctx: {
       scope: 'Legacy usage keys are counted once per tenant and request per day. The total number of historical supplier sends is unknown.',
       fields: {
         projected_status: 'Projected outcome', requests_with_terminal_projection: 'Receipts with a projected outcome',
+        business_requests: 'Business receipts', platform_requests: 'Platform operations receipts',
         received_requests: 'Client requests received', terminal_usage_without_retained_receipt: 'Terminal usage missing a receipt',
         orchestration_child_receipts: 'Linked internal requests', orchestration_dispatches_unlinked: 'Unlinked orchestration dispatches',
         recorded_sends: 'Recorded sends', recorded_sends_without_reported_amount: 'Sends missing a reported amount',

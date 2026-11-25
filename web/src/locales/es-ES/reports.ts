@@ -121,6 +121,7 @@ export default {
     },
     fields: {
       projected_status: 'Resultado final proyectado', requests_with_terminal_projection: 'Solicitudes recibidas con resultado final proyectado',
+      business_requests: 'Solicitudes de negocio recibidas', platform_requests: 'Solicitudes de operación de la plataforma recibidas',
       total_tokens: 'Tokens finales conservados',
       measured_total_requests: 'Solicitudes con un total de tokens medido',
       usage_source: 'Fuente del uso',

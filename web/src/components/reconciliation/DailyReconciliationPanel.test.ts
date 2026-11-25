@@ -44,7 +44,7 @@ describe('daily reconciliation evidence', () => {
 
   it('shows the request status when terminal projection evidence is missing', async () => {
     readDailyReport.mockImplementation(async (query: DailyQuery) => ({
-      ...response(query), summary: { requests: 2, requests_with_terminal_projection: 1 },
+      ...response(query), summary: { requests: 2, business_requests: 1, platform_requests: 1, requests_with_terminal_projection: 1 },
       rows: [
         { request_id: 'wal-only', status: 'success', projected_status: null },
         { request_id: 'with-fact', status: 'success', projected_status: 'success' },
@@ -56,6 +56,8 @@ describe('daily reconciliation evidence', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(wrapper.text()).toContain('Receipts with a projected outcome1')
+    expect(wrapper.text()).toContain('Business receipts1')
+    expect(wrapper.text()).toContain('Platform operations receipts1')
     const labels = wrapper.findAll('th').map(cell => cell.text())
     const projectedStatus = labels.indexOf('Projected outcome')
     expect(projectedStatus).toBeGreaterThan(0)

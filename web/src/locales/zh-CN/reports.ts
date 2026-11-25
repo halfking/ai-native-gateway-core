@@ -59,6 +59,7 @@ export default {
     },
     fields: {
       projected_status: '投影终态', requests_with_terminal_projection: '有投影终态的收件',
+      business_requests: '业务收件', platform_requests: '平台运维收件',
       requests: '客户端请求', success: '成功', failure: '失败', rate_limited: '限流', cancelled: '取消', pending: '进行中',
       unknown_status: '终态未知', unassigned_session: '无会话归属', local_day: '当地日期', request_id: '请求 ID',
       admission_rejected_requests: '网关入口拒绝', admission_rejection: '入口拒绝原因',
