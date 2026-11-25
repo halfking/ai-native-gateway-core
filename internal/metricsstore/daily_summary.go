@@ -59,9 +59,10 @@ func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, er
 	const historyDays = "public.request_metrics_history_days"
 	const tenantDays = "public.request_metrics_tenant_history_days"
 	const detailDays = "public.request_metrics_history_detail_days"
-	var tenantsAvailable, detailsAvailable bool
-	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL`, tenantDays, detailDays).
-		Scan(&tenantsAvailable, &detailsAvailable); err != nil {
+	const pageDays = "public.request_metrics_history_page_days"
+	var tenantsAvailable, detailsAvailable, pagesAvailable bool
+	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL, to_regclass($3) IS NOT NULL`, tenantDays, detailDays, pageDays).
+		Scan(&tenantsAvailable, &detailsAvailable, &pagesAvailable); err != nil {
 		return false, err
 	}
 	type publication struct {
@@ -74,6 +75,9 @@ func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, er
 	}
 	if detailsAvailable {
 		publications = append(publications, publication{detailDays, reportrollup.RebuildDailyHistoryDetails})
+	}
+	if pagesAvailable {
+		publications = append(publications, publication{pageDays, reportrollup.RebuildDailyPageHistory})
 	}
 	missing := make([]string, 0, len(publications))
 	for _, pub := range publications {

@@ -84,7 +84,7 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 	if section == "dimensions" {
 		var dims *reportrollup.DimensionOptions
 		var coverage reportrollup.ProjectionCoverage
-		err := h.readProjectedReport(ctx, start, end, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
+		err := h.readProjectedReport(ctx, start, end, func(q pgx.Tx, p reportrollup.ProjectionCoverage) error {
 			coverage = p
 			var err error
 			dims, err = reportrollup.LoadProjectedDimensionOptions(ctx, q, view, filter, p)
@@ -109,7 +109,7 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 	case scope == reportrollup.ProjectedSummaryDistribution && (view == reportrollup.ViewProvider || view == reportrollup.ViewCredential):
 		names.Providers = h.providerNames(ctx)
 	}
-	err = h.readProjectedReport(ctx, start, end, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
+	err = h.readProjectedReport(ctx, start, end, func(q pgx.Tx, p reportrollup.ProjectionCoverage) error {
 		var err error
 		switch {
 		case personPage > 0:
@@ -155,8 +155,16 @@ func (h *Handler) handleProjectedDailyPage(ctx context.Context, w http.ResponseW
 	}
 	var coverage reportrollup.ProjectionCoverage
 	var page reportrollup.ProjectedDailyPage
-	if err := h.readProjectedReport(ctx, day, day, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
+	if err := h.readProjectedReport(ctx, day, day, func(q pgx.Tx, p reportrollup.ProjectionCoverage) error {
 		coverage = p
+		if p.From.Before(p.Through) {
+			// A single day can still sort tens of thousands of exact latency samples.
+			// Avoid spilling the day query without changing pooled connection settings.
+			if _, err := q.Exec(ctx, `SELECT set_config('work_mem','16MB',true)
+				WHERE pg_size_bytes(current_setting('work_mem')) < pg_size_bytes('16MB')`); err != nil {
+				return fmt.Errorf("set daily report work_mem: %w", err)
+			}
+		}
 		var err error
 		page, err = reportrollup.BuildProjectedDailyPage(ctx, q, view, filter, p, group, int(number))
 		return err
@@ -207,7 +215,7 @@ func projectedReportRange(r *http.Request, now time.Time) (time.Time, time.Time,
 	return end.AddDate(0, 0, 1-days), end, nil
 }
 
-func (h *Handler) readProjectedReport(ctx context.Context, start, end time.Time, read func(reportrollup.Querier, reportrollup.ProjectionCoverage) error) error {
+func (h *Handler) readProjectedReport(ctx context.Context, start, end time.Time, read func(pgx.Tx, reportrollup.ProjectionCoverage) error) error {
 	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err

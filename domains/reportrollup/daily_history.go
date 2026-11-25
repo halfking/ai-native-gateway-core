@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 )
@@ -22,6 +23,8 @@ const (
 	tenantHistoryCellTable  = "public.request_metrics_daily_tenant_history"
 	historyDetailDaysTable  = "public.request_metrics_history_detail_days"
 	tenantModelHistoryTable = "public.request_metrics_daily_tenant_model_history"
+	historyPageDaysTable    = "public.request_metrics_history_page_days"
+	historyPageCellsTable   = "public.request_metrics_daily_history_page_cells"
 )
 
 type historyKind uint8
@@ -32,10 +35,12 @@ const (
 	historyProvider
 	historyTenant
 	historyTenantModel
+	historyPageDimensions
 )
 
 const historyFacts = `status, ` + projectedErrorKind + ` AS kind, ` + projectedModelKey + ` AS model,
-	provider_id, tenant_id, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
+	provider_id, tenant_id, credential_id, api_key_id, ` + projectedPersonKey + ` AS person,
+	prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
 	total_tokens, credits_charged, latency_ms, cost_amount, cost_currency`
 
 const historyKeys = `report_date, business_only, dimension, group_key`
@@ -43,7 +48,7 @@ const historyMeasures = `requests, successes, input_tokens, output_tokens, cache
 	usd_cents, credits, tokens, cache_covered_read, cache_input, cache_coverage, usd_coverage, latency_samples`
 
 func historyKeyColumns(kind historyKind) string {
-	if kind == historyTenantModel {
+	if kind == historyTenantModel || kind == historyPageDimensions {
 		return historyKeys + ", tenant_id"
 	}
 	return historyKeys
@@ -69,12 +74,27 @@ func historyCellsSQL(kind historyKind) string {
 	case historyTenantModel:
 		keys = `report_date, business_only, 'model'::text AS dimension, model AS group_key, tenant_id`
 		groupBy += `, tenant_id, model`
+	case historyPageDimensions:
+		keys = `report_date, business_only,
+			CASE WHEN GROUPING(person)=0 THEN 'person' WHEN GROUPING(tenant_id)=0 THEN 'tenant'
+			     WHEN GROUPING(credential_id)=0 THEN 'credential' WHEN GROUPING(api_key_id)=0 THEN 'apikey'
+			     WHEN GROUPING(provider_id)=0 THEN 'provider' ELSE 'model' END AS dimension,
+			CASE WHEN GROUPING(person)=0 THEN person WHEN GROUPING(tenant_id)=0 THEN tenant_id
+			     WHEN GROUPING(credential_id)=0 THEN coalesce(credential_id,-1)::text WHEN GROUPING(api_key_id)=0 THEN coalesce(api_key_id,-1)::text
+			     WHEN GROUPING(provider_id)=0 THEN coalesce(provider_id,-1)::text ELSE model END AS group_key,
+			CASE WHEN GROUPING(person)=0 THEN tenant_id ELSE '' END AS tenant_id`
+		groupBy += `, GROUPING SETS ((tenant_id, person), (tenant_id), (credential_id), (api_key_id), (provider_id), (model))`
 	}
 	keyColumns := historyKeyColumns(kind)
+	var rankAggregation, rankColumn string
+	if kind == historyPageDimensions {
+		rankAggregation = `, ` + projectedLatencyRanks + ` FILTER (WHERE ` + projectedLatencySample + `) AS latency_ranks`
+		rankColumn = `, latency_ranks`
+	}
 	return `, measures AS (
 		SELECT ` + keys + `, ` + projectedAdditiveMeasures + `,
 			coalesce(string_agg(int8send(latency_ms), ''::bytea ORDER BY latency_ms)
-				FILTER (WHERE ` + projectedLatencySample + `), ''::bytea) AS latency_samples
+				FILTER (WHERE ` + projectedLatencySample + `), ''::bytea) AS latency_samples` + rankAggregation + `
 		FROM facts GROUP BY ` + groupBy + `
 	), error_counts AS (
 		SELECT ` + keys + `, kind, count(*) AS requests
@@ -83,7 +103,7 @@ func historyCellsSQL(kind historyKind) string {
 		SELECT ` + keyColumns + `, jsonb_object_agg(kind, requests) AS counts
 		FROM error_counts GROUP BY ` + keyColumns + `
 	), raw_cells AS (
-		SELECT ` + keyColumns + `, ` + historyMeasures + `, coalesce(counts,'{}') AS errors
+		SELECT ` + keyColumns + `, ` + historyMeasures + `, coalesce(counts,'{}') AS errors` + rankColumn + `
 		FROM measures LEFT JOIN errors USING (` + keyColumns + `)
 	)`
 }
@@ -100,12 +120,20 @@ func RebuildDailyTenantHistory(ctx context.Context, tx *sql.Tx, day string) erro
 	return rebuildDailyHistory(ctx, tx, day, historyTenant)
 }
 
+// RebuildDailyPageHistory publishes each single-day dimension with ranks
+// computed by the same PostgreSQL aggregate as the live report.
+func RebuildDailyPageHistory(ctx context.Context, tx *sql.Tx, day string) error {
+	return rebuildDailyHistory(ctx, tx, day, historyPageDimensions)
+}
+
 func historyTables(kind historyKind) (days, cells string) {
 	switch kind {
 	case historyTenant:
 		return tenantHistoryDaysTable, tenantHistoryCellTable
 	case historyTenantModel:
 		return historyDetailDaysTable, tenantModelHistoryTable
+	case historyPageDimensions:
+		return historyPageDaysTable, historyPageCellsTable
 	default:
 		return historyDaysTable, historyCellsTable
 	}
@@ -129,6 +157,10 @@ func rebuildDailyHistoryCells(ctx context.Context, tx *sql.Tx, day string, kind 
 	if kind == historyTenant || kind == historyTenantModel {
 		traffic = `(true)`
 	}
+	columns := historyKeyColumns(kind) + `, ` + historyMeasures + `, errors`
+	if kind == historyPageDimensions {
+		columns += `, latency_ranks`
+	}
 	_, err := tx.ExecContext(ctx, `WITH facts AS NOT MATERIALIZED (
 		SELECT $1::date AS report_date, scope.business_only, `+historyFacts+`
 		FROM public.request_metrics_projection CROSS JOIN (VALUES `+traffic+`) scope(business_only)
@@ -136,7 +168,7 @@ func rebuildDailyHistoryCells(ctx context.Context, tx *sql.Tx, day string, kind 
 		  AND occurred_at >= ($1::date::timestamp AT TIME ZONE '`+dailyHistoryZone+`')
 		  AND occurred_at < (($1::date+1)::timestamp AT TIME ZONE '`+dailyHistoryZone+`')
 	)`+historyCellsSQL(kind)+`
-	INSERT INTO `+cells+` (`+historyKeyColumns(kind)+`, `+historyMeasures+`, errors)
+	INSERT INTO `+cells+` (`+columns+`)
 	SELECT * FROM raw_cells`, day)
 	return err
 }
@@ -234,6 +266,38 @@ type dailyHistoryGroup struct {
 	samples int
 }
 
+type dailyHistoryCell struct {
+	row       grainScanRow
+	dimension string
+	key       string
+	amount    pgtype.Numeric
+	samples   latencyRun
+	errors    map[string]int64
+}
+
+func scanDailyHistoryCell(rows pgx.Rows, extra ...any) (dailyHistoryCell, error) {
+	var c dailyHistoryCell
+	c.row.projection = &projectedMeasures{}
+	c.row.currency = "USD"
+	var encoded []byte
+	r, p := &c.row, c.row.projection
+	columns := []any{&r.date, &c.dimension, &c.key, &r.requestCount, &r.successCount, &r.inputTokens, &r.outputTokens,
+		&r.cacheRead, &r.cacheWrite, &c.amount, &r.credits, &p.tokens, &p.cacheRead, &p.cacheInput, &p.cacheMeasured,
+		&p.usdMeasured, &encoded, &c.errors}
+	if err := rows.Scan(append(columns, extra...)...); err != nil {
+		return c, fmt.Errorf("scan daily request history: %w", err)
+	}
+	if !c.amount.Valid || c.amount.Int == nil {
+		return c, fmt.Errorf("invalid daily history amount for %s %q", c.dimension, c.key)
+	}
+	if len(encoded)%8 != 0 {
+		return c, fmt.Errorf("invalid daily latency samples for %s %q: %d bytes", c.dimension, c.key, len(encoded))
+	}
+	c.samples = latencyRun(encoded)
+	p.latencyMeasured = int64(c.samples.size())
+	return c, nil
+}
+
 // latencyRun holds the sorted int8send values returned by PostgreSQL. Keep
 // one copy of the bytes and decode only values inspected during rank selection.
 type latencyRun []byte
@@ -290,27 +354,12 @@ func readDailyHistory(ctx context.Context, q Querier, coverage ProjectionCoverag
 	groups := make(map[[2]string]*dailyHistoryGroup)
 	tenantTotals := kind == historyTenant && tenantID != ""
 	for rows.Next() {
-		var row grainScanRow
-		row.projection = &projectedMeasures{}
-		row.currency = "USD"
-		var dimension, key string
-		var encoded []byte
-		var errors map[string]int64
-		var amount pgtype.Numeric
-		p := row.projection
-		if err := rows.Scan(&row.date, &dimension, &key, &row.requestCount, &row.successCount, &row.inputTokens, &row.outputTokens,
-			&row.cacheRead, &row.cacheWrite, &amount, &row.credits, &p.tokens, &p.cacheRead, &p.cacheInput, &p.cacheMeasured,
-			&p.usdMeasured, &encoded, &errors); err != nil {
-			return true, fmt.Errorf("scan daily request history: %w", err)
+		cell, err := scanDailyHistoryCell(rows)
+		if err != nil {
+			return true, err
 		}
-		if !amount.Valid || amount.Int == nil {
-			return true, fmt.Errorf("invalid daily history amount for %s %q", dimension, key)
-		}
-		if len(encoded)%8 != 0 {
-			return true, fmt.Errorf("invalid daily latency samples for %s %q: %d bytes", dimension, key, len(encoded))
-		}
-		samples := latencyRun(encoded)
-		p.latencyMeasured = int64(samples.size())
+		row, dimension, key := cell.row, cell.dimension, cell.key
+		amount, samples, errors := cell.amount, cell.samples, cell.errors
 		groupKey := [2]string{dimension, key}
 		group := groups[groupKey]
 		if group == nil {
@@ -336,7 +385,7 @@ func readDailyHistory(ctx context.Context, q Querier, coverage ProjectionCoverag
 		if amount.Int.Sign() != 0 {
 			group.cost = group.cost.Add(decimal.NewFromBigInt(amount.Int, amount.Exp))
 		}
-		if len(samples) > 0 {
+		if samples.size() > 0 {
 			group.runs = append(group.runs, samples)
 			group.samples += samples.size()
 		}

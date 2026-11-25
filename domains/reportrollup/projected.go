@@ -99,6 +99,7 @@ const projectedDimensions = projectedModelKey + ` AS raw_model_name,
 const projectedDateWhere = `occurred_at >= $1 AND occurred_at < $2 AND source_fact_id IS NOT NULL`
 const projectedErrorKind = `coalesce(nullif(error_kind,''),nullif(status,''),'unknown')`
 const projectedLatencySample = `status='success' AND latency_ms>0`
+const projectedLatencyRanks = `percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)`
 
 const projectedAdditiveMeasures = `count(*) AS requests, count(*) FILTER (WHERE status='success') AS successes,
 	coalesce(sum(prompt_tokens),0)::bigint AS input_tokens,
@@ -253,7 +254,7 @@ func projectedGrainAggregates(groups []string, fullReport bool) string {
 	errorSets := strings.Join(grainErrorGroups(groups), ", ")
 	measures := `, measures AS (
 		SELECT ` + flags + measureKeys + projectedAdditiveMeasures + `,
-			percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)
+			` + projectedLatencyRanks + `
 				FILTER (WHERE ` + projectedLatencySample + `) AS latency_ranks,
 			count(*) FILTER (WHERE ` + projectedLatencySample + `) AS latency_coverage
 		FROM facts GROUP BY GROUPING SETS (` + sets + `)
@@ -264,7 +265,7 @@ func projectedGrainAggregates(groups []string, fullReport bool) string {
 		measures = `, additive AS (
 			SELECT ` + flags + measureKeys + projectedAdditiveMeasures + ` FROM facts GROUP BY tenant_id
 		), ranks AS (
-			SELECT tenant_id, percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms) AS latency_ranks,
+			SELECT tenant_id, ` + projectedLatencyRanks + ` AS latency_ranks,
 				count(*) AS latency_coverage
 			FROM facts WHERE ` + projectedLatencySample + ` GROUP BY tenant_id
 		), measures AS (
