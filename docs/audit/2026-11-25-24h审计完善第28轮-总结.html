@@ -82,6 +82,7 @@
       <tr><td>10</td><td><code>bg/node_probe_quota_verdict_test.go</code></td><td>修一条既有偶发假红：两次各取时钟的时长被要求严格相等（30 次 2 败、各差 1 纳秒）⇒ 容许 1ms 抖动</td><td><span class="pill p-ok">200 次 0 败</span> 变异仍红</td></tr>
       <tr><td>11</td><td><code>pipefail_race_ledger.tsv</code>、范围收窄候选清单</td><td>上游停机预算修复改了 shell 没同步两份生成器台账 ⇒ 重生成；2 个新候选点按实测（19 B／41 B ≤ PIPE_BUF）裁决</td><td><span class="pill p-ok">pipefail 全族绿</span></td></tr>
       <tr><td>12</td><td><code>maestro/tools/result.mjs</code>、<code>selftest.mjs</code><br><code>maestro/run-stats-range-picker.sh</code>、<code>run-request-logs-time-ranges.sh</code>、<code>run-session-analytics.sh</code>、<code>README.md</code></td><td>被杀（137／143）、被中断、崩溃、无有效值的退出码不再被当绿：合并判定判为量具失效（别层的红仍优先）；runner 的 PASS 只挂在全 0 上，结论行点出是哪一层；session-analytics 加兜底</td><td><span class="pill p-ok">自检 24/24</span> 变异 5/5 咬住</td></tr>
+      <tr><td>13</td><td><code>Makefile</code>、<code>tests/scan_secrets_placeholder_privilege_test.sh</code></td><td>代上游收口：两条新门接进快门 <code>guards-gate-scripts</code>；扫描器已知清单补登新 runner</td><td><span class="pill p-ok">登记册门 230/0</span> 扫描器 10/0</td></tr>
     </table>
   </div>
 
@@ -150,6 +151,7 @@
       <tr><td><span class="pill p-p2">P2</span></td><td>AGENTS.md：L87 整块、L108 段头、L79 ⑪⑫ 丢失；L71 归档未摘净；无门</td><td><code>570087c16</code>、<code>34b4a9a6f</code></td><td><span class="pill p-ok">已恢复＋新门</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>L107 记录「不照搬退役/后继框架」与事实相反（<code>e7e03cdb8</code> 带进了整套框架）</td><td>L107</td><td><span class="pill p-ok">已就地订正</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>maestro 判定：非 0/1/2 的退出码一律当 PASS（被杀的 Maestro ⇒ PASS）</td><td><code>fc580c5fd</code></td><td><span class="pill p-ok">已修 <code>050e06131</code></span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>cgo 边界漂移：<code>domains/reconciliation/attempt_outbox.go</code> 无条件空导入 go-sqlite3 ⇒ cgo=1 闭包 6 → 39 个包；cgo=0 二进制上该 outbox 打不开（实测 Ping 报 stub 错），退回直写。生产今天不受影响（影子台账开关默认关闭）</td><td><code>cdd155fff</code></td><td><span class="pill p-hold">登记（修法待 owner）</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>默认路径向生产机 scp 脚本到可预测的 /tmp 路径并签 super_admin JWT</td><td><code>a6797a559</code></td><td><span class="pill p-hold">登记</span></td></tr>
       <tr><td><span class="pill p-p1">P1 潜伏</span></td><td>W3 外部钩子：休眠；接线后来源判定失效、凭据头外送、无熔断无观测</td><td><code>22fcf788c</code>、<code>742367828</code></td><td><span class="pill p-ok">现状声明</span> <span class="pill p-hold">修复待 owner</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>探测口径静默屏蔽只修一半；低版本清单补登后的锁影响；域数订正漏 4 个 README</td><td><code>19123218a</code>、<code>9d5b1db65</code>、<code>ccc28f2d3</code></td><td><span class="pill p-ok">README 已修</span> <span class="pill p-hold">其余登记</span></td></tr>
@@ -173,6 +175,7 @@
   <h2>⑦ 遗留风险与待 owner 决策</h2>
   <div class="card">
     <ul>
+      <li><span class="tag">cgo 边界</span> —— 两道门口径不同：依赖图绊线按惯例拆 <code>//go:build cgo</code> 即可回绿；登记册门要求 cgo=1 闭包里只有登记的 6 个包能到达 go-sqlite3（让日志走 storage 层，或更新登记册与 CGO 边界）。证据：<code>docs/audit/evidence/2026-11-25-round28-prepush-suites-and-cgo-boundary.txt</code>。</li>
       <li><span class="tag">同级检出的清理</span> —— 是否把 worktree 清理扩到同级检出：<code>llm-gateway-go</code> 与 <code>llm-gateway-go-5</code> 登记的 8 个干净临时树可删（提交都在 main）；<code>llm-gateway-go-5-l1l5</code> 须先把那份未跟踪文档保全；两个检出正被别的会话使用。清单见证据 <code>docs/audit/evidence/2026-11-25-round28-sibling-checkouts-survey.txt</code>。</li>
       <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两者是同一特性的两条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>／<code>988b</code>）：并入要先定哪条线为准，删除任一个都会丢掉别处没有的内容。两条线都「健康但未就绪」：共有的 V2 前端改动打破 4 条既有 web 契约测试，并入前须对账并重生成台账（证据：<code>docs/audit/evidence/2026-11-25-round28-local-branches-validity.txt</code>）。两个分支目前都只在本地。已向 owner 询问四个选项、未获答复；按纪律不并不删不推。若只求防本机丢失，可推到远端侧分支（已核实不触发 CI）。</li>
       <li><span class="tag">W3 外部钩子</span> —— 是否上线；上线前须先修来源判定、凭据头脱敏、熔断与观测、流式空正文、改写体校验。</li>
@@ -182,7 +185,7 @@
       <li><span class="tag">环境</span> —— <code>llm-gateway-local-8782</code> 崩溃循环（本地 PG 54318 不可达）；<code>.build-local</code> 11GB；<code>.audit-validation</code> 无保留策略；3 个已退出的 <code>llmgw-211-*</code> 容器。</li>
       <li><span class="tag">记录</span> —— 归档档内 L21、L74 各有两份；L79 在历史上被两轮用过；3 条旧归档指针标题对不上段头。</li>
       <li><span class="tag">推送保护</span> —— pre-push 钩子在本克隆未接线（接上会拦住一切推送）。等价执行结果：敏感信息扫描 BLOCK 32／WARN 2073，<b>本轮新增的行上 0 条</b>；其中 2 条是根目录 <code>DEPLOYMENT-VERIFICATION-GUIDE.md</code> 的本地开发库口令，请 owner 确认是否移除。</li>
-      <li><span class="tag">上游带入</span> —— pre-push 钩子的 <code>tests/*.sh</code> 有 6 套真红（纯上游树同条件同红）：门脚本登记册缺上游新增的两个脚本、deploy_211 契约 1 条、ssh-retry 7 条、扫描白名单缺 1 条、cgo 名单不一致。</li>
+      <li><span class="tag">上游带入</span> —— pre-push 钩子的 <code>tests/*.sh</code>：收尾后复核 74 套 69 过 5 败。其中 2 套是清单没跟上、已代上游收口（<code>2075b652b</code>：两条新门接进快门、扫描器已知清单补登）。仍红：deploy_211 契约 1 条、ssh-retry 7 条、审计镜像缺失（环境），以及 cgo 边界漂移——<code>domains/reconciliation/attempt_outbox.go</code> 无条件导入 go-sqlite3（<code>cdd155fff</code>），cgo=1 闭包由 6 个包涨到 39 个；生产因影子台账开关默认关闭而不受影响，修法待 owner。</li>
       <li><span class="tag">沿用</span> —— 上一轮登记的 owner 待决项（N1/N5/N6 口径、通道重放 983、闸门扩面剩余半边、census 口径、方案 A、P2）本轮无变化。</li>
     </ul>
     <p class="note">本轮零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。所有修复在私有工作树上完成，逐文件暂存后提交。</p>
