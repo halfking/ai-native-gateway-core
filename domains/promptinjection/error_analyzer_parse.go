@@ -1,6 +1,6 @@
 package promptinjection
 
-// error_analysis_parse.go — LLM 分析输出的 JSON 层：保序解码 / 候选块 / 容错抢救。
+// error_analyzer_parse.go — LLM 分析输出的 JSON 层：保序解码 / 候选块 / 容错抢救。
 //
 // ★ 背景（2026-11-25，三台生产实测）：存量 15 条真实分析里 **14 条**被解析器
 //
@@ -19,7 +19,7 @@ package promptinjection
 //	  （修复建议常是「立即措施/短期修复/长期优化」这样的有序分组，
 //	  解成 map 会丢序 ⇒ 渲染出来的建议顺序每次都不同）。
 //
-// 字段的识别与类型宽 coercion 在 error_analysis_harvest.go。
+// 字段的识别与类型宽 coercion 在 error_analyzer_harvest.go。
 
 import (
 	"bytes"

@@ -1,6 +1,6 @@
 package promptinjection
 
-// error_analysis_reanalyze.go — 定向分析（单条）与存量结果的重解析（2026-11-25 取证轮）。
+// error_analyzer_reanalyze.go — 定向分析（单条）与存量结果的重解析（2026-11-25 取证轮）。
 //
 // ★ 为什么需要「定向分析」：
 //

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// error_analysis_parse_test.go — LLM 分析输出容错解析的钉测（2026-11-25）。
+// error_analyzer_parse_test.go — LLM 分析输出容错解析的钉测（2026-11-25）。
 //
 // ★ 夹具对着三台生产的**真实失败形态**写（键结构逐字对应，正文换成合成内容）：
 //

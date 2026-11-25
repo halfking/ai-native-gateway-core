@@ -90,7 +90,7 @@ func NewErrorAnalyzer(
 		collector:     collector,
 		llmClient:     llmClient,
 		analyzerModel: analyzerModel,
-		// ★ 2026-11-25：解析器换了代（容错解析，见 error_analysis_parse.go）⇒
+		// ★ 2026-11-25：解析器换了代（容错解析，见 error_analyzer_parse.go）⇒
 		//   版本号随之升到 2.0.0——落库的 analyzer_version 能答出「这条结果是
 		//   哪一代解析器读出来的」。
 		analyzerVersion: analyzerVersionCurrent,
@@ -792,7 +792,7 @@ func (ea *ErrorAnalyzer) getGenericTemplate() PromptTemplate {
 //
 // ★ 2026-11-25 容错改造：整条解析迁到 parseAnalysisResponse（见
 //
-//	error_analysis_parse.go / _harvest.go / _compose.go）。旧实现是一次严格的
+//	error_analyzer_parse.go / _harvest.go / _compose.go）。旧实现是一次严格的
 //	结构体反序列化——三台生产实测 15 条真实分析里 14 条被它丢弃（模型按自己的
 //	报告体例返回、输出被截断、suggested_fix 是对象……都算失败）。
 //

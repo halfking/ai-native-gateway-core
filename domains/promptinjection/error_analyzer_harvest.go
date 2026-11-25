@@ -1,6 +1,6 @@
 package promptinjection
 
-// error_analysis_harvest.go — 从已解码的 JSON 里**认出**分析字段 + 类型宽 coercion
+// error_analyzer_harvest.go — 从已解码的 JSON 里**认出**分析字段 + 类型宽 coercion
 // + 结构化修正方案（fix_plan）。
 //
 // ★ 为什么需要「认」而不是「反序列化」：

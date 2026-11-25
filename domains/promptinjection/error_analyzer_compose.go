@@ -1,6 +1,6 @@
 package promptinjection
 
-// error_analysis_compose.go — LLM 分析输出的解析总入口：解码 → 认字段 → 组装。
+// error_analyzer_compose.go — LLM 分析输出的解析总入口：解码 → 认字段 → 组装。
 //
 // ★ 什么时候算「解析失败」（返回 nil）：
 //
