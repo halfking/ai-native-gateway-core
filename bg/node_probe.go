@@ -271,6 +271,16 @@ type NodeProbeWorker struct {
 	// without a live database.
 	gatewayRoutableLookup gatewayRoundRoutableFn
 
+	// gatewayPlanLookup (2026-11-26 第36轮 · 第四处修正) is the test seam
+	// over the routing layer's **own candidate resolver**
+	// (provider.Client.GetCandidatesByModality — the same entry point the
+	// admin routing panel's plan_order uses). Production leaves it nil and
+	// gatewayPlanEmpty reports "no lookup ⇒ not empty" (fail-open); tests stub
+	// it to pin the "the model has zero candidates at all ⇒ the pinned gateway
+	// round can only be a no_candidate ⇒ skip it" behaviour without a live
+	// database.
+	gatewayPlanLookup gatewayPlanLookupFn
+
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
 	invalidateCandidateCache func(credentialID int)
@@ -533,6 +543,18 @@ func (w *NodeProbeWorker) SetProbeSink(sink ProbeEventSink) {
 func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int)) {
 	if w != nil {
 		w.invalidateCandidateCache = fn
+	}
+}
+
+// SetGatewayPlanLookup wires the routing layer's own candidate resolver into
+// the worker.
+//
+// ★ 2026-11-26（第36轮 · 第四处修正）：这条接线让「模型级零候选 ⇒ 钉住的网关轮
+// 必然是 no_candidate」这条判据**问被测系统自己**，而不是探针侧抄一份可路由性
+// 合取。生产实现见 cmd/gateway/main.go 的 wireGatewayPlanLookup。
+func (w *NodeProbeWorker) SetGatewayPlanLookup(fn gatewayPlanLookupFn) {
+	if w != nil {
+		w.gatewayPlanLookup = fn
 	}
 }
 
@@ -2860,11 +2882,19 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	//
 	// ⇒ 直连轮成功时**不**问视图：网关轮此刻的职责是确认路由层看见了已恢复
 	// 的状态，而视图可能还停留在上一轮的失败态，问它会误杀这一职责。
+	//
+	// ★ 2026-11-26 第36轮（第四处修正）：第三种**可证明冗余** —— 路由层对这个
+	// **模型**整体就没有候选时（plan_count=0），钉住哪一把凭据都一样是 503
+	// no_candidate。判据见 probe_gateway_plan.go（问路由层**自己的**候选解析器）。
 	routable := true
+	planEmpty := false
 	if !direct.ok {
 		routable = w.gatewayRoundRoutable(ctx, credID, model)
+		// 这条路径的网关轮用 DB 权威模态造 body（见 probeGateway）⇒ 模态参数
+		// 必须与它一致，否则「零候选」的结论不成立。
+		planEmpty = w.gatewayPlanEmpty(ctx, model, w.probeModalityFor(ctx, credID, model))
 	}
-	runGateway, skipReason := probeGatewayRoundDecision(direct, routable)
+	runGateway, skipReason := probeGatewayRoundDecision(direct, routable, planEmpty)
 	var gw nodeProbeRoundResult
 	if runGateway {
 		gw = w.probeGateway(ctx, credID, model)

@@ -5094,6 +5094,8 @@ func main() {
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 				nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
+				// ★ 2026-11-26（第36轮 · 第四处修正）：注入路由层自己的候选解析器。
+				wireGatewayPlanLookup(nodeProbeWorker, providerClient)
 				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 				}
@@ -5424,6 +5426,8 @@ func main() {
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 			nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
+			// ★ 2026-11-26（第36轮 · 第四处修正）：同 site 1 的接线（判据单源）。
+			wireGatewayPlanLookup(nodeProbeWorker, providerClient)
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
 			if probeStreamHub != nil {

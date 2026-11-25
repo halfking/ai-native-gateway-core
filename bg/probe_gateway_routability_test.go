@@ -31,6 +31,7 @@ func TestProbeGatewayRoundDecisionSkipsUnroutable(t *testing.T) {
 		name       string
 		direct     nodeProbeRoundResult
 		routable   bool
+		planEmpty  bool
 		wantRun    bool
 		wantReason string
 	}{
@@ -44,6 +45,13 @@ func TestProbeGatewayRoundDecisionSkipsUnroutable(t *testing.T) {
 			name:     "direct ok ⇒ gateway round runs (routable pair)",
 			direct:   nodeProbeRoundResult{ok: true, httpStatus: 200},
 			routable: true,
+			wantRun:  true,
+		},
+		{
+			name:     "direct ok ⇒ gateway round runs even when the model has zero candidates",
+			direct:   nodeProbeRoundResult{ok: true, httpStatus: 200},
+			routable: true,
+			planEmpty: true,
 			wantRun:  true,
 		},
 		{
@@ -93,10 +101,37 @@ func TestProbeGatewayRoundDecisionSkipsUnroutable(t *testing.T) {
 			routable: true,
 			wantRun:  true,
 		},
+		{
+			// ★ 第36轮：模型级零候选（plan_count=0）⇒ 钉住哪一把凭据都一样是
+			// 503 no_candidate ⇒ 零信息量 ⇒ 跳过。
+			name:       "node family (502) + model has zero candidates ⇒ skip",
+			direct:     nodeProbeRoundResult{errCode: "http_502", httpStatus: 502},
+			routable:   true,
+			planEmpty:  true,
+			wantRun:    false,
+			wantReason: "gateway_round_skipped_no_plan",
+		},
+		{
+			name:       "rate limit (429) + model has zero candidates ⇒ skip",
+			direct:     nodeProbeRoundResult{errCode: "http_429", httpStatus: 429},
+			routable:   true,
+			planEmpty:  true,
+			wantRun:    false,
+			wantReason: "gateway_round_skipped_no_plan",
+		},
+		{
+			// 凭据级理由优先于模型级理由（便宜的判据先问，理由也先记它）。
+			name:       "pair unroutable + model empty ⇒ the credential-level reason wins",
+			direct:     nodeProbeRoundResult{errCode: "http_502", httpStatus: 502},
+			routable:   false,
+			planEmpty:  true,
+			wantRun:    false,
+			wantReason: "gateway_round_skipped_unroutable",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			run, reason := probeGatewayRoundDecision(tc.direct, tc.routable)
+			run, reason := probeGatewayRoundDecision(tc.direct, tc.routable, tc.planEmpty)
 			if run != tc.wantRun {
 				t.Fatalf("run = %v, want %v (reason %q)", run, tc.wantRun, reason)
 			}
@@ -188,20 +223,24 @@ func TestNodeProbeWorkerGatewayRoundRoutableWithoutLookupFailsOpen(t *testing.T)
 	}
 }
 
-// TestProbeGatewayRoundSkipDetailHasBothReasons keeps the two skip reasons
+// TestProbeGatewayRoundSkipDetailHasBothReasons keeps the skip reasons
 // distinguishable in the audit trail — an operator reading node_probe_runs must
 // be able to tell "the upstream already refused" from "the router had no
-// candidate anyway".
+// candidate anyway" from "the model has no candidate at all".
 func TestProbeGatewayRoundSkipDetailHasBothReasons(t *testing.T) {
 	redundant := probeGatewayRoundSkipDetail("gateway_round_skipped_redundant")
 	unroutable := probeGatewayRoundSkipDetail("gateway_round_skipped_unroutable")
-	if redundant == "" || unroutable == "" {
-		t.Fatal("both skip reasons must carry an explanation")
+	noPlan := probeGatewayRoundSkipDetail(gatewayRoundSkippedNoPlan)
+	if redundant == "" || unroutable == "" || noPlan == "" {
+		t.Fatal("every skip reason must carry an explanation")
 	}
-	if redundant == unroutable {
-		t.Fatal("the two skip reasons must not read identically")
+	if redundant == unroutable || unroutable == noPlan || redundant == noPlan {
+		t.Fatal("the skip reasons must not read identically")
 	}
 	if !strings.Contains(unroutable, "no_candidate") {
 		t.Fatalf("the unroutable reason must name the observed symptom, got %q", unroutable)
+	}
+	if !strings.Contains(noPlan, "no candidate at all") {
+		t.Fatalf("the no-plan reason must say the model itself has no candidate, got %q", noPlan)
 	}
 }
