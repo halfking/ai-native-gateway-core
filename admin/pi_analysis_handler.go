@@ -63,6 +63,35 @@ type PIAnalysisHandler struct {
 	//	promptinjection.Detector.RefreshRules 此前**零生产调用方**（死面）
 	//	⇒ 本字段是它的第一个接线点（由 cmd/gateway 装配侧注入）。
 	ruleRefresher func() error
+
+	// ★ 2026-11-25 取证轮：取证采集面 + 复测用的在线检测器（见 pi_analysis_forensics.go）。
+	//   两者都由装配侧注入；nil ⇒ 对应端点如实回 503 / 对应复测项如实报不可用。
+	evidence    *PIEvidenceGatherer
+	replayJudge *promptinjection.Detector
+
+	// 复测的两个调用面：默认指向 promptinjection 的实现；单测注入桩
+	// （规则重放要读十来张表，用 sqlmock 逐列钉只会钉住实现细节而不是聚合规则）。
+	replayRulesFn  piReplayRulesFunc
+	recheckLayerFn piRecheckLayerFunc
+}
+
+type (
+	piReplayRulesFunc  func(ctx context.Context, db *sql.DB, tenantID, input string) (*promptinjection.RulesReplayResult, error)
+	piRecheckLayerFunc func(ctx context.Context, db *sql.DB, errorType, tenantID, input string, opts promptinjection.RecheckOptions) (*promptinjection.LayerRecheckResult, error)
+)
+
+func (h *PIAnalysisHandler) replayRules(ctx context.Context, db *sql.DB, tenantID, input string) (*promptinjection.RulesReplayResult, error) {
+	if h.replayRulesFn != nil {
+		return h.replayRulesFn(ctx, db, tenantID, input)
+	}
+	return promptinjection.ReplayRules(ctx, db, tenantID, input)
+}
+
+func (h *PIAnalysisHandler) recheckLayer(ctx context.Context, db *sql.DB, errorType, tenantID, input string, opts promptinjection.RecheckOptions) (*promptinjection.LayerRecheckResult, error) {
+	if h.recheckLayerFn != nil {
+		return h.recheckLayerFn(ctx, db, errorType, tenantID, input, opts)
+	}
+	return promptinjection.RecheckLayer(ctx, db, errorType, tenantID, input, opts)
 }
 
 // SetRuleRefresher 注入规则热刷新回调（由装配侧在构造出 detector 后调用）。
@@ -136,20 +165,46 @@ func (h *PIAnalysisHandler) RegisterRoutes(mux *http.ServeMux, prefix string) {
 	//	⇒ 补注册 `prefix+"/results/"`（**前缀**模式）⇒
 	//	  `/results` 仍由精确模式命中（列表），`/results/{id}` 由前缀模式命中（详情）。
 	mux.HandleFunc(prefix+"/results/", wrap(h.handleResults))
+	// ★ 2026-11-25 取证轮：批量重读「解析失败」的存量结果。必须注册成**精确**模式——
+	//	它落在 /results/ 前缀路由里，不单独注册会被当成 queue_id="reparse-failed"。
+	mux.HandleFunc(prefix+"/results/reparse-failed", wrap(h.handleReparseFailed))
 	mux.HandleFunc(prefix+"/trigger", wrap(h.TriggerAnalysis))
 	mux.HandleFunc(prefix+"/stats", wrap(h.GetStats))
 }
 
-// handleQueueItem 派发 /queue/{id}（单条队列详情）。
+// handleQueueItem 派发 /queue/{id}（单条队列详情）及其子动作。
 func (h *PIAnalysisHandler) handleQueueItem(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, h.prefix+"/queue")
-	queueIDStr := strings.TrimPrefix(path, "/")
-	queueID, err := strconv.ParseInt(queueIDStr, 10, 64)
+	rest := strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(rest, "/", 2)
+	queueID, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		http.Error(w, "invalid queue_id", http.StatusBadRequest)
 		return
 	}
-	h.GetQueueItem(w, r, queueID)
+	if len(parts) == 1 {
+		h.GetQueueItem(w, r, queueID)
+		return
+	}
+	// ★ 2026-11-25 取证轮：详情之下的三个子动作（见 pi_analysis_forensics.go）。
+	//	★ 2026-11-26：evidence 是读；analyze / verify 会花模型调用、往队列行写留痕
+	//	⇒ 写动作统一过超级管理员闸（见 piRequireSuperAdminForWrite）。
+	switch parts[1] {
+	case "evidence":
+		h.handleQueueEvidence(w, r, queueID)
+	case "analyze":
+		if piRequireSuperAdminForWrite(w, r) {
+			return
+		}
+		h.handleQueueAnalyze(w, r, queueID)
+	case "verify":
+		if piRequireSuperAdminForWrite(w, r) {
+			return
+		}
+		h.handleQueueVerify(w, r, queueID)
+	default:
+		http.Error(w, "unknown sub-action", http.StatusNotFound)
+	}
 }
 
 func (h *PIAnalysisHandler) handleResults(w http.ResponseWriter, r *http.Request) {
@@ -172,11 +227,25 @@ func (h *PIAnalysisHandler) handleResults(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// ★ 2026-11-18 PI 分析管理面优化轮：修复应用/回滚子动作。
+	//	★ 2026-11-26：apply / revert / reparse 都是写动作 ⇒ 统一过超级管理员闸
+	//	（见 piRequireSuperAdminForWrite）。apply / revert 会改**全平台**的 PI 规则。
 	switch parts[1] {
 	case "apply":
+		if piRequireSuperAdminForWrite(w, r) {
+			return
+		}
 		h.ApplyFix(w, r, queueID)
 	case "revert":
+		if piRequireSuperAdminForWrite(w, r) {
+			return
+		}
 		h.RevertFix(w, r, queueID)
+	// ★ 2026-11-25 取证轮：用当前解析器重读这条结果的原始响应（不调模型）。
+	case "reparse":
+		if piRequireSuperAdminForWrite(w, r) {
+			return
+		}
+		h.handleResultReparse(w, r, queueID)
 	default:
 		http.Error(w, "unknown sub-action", http.StatusNotFound)
 	}
@@ -538,8 +607,9 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	// ★ 2026-11-25 取证轮：附上「修正方案视图」（能不能自动修正、为什么不能）——
+	//   由后端单点判定，按钮状态与 ApplyFix 的闸门同源。
+	h.writeResultWithPlan(w, result)
 }
 
 // getResultLegacy 是 applied_actions 列缺席（迁移 979 未应用）时的降级详情。
@@ -730,6 +800,10 @@ func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request,
 func (h *PIAnalysisHandler) TriggerAnalysis(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// 2026-11-26：批量分析是写动作（花模型调用、改写结果行）⇒ 过超级管理员闸。
+	if piRequireSuperAdminForWrite(w, r) {
 		return
 	}
 	if h.analyzer == nil {

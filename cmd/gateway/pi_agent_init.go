@@ -42,6 +42,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // piAgentConfig 是 PI 智能体的运行配置（全部来自环境变量）。
@@ -212,6 +213,21 @@ func initPIAgent(
 	// ★ 单批条数：真正落到实现（此前配置项形同虚设）。
 	analyzer.SetBatchSize(cfg.batchSize)
 	worker := promptinjection.NewErrorAnalysisWorker(analyzer, cfg.interval)
+	// ★ 2026-11-25 取证轮：请求错误发现器挂在 worker 每轮**领取之前**（先发现、
+	//   再分析，同一节拍）。它只读网关自己已经落库的候选失败记录，不碰请求热路径；
+	//   阈值/窗口走设置项（每轮重读 ⇒ 管理面改了即时生效）。
+	//
+	//	★ 装配位置的取舍：发现器在 worker 上、取证面在管理面注册点（main.go）——
+	//	两者都**不依赖 V2 pipeline**：关着 V2 时 PI 检测器不采集，但请求级失败
+	//	照样能被发现和分析（那正是「请求过程中发生错误」这一类）。
+	discoverer := promptinjection.NewRequestErrorDiscoverer(sqlDB, collector, loadPIRequestDiscoveryConfig)
+	worker.SetPreBatch(func(ctx context.Context) {
+		if n, err := discoverer.RunOnce(ctx); err != nil {
+			slog.Warn("pi_agent: request error discovery failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pi_agent: request error groups queued for analysis", "groups", n)
+		}
+	})
 	worker.Start(ctx)
 
 	// F6 修复：定期清理旧的错误分析记录（90 天保留期）。
@@ -251,4 +267,20 @@ func initPIAgent(
 		"base_url", validatedURL)
 
 	return collector, analyzer, worker
+}
+
+// loadPIRequestDiscoveryConfig 每轮从设置项读出请求错误发现器的配置（热生效）。
+//
+//	三个键登记在 settings/pi_analysis_specs.go；取值口径与其它开关一致：
+//	DB > env > default（见 settings/spec.go 的 EffectiveValue）。
+func loadPIRequestDiscoveryConfig() promptinjection.DiscoveryConfig {
+	cfg := promptinjection.DefaultDiscoveryConfig()
+	cfg.Enabled = settings.GetPlatformBool("pi_analysis.request_error_discovery_enabled", cfg.Enabled)
+	if v := settings.GetPlatformInt("pi_analysis.request_error_threshold", 0); v > 0 {
+		cfg.Threshold = v
+	}
+	if v := settings.GetPlatformInt("pi_analysis.request_error_window_minutes", 0); v > 0 {
+		cfg.Window = time.Duration(v) * time.Minute
+	}
+	return cfg
 }

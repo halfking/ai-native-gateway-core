@@ -63,6 +63,12 @@ var piAnalysisRoutePaths = []struct {
 	{http.MethodPost, "/api/admin/pi-analysis/results/1/revert"},
 	{http.MethodPost, "/api/admin/pi-analysis/trigger"},
 	{http.MethodGet, "/api/admin/pi-analysis/stats"},
+	// ★ 2026-11-25 取证轮：按需取证 / 定向分析 / 复测 / 重解析（单条与批量）。
+	{http.MethodGet, "/api/admin/pi-analysis/queue/1/evidence"},
+	{http.MethodPost, "/api/admin/pi-analysis/queue/1/analyze"},
+	{http.MethodPost, "/api/admin/pi-analysis/queue/1/verify"},
+	{http.MethodPost, "/api/admin/pi-analysis/results/1/reparse"},
+	{http.MethodPost, "/api/admin/pi-analysis/results/reparse-failed"},
 }
 
 // newTestPIGatewayPool 造一个**惰性**连接池（不会真的连库）。
