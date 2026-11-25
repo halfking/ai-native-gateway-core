@@ -104,6 +104,25 @@ func decodeCandidates(cands []string) []decodedDoc {
 		if decoded {
 			continue
 		}
+		// ★ 截断修复（2026-11-26）：输出在半路被掐断——最常见的是停在某个字符串中间——
+		//   丢掉没写完的那个成员、补齐未闭合的括号，再严格解码。解出来的每个成员都是
+		//   模型完整写出的 ⇒ 比「按缩进切分逐成员打捞」保住的多（后者遇到未闭合的
+		//   引号一个成员都切不出来）。仍按「打捞」计：标记截断 ⇒ 置信度封顶、不进自动应用。
+		for vi, variant := range repairVariants(c) {
+			closed, lost, ok := repairTruncatedJSON(variant)
+			if !ok {
+				continue
+			}
+			if obj, err := decodeStrictOrdered(closed); err == nil {
+				out = append(out, decodedDoc{obj, decodeInfo{salvaged: true, truncated: true, repaired: true, lost: lost}})
+				_ = vi
+				decoded = true
+				break
+			}
+		}
+		if decoded {
+			continue
+		}
 		// ★ 抢救要看**每一个**修复变体、取丢得最少的那个：原样文本常常也能
 		//   抢出一个对象，只是坏点所在的成员丢了（例：字符串里的裸换行让
 		//   那个成员解不出）；而转义修复后的变体能把同一个成员救回来。
