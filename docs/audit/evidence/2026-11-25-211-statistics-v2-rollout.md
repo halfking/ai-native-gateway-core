@@ -89,3 +89,61 @@ session analytics  RESULT: PASS（65 条）
 ranking filter  RESULT: PASS（20 条）
 SELFTEST: PASS
 ```
+
+## 30 分钟稳定窗口
+
+观察从 22:46:07 到 23:16:07（Asia/Shanghai）。31 次采样中，公网和槽 a 的版本均为 `6f099525`、构建号 3274。数据库和 Redis 就绪检查、投影检查均为 HTTP 200，期间槽 a 无重启，投影待处理最早记录的最大年龄为 13.927 秒。nginx 日志中，本域名的网关 upstream 没有连接拒绝、超时、重置、提前断开或无可用槽位。
+
+正式日对账、统计导出及就绪探针没有新增 5xx。访问日志里的另两笔会话总览 500 和一笔热门模型 500 均对应查询上下文取消的服务端记录。对同一区间的 V2 会话总览单独复测三次，均返回 200、来源为 `request_metrics`。模型 API 另有 297 / 930 笔 5xx，发布前的同长对照窗为 485 / 1515。
+
+初次监测脚本的本机 Python 3.9 解析不了部分可变精度时间戳。下列数据来自改用可变精度解析后完整重跑的 30 分钟窗口。
+
+```text
+{"at": "2026-11-25T14:46:07.565563+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 7.705333, "projection_updated_at": "2026-11-25T22:46:00.606392+08:00", "counters": {"requests": 1739, "http_5xx": 389, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:47:07.567116+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 4.698778, "projection_updated_at": "2026-11-25T22:47:01.011061+08:00", "counters": {"requests": 2012, "http_5xx": 393, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:48:07.574308+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 5.916045, "projection_updated_at": "2026-11-25T22:48:01.60709+08:00", "counters": {"requests": 2227, "http_5xx": 394, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:49:07.568664+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 6.236033, "projection_updated_at": "2026-11-25T22:49:01.870909+08:00", "counters": {"requests": 2576, "http_5xx": 406, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:50:07.567660+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 6.051964, "projection_updated_at": "2026-11-25T22:50:02.2303+08:00", "counters": {"requests": 2904, "http_5xx": 441, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:51:07.582446+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 2.865205, "projection_updated_at": "2026-11-25T22:51:02.454521+08:00", "counters": {"requests": 3397, "http_5xx": 443, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:52:07.569267+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 1.045166, "projection_updated_at": "2026-11-25T22:52:02.785545+08:00", "counters": {"requests": 3611, "http_5xx": 451, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:53:07.571467+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 2.01073, "projection_updated_at": "2026-11-25T22:53:03.061022+08:00", "counters": {"requests": 3781, "http_5xx": 462, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:54:07.572543+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 5.102861, "projection_updated_at": "2026-11-25T22:54:03.303656+08:00", "counters": {"requests": 3927, "http_5xx": 474, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:55:07.578331+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 3.792443, "projection_updated_at": "2026-11-25T22:55:03.564557+08:00", "counters": {"requests": 4118, "http_5xx": 481, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:56:07.573899+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 3.445058, "projection_updated_at": "2026-11-25T22:56:03.830079+08:00", "counters": {"requests": 4291, "http_5xx": 491, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:57:07.578955+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 2.931901, "projection_updated_at": "2026-11-25T22:57:04.013699+08:00", "counters": {"requests": 4584, "http_5xx": 492, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:58:07.576202+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 0.132305, "projection_updated_at": "2026-11-25T22:58:04.219522+08:00", "counters": {"requests": 4844, "http_5xx": 496, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T14:59:07.582744+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 1.750882, "projection_updated_at": "2026-11-25T22:59:04.438369+08:00", "counters": {"requests": 5145, "http_5xx": 497, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:00:07.582779+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 1.930915, "projection_updated_at": "2026-11-25T23:00:04.66336+08:00", "counters": {"requests": 5456, "http_5xx": 501, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:01:07.582868+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": null, "projection_updated_at": "2026-11-25T23:01:04.940562+08:00", "counters": {"requests": 5830, "http_5xx": 517, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:02:07.576325+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 1.230509, "projection_updated_at": "2026-11-25T23:02:05.473782+08:00", "counters": {"requests": 6197, "http_5xx": 537, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:03:07.578697+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 1.770732, "projection_updated_at": "2026-11-25T23:03:05.946103+08:00", "counters": {"requests": 6497, "http_5xx": 540, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:04:07.577412+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 0.685285, "projection_updated_at": "2026-11-25T23:04:06.335896+08:00", "counters": {"requests": 6597, "http_5xx": 551, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:05:07.583680+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": null, "projection_updated_at": "2026-11-25T23:05:06.659997+08:00", "counters": {"requests": 6694, "http_5xx": 558, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:06:07.582720+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": null, "projection_updated_at": "2026-11-25T23:06:07.181622+08:00", "counters": {"requests": 6788, "http_5xx": 564, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:07:07.584455+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": null, "projection_updated_at": "2026-11-25T23:07:07.488693+08:00", "counters": {"requests": 6895, "http_5xx": 588, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:08:07.585386+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": null, "projection_updated_at": "2026-11-25T23:08:07.833244+08:00", "counters": {"requests": 6995, "http_5xx": 596, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:09:07.579062+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 10.3192, "projection_updated_at": "2026-11-25T23:08:52.995926+08:00", "counters": {"requests": 7096, "http_5xx": 603, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:10:07.586427+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": null, "projection_updated_at": "2026-11-25T23:10:08.239833+08:00", "counters": {"requests": 7182, "http_5xx": 611, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:11:07.583161+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 8.158891, "projection_updated_at": "2026-11-25T23:10:53.497418+08:00", "counters": {"requests": 7271, "http_5xx": 614, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:12:07.584904+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 12.137073, "projection_updated_at": "2026-11-25T23:11:53.72091+08:00", "counters": {"requests": 7365, "http_5xx": 621, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:13:07.583314+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 13.927318, "projection_updated_at": "2026-11-25T23:12:53.922145+08:00", "counters": {"requests": 7462, "http_5xx": 633, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:14:07.587919+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 7.149699, "projection_updated_at": "2026-11-25T23:13:54.157733+08:00", "counters": {"requests": 7555, "http_5xx": 645, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:15:07.584962+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 13.108632, "projection_updated_at": "2026-11-25T23:14:54.405641+08:00", "counters": {"requests": 7653, "http_5xx": 662, "report_5xx": 295}, "restart_count": 0}
+{"at": "2026-11-25T15:16:07.582838+00:00", "sha": "6f099525", "build_seq": 3274, "slot": "a", "ok": true, "readyz": 200, "projection_http": 200, "pending_age_secs": 12.924945, "projection_updated_at": "2026-11-25T23:15:54.760447+08:00", "counters": {"requests": 7760, "http_5xx": 689, "report_5xx": 295}, "restart_count": 0}
+{"samples": 31, "window_s": 1800, "counter_delta": {"requests": 6021, "http_5xx": 300, "report_5xx": 0}, "stable_restart_count": true}
+refused 0
+timeout 0
+reset 0
+early_close 0
+no_backend 0
+{"5xx": {"model_api:502": 5, "model_api:503": 480}, "end": "2026-11-25T14:40:43Z", "other_admin_routes": {}, "slot": "b", "start": "2026-11-25T14:10:43Z", "totals": {"model_api": 1515, "other": 956, "readiness": 272}}
+{"5xx": {"model_api:502": 13, "model_api:503": 284, "other:500": 1, "reports_and_analytics:500": 2}, "end": "2026-11-25T15:16:07.582838+00:00", "other_admin_routes": {}, "slot": "a", "start": "2026-11-25T14:46:07.565563+00:00", "totals": {"model_api": 930, "other": 3771, "readiness": 482, "reports_and_analytics": 209}}
+{"timestamp": "2026-11-25T14:52:50.37405658Z", "event": "session statistics unavailable", "causes": ["context canceled"]}
+{"timestamp": "2026-11-25T15:01:25.25309193Z", "event": "session statistics unavailable", "causes": ["context canceled"]}
+{"timestamp": "2026-11-25T14:52:50.374234473Z", "route": "/api/admin/dashboard/v2/session-overview", "status": 500, "duration_ms": 4265}
+{"timestamp": "2026-11-25T15:01:15.394016898Z", "route": "/api/logs/top-models", "status": 500, "duration_ms": 1587}
+{"timestamp": "2026-11-25T15:01:25.253174945Z", "route": "/api/admin/dashboard/v2/session-overview", "status": 500, "duration_ms": 4313}
+200 request_metrics 5.518
+200 request_metrics 5.505
+200 request_metrics 5.428
+```
