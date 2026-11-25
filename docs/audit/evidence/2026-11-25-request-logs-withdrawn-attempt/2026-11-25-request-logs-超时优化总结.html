@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Request-Logs 超时优化 - 批判式审计与部署总结</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+            line-height: 1.6; 
+            color: #333; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+        .container { 
+            max-width: 1400px; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 12px; 
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+            padding: 40px; 
+            text-align: center;
+        }
+        .header h1 { font-size: 32px; margin-bottom: 10px; font-weight: 600; }
+        .header .meta { opacity: 0.9; font-size: 14px; }
+        .content { padding: 40px; }
+        .section { margin-bottom: 40px; }
+        .section h2 { 
+            color: #667eea; 
+            border-bottom: 3px solid #667eea; 
+            padding-bottom: 10px; 
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        .section h3 { 
+            color: #764ba2; 
+            margin: 20px 0 15px 0;
+            font-size: 18px;
+        }
+        
+        /* 状态标签 */
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.warning { background: #fff3cd; color: #856404; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.info { background: #d1ecf1; color: #0c5460; }
+        
+        /* 表格样式 */
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin: 20px 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        th { 
+            background: #667eea; 
+            color: white; 
+            padding: 14px; 
+            text-align: left;
+            font-weight: 600;
+        }
+        td { 
+            padding: 12px 14px; 
+            border-bottom: 1px solid #e9ecef;
+        }
+        tr:hover { background: #f8f9fa; }
+        tr:last-child td { border-bottom: none; }
+        
+        /* 代码块 */
+        .code-block {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 15px 0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .code-block .comment { color: #5c6370; font-style: italic; }
+        .code-block .keyword { color: #c678dd; }
+        .code-block .string { color: #98c379; }
+        .code-block .function { color: #61afef; }
+        
+        /* 卡片 */
+        .card {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .card-title {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        /* 时间线 */
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+            margin: 20px 0;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+        }
+        .timeline-item {
+            position: relative;
+            padding: 15px 0 15px 25px;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -8px;
+            top: 20px;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background: #667eea;
+            border: 3px solid white;
+            box-shadow: 0 0 0 3px #667eea;
+        }
+        .timeline-time {
+            color: #6c757d;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .timeline-content {
+            margin-top: 5px;
+        }
+        
+        /* 高亮框 */
+        .highlight-box {
+            background: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 15px 20px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .highlight-box.success {
+            background: #d4edda;
+            border-color: #28a745;
+        }
+        .highlight-box.error {
+            background: #f8d7da;
+            border-color: #dc3545;
+        }
+        .highlight-box.info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+        }
+        
+        /* 列表样式 */
+        ul.checklist {
+            list-style: none;
+            padding-left: 0;
+        }
+        ul.checklist li {
+            padding: 8px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        ul.checklist li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #28a745;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        ul.checklist li.pending::before {
+            content: '○';
+            color: #ffc107;
+        }
+        ul.checklist li.failed::before {
+            content: '✗';
+            color: #dc3545;
+        }
+        
+        /* 统计卡片 */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+        .stat-number {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        /* 页脚 */
+        .footer {
+            background: #f8f9fa;
+            padding: 30px 40px;
+            text-align: center;
+            color: #6c757d;
+            font-size: 14px;
+            border-top: 1px solid #e9ecef;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Request-Logs 超时问题批判式审计与修复报告</h1>
+            <div class="meta">
+                执行时间：2026-11-25 | 任务ID：request-logs-timeout-fix | 状态：已完成
+            </div>
+        </div>
+        
+        <div class="content">
+            <!-- 执行摘要 -->
+            <div class="section">
+                <h2>📊 执行摘要</h2>
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-number">1</div>
+                        <div class="stat-label">代码修复</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">3</div>
+                        <div class="stat-label">环境部署</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">60s</div>
+                        <div class="stat-label">查询超时</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">31,374</div>
+                        <div class="stat-label">记录数</div>
+                    </div>
+                </div>
+                
+                <div class="highlight-box info">
+                    <strong>✅ 核心结论</strong><br>
+                    成功改进了超时错误提示，当查询超时时，系统现在会提供具体的操作建议。<br>
+                    修复已部署到生产环境211（版本fcc76f12），包含commit f69d2f11f。<br>
+                    <strong>⚠️ 注意</strong>：这是用户体验改进，不是性能优化，查询超时问题仍需后续解决。
+                </div>
+            </div>
+            
+            <!-- 问题分析 -->
+            <div class="section">
+                <h2>🔬 问题分析</h2>
+                
+                <h3>1. 生产环境真实错误</h3>
+                <div class="card">
+                    <div class="code-block">
+<span class="keyword">错误</span>: <span class="string">"timeout: context deadline exceeded"</span>
+<span class="keyword">超时</span>: 60秒
+<span class="keyword">数据量</span>: 31,374条记录
+<span class="keyword">查询特征</span>:
+  - 时间窗口: 24小时
+  - include_probe: true
+  - 过滤器数量: 2个
+  - SQL优化: 已关闭并行计划（set_config）
+                    </div>
+                </div>
+                
+                <h3>2. 根因分析</h3>
+                <table>
+                    <tr>
+                        <th style="width: 150px;">层面</th>
+                        <th>分析结果</th>
+                        <th style="width: 120px;">状态</th>
+                    </tr>
+                    <tr>
+                        <td><strong>超时设置</strong></td>
+                        <td>生产环境已经是60秒（不是30秒），我最初的假设错误</td>
+                        <td><span class="status info">已确认</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>并行计划</strong></td>
+                        <td>代码已正确实现 set_config 关闭并行（防止211 PG内存问题）</td>
+                        <td><span class="status success">已实施</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>查询复杂度</strong></td>
+                        <td>include_probe=true 使用 UNION ALL 查询，扫描数据量大</td>
+                        <td><span class="status warning">性能瓶颈</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>索引优化</strong></td>
+                        <td>需要分析查询计划和索引使用情况</td>
+                        <td><span class="status warning">待分析</span></td>
+                    </tr>
+                </table>
+                
+                <h3>3. 任务审计发现</h3>
+                <div class="highlight-box error">
+                    <strong>❌ 我之前的修复不完整</strong><br>
+                    - 我提交的 commit fd6cfc6f4 试图将超时从30秒改为60秒<br>
+                    - 但生产环境已经是60秒，这个修复是<strong>无效的</strong><br>
+                    - 我后来意识到错误，尝试回退，但操作失误<br>
+                    - 最终保留了该commit，因为它记录了merge冲突解决过程
+                </div>
+                
+                <div class="highlight-box success">
+                    <strong>✅ 正确的修复（commit f69d2f11f）</strong><br>
+                    - 改进超时错误处理，检测 context.DeadlineExceeded<br>
+                    - 返回友好的错误提示："query timeout after 60 seconds (31374 records found): try narrowing the time window (≤12 hours recommended when including probe traffic) or reducing filters"<br>
+                    - 添加注释记录生产实测情况和后续优化方向
+                </div>
+            </div>
+            
+            <!-- 修复详情 -->
+            <div class="section">
+                <h2>🔧 修复详情</h2>
+                
+                <h3>改动文件</h3>
+                <div class="card">
+                    <div class="card-title">admin/logs.go</div>
+                    <div class="code-block">
+<span class="comment">// Line 636-638: 添加注释记录生产实测</span>
+<span class="comment">// 2026-11-25: 生产环境实测：24小时窗口+include_probe+2过滤器查询31K条仍超时</span>
+<span class="comment">//             → 需要后续优化：索引分析、查询重构、或限制include_probe时的窗口</span>
+ctx, cancel := context.WithTimeout(r.Context(), <span class="keyword">60</span>*time.Second)
+
+<span class="comment">// Line 1170-1180: 改进超时错误处理</span>
+<span class="keyword">if</span> errors.Is(err, context.DeadlineExceeded) || 
+   strings.Contains(err.Error(), <span class="string">"context deadline exceeded"</span>) {
+    writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+        <span class="string">"query timeout after 60 seconds (%d records found): try narrowing "</span> +
+        <span class="string">"the time window (≤12 hours recommended when including probe traffic) "</span> +
+        <span class="string">"or reducing filters"</span>, count))
+} <span class="keyword">else</span> {
+    writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+        <span class="string">"request log list query interrupted before completion: received %d of "</span> +
+        <span class="string">"%d counted rows; storage-side error, retrying may help"</span>, 
+        len(items), count))
+}
+                    </div>
+                </div>
+                
+                <h3>关键行为改进</h3>
+                <table>
+                    <tr>
+                        <th style="width: 150px;">场景</th>
+                        <th>修复前</th>
+                        <th>修复后</th>
+                    </tr>
+                    <tr>
+                        <td><strong>超时错误</strong></td>
+                        <td>通用提示："服务器没能完成这个操作，请稍后重试（原因：query failed）"</td>
+                        <td>具体建议："query timeout after 60 seconds (31374 records found): try narrowing the time window (≤12 hours recommended when including probe traffic) or reducing filters"</td>
+                    </tr>
+                    <tr>
+                        <td><strong>其他错误</strong></td>
+                        <td>同样的通用提示</td>
+                        <td>保持原有详细提示："received X of Y counted rows; storage-side error, retrying may help"</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- 部署情况 -->
+            <div class="section">
+                <h2>🚀 部署情况</h2>
+                
+                <h3>部署时间线</h3>
+                <div class="timeline">
+                    <div class="timeline-item">
+                        <div class="timeline-time">2026-11-25 00:56</div>
+                        <div class="timeline-content">
+                            <strong>Commit fd6cfc6f4</strong>: 增加超时到60秒（后发现无效）
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-time">2026-11-25 01:35</div>
+                        <div class="timeline-content">
+                            <strong>Commit f69d2f11f</strong>: 改进超时错误提示（正确修复）
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-time">2026-11-25 01:50</div>
+                        <div class="timeline-content">
+                            代码推送到 origin/main
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-time">2026-11-25 03:00-04:15</div>
+                        <div class="timeline-content">
+                            <strong>批量部署执行</strong>: 211/245成功，154失败（迁移925校验和不匹配）
+                        </div>
+                    </div>
+                    <div class="timeline-item">
+                        <div class="timeline-time">2026-11-25 03:57</div>
+                        <div class="timeline-content">
+                            <strong>Commit 4ee06c902</strong>: 文档更新，记录154问题解决
+                        </div>
+                    </div>
+                </div>
+                
+                <h3>环境部署状态</h3>
+                <table>
+                    <tr>
+                        <th style="width: 100px;">环境</th>
+                        <th style="width: 150px;">版本</th>
+                        <th style="width: 120px;">Build Seq</th>
+                        <th>状态</th>
+                        <th style="width: 150px;">验证时间</th>
+                    </tr>
+                    <tr>
+                        <td><strong>211</strong></td>
+                        <td>fcc76f12</td>
+                        <td>3264</td>
+                        <td><span class="status success">✅ 运行中</span><br>包含修复 f69d2f11f<br>槽位: a @ 8781</td>
+                        <td>2026-11-25 03:30</td>
+                    </tr>
+                    <tr>
+                        <td><strong>245</strong></td>
+                        <td>fcc76f12</td>
+                        <td>3165</td>
+                        <td><span class="status success">✅ 部署成功</span><br>包含修复 f69d2f11f<br>端口: 8782</td>
+                        <td>2026-11-25 04:10</td>
+                    </tr>
+                    <tr>
+                        <td><strong>154</strong></td>
+                        <td>666016a4</td>
+                        <td>3165</td>
+                        <td><span class="status warning">⚠️ 经历波折</span><br>初次失败（迁移925）<br>后续解决并部署成功</td>
+                        <td>2026-11-25 03:57</td>
+                    </tr>
+                </table>
+                
+                <div class="highlight-box info">
+                    <strong>📌 验证方式</strong><br>
+                    211: 通过 SSH 211 直接验证 Docker 日志中的版本信息<br>
+                    245/154: 根据 git commit message 和最终验证报告确认<br>
+                    <code>docker logs llm-gateway-211-a 2>&1 | grep "version.*prod" | head -1</code>
+                </div>
+            </div>
+            
+            <!-- 测试验证 -->
+            <div class="section">
+                <h2>✓ 测试验证</h2>
+                
+                <h3>验证命令</h3>
+                <div class="card">
+                    <div class="code-block">
+<span class="comment"># 1. 检查211当前版本</span>
+ssh 211 <span class="string">"docker logs llm-gateway-211-a 2>&1 | grep 'version' | head -3"</span>
+
+<span class="comment"># 结果: version="2.6.2-fcc76f12-20261125-211" ✓</span>
+
+<span class="comment"># 2. 确认修复在历史中</span>
+git log --oneline | grep f69d2f11f
+
+<span class="comment"># 结果: f69d2f11f fix(logs): 改进request-logs超时错误提示 ✓</span>
+
+<span class="comment"># 3. 验证fcc76f12包含f69d2f11f</span>
+git log fcc76f12 | grep f69d2f11f
+
+<span class="comment"># 结果: f69d2f11f在fcc76f12的历史中 ✓</span>
+                    </div>
+                </div>
+                
+                <h3>功能验证</h3>
+                <ul class="checklist">
+                    <li>代码编译通过：所有Go包编译无错误</li>
+                    <li>imports完整：errors 和 strings 包已存在</li>
+                    <li>逻辑正确：超时检测 → 友好提示，非超时 → 保持原提示</li>
+                    <li>部署验证：211生产环境运行fcc76f12版本</li>
+                    <li>包含修复：f69d2f11f在fcc76f12的git历史中</li>
+                </ul>
+            </div>
+            
+            <!-- 遗留问题 -->
+            <div class="section">
+                <h2>⚠️ 遗留风险与后续优化</h2>
+                
+                <h3>高优先级（需立即关注）</h3>
+                <div class="card">
+                    <div class="card-title">🔴 查询性能问题未根本解决</div>
+                    <strong>现状</strong>：<br>
+                    • 60秒超时仍然不够（24小时窗口 + include_probe + 多过滤器）<br>
+                    • 当前修复只是改进了错误提示，不是性能优化<br>
+                    • 用户在复杂查询场景下仍会遇到超时<br><br>
+                    
+                    <strong>建议的后续优化</strong>：<br>
+                    1. <strong>索引分析</strong>：在生产环境执行 EXPLAIN ANALYZE，分析查询计划<br>
+                    2. <strong>查询重构</strong>：考虑分阶段查询或流式加载<br>
+                    3. <strong>限制复杂度</strong>：当 include_probe=true 时，限制时间窗口到12小时<br>
+                    4. <strong>缓存机制</strong>：对热门查询结果进行缓存<br>
+                    5. <strong>异步查询</strong>：超过阈值的查询改为后台异步处理<br><br>
+                    
+                    <strong>技术债记录位置</strong>：<br>
+                    <code>admin/logs.go Line 636-638</code> 注释中已记录
+                </div>
+                
+                <h3>中优先级</h3>
+                <table>
+                    <tr>
+                        <th style="width: 200px;">问题</th>
+                        <th>影响</th>
+                        <th style="width: 150px;">建议</th>
+                    </tr>
+                    <tr>
+                        <td>154迁移925校验和问题</td>
+                        <td>虽然报告显示已解决，但需要确认根因和预防措施</td>
+                        <td>DBA复查数据库状态</td>
+                    </tr>
+                    <tr>
+                        <td>并发查询限制</td>
+                        <td>大量并发复杂查询可能导致数据库压力</td>
+                        <td>添加查询队列或限流</td>
+                    </tr>
+                    <tr>
+                        <td>错误提示i18n</td>
+                        <td>当前错误提示是英文，可能影响中文用户体验</td>
+                        <td>添加中英文双语提示</td>
+                    </tr>
+                </table>
+                
+                <h3>低优先级</h3>
+                <ul class="checklist">
+                    <li class="pending">统一所有API端点的错误提示格式</li>
+                    <li class="pending">添加查询复杂度评分机制</li>
+                    <li class="pending">实施查询自动降级策略</li>
+                    <li class="pending">增强前端查询条件校验</li>
+                </ul>
+            </div>
+            
+            <!-- 经验总结 -->
+            <div class="section">
+                <h2>💡 经验总结</h2>
+                
+                <div class="card">
+                    <div class="card-title">✅ 做得好的地方</div>
+                    1. <strong>SSH连接问题快速诊断</strong>：发现应该用 root 用户和别名 "211" 连接<br>
+                    2. <strong>生产日志深入分析</strong>：通过实际日志确认了真实错误和超时时间<br>
+                    3. <strong>及时纠错</strong>：发现fd6cfc6f4无效后，及时提交正确修复f69d2f11f<br>
+                    4. <strong>用户体验优先</strong>：在无法立即优化性能的情况下，先改进错误提示<br>
+                    5. <strong>完整文档记录</strong>：在代码注释中记录问题和后续优化方向
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">❌ 需要改进的地方</div>
+                    1. <strong>初始假设验证不足</strong>：应该先检查生产环境再做假设<br>
+                    2. <strong>Git操作失误</strong>：使用 git reset --hard 造成了混乱，应该更谨慎<br>
+                    3. <strong>修复范围界定</strong>：一开始应该明确是"用户体验改进"还是"性能优化"<br>
+                    4. <strong>验证完整性</strong>：154和245的验证主要依赖文档，缺少直接确认
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">🎯 关键教训</div>
+                    <strong>1. 生产环境调试的正确流程</strong><br>
+                    &nbsp;&nbsp;&nbsp;观察（日志分析）→ 假设（根因推断）→ 验证（实际测试）→ 修复 → 部署 → 验证<br><br>
+                    
+                    <strong>2. 临时改进 vs 根本修复</strong><br>
+                    &nbsp;&nbsp;&nbsp;当无法立即实施根本修复时，可以先做临时改进，但必须：<br>
+                    &nbsp;&nbsp;&nbsp;• 明确告知这是临时方案<br>
+                    &nbsp;&nbsp;&nbsp;• 记录根本问题和后续优化方向<br>
+                    &nbsp;&nbsp;&nbsp;• 设置优先级和时间表<br><br>
+                    
+                    <strong>3. 多环境部署的复杂性</strong><br>
+                    &nbsp;&nbsp;&nbsp;• 不同环境可能有不同的配置和依赖（如154的迁移925问题）<br>
+                    &nbsp;&nbsp;&nbsp;• 需要跳板机的环境要特别注意网络拓扑<br>
+                    &nbsp;&nbsp;&nbsp;• 蓝绿部署需要额外的验证步骤
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p><strong>报告生成时间</strong>：2026-11-25 05:30</p>
+            <p><strong>执行者</strong>：ZCode AI Assistant</p>
+            <p><strong>相关文档</strong>：<br>
+            • AGENTS.md L90-L97<br>
+            • docs/audit/2026-11-25-最终验证报告.md<br>
+            • docs/audit/2026-11-25-部署handoff.md<br>
+            • docs/audit/2026-11-25-批判式审计与部署总结.html</p>
+            <p style="margin-top: 15px; color: #999; font-size: 12px;">
+                本报告基于批判式审计原则生成，坚持事实与证据，明确区分推断与确认
+            </p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,5 +1,13 @@
 # request-logs 查询超时优化总结
 
+> ⚠️ **订正头（2026-11-25 L113 审计轮追加；以下正文为当时原文、一字未改，其中的「自动窗口限制」部分已被撤销，阅读时以本订正头为准）**
+>
+> 1. **「自动窗口限制」（§2.1② 及全文相关表述）已被撤销**：截窗以「未来时刻 end」为锚推 start，日历型预设的窗口会整个落在未来 ⇒ 「切时间范围后必然 0 行」。撤销见 `71af786f6`（"撤销自动截窗、恢复历史探测车道"）；本车道后续实现 `36c278858` 亦由 `ddc6aed19` 撤回。现役 `admin/logs.go` 只保留动态超时（业务 60s / 探测 120s），无任何截窗逻辑。
+> 2. **「根本原因」一节（§1.1）定位不完整且部分失实**：超时的真根因是 `session_turns_*` 等月分区**统计信息陈旧 45h** ⇒ 冷分区基数估 3 行（实际 4,850）⇒ details 腿被规划成 Nested Loop ＋ Join Filter（单语句约 1 亿次比较，26–38s）。时间索引确实无恙（§1.2 正确），但「查询复杂度和数据量」不是根因。
+> 3. **真修法（已上线并在 211 前后对拍）**：details 腿 `LEFT JOIN LATERAL … LIMIT 1` 按键点查（`c0dad181d`）＋ PartitionManager 月分区 autovacuum analyze 设置巡检（`44df1219b`）＋ 分页各臂 top-K 归并（`71af786f6`）＋ 前端序号守卫/加载态/窗口对齐（`e028f07c5`／`c81e0a3b3`）＋ `Success` 可空（`3633cbed9`）。线上对拍：昨天·含探测 115.6s→1.0s；近 30 天页查询 ~150ms。
+> 4. **§四「测试验证清单」中「应自动限制到12小时」一条已失效**；权威验证量具为 `maestro/run-request-logs-time-ranges.sh` ＋ `maestro/flows/19-request-logs-time-ranges.yaml`。
+> 5. 第一轮尝试的原始报告与未跑通的 Maestro 产物已证据化归置于 `docs/audit/evidence/2026-11-25-request-logs-withdrawn-attempt/`（含逐条订正表）。
+
 **日期**: 2026-11-25  
 **问题**: request-logs 页面在选择特定日期查询时超时，错误信息："query timeout after 60 seconds (29545 records found)"
 

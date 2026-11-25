@@ -1,0 +1,102 @@
+# Maestro测试：request-logs查询超时优化验证
+# 测试目标：验证探测流量查询的超时处理和窗口限制
+appId: com.example.llmgateway
+
+---
+# 测试1：业务流量24小时窗口查询（应该成功）
+- launchApp
+- tapOn: "登录"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录按钮"
+- assertVisible: "Dashboard"
+
+# 导航到request-logs页面
+- tapOn: "日志"
+- tapOn: "请求日志"
+- assertVisible: "请求日志"
+
+# 设置24小时窗口，业务流量
+- tapOn: "时间范围"
+- tapOn: "最近24小时"
+- tapOn: "确定"
+
+# 确保探测流量未选中
+- assertVisible: "包含探测流量"
+- assertNotChecked: "包含探测流量"
+
+# 执行查询
+- tapOn: "查询"
+- waitForAnimationToEnd
+- assertVisible: "查询结果"
+
+---
+# 测试2：探测流量6小时窗口查询（应该成功）
+- tapOn: "时间范围"
+- tapOn: "最近6小时"
+- tapOn: "确定"
+
+# 启用探测流量
+- tapOn: "包含探测流量"
+- assertChecked: "包含探测流量"
+
+# 执行查询
+- tapOn: "查询"
+- waitForAnimationToEnd
+- assertVisible: "查询结果"
+
+---
+# 测试3：探测流量24小时窗口查询（应该自动限制到12小时）
+- tapOn: "时间范围"
+- tapOn: "最近24小时"
+- tapOn: "确定"
+
+# 探测流量应该还是选中状态
+- assertChecked: "包含探测流量"
+
+# 执行查询
+- tapOn: "查询"
+- waitForAnimationToEnd
+
+# 验证窗口限制提示
+- assertVisible: "查询窗口已自动限制至12小时"
+- assertVisible: "查询结果"
+
+---
+# 测试4：探测流量24小时 + override参数（使用完整窗口）
+- tapOn: "高级选项"
+- tapOn: "覆盖窗口限制"
+- assertChecked: "覆盖窗口限制"
+
+# 执行查询（这个可能需要较长时间）
+- tapOn: "查询"
+- waitForAnimationToEnd:
+    timeout: 150000  # 等待最多150秒
+
+# 应该能看到结果或超时错误
+- assertVisible: 
+    - "查询结果"
+    - "查询超时"
+
+---
+# 测试5：验证错误消息（强制超时场景）
+- tapOn: "时间范围"
+- tapOn: "自定义"
+- inputText: "${LARGE_DATE_RANGE}"  # 设置一个非常大的范围
+- tapOn: "确定"
+
+# 添加复杂过滤器
+- tapOn: "全文搜索"
+- inputText: "test"
+
+# 执行查询
+- tapOn: "查询"
+- waitForAnimationToEnd:
+    timeout: 130000
+
+# 验证错误消息包含操作建议
+- assertVisible:
+    - "查询超时"
+    - "建议"
+    - "缩小时间窗口"
