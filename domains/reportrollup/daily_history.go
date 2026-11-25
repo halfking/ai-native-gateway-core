@@ -74,7 +74,7 @@ func RebuildDailyHistory(ctx context.Context, tx *sql.Tx, day string) error {
 
 func eligibleDailyHistory(filter GrainFilter, coverage ProjectionCoverage, scope ProjectedSummaryScope) bool {
 	if !filter.empty() || coverage.Timezone != dailyHistoryZone || !coverage.Through.After(coverage.From) ||
-		(scope != ProjectedSummaryTotals && scope != ProjectedSummaryDistribution) {
+		(scope != ProjectedSummaryTotals && !scope.includesDistribution()) {
 		return false
 	}
 	loc, err := time.LoadLocation(dailyHistoryZone)
@@ -191,7 +191,7 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 	if contiguousGap {
 		args = append(args, firstMissing.Time, lastMissing.Time.AddDate(0, 0, 1))
 	}
-	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, scope == ProjectedSummaryDistribution, projectedProviderDistribution(view)), args...)
+	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, scope.includesDistribution(), projectedProviderDistribution(view)), args...)
 	if err != nil {
 		return true, fmt.Errorf("read daily request history: %w", err)
 	}

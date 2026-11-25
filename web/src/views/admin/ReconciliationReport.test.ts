@@ -8,7 +8,7 @@ import ReconciliationReport from './ReconciliationReport.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import { snapshotDatePresets, snapshotNotAfter } from '../../components/reconciliation/snapshotRange'
 import { systemTzDateStr } from '../../components/ui/kxDatePresets'
-import type { DimensionOptions, RangeReport } from '../../api/reportrollup'
+import { downloadReportExport, type DimensionOptions, type RangeReport, type ReportQuery } from '../../api/reportrollup'
 import { readDailyReconciliationDefault, readDailyReport, type DailyQuery } from '../../api/requestReconciliation'
 import { isSuperAdmin } from '../../store'
 
@@ -241,6 +241,36 @@ describe('ReconciliationReport', () => {
     expect(getReportSummaryMock).toHaveBeenCalledWith(expect.objectContaining({ view: 'internal' }))
     expect(wrapper.text()).toContain('tenant-x')
     expect(wrapper.get('[data-testid="person-dist"]').text()).toContain('alice')
+  })
+
+  it('pages people and resets the ranking when drilling down', async () => {
+    routeState.query = { view: 'internal' }
+    getReportSummaryMock.mockImplementation(async ({ person_page }: ReportQuery) => {
+      const report = internalReport()
+      const number = person_page ?? 1
+      report.person_page = { number, page_size: 50, total: 54 }
+      if (number === 2) report.persons![0].person = 'bob'
+      return report
+    })
+    const wrapper = await mountView()
+    expect(getReportSummaryMock).toHaveBeenLastCalledWith(expect.objectContaining({ person_page: 1 }))
+    await wrapper.get('.person-pages .btn-next').trigger('click')
+    await flushPromises()
+    expect(getReportSummaryMock).toHaveBeenLastCalledWith(expect.objectContaining({ person_page: 2 }))
+    const people = wrapper.get('[data-testid="person-dist"]')
+    expect(people.text()).toContain('bob')
+    expect(people.text()).not.toContain('alice')
+
+    wrapper.getComponent({ name: 'ReconciliationToolbar' }).vm.$emit('export')
+    expect(downloadReportExport).toHaveBeenCalledWith(expect.objectContaining({ view: 'internal', group: 'tenant' }))
+    expect(vi.mocked(downloadReportExport).mock.calls.at(-1)?.[0].person_page).toBeUndefined()
+
+    await people.get('tr.el-table__row').trigger('click')
+    await flushPromises()
+    expect(getReportSummaryMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      person_page: 1, tenant_id: 'tenant-x', person: 'bob',
+    }))
+    wrapper.unmount()
   })
 
   it('reorders the provider table when the metric switches from tokens to credits', async () => {

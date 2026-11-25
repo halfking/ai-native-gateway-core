@@ -118,7 +118,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     t('reports.requests'), t('reports.success'), t('reports.errors'), t('reports.errorRate'), t('reports.totalTokens'), moneyHeader.value,
   ])
 
-  async function refresh() {
+  async function refresh(personPage = 1) {
     if (!active.value) return
     const gen = reportRace.begin()
     loading.value = true
@@ -130,6 +130,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
         view: view.value,
         detail: false,
         summary_scope: 'distribution',
+        ...(view.value === 'internal' && { person_page: personPage }),
         ...cleanFilters(filters.value),
       })
       if (reportRace.stale(gen)) return
@@ -141,6 +142,10 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     } finally {
       if (reportRace.current(gen)) loading.value = false
     }
+  }
+
+  function setPersonPage(page: number) {
+    if (view.value === 'internal' && page !== report.value?.person_page?.number) void refresh(page)
   }
 
   async function refreshDimensions() {
@@ -314,6 +319,6 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
     reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
     personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-    applyRange, exportXlsx, reload, clearReason, setView, setMetric,
+    applyRange, exportXlsx, reload, clearReason, setView, setMetric, setPersonPage,
   }
 }

@@ -59,11 +59,21 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	daily := reportDailyDetail(r)
-	scope := reportrollup.ProjectedSummaryScope(r.URL.Query().Get("summary_scope"))
+	params := r.URL.Query()
+	scope := reportrollup.ProjectedSummaryScope(params.Get("summary_scope"))
 	if scope != "" && (section != "summary" || daily ||
 		(scope != reportrollup.ProjectedSummaryTotals && scope != reportrollup.ProjectedSummaryDistribution)) {
 		writeError(w, http.StatusBadRequest, "summary_scope must be totals or distribution on a summary without daily detail")
 		return
+	}
+	var personPage int32
+	if params.Has("person_page") {
+		page, err := strconv.ParseInt(params.Get("person_page"), 10, 32)
+		if err != nil || page < 1 || view != reportrollup.ViewInternal || scope != reportrollup.ProjectedSummaryDistribution {
+			writeError(w, http.StatusBadRequest, "person_page must be a positive integer on an internal distribution summary")
+			return
+		}
+		personPage = int32(page)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
@@ -97,9 +107,12 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 	}
 	err = h.readProjectedReport(ctx, start, end, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
 		var err error
-		if scope == "" {
+		switch {
+		case personPage > 0:
+			rep, err = reportrollup.BuildProjectedPersonPage(ctx, q, start, end, filter, p, personPage)
+		case scope == "":
 			rep, err = reportrollup.BuildProjectedReport(ctx, q, start, end, view, filter, names, daily, p)
-		} else {
+		default:
 			rep, err = reportrollup.BuildProjectedSummary(ctx, q, start, end, view, filter, names, p, scope)
 		}
 		return err

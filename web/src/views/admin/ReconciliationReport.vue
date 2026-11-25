@@ -2,7 +2,7 @@
 // ReconciliationReport.vue — provider/internal reconciliation layout.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElAlert, ElButton, ElCollapse, ElCollapseItem } from 'element-plus'
+import { ElAlert, ElButton, ElCollapse, ElCollapseItem, ElPagination } from 'element-plus'
 import DistributionTable from '../../components/analytics/DistributionTable.vue'
 import FailureReasons from '../../components/reconciliation/FailureReasons.vue'
 import ReconciliationCharts from '../../components/reconciliation/ReconciliationCharts.vue'
@@ -28,7 +28,7 @@ const {
   report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
   reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
   personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-  applyRange, exportXlsx, reload, clearReason, setView, setMetric,
+  applyRange, exportXlsx, reload, clearReason, setView, setMetric, setPersonPage,
 } = useReconciliationPage(showSnapshots)
 
 watch(() => snapshotQueryKeys.map(key => route.query[key]), () => {
@@ -169,6 +169,18 @@ onBeforeUnmount(() => {
             :headers="personHeaders"
             @row="onPersonRow"
           />
+          <el-pagination
+            v-if="report.person_page && report.person_page.total > report.person_page.page_size"
+            class="person-pages"
+            :aria-label="t('reports.byPerson')"
+            :current-page="report.person_page.number"
+            :page-size="report.person_page.page_size"
+            :total="report.person_page.total"
+            :disabled="loading"
+            :pager-count="5"
+            layout="total, prev, pager, next"
+            @update:current-page="setPersonPage"
+          />
         </div>
       </div>
 
@@ -198,6 +210,7 @@ onBeforeUnmount(() => {
 .section-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 8px 0; }
 .section-head h2, .panel h3 { margin: 0 0 8px; font-size: 16px; }
 .hint { color: var(--text-muted, var(--el-text-color-secondary)); font-size: 12px; }
+.person-pages { flex-wrap: wrap; margin-top: var(--space-2); }
 .spacer { flex: 1; }
 .chips { display: flex; gap: 4px; }
 .chip {

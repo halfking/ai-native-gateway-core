@@ -75,7 +75,12 @@ type ProjectedSummaryScope string
 const (
 	ProjectedSummaryTotals       ProjectedSummaryScope = "totals"
 	ProjectedSummaryDistribution ProjectedSummaryScope = "distribution"
+	projectedSummaryPersonPage   ProjectedSummaryScope = "person_page"
 )
+
+func (scope ProjectedSummaryScope) includesDistribution() bool {
+	return scope == ProjectedSummaryDistribution || scope == projectedSummaryPersonPage
+}
 
 // BuildProjectedSummary computes only totals or the distributions shown by the
 // requested view. Both scopes include exact daily totals and coverage.
@@ -152,7 +157,18 @@ func projectedProviderDistribution(view View) bool {
 	return view == ViewProvider || view == ViewCredential
 }
 
-var projectedTenantPersonGroups = []string{"(tenant_id)", "(tenant_id, person)"}
+const (
+	projectedTenantGroup = "(tenant_id)"
+	projectedPersonGroup = "(tenant_id, person)"
+)
+
+func projectedInternalGroups(scope ProjectedSummaryScope) []string {
+	groups := []string{projectedTenantGroup}
+	if scope == ProjectedSummaryDistribution {
+		groups = append(groups, projectedPersonGroup)
+	}
+	return groups
+}
 
 func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []string {
 	if scope == "" {
@@ -163,12 +179,12 @@ func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []
 		return groups
 	}
 	groups := []string{"()", "(report_date)"}
-	if scope == ProjectedSummaryDistribution {
+	if scope.includesDistribution() {
 		groups = append(groups, "(raw_model_name)")
 		if projectedProviderDistribution(view) {
 			groups = append(groups, "(provider_id)")
 		} else {
-			groups = append(groups, projectedTenantPersonGroups...)
+			groups = append(groups, projectedInternalGroups(scope)...)
 		}
 	}
 	return groups
@@ -200,12 +216,7 @@ func projectedGrainKeys(sets string, owners bool) (flags, measureKeys, errorKeys
 	return flags, measureKeys, errorKeys
 }
 
-func projectedGrainSQL(where string, groups []string, fullReport bool) string {
-	// The displayed credential and key rows each have one ID, independent of
-	// source attribution. Aggregate their samples together before computing ranks.
-	sets := strings.Join(groups, ", ")
-	flags, measureKeys, errorKeys := projectedGrainKeys(sets, fullReport)
-	errorSets := strings.Join(grainErrorGroups(groups), ", ")
+func projectedFactsSQL(where string, fullReport bool) string {
 	materialization := "MATERIALIZED"
 	if !fullReport {
 		// The smaller grouping sets leave fewer columns live. Inline each scan
@@ -218,15 +229,37 @@ func projectedGrainSQL(where string, groups []string, fullReport bool) string {
 			prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
 			total_tokens, credits_charged, latency_ms, cost_amount, cost_currency
 		FROM public.request_metrics_projection WHERE ` + projectedDateWhere + ` AND (NOT $4::boolean OR traffic_class='business')
-	), facts AS ` + materialization + ` (SELECT * FROM bounded WHERE true` + where + `),
-	measures AS (
+	), facts AS ` + materialization + ` (SELECT * FROM bounded WHERE true` + where + `)`
+}
+
+func projectedGrainSQL(where string, groups []string, fullReport bool) string {
+	// The displayed credential and key rows each have one ID, independent of
+	// source attribution. Aggregate their samples together before computing ranks.
+	sets := strings.Join(groups, ", ")
+	flags, measureKeys, errorKeys := projectedGrainKeys(sets, fullReport)
+	errorSets := strings.Join(grainErrorGroups(groups), ", ")
+	measures := `, measures AS (
 		SELECT ` + flags + measureKeys + projectedAdditiveMeasures + `,
 			percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)
 				FILTER (WHERE ` + projectedLatencySample + `) AS latency_ranks,
 			count(*) FILTER (WHERE ` + projectedLatencySample + `) AS latency_coverage
 		FROM facts GROUP BY GROUPING SETS (` + sets + `)
-	)
-	SELECT ` + projectedGrainColumns + `, NULL::text,
+	)`
+	if len(groups) == 1 && groups[0] == projectedTenantGroup {
+		// The low-cardinality tenant totals can use a hash aggregate. Let the
+		// ordered-set aggregate sort only tenant IDs and measured latencies.
+		measures = `, additive AS (
+			SELECT ` + flags + measureKeys + projectedAdditiveMeasures + ` FROM facts GROUP BY tenant_id
+		), ranks AS (
+			SELECT tenant_id, percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms) AS latency_ranks,
+				count(*) AS latency_coverage
+			FROM facts WHERE ` + projectedLatencySample + ` GROUP BY tenant_id
+		), measures AS (
+			SELECT additive.*, ranks.latency_ranks, coalesce(ranks.latency_coverage,0) AS latency_coverage
+			FROM additive LEFT JOIN ranks USING (tenant_id)
+		)`
+	}
+	return projectedFactsSQL(where, fullReport) + measures + ` SELECT ` + projectedGrainColumns + `, NULL::text,
 		requests, successes, input_tokens, output_tokens, cache_read, cache_write, usd_cents, 'USD',
 		credits, 0::float8, coalesce(latency_ranks[1],0), coalesce(latency_ranks[2],0),
 		(latency_coverage>0)::int::float8, 0::bigint,
@@ -251,12 +284,16 @@ func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFi
 			}
 			// Published history covers totals and models. Query tenant and
 			// person groups in the same snapshot without repeating those ranks.
-			groups = projectedTenantPersonGroups
+			groups = projectedInternalGroups(scope)
 		}
 	}
 	args := []any{coverage.From, coverage.Through, coverage.Timezone, projectedBusinessOnly(view, filter)}
 	where, args := projectedGrainWhere(filter, args)
-	rows, err := q.Query(ctx, projectedGrainSQL(where, groups, scope == ""), args...)
+	return readProjectedGroups(ctx, q, projectedGrainSQL(where, groups, scope == ""), args, sink)
+}
+
+func readProjectedGroups(ctx context.Context, q Querier, query string, args []any, sink func(groupKind, grainScanRow)) error {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("aggregate request metrics report: %w", err)
 	}

@@ -141,6 +141,7 @@ type GrainReport struct {
 	ModelTotals []ModelRow  `json:"model_totals,omitempty"`
 	Tenants     []TenantRow `json:"tenants,omitempty"`
 	Persons     []PersonRow `json:"persons,omitempty"`
+	PersonPage  *PersonPage `json:"person_page,omitempty"`
 
 	// Daily* 明细模式（daily=true）额外返回的按天 × 维度行，供「看到详细
 	// 的每天的数据」与明细导出使用；汇总模式下为 nil。
@@ -1086,14 +1087,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	personKeys := sortedKeysStr(persons)
 	for _, key := range personKeys {
 		tenant, person := splitKey(key)
-		tot := persons[key].finalize()
-		rep.Persons = append(rep.Persons, PersonRow{
-			TenantID:       tenant,
-			Person:         person,
-			Totals:         tot,
-			ErrorBreakdown: persons[key].breakdown(),
-			QualityScore:   ProviderQualityScore(tot),
-		})
+		rep.Persons = append(rep.Persons, persons[key].personRow(tenant, person))
 	}
 	sort.Slice(rep.Persons, func(i, j int) bool {
 		return rep.Persons[i].Totals.RequestCount > rep.Persons[j].Totals.RequestCount
@@ -1133,6 +1127,12 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		rep.Source = "grain"
 	}
 	return rep, nil
+}
+
+func (a *grainAccumulator) personRow(tenant, person string) PersonRow {
+	totals := a.finalize()
+	return PersonRow{TenantID: tenant, Person: person, Totals: totals,
+		ErrorBreakdown: a.breakdown(), QualityScore: ProviderQualityScore(totals)}
 }
 
 // legacySink 旧口径回落行的落点：只有总计与按天有值，维度分组不接受

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1542,6 +1543,87 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 		drain(processor.RefreshDailySummary)
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", reportrollup.GrainFilter{})
+	})
+
+	t.Run("person_pages_match_full_internal_distributions", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+ request_id,tenant_id,person_key,occurred_at,occurred_date,billing_date,raw_model_name,
+ status,traffic_class,total_tokens,credits_charged,cost_amount,cost_currency,latency_ms,source,source_fact_id)
+SELECT 'person-page-'||n,
+ CASE WHEN n=62 THEN 'page-c' WHEN n IN (59,60,61) OR n%2=0 THEN 'page-a' ELSE 'page-b' END,
+ CASE n WHEN 59 THEN NULL WHEN 60 THEN '' WHEN 61 THEN 'probe-only' WHEN 101 THEN 'person-01'
+      ELSE 'person-'||lpad((n%29)::text,2,'0') END,
+ '2026-11-05 01:00+08','2026-11-05','2026-11-05','page-model',
+ CASE WHEN n=62 OR n%7=0 THEN 'timeout' ELSE 'success' END,
+ CASE WHEN n=61 THEN 'probe' ELSE 'business' END,
+ n*3,n,n*0.0003123,'USD',n*40,'async_processor',27000+n
+FROM (SELECT n FROM generate_series(1,62) n UNION ALL SELECT 101) fixture;`)
+		for _, refresh := range []func(context.Context) (bool, error){processor.RefreshDailySummary, processor.RefreshDailyHistory} {
+			for {
+				built, err := refresh(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !built {
+					break
+				}
+			}
+		}
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Date(2026, 11, 5, 0, 0, 0, 0, loc)
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, start, start.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			filter    reportrollup.GrainFilter
+			requested int32
+			page      int32
+			people    int64
+		}{
+			{requested: 1, page: 1, people: 60},
+			{requested: 2, page: 2, people: 60},
+			{requested: 99, page: 2, people: 60},
+			{filter: reportrollup.GrainFilter{TenantID: "page-a"}, requested: 1, page: 1, people: 30},
+			{filter: reportrollup.GrainFilter{Person: "unknown"}, requested: 1, page: 1, people: 1},
+			{filter: reportrollup.GrainFilter{Person: "probe-only"}, requested: 2, page: 1, people: 0},
+		} {
+			want, err := reportrollup.BuildProjectedSummary(ctx, tx, start, start, reportrollup.ViewInternal, tc.filter,
+				reportrollup.Names{}, coverage, reportrollup.ProjectedSummaryDistribution)
+			if err != nil || int64(len(want.Persons)) != tc.people {
+				t.Fatalf("full internal distribution for %+v: %v", tc, err)
+			}
+			sort.Slice(want.Persons, func(i, j int) bool {
+				a, b := want.Persons[i], want.Persons[j]
+				if a.Totals.RequestCount != b.Totals.RequestCount {
+					return a.Totals.RequestCount > b.Totals.RequestCount
+				}
+				if a.TenantID != b.TenantID {
+					return a.TenantID < b.TenantID
+				}
+				return a.Person < b.Person
+			})
+			want.PersonPage = &reportrollup.PersonPage{Number: tc.page, Size: 50, Total: tc.people}
+			offset := int(tc.page-1) * want.PersonPage.Size
+			want.Persons = want.Persons[offset:min(offset+want.PersonPage.Size, len(want.Persons))]
+			probe := &historyQueryProbe{Querier: tx}
+			got, err := reportrollup.BuildProjectedPersonPage(ctx, probe, start, start, tc.filter, coverage, tc.requested)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("person page for %+v does not equal exact full slice: %v", tc, err)
+			}
+			if tc.filter.TenantID == "" && tc.filter.Person == "" && probe.mode != "published" {
+				t.Fatalf("unfiltered person page should use published day, got %q", probe.mode)
+			}
+		}
 	})
 
 	t.Run("history_percentiles_follow_the_displayed_group", func(t *testing.T) {
