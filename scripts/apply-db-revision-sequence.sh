@@ -274,18 +274,45 @@ sha256_file() {
   fi
 }
 
-# Extract version number from migration filename (e.g., "392" from "392_name.sql",
-# "983" from "983b_name.sql"). Returns empty string if no numeric prefix found.
-# This matches the installer's migrationVersionOf logic in runner.go.
+# ── 迁移版本键提取（★ 与安装器 `dbinit.migrationVersionOf` **严格同口径** ★）──
+# ★★ 口径来源（★ installer/internal/dbinit/runner.go:2787 ★★）：
+#     idx := strings.Index(base, "_"); v, err := strconv.Atoi(base[:idx])
+#     ⇒ ★ **纯数字前缀才成立**；★ 字母后缀件（"983b_"、"361b_"、"999a_"）⇒
+#       Atoi 失败 ⇒ **无版本键** ⇒ ★★ **不折叠回主号** ★★
+# ★★ **为什么「不折叠」是硬要求（★ 仓内既有实测结论 ★★）★★：
+#     installer/internal/dbinit/migration_version_identity_test.go 与
+#     installer/internal/upgrader/migration_order_suffix_test.go 都明写：
+#     「台账跳过口径**必须不折叠** ⇒ 折叠后 983b 会去查台账 '983' ⇒ 而 '983'
+#       行是 request_metrics 建表件写的 ⇒ 983b 被**假跳过** ⇒ 补列件永不落地」
+#     ⇒ ★★ 本函数**曾经**写成 `^([0-9]+)[a-z]?_`（折叠）⇒ ★ 与安装器口径相反
+#       ⇒ 本轮已订正（★ 见 AGENTS.md L121 轮块 ★）
+# ★★ 前导零按 Atoi 归一（"00001_x.sql" ⇒ "1"）★★：安装器用 %d 写台账 ⇒
+#     台账里存的是归一后的十进制 ⇒ 推断查询必须用同一形态才查得到。
 extract_migration_version() {
-  local filename="$1"
-  # Match: start of string, 1+ digits, optional letter suffix, underscore
-  # Handles: 392_, 983b_, 361b_, etc.
-  if [[ "$filename" =~ ^([0-9]+)[a-z]?_ ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-  else
-    printf ''
-  fi
+  local filename="$1" prefix
+  prefix="${filename%%_*}"
+  # ★ 纯数字前缀才成立（Atoi 可解析）⇒ 字母后缀件返回空串（★ 不折叠 ★）
+  [[ "$prefix" =~ ^[0-9]+$ ]] || { printf ''; return 0; }
+  # ★ 归一（去前导零）★："00001" ⇒ "1"（★ 与安装器写台账的形态一致 ★）
+  printf '%s' "$((10#$prefix))"
+}
+
+# ── 版本键冲突计数（★ 推断「安装器台账已应用」的**唯一性前提** ★）──────────
+# ★ 为什么要这道闸：★ schema_migrations.version 是 **text**、**一行只能属于一个
+#   version** ⇒ ★ 若投递面里有两个文件共用同一个版本键 ⇒ 台账那一行**无法证明**
+#   是哪一个文件写的 ⇒ ★★ 用它推断「本文件已被应用」＝**假跳过** ⇒ 产物永不落地 ★★
+# ★ 用法：migration_version_conflict_count "<version>" <basename...>
+#   ⇒ 打印同键文件数（★ 1 ⇒ 键在本投递面内唯一 ⇒ 推断成立 ★；★ ≥2 ⇒ 拒绝推断 ★）
+# ★ 实测（★ 2026-11-26 L121 轮 ★）：★ 投递面 369 条内部 = 0 组冲突；
+#   ★ 投递面 ∪ 安装器清单（407 条）= 0 组冲突 ⇒ ★ 当前唯一性成立 ★★
+#   ⇒ 但这是**实测读数、不是恒真** ⇒ ⇒ 运行时必须每次现查、★ 不能写死 ★
+migration_version_conflict_count() {
+  local version="$1" base count=0
+  shift
+  for base in "$@"; do
+    [[ "$(extract_migration_version "$base")" == "$version" ]] && count=$((count + 1))
+  done
+  printf '%s' "$count"
 }
 
 # Fixed order: 655 restores the canonical session_summaries columns; 560
@@ -3346,6 +3373,15 @@ declare -a sha_matched_markers=()
 # 本轮识别为「安装器已应用」而跳过的文件（★ 方案 A：部署通道账本统一）
 declare -a installer_applied_markers=()
 
+# ★ 投递面 basename 清单（★ 版本键唯一性闸门的输入 ★）
+# ★ 为什么需要它：★ schema_migrations.version 一行只能属于一个 version ⇒
+#   ⇒ 只有当某个版本键在**投递面内唯一**时，那一行才能证明「是本文件写的」
+#   ⇒ ⇒ 唯一性必须**每次现查**（★ 实测读数不是恒真 ★）★
+declare -a surface_bases=()
+for f in "${files[@]}"; do
+  [[ -n "$f" ]] && surface_bases+=("${f##*/}")
+done
+
 # A fresh installer seals these receipts only after all of its SQL succeeds.
 # The version ledger cannot establish file identity or prove execution.
 installer_receipts=""
@@ -3449,21 +3485,38 @@ for file in "${files[@]}"; do
   # 若版本已在安装器台账 ⇒ 跳过（该迁移已被安装器应用）+ 回填部署通道台账，
   # 防止下次部署重复查询。这使得「安装器新装 → 部署通道升级」路径不再重放
   # 已应用的迁移，解决 252 上 392 漂移风险 + 账本语义统一。
+  # ★★ 2026-11-26 L121 轮订正（★ 见 AGENTS.md L121 轮块 ★）★★：
+  #   ★ ① 版本键口径与安装器**严格同口径**（★ 字母后缀件**无版本键**、★ 不折叠 ★）
+  #   ★ ② **唯一性闸门**：★ 版本键在投递面内被多个文件共用 ⇒ **拒绝推断**
+  #     （★ schema_migrations.version 一行只能属于一个 version ⇒ 那一行无法
+  #       证明是哪个文件写的 ⇒ 用它推断＝**假跳过** ⇒ 产物永不落地 ★）
+  #   ★ ③ **不写权威账**：★ 版本台账**证不出文件身份、也证不出执行事实**
+  #     （★ 本文件上方 installer receipt 段落的原话 ★）⇒ ⇒ 推断出来的跳过
+  #       **不写进 gateway_db_revision_sequences** ⇒ ★ 权威账里只有真跑过的行 ★
   version="$(extract_migration_version "$base")"
   installer_applied=""
   if [[ -n "$version" ]]; then
-    # 查询时处理表不存在的情况（全新库 / 仅部署通道管理的库）
-    installer_applied="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='${version}' LIMIT 1" 2>/dev/null || true)"
+    version_conflicts="$(migration_version_conflict_count "$version" "${surface_bases[@]}")"
+    if [[ "$version_conflicts" == "1" ]]; then
+      # 查询时处理表不存在的情况（全新库 / 仅部署通道管理的库）
+      installer_applied="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='${version}' LIMIT 1" 2>/dev/null || true)"
+    else
+      # ★ 键不唯一 ⇒ 不推断（★ 宁可重放、不可假跳过 ★）
+      printf 'note: version %s is shared by %s files in the delivery surface ⇒ installer-ledger inference disabled: %s\n' \
+        "${version}" "${version_conflicts}" "${file#"$ROOT_DIR/"}"
+    fi
   fi
-  
+
   if [[ "$installer_applied" == "1" ]]; then
-    # 安装器已应用：跳过 + 回填部署通道台账（INSERT ... ON CONFLICT DO NOTHING 幂等）
-    printf 'applied by installer (backfilling deployment ledger): %s\n' "${file#"$ROOT_DIR/"}"
+    # ★ 安装器台账有该版本行 ⇒ 推断为「已应用」⇒ 跳过本文件。
+    # ★★ **不写权威账**（★ content_sha256/execution_sha256 都留空 ★）⇒
+    #   ★ 权威账只记录「本通道真跑过」的行 ⇒ ★ 不制造假指纹、不吸收后续漂移 ★
+    printf 'skipped by installer-ledger inference (version %s; not recorded in the deployment ledger): %s\n' \
+      "${version}" "${file#"$ROOT_DIR/"}"
     installer_applied_markers+=("${base}")
-    psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${file_sha}', 'none') ON CONFLICT (sequence_name) DO NOTHING"
     continue
   fi
-  
+
   # 部署通道与安装器台账均无记录：按全新迁移应用
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
