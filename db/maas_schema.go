@@ -53,7 +53,16 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 
 		-- Existing baseline installs may have created the table without the
 		-- key that model-rate upserts use. Keep any existing usable arbiter.
+		--
+		-- ★ 2026-11-26 12h 审计轮：★ 补**可诊断性**（★ 不改行为口径 ★）——
+		-- CREATE UNIQUE INDEX 在**存量有重复 canonical_id** 时会抛裸 23505
+		-- （duplicate key value violates unique constraint）⇒ 启动期报出来的是
+		-- 一个**看不出该怎么办**的错 ⇒ ⇒ 这里先数一次重复，★ 有重复就抛**带
+		-- 处置提示**的错（★ 不自动去重：★ 自动去重＝替业务决定「哪一行费率算
+		-- 数」＝计费语义变更 ⇒ 属 owner 决策 ★）。
 		DO $$
+		DECLARE
+		    dup_count BIGINT;
 		BEGIN
 		    IF NOT EXISTS (
 		        SELECT 1
@@ -65,6 +74,19 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 		          AND i.indpred IS NULL AND i.indnkeyatts = 1
 		          AND a.attname = 'canonical_id'
 		    ) THEN
+		        SELECT count(*) INTO dup_count FROM (
+		            SELECT canonical_id
+		            FROM public.model_credit_rates
+		            WHERE canonical_id IS NOT NULL
+		            GROUP BY canonical_id
+		            HAVING count(*) > 1
+		        ) dupes;
+		        IF dup_count > 0 THEN
+		            RAISE EXCEPTION
+		                'model_credit_rates has % canonical_id value(s) duplicated; the unique arbiter uq_model_credit_rates_canonical_id cannot be created',
+		                dup_count
+		                USING HINT = 'Deduplicate public.model_credit_rates first (one rate row per canonical_id), then restart. Auto-deduplication would silently change billing semantics and is intentionally not done here.';
+		        END IF;
 		        CREATE UNIQUE INDEX uq_model_credit_rates_canonical_id
 		            ON public.model_credit_rates (canonical_id);
 		    END IF;

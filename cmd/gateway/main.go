@@ -8273,6 +8273,15 @@ func main() {
 				}
 				return piDetectorCoreGlobal.RefreshRules()
 			})
+			// ★ 2026-11-25 取证轮：取证采集面（分析前取证 + 按需取证端点）与
+			//	复测用的在线检测器（判官复查要走它的端点解析器；未开 V2 时为 nil ⇒
+			//	该复测项如实报不可用，其余复测项不受影响）。
+			piEvidenceGatherer := admin.NewPIEvidenceGatherer(piSQLDBGlobal)
+			piAnalysisHandler.SetEvidenceGatherer(piEvidenceGatherer)
+			piAnalysisHandler.SetReplayJudge(piDetectorCoreGlobal)
+			if piErrorAnalyzerGlobal != nil {
+				piErrorAnalyzerGlobal.SetEvidenceProvider(piEvidenceGatherer)
+			}
 			slog.Info("pi-analysis API registered")
 		}
 		// /api/admin/error-playbook/* — 错误处理手册（2026-11-20）：

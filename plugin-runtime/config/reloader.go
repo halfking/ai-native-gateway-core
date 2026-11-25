@@ -91,6 +91,16 @@ type configReloader struct {
 	watcher    *fsnotify.Watcher
 	configPath string
 
+	// rejectMu protects `rejected` **on its own**.
+	//
+	// ★ 2026-11-26 12h 审计轮：★ 原来 `rejected` 挂在 `reloadMu` 下，而读侧
+	// `rejection()` 用的是 **`TryLock`** ⇒ **只要有一轮 reload 在飞，读侧就
+	// 直接返回「没有拒收」** ⇒ 拒收状态**整轮漏报**（配置漂移检测不可靠，
+	// 且对外可见性不确定）★★。
+	//   ⇒ 现在读写各用 `rejectMu`（**独立的叶子锁**）⇒ ★ 读侧不再被
+	//     「reload 进行中」挡住 ★；★ 读侧**先取路径、再取锁**⇒ 锁序只有
+	//     「reloadMu → rejectMu」与「rejectMu」两条 ⇒ 无环 ★。
+	rejectMu sync.Mutex
 	mu       sync.RWMutex
 	reloadMu sync.Mutex
 	rejected *rejectedConfig // protected by reloadMu
@@ -322,7 +332,9 @@ func (r *configReloader) Reload(ctx context.Context) error {
 	// Load old config
 	oldConfig := r.holder.Get()
 
+	r.rejectMu.Lock()
 	r.rejected = nil
+	r.rejectMu.Unlock()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -378,25 +390,29 @@ func (r *configReloader) rememberRejection(old, desired *Config, data []byte, in
 	pair := [64]byte{}
 	copy(pair[:32], actualHash[:])
 	copy(pair[32:], desiredHash[:])
+	r.rejectMu.Lock()
 	r.rejected = &rejectedConfig{
 		rejection: Rejection{ID: sha256.Sum256(pair[:]), Invalid: invalid},
 		fileHash:  fileHash,
 	}
+	r.rejectMu.Unlock()
 }
 
 func (r *configReloader) rejection() (Rejection, bool) {
-	if !r.reloadMu.TryLock() {
-		return Rejection{}, false
-	}
-	defer r.reloadMu.Unlock()
-	if r.rejected == nil {
-		return Rejection{}, false
-	}
+	// ★ 2026-11-26 12h 审计轮：★ **不再用 TryLock 表达「没有拒收」** ★
+	// （★ TryLock 在「reload 在飞」时返回 false ⇒ **拒收被静默吞掉** ★）。
+	// ⇒ 现在：★ 先取路径（独立读锁）⇒ 再取 `rejectMu`（叶子锁）⇒
+	//   **拒收状态不会因为一轮 reload 在飞而漏报** ★。
 	r.mu.RLock()
 	path := r.configPath
 	r.mu.RUnlock()
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
+		return Rejection{}, false
+	}
+	r.rejectMu.Lock()
+	defer r.rejectMu.Unlock()
+	if r.rejected == nil {
 		return Rejection{}, false
 	}
 	file, err := os.Open(path)

@@ -19,6 +19,20 @@ import (
 
 // runtimeAdapter uses the new reconciliation DTOs, but every process operation
 // is delegated to the established root supervisor.
+//
+// ★★ 锁不变式（★ 2026-11-26 12h 审计轮**实测复核**后登记 ★★）：
+//
+//	本适配器直接读写 `c.desired` / `c.disabled` / `c.scope`，而这三个字段的
+//	**写侧**在 `Controller.transact` 家族里、由 `c.opMu` 保护 ⇒
+//	★ 本适配器的每一个方法**必须**在持有 `c.opMu` 的调用栈里被调用 ★
+//	⇒ **当前唯一入口是 `Controller.Reconcile`（它整段持 `opMu`）** ✔
+//	（`reconciler.Start` 里那个自带的后台循环——它若被启用，其 `Reconcile`
+//	  调用**不经** `Controller.opMu` ⇒ ★ 那时这里就是数据竞争 ★ ⇒
+//	  ★ **谁要启用那个循环，必须先给适配器补锁** ★）。
+//
+//	⇒ 本轮**未**给适配器加锁：★ ① 现网没有那条并发路径（唯一入口持 opMu）★
+//	  ② 加锁需同时处理「适配器方法 ↔ transact」的锁序，★ 在没有复现路径的
+//	  情况下动它，★ 比登记更危险（★ 改错锁序＝把活锁变成死锁 ★）★。
 type runtimeAdapter struct{ c *Controller }
 
 func (a *runtimeAdapter) List(_ context.Context, filter reconciler.RegistryFilter) ([]*reconciler.RegistryPlugin, error) {

@@ -519,6 +519,14 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		gateway.round.errCode = skipReason
 		gateway.round.errDetail = probeGatewayRoundSkipDetail(skipReason)
 	}
+	// ★ 2026-11-26 12h 审计轮：跳过时网关轮**没有真跑** ⇒ 它的 httpStatus /
+	// latencyMs 恒为 0 ⇒ 队列主状态（credential_probe_queue.result_http_status /
+	// result_latency_ms）会变成 0/0，★ **把直连轮真实的 429/502 与延迟抹掉** ★
+	// （队列主状态是复检面板与退避判定的读数面 ⇒ 0/0 = 「没有信息」）。
+	// ⇒ 跳过时**队列结果**取直连轮的读数（★ 直连轮才是这一轮真跑过的那一次 ★）；
+	// ⇒ 但**不**把它写进网关轮自己的列（node_probe_runs.gateway_http_status /
+	// gateway_latency_ms 必须继续如实表示「网关轮没跑」⇒ 那里保持 0/0 + 跳过码 ★）。
+	gatewaySkipped := !runGateway
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
 			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
@@ -530,6 +538,13 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		gw.ok = false
 		gw.errCode = "gateway_pin_unsupported"
 		gw.errDetail = "legacy gateway probe cannot prove credential attribution"
+	}
+	// ★ 队列主状态该记哪一次的读数（★ 见上面 gatewaySkipped 的说明 ★）：
+	//   网关轮真跑过 ⇒ 记网关轮；★ 网关轮被跳过 ⇒ 记**直连轮**（那一轮真跑过）★
+	// ⇒ 队列结果不再是「0/0 = 没有信息」。
+	queueHTTPStatus, queueLatencyMs := gw.httpStatus, gw.latencyMs
+	if gatewaySkipped {
+		queueHTTPStatus, queueLatencyMs = direct.httpStatus, direct.latencyMs
 	}
 
 	// 2026-09-25 (对健康节点零探测 / "错误的探测要搞清楚是协议问题还是节点的
@@ -738,8 +753,8 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			Status:       ProbeQueueFailed,
 			ReasonCode:   errCode,
 			ReasonDetail: firstErrDetailString(direct, gw),
-			HTTPStatus:   gw.httpStatus,
-			LatencyMs:    gw.latencyMs,
+			HTTPStatus:   queueHTTPStatus,
+			LatencyMs:    queueLatencyMs,
 			NextRunAt:    &nextRetryAt,
 		}, wrappedErr
 	}
@@ -752,8 +767,8 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		Status:       ProbeQueueFailed,
 		ReasonCode:   errCode,
 		ReasonDetail: firstErrDetailString(direct, gw),
-		HTTPStatus:   gw.httpStatus,
-		LatencyMs:    gw.latencyMs,
+		HTTPStatus:   queueHTTPStatus,
+		LatencyMs:    queueLatencyMs,
 		NextRunAt:    &nextRetryAt,
 	}, nil
 }

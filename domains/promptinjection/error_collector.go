@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrorCollector PI 检测错误收集器
@@ -185,6 +186,14 @@ const (
 	// 恒 view-only**（其建议不指向 prompt_injection_rules，见
 	// admin/pi_analysis_fix_apply.go 的类型闸）。
 	ErrorTypeOutputGuardBlocked = "output_guard_blocked" // 输出守卫格式类拦截
+	// ErrorTypeRequestFailed：请求在上游尝试阶段的失败（2026-11-25 取证轮）。
+	//
+	//	生产者是 PI 智能体的「请求错误发现器」（RequestErrorDiscoverer）：它周期性
+	//	读网关自己持久化的候选失败记录（candidate_failure_logs_hot），把窗口内
+	//	达到阈值的 (错误类型, 供应商, 模型) 分组各入队一条样本 ⇒ 走既有分析管线，
+	//	分析前会取证该请求的账本行 / 各次上游尝试 / 服务日志。
+	//	★ 完全不碰请求热路径（只读一张已经落库的表）。
+	ErrorTypeRequestFailed = "request_failed"
 )
 
 // ErrorQueueStatus 队列状态
@@ -864,6 +873,17 @@ func (ec *ErrorCollector) calculateErrorHash(collectedErr *CollectedError) strin
 		return hex.EncodeToString(hash[:])
 	}
 
+	if collectedErr.ErrorType == ErrorTypeRequestFailed {
+		// ★ 2026-11-25：请求失败的指纹 = 类型 + 租户 + 上游错误类型 + 供应商 + 模型。
+		//
+		//	**不含错误消息**：逐请求的错误消息各不相同，拿它算指纹等于每条失败都
+		//	入队一次（211 实测一小时 1400+ 条候选失败）⇒ 同一分组在去重窗口内
+		//	只分析一次。
+		d := collectedErr.ErrorDetails
+		return fmt.Sprintf("%s|%s|%v|%v|%v", collectedErr.ErrorType, collectedErr.TenantID,
+			d["error_kind"], d["provider_id"], d["model"])
+	}
+
 	// 其他类型错误：原有逻辑（包含 errorMessage 和 inputHash）
 	hashInput := fmt.Sprintf("%s|%s|%s",
 		collectedErr.ErrorType,
@@ -1031,6 +1051,128 @@ func (ec *ErrorCollector) GetStats(ctx context.Context) (map[string]interface{},
 	stats["timestamp"] = time.Now()
 
 	return stats, nil
+}
+
+// ── 取证轮新增的队列原语（2026-11-25）────────────────────────────────────
+
+// queuedErrorColumns 是 QueuedError 的列清单（按 ID 读取用；与领取查询的投影同序）。
+const queuedErrorColumns = `
+		id, error_type, error_hash, priority,
+		tenant_id, session_id, request_id,
+		input_text, input_hash, COALESCE(error_message, ''),
+		COALESCE(error_details, 'null'::jsonb),
+		COALESCE(detection_layers, 'null'::jsonb),
+		COALESCE(matched_rules, 'null'::jsonb),
+		COALESCE(policy_config, 'null'::jsonb),
+		status, retry_count, max_retries,
+		created_at, started_at, completed_at,
+		COALESCE(metadata, 'null'::jsonb)
+`
+
+// GetQueueItem 按 ID 读一行（任意状态）。
+func (ec *ErrorCollector) GetQueueItem(ctx context.Context, queueID int64) (*QueuedError, error) {
+	if ec == nil || ec.db == nil {
+		return nil, fmt.Errorf("error collector: database not configured")
+	}
+	row := ec.db.QueryRowContext(ctx,
+		`SELECT`+queuedErrorColumns+`FROM error_analysis_queue WHERE id = $1`, queueID)
+	var qe QueuedError
+	if err := row.Scan(
+		&qe.ID, &qe.ErrorType, &qe.ErrorHash, &qe.Priority,
+		&qe.TenantID, &qe.SessionID, &qe.RequestID,
+		&qe.InputText, &qe.InputHash, &qe.ErrorMessage,
+		&qe.ErrorDetails, &qe.DetectionLayers, &qe.MatchedRules, &qe.PolicyConfig,
+		&qe.Status, &qe.RetryCount, &qe.MaxRetries,
+		&qe.CreatedAt, &qe.StartedAt, &qe.CompletedAt, &qe.Metadata,
+	); err != nil {
+		return nil, err
+	}
+	return &qe, nil
+}
+
+// MarkProcessing 把一行置为 processing（定向分析/重新分析用）。
+//
+//	★ resetRetry：已耗尽重试的 failed 行要能被重新分析 ⇒ 重试计数清零。
+//	★ 条件更新：正在分析中的行（status='processing' 且领取时间在回收阈值之内）
+//	不会被重复领取 ⇒ 返回 false。
+func (ec *ErrorCollector) MarkProcessing(ctx context.Context, queueID int64, resetRetry bool) (bool, error) {
+	if ec == nil || ec.db == nil {
+		return false, fmt.Errorf("error collector: database not configured")
+	}
+	res, err := ec.db.ExecContext(ctx, `
+		UPDATE error_analysis_queue
+		SET status = 'processing',
+		    started_at = NOW(),
+		    completed_at = NULL,
+		    retry_count = CASE WHEN $2 THEN 0 ELSE retry_count END
+		WHERE id = $1
+		  AND (status <> 'processing' OR started_at IS NULL OR started_at < NOW() - $3::interval)
+	`, queueID, resetRetry, fmt.Sprintf("%d seconds", int(staleClaimAge.Seconds())))
+	if err != nil {
+		return false, fmt.Errorf("failed to mark processing: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// maxStoredVerifications 是队列行上保留的复测记录条数（只留最近的）。
+const maxStoredVerifications = 10
+
+// AppendVerification 往队列行的 metadata.verifications 末尾追加一条复测记录
+// （只留最近 maxStoredVerifications 条），并刷新 metadata.last_verification。
+//
+//	★ 为什么落在队列行而不是结果行：复测是关于「这条错误修好了没有」的事实，
+//	未分析/分析失败的行也要能复测；且不改动结果行的分析列（那属于分析器）。
+func (ec *ErrorCollector) AppendVerification(ctx context.Context, queueID int64, record map[string]any) error {
+	if ec == nil || ec.db == nil {
+		return fmt.Errorf("error collector: database not configured")
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal verification record: %w", err)
+	}
+	if !utf8.Valid(payload) {
+		return fmt.Errorf("verification record: invalid UTF-8 payload")
+	}
+	// jsonb 绑定形态与本文件其它写点同款：string + ::text::jsonb（两种执行模式都正确）。
+	//
+	// ★ 只留最近 N 条的写法（2026-11-25 真库 + 真实代码路径实测连踩四处，
+	//   全部是「sqlmock 过得了、真库才现形」的形态）：
+	//	  · 函数名是 jsonb_array_length（jsonb_array_len 是 SQLite 的名字）；
+	//	  · **jsonb 不支持数组下标切片**（`arr[-10:]` 只有 json 类型才有）⇒ 用
+	//	    jsonb_array_elements … WITH ORDINALITY 取尾部；
+	//	  · jsonb_set 的多段路径**不会**把数组值分配到各个键上，中间键不存在时
+	//	    它**原样返回目标**⇒ 语句报「UPDATE 1」却什么都没写进去 ⇒ 顶层合并
+	//	    一律用 `||`；
+	//	  · **生产的队列行 metadata 是 JSON 的 null 字面量，不是 SQL NULL**
+	//	    （Collect 用 nil map 写入 ⇒ jsonb 'null'）⇒ COALESCE 管不到它，而
+	//	    `'null'::jsonb || {…}` 的结果是**数组** [null, {…}] ⇒ 整列被写坏。
+	//	    ⇒ 判 jsonb_typeof = 'object'，不是对象就按空对象起步。
+	//	旧值不是数组时同样按空数组起步（不让一行坏数据把复测写入整条堵死）。
+	_, err = ec.db.ExecContext(ctx, `
+		UPDATE error_analysis_queue q
+		SET metadata = (CASE WHEN jsonb_typeof(q.metadata) = 'object' THEN q.metadata ELSE '{}'::jsonb END)
+		      || jsonb_build_object('verifications', v.trimmed, 'last_verification', $2::text::jsonb)
+		FROM (
+		  SELECT e.id,
+		         COALESCE((
+		           SELECT jsonb_agg(elem ORDER BY ord)
+		           FROM jsonb_array_elements(m.merged) WITH ORDINALITY AS t(elem, ord)
+		           WHERE ord > jsonb_array_length(m.merged) - $3
+		         ), '[]'::jsonb) AS trimmed
+		  FROM error_analysis_queue e
+		  CROSS JOIN LATERAL (
+		    SELECT (CASE WHEN jsonb_typeof(e.metadata->'verifications') = 'array'
+		                 THEN e.metadata->'verifications' ELSE '[]'::jsonb END)
+		           || jsonb_build_array($2::text::jsonb) AS merged
+		  ) m
+		  WHERE e.id = $1
+		) v
+		WHERE q.id = v.id`, queueID, string(payload), maxStoredVerifications)
+	if err != nil {
+		return fmt.Errorf("failed to append verification record: %w", err)
+	}
+	return nil
 }
 
 // Helper functions
