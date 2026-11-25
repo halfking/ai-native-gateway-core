@@ -72,7 +72,7 @@
     <table>
       <tr><th>#</th><th>文件</th><th>关键行为</th><th>验证</th></tr>
       <tr><td>—</td><td>（已撤回）<code>admin/logs.go</code>、<code>RequestLogsView.vue</code>、8 个 <code>requests.ts</code> 等 13 个文件</td><td><code>36c278858</code> ⇒ <code>ddc6aed19</code> 撤回；以上游 <code>71af786f6</code>／<code>c0dad181d</code> 为准</td><td><span class="pill p-ok">与上游 diff 为空</span></td></tr>
-      <tr><td>3</td><td><code>web/src/locales/{6 语种}/reports.ts</code></td><td>补齐「日对账」块与 <code>legacySnapshotView</code> 的译文</td><td><span class="pill p-ok">i18n 17 文件／118 条绿</span></td></tr>
+      <tr><td>3</td><td><code>web/src/locales/{6 语种}/reports.ts</code><br><code>web/src/i18n/localeValueBaseline.json</code></td><td>补齐「日对账」块（224 个叶子键）与 <code>legacySnapshotView</code> 的六语种真实译文；7 个同形值按先例有理由地小幅调高 <code>sameAsSource</code>；与并行车道 <code>bd0761526</code> 的占位镜像版同题，合并时取真实译文、棘轮按真实译文重算</td><td><span class="pill p-ok">i18n 17 文件／118 条绿</span></td></tr>
       <tr><td>4</td><td><code>mobileListUx.spec.ts</code><br><code>web-mobile/…/orphanLedger.spec.ts</code><br><code>web-mobile/…/dynamicKeys.spec.ts</code></td><td>三处登记表按事实更新（行号漂移、新 API 模块、两个动态前缀）</td><td><span class="pill p-ok">3 spec 绿</span></td></tr>
       <tr><td>5</td><td><code>AGENTS.md</code><br><code>AGENTS-archive-20261031.md</code></td><td>从 git 历史逐字恢复 L87、L79、L108；L71 去重；L23 段头接回正文；L107 就地订正</td><td><span class="pill p-ok">9 门绿</span></td></tr>
       <tr><td>6</td><td><code>scripts/ursmcheck/agents_md_round_label_gate_test.go</code>（新）</td><td>R5 主档内轮标记唯一；R6 轮块只许搬、不许丢</td><td>变异自证 2/2</td></tr>
