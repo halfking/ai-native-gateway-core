@@ -1,7 +1,4 @@
-# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=733
-	GET	plugin-runtime/remediation/child/server.go:62
-	GET	plugin-runtime/remediation/child/server.go:70
-	POST	plugin-runtime/remediation/child/server.go:73
+# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=729
 /	ANY	cmd/gateway/main.go:8224
 /	ANY	cmd/gateway/main.go:8227
 /.well-known/oauth-protected-resource	ANY	cmd/gateway/mcp_gateway.go:68
@@ -631,7 +628,6 @@
 /audit/export	GET	mcp/control.go:164
 /capabilities	GET	mcp/control.go:121
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:19
-/debug/pprof/	ANY	cmd/gateway/pprof_server.go:25
 /debug/pprof/cmdline	ANY	cmd/gateway/pprof_server.go:20
 /debug/pprof/profile	ANY	cmd/gateway/pprof_server.go:21
 /debug/pprof/symbol	ANY	cmd/gateway/pprof_server.go:22

@@ -300,6 +300,18 @@ BEGIN { inblock = 0 }
 		m = substr(code, RSTART, RLENGTH)
 		q = substr(m, index(m, "\"") + 1)
 		q = substr(q, 1, length(q) - 1)
+		# ★★ 第 27 轮代上游收口：★ 首参必须**是单个完整字符串字面量**才算登记。
+		#   ★★ 为什么：★ 本脚本【自述】的口径是「只认首参是 Go 字符串字面量的调用；
+		#   ★★ 首参是常量/变量/拼接的【抽不出来】」（★ 见脚本头部「已知不注册」第 ③ 条 ★★）
+		#   ⇒ ★ 但实现只取了**第一个引号对之间的内容** ⇒ ★ 对 `"GET "+manifest.Runtime.HandshakePath`
+		#   ★★ 这种【拼接首参】它截到 `"GET "` ⇒ ⇒ 产出一行 **path 为空**的登记
+		#   ⇒ ⇒ 快照里多出空 path 行 ⇒ ⇒ 防漂移门的「path 必须以 / 开头」判红
+		#   ⇒ ⇒ **这是实现与自述口径不符的真缺陷**（★ 引入自上游 plugin-runtime remediation 那笔 ★★）。
+		#   ⇒ ⇒ **修法＝让实现对齐自述**：★ 字面量之后若不是逗号 ⇒ 首参还在拼接 ⇒ **整条跳过** ★★
+		#   ⇒ ★ 对 `"GET /api/x", …` 这类单字面量调用不受影响（★ 后面紧跟逗号 ★★）。
+		if (substr(code, RSTART + RLENGTH, 1) != ",") {
+			next
+		}
 		meth = "ANY"
 		path = q
 		if (match(q, /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE) /)) {
