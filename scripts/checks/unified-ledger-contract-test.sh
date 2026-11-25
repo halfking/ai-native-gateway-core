@@ -28,27 +28,35 @@ note "测试 ① —— extract_migration_version 版本提取逻辑"
 
 # Source the deployment script to get the helper function
 # (We need to extract just the function, not run the whole script)
+# ★★ 2026-11-26 L121 轮订正：★ 实现与安装器 `dbinit.migrationVersionOf` **严格同口径** ★★
 extract_migration_version() {
-  local filename="$1"
-  if [[ "$filename" =~ ^([0-9]+)[a-z]?_ ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-  else
-    printf ''
-  fi
+  local filename="$1" prefix
+  prefix="${filename%%_*}"
+  # ★ 纯数字前缀才成立（Atoi 可解析）⇒ 字母后缀件返回空串（★ 不折叠 ★）
+  [[ "$prefix" =~ ^[0-9]+$ ]] || { printf ''; return 0; }
+  # ★ 归一（去前导零）★："00001" ⇒ "1"（★ 与安装器写台账的形态一致 ★）
+  printf '%s' "$((10#$prefix))"
 }
 
 # Test cases from actual migration filenames
+# ★★ 2026-11-26 L121 轮订正（★ 见 AGENTS.md L121 轮块 ★）★★：
+#   ★ 口径与安装器 `dbinit.migrationVersionOf` **严格同口径**：
+#     - **纯数字前缀**才有版本键（"392_" ⇒ "392"）
+#     - **字母后缀件无版本键**（"983b_" / "361b_" / "999a_" ⇒ 空串、**不折叠** ⇒ 安装器恒执行）
+#     - **前导零归一**（"00001_" ⇒ "1"，与 Atoi 结果一致）
 declare -a test_cases=(
   "392_candidate_failure_logs_structure.sql|392"
   "983_request_metrics.sql|983"
-  "983b_add_raw_model_name.sql|983"
-  "983c_add_occurred_cursor_index.sql|983"
-  "361b_session_turns_hot_prelude.sql|361"
+  "983b_add_raw_model_name.sql|"
+  "983c_add_occurred_cursor_index.sql|"
+  "361b_session_turns_hot_prelude.sql|"
+  "999a_data_maintenance_playbook.sql|"
   "925_supplier_contract_rates.sql|925"
   "989_guard式回填981.sql|989"
   "1000_would_be_invisible.sql|1000"
   "session_turns_hot_bootstrap.sql|"
   "00-prereqs.sql|"
+  "00001_leading_zeros.sql|1"
 )
 
 pass_count=0
@@ -150,10 +158,10 @@ declare -a edge_cases=(
   "|"                           # 空文件名
   "_.sql|"                       # 只有下划线
   "abc_def.sql|"                 # 无数字前缀
-  "123|"                         # 数字但无下划线
-  "123abc_file.sql|"             # 数字后直接字母（无下划线）→ 应该匹配
+  "123|123"                      # 数字但无下划线（★ prefix="${filename%%_*}" ⇒ 整串 ⇒ 纯数字 ⇒ 成立 ★）
+  "123abc_file.sql|"             # 数字后直接字母（prefix="123abc" ⇒ 非纯数字 ⇒ 空串）
   "0_zero.sql|0"                 # 零
-  "00001_leading_zeros.sql|00001" # 前导零（保留原样）
+  "00001_leading_zeros.sql|1"    # 前导零（★ 归一：Atoi 结果 = 1 ★）
 )
 
 edge_pass=0
