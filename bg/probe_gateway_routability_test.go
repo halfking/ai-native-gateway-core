@@ -14,10 +14,11 @@ import (
 // 的 `credential_recovery` 复检 —— 直连轮 429/502 失败后，钉住同一凭据的网关轮
 // 在路由层找不到候选、必然 503 no_candidate、永远触达不到上游。
 //
-// 这些 (凭据, 模型) 对在路由层自己的资格视图 `v_routable_credential_models`
-// 里读数全是 is_routable=false（7 个 node_probe_failed、3 个
-// binding_unavailable），而同批读数为 true 的 3 个模型对不在残留名单里 ⇒
-// 视图有判别力。
+// 这些 (凭据, 模型) 对在**路由层自己的候选面** `model_offers` 里读数全是
+// available=false（7 个 node_probe_failed、3 个 binding_unavailable —— 这句是
+// 第一版按资格视图读到的，已按事实订正：路由候选面是 model_offers，钉住方
+// 99023 的 10 个 gpt-image 对里 8 个在 model_offers 上是停放态），而同批读数为
+// true 的模型对不在残留名单里 ⇒ 判据有判别力。
 //
 // 本文件钉住这道新判据的三条性质：① 只在直连轮失败时生效；② 只判否、不判未知；
 // ③ 查询出错 ⇒ 照跑网关轮（fail-open）。
@@ -109,34 +110,51 @@ func TestProbeGatewayRoundDecisionSkipsUnroutable(t *testing.T) {
 	}
 }
 
-// TestProbeGatewayRoundRoutableSQLUsesRoutingView guards the **single source**
-// of the routability judgement: the query must ask the routing layer's own
-// eligibility view, and must bind both the credential and the model. A copy of
-// the view's conjunction pasted into Go would drift silently — this test is
-// what makes that paste fail loudly instead.
-func TestProbeGatewayRoundRoutableSQLUsesRoutingView(t *testing.T) {
+// TestProbeGatewayRoundRoutableSQLUsesRoutingSources guards the **single
+// source** of the routability judgement: the query must ask the routing
+// layer's own candidate table (`model_offers` — the table the gateway's
+// candidate_diag counts as `offers_total`) plus the credential-level gates
+// (`v_routable_credential_models`), and must bind both the credential and the
+// model.
+//
+// ★ Why `model_offers` and NOT only the view: 211 实测两表已漂移 —— 99023 的
+// gpt-image-2.5-sunburst 在 `credential_model_bindings` 上 available=true、在
+// `model_offers` 上 available=false/probe_http_429 ⇒ 只问视图会读成「可路由」
+// ⇒ 第一版判据对实测残留**不咬**。
+func TestProbeGatewayRoundRoutableSQLUsesRoutingSources(t *testing.T) {
 	sql := probeGatewayRoundRoutableSQL
-	if !strings.Contains(sql, "v_routable_credential_models") {
-		t.Fatalf("the routability judgement must read the routing view, got:\n%s", sql)
+	for _, want := range []string{
+		"model_offers",
+		"v_routable_credential_models",
+		"credential_id = $1",
+		"raw_model_name = $2",
+		"o.available IS TRUE",
+		"unavailable_reason",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("the routability judgement is missing %q\ngot:\n%s", want, sql)
+		}
 	}
-	if !strings.Contains(sql, "credential_id = $1") {
-		t.Fatalf("the judgement must bind the credential, got:\n%s", sql)
-	}
-	if !strings.Contains(sql, "raw_model_name = $2") {
-		t.Fatalf("the judgement must bind the model, got:\n%s", sql)
-	}
-	if !strings.Contains(sql, "is_routable") {
-		t.Fatalf("the judgement must read the view's own is_routable verdict, got:\n%s", sql)
+	// 凭据级排除原因用**前缀**判（provider_ / credential_ / lifecycle_ /
+	// availability_ / quota_ / recent_probe_unreachable），不枚举状态码 ——
+	// 枚举必然随视图演进而漂移。
+	for _, want := range []string{"provider_", "credential_", "availability_", "quota_"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("the credential-level reason match is missing the %q prefix\ngot:\n%s", want, sql)
+		}
 	}
 }
 
 // TestNodeProbeWorkerGatewayRoundRoutableFailsOpen pins the failure direction:
 // a lookup error must NOT silently disable the gateway round (that would trade
 // a noisy request record for a lost diagnostic round).
+//
+// ★语义：查读桩返回的是「**可证明零候选**」（true ⇒ 该跳过网关轮），
+// 工作层的包装把它翻成「可路由」（可路由 ⇒ 照跑网关轮）。
 func TestNodeProbeWorkerGatewayRoundRoutableFailsOpen(t *testing.T) {
 	w := &NodeProbeWorker{
 		gatewayRoutableLookup: func(ctx context.Context, credID int, model string) (bool, error) {
-			return false, errors.New("boom")
+			return true, errors.New("boom")
 		},
 	}
 	if !w.gatewayRoundRoutable(context.Background(), 99023, "gpt-image-2") {
@@ -144,10 +162,17 @@ func TestNodeProbeWorkerGatewayRoundRoutableFailsOpen(t *testing.T) {
 	}
 
 	w.gatewayRoutableLookup = func(ctx context.Context, credID int, model string) (bool, error) {
-		return false, nil
+		return true, nil
 	}
 	if w.gatewayRoundRoutable(context.Background(), 99023, "gpt-image-2") {
-		t.Fatal("an explicit non-routable verdict must be reported as non-routable")
+		t.Fatal("a provably zero-candidate verdict must be reported as non-routable")
+	}
+
+	w.gatewayRoutableLookup = func(ctx context.Context, credID int, model string) (bool, error) {
+		return false, nil
+	}
+	if !w.gatewayRoundRoutable(context.Background(), 99023, "gpt-image-2") {
+		t.Fatal("a routable verdict must be reported as routable")
 	}
 }
 
