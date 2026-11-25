@@ -78,6 +78,11 @@ REDIS_URL	component	Redis 连接串，绝不能填 PG DSN
 REPORT_E2E_ALLOW_DESTRUCTIVE	dangerous	显式承认「本次 E2E 会破坏数据」；打开即取消保护
 REPORT_E2E_TEST_DATABASE_URL	dsn_exclusive	reportrollup 破坏性 E2E 的专用 DSN：会 DELETE report_snapshots / usage_facts ⇒ 必须指向一次性 scratch 库 ⇒ 不能与通用 DSN 同值（R86 轮把共享名 TEST_DATABASE_URL/TEST_DB_URL 拆成专用名）
 RJ_PGVAL_DOWN_SQL	component	迁移 down 脚本路径（夹具覆盖），不改变选库
+REQUEST_METRICS_LOAD_DSN	dsn_exclusive	已迁移的回环恢复库。负载夹具执行请求投影回填和日重算。
+REQUEST_METRICS_LOAD_END	component	RFC3339 格式的负载采样窗口终点。
+REQUEST_METRICS_LOAD_SAMPLES	component	每个历史窗口的负载样本数。
+REQUEST_METRICS_POLL_TEST_DSN	dsn_exclusive	已迁移的回环库。轮询夹具写入事实并启动投影及日重算。
+REQUEST_METRICS_TEST_DSN	dsn_exclusive	专用空库。投影集成夹具写入测试数据并执行升级和回退。
 ROUTEINCIDENT_IT_DSN	dsn_exclusive	routeincident 集成腿的专用 DSN：会在目标库 CREATE TABLE route_incidents（715 表形）⇒ 文件头写明 Cleanup: DROP DATABASE llm_routeincident_it ⇒ 必须指向一次性库 ⇒ 不能与通用 DSN 同值（R86 轮移出事实源 + 给该腿补库名守卫）
 SANITIZE_FP_AUDIT_CORPUS	component	审计语料文件路径
 SANITIZE_RULES_BROWSER_ADDR	component	浏览器实例地址（host:port），与 PG 无关
