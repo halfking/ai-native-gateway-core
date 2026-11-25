@@ -1489,6 +1489,10 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_hour_publish();`)
 		refresh(processor.RefreshDailyBoard)
 		countPublishedHours(2)
 		assertParity(t, allTenantsPartial)
+		bothEdgesPartial := allTenants
+		bothEdgesPartial.StartTime = f.StartTime.Add(31 * time.Minute)
+		bothEdgesPartial.EndTime = f.EndTime.Add(-37 * time.Minute)
+		assertParity(t, bothEdgesPartial)
 		withProbePartial := withProbe
 		withProbePartial.StartTime, withProbePartial.EndTime = partial.StartTime, partial.EndTime
 		assertParity(t, withProbePartial)

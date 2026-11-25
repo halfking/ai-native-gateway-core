@@ -76,14 +76,22 @@ hour_coverage AS (
 	SELECT coalesce(range_agg(tstzrange(bucket,bucket+interval '1 hour','[)')), '{}') AS covered FROM edge_hours
 ),`
 
-const requestBoardUncoveredHour = `NOT (occurred_at <@ (SELECT covered FROM hour_coverage))`
+// The first test is independent of the detail rows. PostgreSQL can skip
+// scanning them for the hourly widgets when published hours fill every gap.
+const requestBoardUncoveredHour = `(SELECT NOT isempty(missing - covered) FROM coverage CROSS JOIN hour_coverage)
+	AND NOT (occurred_at <@ (SELECT covered FROM hour_coverage))`
 
 func requestBoardHourlyTrendSQL(minutes, scope string) string {
+	// Published hours on each edge day are contiguous. Scan their whole range
+	// once so that the series index can serve all buckets for that day together.
 	return ` UNION ALL
 	SELECT s.bucket, is_total, model, ` + boardMeasureSums + `,
 		sum(success) AS success, sum(latency_sum) AS latency_sum, sum(latency_count) AS latency_count
-	FROM edge_hours e JOIN public.request_metrics_board_series s
-		ON s.day=e.day AND s.bucket>=e.bucket AND s.bucket<e.bucket+interval '1 hour'
+	FROM (
+		SELECT day,min(bucket) AS first_bucket,max(bucket)+interval '1 hour' AS end_bucket
+		FROM edge_hours GROUP BY day
+	) e JOIN public.request_metrics_board_series s
+		ON s.day=e.day AND s.bucket>=e.first_bucket AND s.bucket<e.end_bucket
 	WHERE s.minutes=` + minutes + scope + `
 		AND (is_total OR (model <> '__others__' AND model IN (SELECT key FROM top_models)))
 	GROUP BY s.bucket,is_total,model`
