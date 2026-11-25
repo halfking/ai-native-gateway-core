@@ -1,0 +1,1233 @@
+# 第 29 轮（本会话系列；2026-11-25 21:0x 起）证据档 —— 人工合并的解算残留、纸面上的 CI 门禁、上游直推带来的 5 条门红、并发负载与满盘下的读数
+#
+# 目的：/tmp 会被系统清理、maestro/reports 不进仓 ⇒ 把会被复核的原始输出逐字留在这里。
+# 口径：零生产写 / 零 schema 变更 / 零在役切换 / 零迁移字节变更 / 零部署。所有生产侧命令只读。
+# 隔离：读数在同级私有 worktree 上做（冻结树 …-l117 @ 29b3dfbd5；轮内最终代码树 …-l117fix）。
+# 结构：A 只读取证 ｜ B 两道门的验证（事故形态红 / 修后绿 / 变异自证） ｜ C 打包脚本修前修后实跑
+#       ｜ D CI 作业级读数（公开 REST API） ｜ E 冻结树 29b3dfbd5 上的基线读数与上游 5 红的归因收口
+#       ｜ F 轮内最终代码树上的读数、环境红的同树重跑、磁盘读数
+#
+# ★ 读数对象的哈希映射：F 段的 HEAD 是变基前的轮内提交 f97ce5a70（树内容＝ f2ccb172b ＋ 本轮 5 笔代码修复）。
+#   读数后上游持续前进 ⇒ 我方随之变基／合并 ⇒ 对应现在的轮内代码尖端 9d7ed80b6（基点 820fcc4f0；与 AGENTS 块 ⑨ 的哈希一致）。
+#   两者之差（git diff --stat f97ce5a70 9d7ed80b6）：
+#     AGENTS.md                                          |   5 +
+#      admin/handler.go                                   |   4 +
+#      admin/keys.go                                      | 106 +++++-
+#      admin/keys_capabilities_test.go                    | 188 ++++++++++
+#      admin/keys_create_statement_test.go                |  11 +-
+#      domains/authentication/keystore_sync.go            |   8 +-
+#      domains/authentication/keystore_sync_test.go       |   8 +-
+#      domains/authentication/verifier.go                 |  21 +-
+#      domains/authentication/verifier_pgx_test.go        |   3 +-
+#      domains/authentication/verifier_reject_log_test.go |   3 +-
+#      web/scripts/apply-sessions-translations.mjs        | 120 +++++++
+#      web/scripts/sample-sessions-review.mjs             |  62 ++++
+#      web/scripts/untranslated-scan.mjs                  |  73 ++++
+#      web/src/i18n/localeValueBaseline.json              |  16 +-
+#      web/src/locales/ar-SA/sessions.ts                  | 390 ++++++++++-----------
+#      web/src/locales/de-DE/sessions.ts                  | 386 ++++++++++----------
+#      web/src/locales/es-ES/sessions.ts                  | 384 ++++++++++----------
+#      web/src/locales/fr-FR/sessions.ts                  | 372 ++++++++++----------
+#      web/src/locales/ja-JP/sessions.ts                  |  38 +-
+#      web/src/locales/zh-TW/sessions.ts                  |  30 +-
+#      20 files changed, 1403 insertions(+), 825 deletions(-)
+#   （只应是上游那几笔带来的文件。）变基后的交接面与台账门族定向复跑见 F5；最终尖端上的发布读数在文档提交之后跑。
+
+======== A. 只读取证（采集脚本 collect_facts.sh 的逐字输出） ========
+# 命令见同名脚本；其中 D 段的冲突标记行与重复段头计数是本轮两条新判据的事故依据。
+# 来源：/tmp/l117-audit/facts.txt
+# 第 29 轮（本会话系列，2026-11-25 21:0x 起）只读取证。采集时间：2026-11-25 22:11:22 CST。全部命令只读。
+
+===== A. 基线：两个远端与三处位置 =====
+HEAD         29b3dfbd5279bd45195fdfe4bfaa9547039432bc
+origin/main  29727b3baee2ea1ec8c59382f035a890898dd7ba
+github/main  29727b3baee2ea1ec8c59382f035a890898dd7ba
+ahead/behind HEAD...origin/main: 0/1   HEAD...github/main: 0/1
+
+===== B. 交接点 1fb5d225f 之后的提交（--no-merges） =====
+966adbf6e 11-25 20:58 huangzhouzixuan | docs(audit): L115 轮块（第32轮 三裁决项实测核实）＋ 裁决清单第32轮订正头
+9c9d3258c 11-25 20:48 huangxt | docs(AGENTS): L115 轮块（三台拉齐 cgo 修复 ＋ request-logs 量具复跑 ＋ 两处部署闸门新红收口）
+c5120d3b5 11-25 20:10 huangxt | fix(docs): R135–R139 轮标记索引行补「轮」字 token —— 修复 §143.91–95 交接门红（部署闸门拦下的新红）
+19a02bce9 11-25 19:57 huangxt | fix(guards): 代上游收口 W4.4 引入的 gocache 脚本族门红 —— package-forensics.sh 接专用构建缓存共享入口 ＋ 登记簿 197→198
+e491a6ae8 11-25 19:28 huangzhouzixuan | feat(forensics): W4.4 取证组件独立交付 —— 打包脚本+CI门禁
+138e8c0af 11-25 16:43 huangzhouzixuan | docs(audit): L114 HTML 补正前端读数（vitest 逐字输出 ＋ 瞬时 Errors 与 i18n 告警的定性）
+3bef01d12 11-25 16:40 huangzhouzixuan | docs(audit): L114 轮 HTML 图表总结（结论/根因、改动文件与关键行为、测试命令与结果、遗留风险＋四图表）
+2a0e25a0a 11-25 16:38 huangzhouzixuan | feat(capability): W4.2 会话能力绑 Key —— capabilities 词表 + 鉴权门 + 迁移（另一会话在途产物落地）
+f0ae228ca 11-25 16:29 huangzhouzixuan | docs(AGENTS): L114 轮块（★ 第29轮 一周审计与完善）＋ 归档 L75（241,816 B）以腾体积
+60ffc32b5 11-25 16:28 huangzhouzixuan | docs(audit): 第29轮 docs 收口（三件套归并 evidence／双 L112 HTML 互指／三处门禁红改名消歧）
+a781c79fb 11-25 16:28 huangzhouzixuan | docs(audit): 第29轮 一周审核目标文档 ＋ 两处失实登记订正头（captcha TTL 已合已部署／cgo 候选已合）
+total: 16  no-merge: 11
+
+===== C. 窗口内各合并提交：自动合并结果 vs 实际提交树（有没有夹带） =====
+986f54cc7  huangzhouzixuan 16:38  pure-merge（树与自动合并逐字相同）
+2839eefce  huangzhouzixuan 16:41  pure-merge（树与自动合并逐字相同）
+012b6662e  huangzhouzixuan 16:45  pure-merge（树与自动合并逐字相同）
+29b3dfbd5  huangzhouzixuan 21:07  有冲突（人工解算）：CONFLICT (content): Merge conflict in AGENTS.md 
+
+===== D. 合并 29b3dfbd5 的 AGENTS.md 残留：对两个父提交 =====
+冲突标记行（行首 <<<<<<< / ======= / >>>>>>> / |||||||）：
+  966adbf6e: 0 行  
+  9c9d3258c: 0 行  
+  29b3dfbd5: 1 行  9,
+L116 块（原 L115，撞号后改号）内「⑤ 状态与待 owner」段头计数（前 9 行）：
+  966adbf6e: 1
+  9c9d3258c: 0
+  29b3dfbd5: 2
+29b3dfbd5 第 6 行 sha256: b9bb1a4aa6601910   第 7 行: 8d6241285a3c4c76   父 966adbf6e 第 6 行: b9bb1a4aa6601910
+第 6 行是第 7 行的前缀: True
+第 8–10 行（原样，截断到 70 字符）：
+  
+  =======
+  > ★★★★ **★ L115（★ 2026-11-25 19:4x–20:4x）：★★�
+合并相对两个父的非 AGENTS.md 改动：
+  ≠ 两个父（合并时人工改过）  docs/audit/2026-11-25-待owner裁决清单.md
+  = 父 9c9d3258c  scripts/package-forensics.sh
+  = 父 9c9d3258c  scripts/ursmcheck/gocache_script_family_exclusions.json
+
+===== E. 全仓残留扫描（冻结树 29b3dfbd5；python3 -I scan_residue.py） =====
+  [i] git 认的文件 21930 个；独占一行的 `=======` 共 1 处；其中孤立分隔符（前一行为空/文件首行/结构行，且不在围栏内）1 处
+      AGENTS.md:9  (prev-blank)
+  
+  [ii] AGENTS.md 轮块内段号序列（只列有重复或有跳号的块）
+       轮块数 31；带段号的块 20
+      L116 (段头行 1): 段号序列 ①②③④⑤⑤
+          行 2: ① 【★ fetch 实测：远端被并行车道推进 4 笔（`138e8c0afd..e4】 
+          行 3: ② 【★ ①③ 两项刷新实测（★ 判据修正一处 ★）】 
+          行 4: ③ 【★ 裁决问卷已提交 ⇒ 两项超时自动选「维持现状」（★ 自动选中 ≠ owner】 
+          行 5: ④ 【★ 本轮通用式（★ 新增三条 ★★）】 
+          行 6: ⑤ 【★ 状态与待 owner ★★】 DUP
+          行 7: ⑤ 【★ 状态与待 owner ★★】 DUP
+
+===== F. 分支 / worktree / stash =====
+  local   1655ad7ce codex/211-statistics-v2-release
+  local   d7548876f codex/installer-211-history-upgrade
+  local   c43c3e63f codex/reconciliation-release-preview
+  local   5a6b63c51 codex/reconciliation-upgrade
+  local   bcb216dad codex/request-metrics-v2
+  local   46b0710b4 l117/round29-20261125
+  local   29b3dfbd5 main
+  origin  c43c3e63f refs/heads/codex/reconciliation-release-preview
+  origin  5a6b63c51 refs/heads/codex/reconciliation-upgrade
+  origin  29727b3ba refs/heads/main
+  github  c43c3e63f refs/heads/codex/reconciliation-release-preview
+  github  5a6b63c51 refs/heads/codex/reconciliation-upgrade
+  github  29727b3ba refs/heads/main
+  /Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3           29b3dfbd5 [main]
+  /private/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/tmp.PU6lktc2CR/base  c5120d3b5 (detached HEAD)
+  /Users/niuer/.codex/worktrees/211-statistics-v2-release/llm-gateway-go-3      1655ad7ce [codex/211-statistics-v2-release]
+  /Users/niuer/.codex/worktrees/installer-211-history-upgrade/llm-gateway-go-3  d7548876f [codex/installer-211-history-upgrade]
+  /Users/niuer/.codex/worktrees/request-metrics-v2/llm-gateway-go-3             bcb216dad [codex/request-metrics-v2]
+  /Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3-l117      29b3dfbd5 (detached HEAD)
+  /Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3-l117fix   46b0710b4 [l117/round29-20261125]
+stash: 6 条
+  codex/installer-211-history-upgrade: 尖端 d7548876f 19:59 huangxt | ahead=2 behind=16 | 相对 main 改动文件 3 个 | 与 main 自其基准以来的改动重叠 0 个
+  codex/211-statistics-v2-release: 尖端 1655ad7ce 22:07 huangxt | ahead=7 behind=0 | 相对 main 改动文件 302 个 | 与 main 自其基准以来的改动重叠 0 个
+  codex/request-metrics-v2: 尖端 bcb216dad 22:04 huangxt | ahead=2 behind=0 | 相对 main 改动文件 317 个 | 与 main 自其基准以来的改动重叠 0 个
+  codex/reconciliation-upgrade 对 main：merge-tree rc=1 冲突路径=33（判据：stage1 条目数）
+  codex/reconciliation-release-preview 对 main：merge-tree rc=1 冲突路径=27（判据：stage1 条目数）
+
+===== G. pending 清单复核（只读） =====
+[W3 外部钩子] SetExternalHooks 的非测试调用方：
+  29b3dfbd5:domains/hooks/externalhost/demo/integration_demo.go:201:	handler.SetExternalHooks(integrator)
+[maestro 预置会话] 默认值：SEED_ENABLE="${SEED_ENABLE:-1}"
+[gofmt] 追踪的 .go 文件 7465 个；gofmt -l 命中 320 个（其中非 _test.go 129 个）；仓内没有 gofmt 门（scripts/ursmcheck、Makefile、.github/workflows 里只有两份无关测试提到 gofmt 字样）
+[pre-push 钩子] core.hooksPath=''；.git/hooks/pre-push 不在；.githooks/pre-push 受控=1
+[归档档段头重复] 段头 24 个、去重 22 、重复 [('L21', 2), ('L74', 2)]
+[同级检出]（只读；dirty＝已跟踪文件改动数）
+  llm-gateway-go             HEAD=29727b3ba branch=main dirty=0 untracked=0
+  llm-gateway-go-5           HEAD=29b3dfbd5 branch=main dirty=0 untracked=0
+  llm-gateway-go-5-l1l5      HEAD=55f5bb18d branch=feat/211-config-todos-l1l5 dirty=0 untracked=1
+  llm-gateway-go-5-reqlogs   HEAD=b36089b1d branch=HEAD dirty=0 untracked=0
+  llm-gateway-go-cursor      HEAD=9c9d3258c branch=main dirty=0 untracked=0
+[环境] llm-gateway-local-8782 RestartCount=1631 Status=running
+[环境] 已退出的 llmgw-211-* 容器：4 个；.build-local  12G；.audit-validation 197 个目录 /  21M
+[deploy-lib（同级 ai-native-tools 仓）] 109fbd84 11-25 21:51 huangxt；ssh-retry.sh 里 ${#SSH_RETRY_KEY_ARGS[@]} 仍在第 252 行
+
+===== H. CI（GitHub 镜像 halfking/ai-native-gateway-core；公开 REST API、未认证、只读；作业日志需管理员权限 ⇒ 403 读不到） =====
+  run 45607481511 @ e491a6ae8（W4.4 首次进镜像）:
+      Lint                                         failure    失败步骤=['golangci-lint']
+      Sessions V2 integration                      queued     失败步骤=-
+      Identity unit tests (race)                   success    失败步骤=-
+      Build + Unit + SessionForensics              failure    失败步骤=['Run unit tests (short mode)']
+      Raw sink + streaming tests (race)            failure    失败步骤=['Run logging and streaming race tests']
+      Core quality (vet + race + fuzz)             failure    失败步骤=['Run core tests with race detector']
+      Concurrency tests (race)                     success    失败步骤=-
+      Gateway RLS integration                      queued     失败步骤=-
+      Gateway PostgreSQL contract integration      cancelled  失败步骤=-
+      Forensics package gate (W4.4)                skipped    失败步骤=-
+  run 45620484041 @ 29b3dfbd5（当前尖端）:
+      Gateway RLS integration                      queued     失败步骤=-
+      Raw sink + streaming tests (race)            failure    失败步骤=['Run logging and streaming race tests']
+      Build + Unit + SessionForensics              failure    失败步骤=['Run unit tests (short mode)']
+      Concurrency tests (race)                     success    失败步骤=-
+      Sessions V2 integration                      queued     失败步骤=-
+      Lint                                         failure    失败步骤=['golangci-lint']
+      Identity unit tests (race)                   success    失败步骤=-
+      Core quality (vet + race + fuzz)             in_progress 失败步骤=-
+      Gateway PostgreSQL contract integration      pending    失败步骤=-
+      Forensics package gate (W4.4)                skipped    失败步骤=-
+  自 e491a6ae8 起该工作流在 main 上的运行（run id / sha / Forensics package gate 结论）:
+      45607481511 e491a6ae8: skipped
+      45610193448 19a02bce9: skipped
+      45611238559 c5120d3b5: skipped
+      45617273383 9c9d3258c: skipped
+      45620484041 29b3dfbd5: skipped
+  历史抽样（同工作流 run → 作业级结论）：
+      {"sha": "e491a6ae8", "Lint": "failure @ ['golangci-lint']", "Identity uni": "success", "build": "failure @ ['Run unit tests (short mode)']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Core quality": "failure @ ['Run core tests with race detector']", "Concurrency ": "success", "Forensics pa": "skipped"
+      {"sha": "1fb5d225f", "Lint": "failure @ ['golangci-lint']", "Core quality": "failure @ ['Run core tests with race detector']", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "success", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Identity uni": "success"}
+      {"sha": "76e7b6ece", "Lint": "failure @ ['golangci-lint']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Identity uni": "success", "Core quality": "failure @ ['Run core tests with race detector']", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "success"}
+      {"sha": "254ae0ef4", "build": "failure @ ['Run unit tests (short mode)']", "Lint": "failure @ ['golangci-lint']", "Core quality": "failure @ ['Run core tests with race detector']", "Concurrency ": "success", "Identity uni": "success", "Raw sink + s": "failure @ ['Run logging and streaming race tests']"}
+      {"sha": "b36089b1d", "Lint": "failure @ ['golangci-lint']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Identity uni": "success", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "failure @ ['Run concurrency tests (race detector)']", "Core quality": "failure @ ['Run core tests with
+      {"sha": "39a8a25e6", "Identity uni": "success", "build": "failure @ ['Run unit tests (short mode)']", "Lint": "failure @ ['golangci-lint']", "Concurrency ": "failure @ ['Run concurrency tests (race detector)']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Core quality": "failure @ ['Run core tests with
+      {"sha": "a82fb8057", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "failure @ ['Run concurrency tests (race detector)']", "Identity uni": "success", "Lint": "failure @ ['golangci-lint']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Core quality": "failure @ ['Run core tests with
+
+===== I. 完成 2026-11-25 22:12:57 =====
+
+======== B1. 两道门：真实事故形态必红 → 修后必绿 → 变异自证（verify_gates2.sh 自检版逐字输出；VERDICT 行在末尾） ========
+# 验证树＝修复树；第 1 段把 AGENTS.md 临时换回显式指定的未修版本 29b3dfbd5 再跑两道新判据；每一步都断言期望的红／绿与红因。
+# 来源：/tmp/l117-audit/verify_gates.out
+tree=/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3-l117fix HEAD=f97ce5a70 未修版本=29b3dfbd5（该版本的 AGENTS.md 第 9 行是孤立 =======、L116 块里 ⑤ 两行）
+baseline md5: marker=693d1220eb7b0adacfaeace1150a2ed5 round=e0f0ba00c719f764dfd46bb89d02cd51 AGENTS=b35adb2502c66e2302548edb715c1f2f
+===== 1) 真实事故形态：AGENTS.md 换回未修版本 29b3dfbd5 ⇒ 两条新判据必须红、且恰好点到那两处 =====
+[bite_real_incident] rc=1 
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L116 块里段首编号 ⑤ 出现了 2 次（行 [6 7]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法：保�
+     |     agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 224 行（分布在 31 个轮块）、块内重复 1 组
+     |     merge_conflict_marker_gate_test.go:237: ★ AGENTS.md:9 孤立分隔符 "======="（★ 前一行承载不了 setext 标题 ⇒ ★ 它不是 markdown 的标题下划线 ⇒ ★ ★ 多半是解冲突时删了两端、漏了�
+     |     merge_conflict_marker_gate_test.go:247: ★ 共 1 处（★ 扫了 21718 个文件）
+===== 2) 修后：两道门全部函数（真门 ＋ 阳性对照 ＋ 量具自证）必须绿 =====
+[after_fix] rc=0 ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	3.062s 
+after_fix_v: ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	2.698s PASS=7 FAIL=0
+===== 3) 变异自证（施加 → 跑 → 还原；每个变异必须红、且红在指定的对照臂上） =====
+--- M1 关掉判据④（孤立分隔符永不判红）⇒ 对照臂 C/D 必红 ---
+[M1] rc=1 
+     |     merge_conflict_marker_gate_test.go:325: ★ 阳性对照失败【C 孤立分隔符（前一行是空行、没有 `<<<<<<<`）】：★ 期望 [{3 ======= true}]、★ 实得 []
+     |     merge_conflict_marker_gate_test.go:325: ★ 阳性对照失败【D 文件首行就是分隔符】：★ 期望 [{1 ======= true}]、★ 实得 []
+     |     merge_conflict_marker_gate_test.go:352: ★ 按路径扫描与按内容扫描结论不一致【C 孤立分隔符（前一行是空行、没有 `<<<<<<<`）】：★ 期望进判据面且为 [{3 ======= true}]、★ 实得 inSc
+     |     merge_conflict_marker_gate_test.go:352: ★ 按路径扫描与按内容扫描结论不一致【D 文件首行就是分隔符】：★ 期望进判据面且为 [{1 ======= true}]、★ 实得 inScope=true []
+--- M2 判据④不看前一行（任何 ======= 都判孤立 ⇒ setext 豁免失效）⇒ 对照臂 B 必红 ---
+[M2] rc=1 
+     |     merge_conflict_marker_gate_test.go:325: ★ 阳性对照失败【B markdown 的 setext 下划线（恰好七个等号）】：★ 期望 []、★ 实得 [{2 ======= true}]
+     |     merge_conflict_marker_gate_test.go:352: ★ 按路径扫描与按内容扫描结论不一致【B markdown 的 setext 下划线（恰好七个等号）】：★ 期望进判据面且为 []、★ 实得 inScope=true [{2 ======= 
+--- M3 判据④不排除围栏 ⇒ 对照臂 E 必红 ---
+[M3] rc=1 
+     |     merge_conflict_marker_gate_test.go:325: ★ 阳性对照失败【E 围栏内的是引文（不在判据面里）】：★ 期望 []、★ 实得 [{4 ======= true}]
+     |     merge_conflict_marker_gate_test.go:352: ★ 按路径扫描与按内容扫描结论不一致【E 围栏内的是引文（不在判据面里）】：★ 期望进判据面且为 []、★ 实得 inScope=true [{4 ======= true}]
+--- M4 R7 的段首编号正则失准（认不出编号）⇒ 自证臂 A 必红、真门报「一条都匹配不到」 ---
+[M4] rc=1 
+     |     agents_md_round_label_gate_test.go:271: ★ AGENTS.md 里一条「段首编号」行都匹配不到 ⇒ ⇒ ⇒ 判据可能已失效（★ 别按本门结论改代码）
+     |     agents_md_round_label_gate_test.go:319: ★ 量具自证失败：相邻形态的块内重复没抓准（得到 map[string]map[string][]int{}）⇒ R7 恒绿
+--- M5 R7 的连续引用段不随引用断开而换段 ⇒ 自证臂 D 必红（且真实文件 L88/L104 被误判） ---
+[M5] rc=1 
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ① 出现了 4 次（行 [162 176 188 201]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ② 出现了 4 次（行 [163 177 189 202]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ③ 出现了 4 次（行 [164 178 190 203]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ④ 出现了 4 次（行 [165 179 191 204]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑤ 出现了 4 次（行 [166 180 192 205]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑥ 出现了 4 次（行 [167 181 193 206]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑦ 出现了 4 次（行 [168 182 194 207]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ �
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑧ 出现了 3 次（行 [183 195 220]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑨ 出现了 2 次（行 [184 196]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法：�
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑩ 出现了 2 次（行 [185 197]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法：�
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L104 块里段首编号 ① 出现了 2 次（行 [79 94]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法：�
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L104 块里段首编号 ② 出现了 2 次（行 [80 95]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法：�
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L104 块里段首编号 ③ 出现了 2 次（行 [81 96]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在旧稿下面、旧稿没删 ⇒ ★ 修法：�
+     |     agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 227 行（分布在 32 个轮块）、块内重复 2 组
+     |     agents_md_round_label_gate_test.go:354: ★ 量具自证失败：分段重新编号被判成重复（得到 map[string]map[string][]int{"L116":map[string][]int{"①":[]int{2, 4}}}）⇒ R7 会误伤旧式多补记的轮块
+--- M6 R7 关掉「编号＋标题相同」这一形态（只剩相邻形态）⇒ 自证臂 A2 必红 ---
+[M6] rc=1 
+     |     agents_md_round_label_gate_test.go:328: ★ 量具自证失败：隔空行的同题旧稿没抓到（得到 map[string]map[string][]int{}）⇒ R7 只能抓相邻形态
+--- M7 编号令牌吞掉字母后缀（⑦b…⑦m 当成 ⑦）⇒ 自证臂 G 必红、真实文件 L88 被误判 ---
+[M7] rc=1 
+     |     agents_md_round_label_gate_test.go:292: ★ AGENTS.md 的 L88 块里段首编号 ⑦ 出现了 13 次（行 [207 208 209 210 211 212 213 214 215 216 217 218 219]）⇒ ⇒ ⇒ 多半是合并/改稿时把新稿【追加】在�
+     |     agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 227 行（分布在 32 个轮块）、块内重复 1 组
+     |     agents_md_round_label_gate_test.go:375: ★ 量具自证失败：字母后缀子项被判成重复（得到 map[string]map[string][]int{"L88":map[string][]int{"⑦":[]int{3, 4, 5}}}）⇒ R7 会误伤旧式轮块
+===== 4) 还原核对 =====
+after md5:  marker=693d1220eb7b0adacfaeace1150a2ed5 round=e0f0ba00c719f764dfd46bb89d02cd51 AGENTS=b35adb2502c66e2302548edb715c1f2f
+RESTORED=1
+VERDICT=ALL_EXPECTATIONS_MET
+
+======== B2. 修后两道门的全函数读数（-v；含阳性对照与量具自证臂） ========
+# 来源：/tmp/l117-audit/gatelogs/after_fix_v.log
+2026/11/25 22:41:41 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+=== RUN   TestAgentsMdRoundLabelUniqueInMain
+    agents_md_round_label_gate_test.go:127: ★ 主档里有 32 个 L 标记（范围 L76–L117）
+--- PASS: TestAgentsMdRoundLabelUniqueInMain (0.01s)
+=== RUN   TestAgentsMdRoundLabelNotLost
+    agents_md_round_label_gate_test.go:156: ★ 同时出现在主档与归档档的标记（历史同号或归档未摘净，非本门判据）：[79]
+    agents_md_round_label_gate_test.go:159: ★ 归档档内段头重复的标记（历史原因，非本门判据）：[21 74]
+--- PASS: TestAgentsMdRoundLabelNotLost (0.07s)
+=== RUN   TestAgentsMdRoundParaNumberingUniqueInBlock
+    agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 227 行（分布在 32 个轮块）、块内重复 0 组
+--- PASS: TestAgentsMdRoundParaNumberingUniqueInBlock (0.00s)
+=== RUN   TestAgentsMdRoundParaDetectorBites
+--- PASS: TestAgentsMdRoundParaDetectorBites (0.00s)
+=== RUN   TestAgentsMdRoundLabelDetectorBites
+--- PASS: TestAgentsMdRoundLabelDetectorBites (0.01s)
+=== RUN   TestNoMergeConflictMarkersInTree
+    merge_conflict_marker_gate_test.go:250: ★ 冲突标记扫描：21718 个文件、0 处（★ git 认的文件 29327 个）
+--- PASS: TestNoMergeConflictMarkersInTree (2.29s)
+=== RUN   TestMergeConflictMarkerDetectorPositiveControl
+--- PASS: TestMergeConflictMarkerDetectorPositiveControl (0.12s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	2.698s
+
+======== C1. 打包脚本修前：--out DIR（脚本文档与 CI 作业的调用形态） ========
+# 来源：/tmp/l117-audit/pkg_before_space.log
+==> packaging llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty
+rm: illegal option -- -
+usage: rm [-f | -i] [-dIPRrvWx] file ...
+       unlink [--] file
+rc=64
+
+======== C2. 打包脚本修前：--out=DIR（假 go/tar 桩，只看解析走到哪一步） ========
+# 来源：/tmp/l117-audit/pkg_before_eq.log
+==> packaging llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty
+==> building bin/sessionforensics (CGO_ENABLED=0)
+FAKE-GO build -trimpath -ldflags=-s -w -o /tmp/l117-audit/pkg-eq/dist/llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/sessionforensics ./cmd/sessionforensics
+FAKE-TAR czf llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty.tar.gz llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty
+==> done: /tmp/l117-audit/pkg-eq/dist/llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty.tar.gz
+FAKE-TAR tzf /tmp/l117-audit/pkg-eq/dist/llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty.tar.gz
+rc=0
+
+======== C3. 打包脚本修后：--out DIR 真构建 ========
+# 来源：/tmp/l117-audit/logs/pkg_after_space.log
+==> packaging llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty
+==> building bin/sessionforensics (CGO_ENABLED=0)
+==> done: /tmp/l117-audit/pkg-after/space/llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty.tar.gz
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/config/
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/README.md
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/config/forensics.env.example
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/sessionforensics
+
+======== C4. 打包脚本修后：CI 作业验证步骤原样走一遍 ＋ 包内 README 与拒绝用例 ========
+# 来源：/tmp/l117-audit/pkg_after_verify.log
+# 修后脚本的拒绝用例（用 git show 46b0710b4:scripts/package-forensics.sh 的副本跑：这些用例都在参数解析处退出、不构建、不读树）
+argv=[--out]    rc=64 :: package-forensics: --out 后面要跟一个目录（--out DIR 或 --out=DIR）
+argv=[--out '']  rc=64 :: package-forensics: --out 后面要跟一个目录（--out DIR 或 --out=DIR）
+argv=[--out /]   rc=64 :: package-forensics: 输出目录不能为空、也不能是根目录（实得：/）
+argv=[--out=/]   rc=64 :: package-forensics: 输出目录不能为空、也不能是根目录（实得：/）
+argv=[--bogus x] rc=64 :: package-forensics: 未知参数：--bogus（用法：--out DIR 或 --out=DIR）
+--- --help（rc 与输出）---
+用法：./scripts/package-forensics.sh [--out DIR | --out=DIR]
+  OUT 目录缺省为 <仓根>/dist；相对路径按【调用时的当前目录】解析（不是仓根）。
+版本号默认取 git describe --tags（无 tag 时回退 git 短 SHA）。
+help rc=0
+
+# CI 作业 package-forensics 的验证步骤原样（对修后 --out DIR 产出的包）
+test -x rc=0
+help > /dev/null rc=0
+--- 包内清单 ---
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty.tar.gz
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/README.md
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/sessionforensics
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/config/forensics.env.example
+--- 包内 README（前 22 行）---
+# llm-gateway Forensics 组件
+
+会话取证独立交付包（W4.4）：生产环境无侵入下载、回放、摘要会话。
+
+## 平台
+本包的二进制是在【打包机】的平台/架构上构建的，只能在同平台/架构上运行；
+换平台请在目标平台重新执行 `scripts/package-forensics.sh`。
+- 本包构建于：
+  Darwin/arm64
+
+## 依赖
+- Go 1.27.4（取自仓库 go.mod 的 go 指令；只有打包机需要，运行时零依赖）
+- 目标网关 admin 面可达（具备会话读取权限的 JWT）
+
+## 安装
+1. 解压本包到任意目录
+2. `cp config/forensics.env.example config/forensics.env` 并填入 BASE_URL 与 BEARER
+3. `source config/forensics.env`
+
+## 使用
+    ./bin/sessionforensics list     --limit=20
+    ./bin/sessionforensics download --id=gw_xxx --out=sessions/
+--- 包内 config/forensics.env.example ---
+# sessionforensics 配置（复制为 forensics.env 后 source 使用）
+# admin 网关地址（--from/--to 的默认值）
+SESSION_FORENSICS_BASE_URL=https://admin.example.com
+# admin JWT（Authorization: Bearer ...）
+SESSION_FORENSICS_BEARER=
+--- 二进制 ---
+36207362 bytes
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/sessionforensics: Mach-O 64-bit executable arm64
+--- 修后相对路径形态的产出（logs/pkg_after_rel.log）---
+==> packaging llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty
+==> building bin/sessionforensics (CGO_ENABLED=0)
+==> done: /tmp/l117-audit/pkg-after/rel/llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty.tar.gz
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/config/
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/README.md
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/config/forensics.env.example
+llm-gateway-forensics-2.6.2-230-g29b3dfbd5-dirty/bin/sessionforensics
+
+======== D. CI 作业级读数 ========
+# GitHub 镜像 halfking/ai-native-gateway-core；公开 REST API、未认证、只读；作业日志需管理员权限（403）⇒ 只到步骤级。
+# 来源：/tmp/l117-audit/ci_jobs.txt
+repo=halfking/ai-native-gateway-core  workflow=.github/workflows/sessionforensics-ci.yml  取数时间≈2026-11-25 21:2x–21:41 CST（未认证公开 REST API；只读）
+自 W4.4（e491a6ae8）起该工作流在 main 上的 5 次运行，逐作业结论：
+  run 45607481511 @ e491a6ae8 W4.4 首次进镜像
+      Lint                                           failure     失败步骤=['golangci-lint']
+      Sessions V2 integration                        queued      失败步骤=-
+      Identity unit tests (race)                     success     失败步骤=-
+      Build + Unit + SessionForensics                failure     失败步骤=['Run unit tests (short mode)']
+      Raw sink + streaming tests (race)              failure     失败步骤=['Run logging and streaming race tests']
+      Core quality (vet + race + fuzz)               failure     失败步骤=['Run core tests with race detector']
+      Concurrency tests (race)                       success     失败步骤=-
+      Gateway RLS integration                        queued      失败步骤=-
+      Gateway PostgreSQL contract integration        cancelled   失败步骤=-
+      Forensics package gate (W4.4)                  skipped     失败步骤=-
+  run 45610193448 @ 19a02bce9 
+      Lint                                           failure     失败步骤=['golangci-lint']
+      Gateway RLS integration                        queued      失败步骤=-
+      Core quality (vet + race + fuzz)               failure     失败步骤=['Run core tests with race detector']
+      Sessions V2 integration                        queued      失败步骤=-
+      Identity unit tests (race)                     success     失败步骤=-
+      Concurrency tests (race)                       success     失败步骤=-
+      Build + Unit + SessionForensics                failure     失败步骤=['Run unit tests (short mode)']
+      Raw sink + streaming tests (race)              failure     失败步骤=['Run logging and streaming race tests']
+      Gateway PostgreSQL contract integration        cancelled   失败步骤=-
+      Forensics package gate (W4.4)                  skipped     失败步骤=-
+  run 45611238559 @ c5120d3b5 
+      Identity unit tests (race)                     success     失败步骤=-
+      Concurrency tests (race)                       success     失败步骤=-
+      Gateway RLS integration                        queued      失败步骤=-
+      Lint                                           failure     失败步骤=['golangci-lint']
+      Build + Unit + SessionForensics                failure     失败步骤=['Run unit tests (short mode)']
+      Raw sink + streaming tests (race)              failure     失败步骤=['Run logging and streaming race tests']
+      Sessions V2 integration                        queued      失败步骤=-
+      Core quality (vet + race + fuzz)               failure     失败步骤=['Run core tests with race detector']
+      Gateway PostgreSQL contract integration        cancelled   失败步骤=-
+      Forensics package gate (W4.4)                  skipped     失败步骤=-
+  run 45617273383 @ 9c9d3258c 
+      Gateway RLS integration                        queued      失败步骤=-
+      Identity unit tests (race)                     success     失败步骤=-
+      Lint                                           failure     失败步骤=['golangci-lint']
+      Build + Unit + SessionForensics                failure     失败步骤=['Run unit tests (short mode)']
+      Raw sink + streaming tests (race)              failure     失败步骤=['Run logging and streaming race tests']
+      Core quality (vet + race + fuzz)               failure     失败步骤=['Run core tests with race detector']
+      Sessions V2 integration                        queued      失败步骤=-
+      Concurrency tests (race)                       success     失败步骤=-
+      Gateway PostgreSQL contract integration        cancelled   失败步骤=-
+      Forensics package gate (W4.4)                  skipped     失败步骤=-
+  run 45620484041 @ 29b3dfbd5 本轮开场时的尖端
+      Gateway RLS integration                        queued      失败步骤=-
+      Raw sink + streaming tests (race)              failure     失败步骤=['Run logging and streaming race tests']
+      Build + Unit + SessionForensics                failure     失败步骤=['Run unit tests (short mode)']
+      Concurrency tests (race)                       success     失败步骤=-
+      Sessions V2 integration                        queued      失败步骤=-
+      Lint                                           failure     失败步骤=['golangci-lint']
+      Identity unit tests (race)                     success     失败步骤=-
+      Core quality (vet + race + fuzz)               in_progress 失败步骤=-
+      Gateway PostgreSQL contract integration        pending     失败步骤=-
+      Forensics package gate (W4.4)                  skipped     失败步骤=-
+历史抽样（run → 作业级结论；每项格式＝作业名: 结论 @ 失败步骤）：
+  {"sha": "e491a6ae8", "Lint": "failure @ ['golangci-lint']", "Identity uni": "success", "build": "failure @ ['Run unit tests (short mode)']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Core quality": "failure @ ['Run core tests with race detector']", "Concurrency ": "success", "Forensics pa": "skipped"}
+  {"sha": "1fb5d225f", "Lint": "failure @ ['golangci-lint']", "Core quality": "failure @ ['Run core tests with race detector']", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "success", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Identity uni": "success"}
+  {"sha": "76e7b6ece", "Lint": "failure @ ['golangci-lint']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Identity uni": "success", "Core quality": "failure @ ['Run core tests with race detector']", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "success"}
+  {"sha": "254ae0ef4", "build": "failure @ ['Run unit tests (short mode)']", "Lint": "failure @ ['golangci-lint']", "Core quality": "failure @ ['Run core tests with race detector']", "Concurrency ": "success", "Identity uni": "success", "Raw sink + s": "failure @ ['Run logging and streaming race tests']"}
+  {"sha": "b36089b1d", "Lint": "failure @ ['golangci-lint']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Identity uni": "success", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "failure @ ['Run concurrency tests (race detector)']", "Core quality": "failure @ ['Run core tests with race detector']"}
+  {"sha": "39a8a25e6", "Identity uni": "success", "build": "failure @ ['Run unit tests (short mode)']", "Lint": "failure @ ['golangci-lint']", "Concurrency ": "failure @ ['Run concurrency tests (race detector)']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Core quality": "failure @ ['Run core tests with race detector']"}
+  {"sha": "a82fb8057", "build": "failure @ ['Run unit tests (short mode)']", "Concurrency ": "failure @ ['Run concurrency tests (race detector)']", "Identity uni": "success", "Lint": "failure @ ['golangci-lint']", "Raw sink + s": "failure @ ['Run logging and streaming race tests']", "Core quality": "failure @ ['Run core tests with race detector']"}
+作业日志端点：GET /repos/{owner}/{repo}/actions/jobs/139226974267/logs → HTTP 403 "Must have admin rights to Repository." ⇒ 读不到日志、只能到步骤级
+
+======== E. 冻结树 29b3dfbd5 上的基线读数（job_tree.sh；A–C 段完整、D 段被手动中止） ========
+# 中止原因：别的车道把机器压到 load 600+，D 段套件开始撞 60 秒名义上限。中止后查树：发现 1 个已修改的追踪文件与 1 个临时目录（套件变异未还原）⇒ 已还原，追踪文件内容指纹回到读数开始时的 7a73904b…
+# 来源：/tmp/l117-audit/baseline_tree_29b3dfbd5.out
+HEAD=29b3dfbd5279bd45195fdfe4bfaa9547039432bc STATUS_LINES=0 fp0=7a73904b7de3ad1a577adaf10c82d6afbf7e8650a9e6572cd88fab3580ddaadd start=2026-11-25 21:13:46
+===== A. 发布读数 =====
+EXIT go_build=0 (86s) 21:15:12
+EXIT ursmcheck=0 (331s) 21:20:43
+URSMCHECK: ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	329.270s 
+EXIT scan=1 (242s) 21:24:45
+SCAN severity:   By severity:     BLOCK                  32     WARN                   2095  
+===== B. 扩展读数 =====
+EXIT go_vet=0 (17s) 21:25:02
+EXIT go_pkgs=0 (457s) 21:32:39
+go_pkgs 逐包计数: ok=43 FAIL=0 no-test-files=1
+MODULE installer build=0 vet=0 test=0 ok=14 fail=0
+MODULE plugin-runtime/config build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/discovery build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/eventbus build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/ipc build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/reconciler build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/supervisor build=0 vet=0 test=0 ok=1 fail=0
+EXIT web_tsc=0
+EXIT web_vitest=1 ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯  Test Files  3 failed | 376 passed | 1 skipped (380)       Tests  3 failed | 3836 passed | 2 skipped (3841) 
+EXIT web_build=0
+EXIT mobile_tsc=0
+EXIT mobile_vitest=1 ⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯  Test Files  7 failed | 244 passed (251)       Tests  11 failed | 9309 passed | 1 skipped (9321) 
+EXIT maestro=0 SELFTEST: PASS
+===== C. 空库新装烟测门（只打它自己起的一次性容器） =====
+SMOKE_START=2026-11-25 21:53:39 containers_before=41 image=sha256:fa31545b6d07
+SMOKE_EXIT=0
+  ✔ minimax-m3.1-flash 在位且 featured=TRUE
+  ℹ public 表数：593
+★ 跑第二次安装（★ 增量路径：★ 同一个库、★ 同一个容器）…
+  ✔ 第二次安装成功（★ 增量路径）
+  ✔ 增量后日对账迁移和读面齐全
+  ✔ 台账行数未变（415）⇒ 没有迁移被重放
+  ✔ 第二次运行没有重放任何带版本号的迁移
+  ✔ 增量路径后 4 个会话分析物化视图仍在
+  ✔ 增量路径后 total_credits_charged 仍在
+★ 跑第三阶段（安装器新装库交给部署迁移通道）…
+  已检查 首次接管，安装器凭证命中 372/372
+★ 跑第四阶段（部署迁移通道复跑）…
+  已检查 接管后复跑，安装器凭证命中 372/372
+fresh-install-smoke: PASS
+SMOKE_END=2026-11-25 21:57:27 containers_after=41 added=1 removed=1
+===== D. pre-push 钩子等价执行（本克隆未接线；钩子原文 .githooks/pre-push） =====
+EXIT audit_guards=0 (32s) 21:57:59
+ok  	github.com/kaixuan/llm-gateway-go/internal/rowsguard	13.619s
+ok  	github.com/kaixuan/llm-gateway-go/internal/errdiscard	13.438s
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbrows	0.026s
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsoncol	0.041s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramguard	0.038s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	29.545s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlreadguard	5.865s
+EXIT guards_sync=0 (0s) 21:57:59
+✅ 另有 8 个非 internal 条目已逐一校验存在性（命名约定不适用于它们，故不告警）
+✅ CI 未硬编码守卫包清单，且在跑的载体（.workflow）仍在跑 make guards*
+/tmp/l117-audit/job_tree.sh: line 68: 37583 Alarm clock: 14         perl -e 'alarm shift; exec @ARGV' "$lim" "$B5" "$t" > "$lf" 2>&1
+/tmp/l117-audit/job_tree.sh: line 68: 65263 Alarm clock: 14         perl -e 'alarm shift; exec @ARGV' "$lim" "$B5" "$t" > "$lf" 2>&1
+
+======== E2. 基线 web vitest 的 3 条红在同一冻结树上的归因重跑 ========
+# 来源：/tmp/l117-audit/web_attrib.txt
+# web vitest 3 条红的归因（同一冻结树 29b3dfbd5；三次读数的 vitest 原始行）
+
+## 读数 1：全量（job_tree.sh；机器被别的车道压到 load ≈ 600；Duration 474s）
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/views/filterDownstreamFalseTruth.silentcatch.test.ts > P2 RequestLogsView：Key 清单取不到，不得说成「按该 Key 筛出零条」 > P2-① Key 清单失败 → 筛选区出现失败说明
+ FAIL  src/views/partialAggregate.silentcatch.test.ts > UsageTrendExplorer 筛选选项：加载失败要说出来 > ③ 供应商/Key 失败 → 横幅出现
+ FAIL  src/views/admin/ReconciliationReport.realdata.test.ts > ReconciliationReport 真实数据渲染 > 真实响应渲染耗时在可接受范围（挂载 + 首次数据落地）
+ Test Files  3 failed | 376 passed | 1 skipped (380)
+      Tests  3 failed | 3836 passed | 2 skipped (3841)
+   Start at  21:36:53
+   Duration  474.44s (tests 36%, environment 34%, import 17%, transform 12%, setup 1%, worker 1%)
+
+## 读数 2：只跑 3 个失败 spec（load ≈ 195–208）
+ ✓ src/views/partialAggregate.silentcatch.test.ts (5 tests) 27155ms
+ ❯ src/views/filterDownstreamFalseTruth.silentcatch.test.ts (7 tests | 1 failed) 31415ms
+ ✓ src/views/admin/ReconciliationReport.realdata.test.ts (6 tests) 15995ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/views/filterDownstreamFalseTruth.silentcatch.test.ts > P2 RequestLogsView：Key 清单取不到，不得说成「按该 Key 筛出零条」 > P2-① Key 清单失败 → 筛选区出现失败说明
+Error: Test timed out in 20000ms.
+ ❯ src/views/filterDownstreamFalseTruth.silentcatch.test.ts:91:3
+ Test Files  1 failed | 2 passed (3)
+      Tests  1 failed | 17 passed (18)
+   Start at  22:00:04
+   Duration  43.57s (tests 65%, transform 18%, environment 10%, import 6%)
+
+## 读数 3：只跑仍红的那 1 个文件（load ≈ 182→171）
+ ✓ src/views/filterDownstreamFalseTruth.silentcatch.test.ts (7 tests) 13276ms
+     ✓ P2-① Key 清单失败 → 筛选区出现失败说明 11498ms
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  22:01:36
+   Duration  15.84s (tests 86%, environment 11%, import 2%, transform 1%)
+
+## 判据
+- 3 条红的失败形态都是超时（Error: Test timed out in 20000ms 或等待超时），没有一条是断言不等
+- spec 与被测组件在窗口内零改动：git log 1fb5d225f..29b3dfbd5 -- web/src/views/filterDownstreamFalseTruth.silentcatch.test.ts web/src/views/RequestLogsView.vue ⇒ 空
+- 同一冻结树单独重跑：3 个文件 ⇒ 2 过 1 红（仍是 20s 超时）；1 个文件 ⇒ 7/7 过（P2-① 11.5s）
+⇒ 归因：满载导致的超时（量具面），非产品缺陷；P2-① 单跑 11.5s、20s 上限的余量在满载机器上不够（既有慢测试，登记不修）
+
+## web-mobile（同一 job；窗口内 web-mobile 零文件改动）
+⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯
+ Test Files  7 failed | 244 passed (251)
+      Tests  11 failed | 9309 passed | 1 skipped (9321)
+ FAIL  src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-1 ★★★★★ 读数：分母必须写在这里，不许只报「对不上的几条」
+ FAIL  src/api/goLineRef.spec.ts > ① Go 行号引用普查：读数 + 召回自证 + 阳性对照 > ①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上
+ FAIL  src/api/goLineRef.spec.ts > ② ★★ 未登记的漂移一律红 > ②-1 ★★★★★ 对不上的引用必须全部已登记（★ 本批起覆盖**全范围**）
+ FAIL  src/api/goLineRef.spec.ts > ③ ★★★ 登记项必须仍然对不上（修好了就要删登记） > ③-1 ★★★★★ 登记项每一条都仍然判为对不上（修好了就要删登
+ FAIL  src/i18n/orphanKeys.spec.ts > ② ★★★ 未登记的孤儿键一律红 > ②-1 ★★★★★ 判为孤儿的键必须全部已登记
+ FAIL  src/views/DataLifecycleStorageView.spec.ts > ① 权限档 admin（两条独立理由，缺一不可） > ①-7 ★★★★★ 行号订正：`:982`/`:983` → `:1009`/`:1010`（批153）→ `
+ FAIL  src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-6 ★★★★★★ 读 Go 源码：`:1182` 与 `:1185` **相邻两行却是两种档位**
+ FAIL  src/views/StorageAndLogConfigView.spec.ts > ① 权限档第二类「真门」 > ①-7 ★★★★ 行号订正：:1108/:1109/:1111/:1114 → :1137/:1138/:1140/:1143 → :1172/:1173/:1175/:117
+ FAIL  src/views/StorageMigrationStateView.spec.ts > ① 权限档「admin」（服务端无角色下限 ⇒ 前端是唯一的门） > ①-5 ★★★★★★ 读 Go 源码：`:1182`（superAdmin）
+ FAIL  src/views/TurnsFilterOptionsView.spec.ts > ① 权限档「admin」（第四个写下错话的模块） > ①-6 ★★★★★★ 读 Go 源码：注册行 `:1277` → `:1307`（批153）→ `
+ FAIL  src/views/UsageEnhancedView.spec.ts > ① 权限档 admin（本仓第一个「有租户维度但缺角色下限」的家族） > ①-8 ★★★★★ 注册处行号订正：模块头原写 `:
+
+======== E3. 首次在「含上游 29727b3ba」的树上读数（A 段到 ursmcheck 为止，其余步骤被手动中止） ========
+# 全量 ursmcheck 红 5 条 ⇒ 触发下面的归因与收口。
+# 来源：/tmp/l117-audit/attempt1_46b0710b4.out
+HEAD=46b0710b49957b2953956af4c9341e609f86e78e STATUS_LINES=0 fp0=22adba422fe8720d032d34d94a98ea9929de4ebf7f9e652b589fa3a418acd166 start=2026-11-25 22:11:55 load=148.13 181.26 220.88
+===== A. 发布读数 =====
+EXIT go_build=0 (122s) 22:13:57 load=111.48 161.85 208.27
+EXIT ursmcheck=1 (374s) 22:20:11 load=56.12 102.81 164.88
+URSMCHECK: 
+--- FAIL: TestAdminRoutesSnapshotMatchesGenerator (3.09s)
+--- FAIL: TestAdminRoutesSnapshotRowCount (2.76s)
+--- FAIL: TestRealDBLegsUseDeclaredDSNEnvNames (2.26s)
+--- FAIL: TestPGTestEnvRegistryCoversEveryGapName (0.86s)
+--- FAIL: TestStructuredRegistryCensusCoversEveryCandidate (0.09s)
+
+======== E4. 归因：纯上游树 29727b3ba（不含本轮任何改动）同条件只跑这 5 条 ========
+# 来源：/tmp/l117-audit/upstream_control_29727b3ba.log
+2026/11/25 22:21:10 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+--- FAIL: TestAdminRoutesSnapshotMatchesGenerator (3.93s)
+    admin_routes_snapshot_gate_test.go:266: ★ 行数不一致：生成器 733 行 vs 快照 730 行 ⇒ 快照已漂移（或生成器口径变了）
+    admin_routes_snapshot_gate_test.go:271: ★ 第 1 行不一致 ⇒ 快照已漂移（或生成器口径变了）
+        生成器："\tGET\tplugin-runtime/remediation/child/server.go:62"
+        快照　："/\tANY\tcmd/gateway/main.go:8224"
+--- FAIL: TestAdminRoutesSnapshotRowCount (2.82s)
+    admin_routes_snapshot_gate_test.go:286: ★ 生成器 733 行 vs 快照 730 行 ⇒ 不相等
+--- FAIL: TestRealDBLegsUseDeclaredDSNEnvNames (1.73s)
+    datasource_env_test.go:444: 真库腿认的 DSN 变量 "TEST_UPSTREAM_COOLDOWN_DSN  ← ../../cmd/gateway/upstream_cooldown_test.go" 不在事实源 ../../scripts/audit/datasource_env.sh 里 ⇒ 跑真库腿时会静默 SKIP（go test 把 SKIP 算成绿）
+    datasource_env_test.go:457: 扫到 368 个打开 PG 的测试文件、56 个 DSN 类变量名；事实源导出 34 个、豁免 24 个、未覆盖 1 个
+--- FAIL: TestPGTestEnvRegistryCoversEveryGapName (1.24s)
+    pg_test_env_registry_test.go:530: 测试读的 env "COOLDOWN_FAULT  ← cmd/gateway/upstream_cooldown_test.go" 不在事实源、也不在登记册 pg_test_env_registry.tsv 里 ⇒ 它属于「整体 DSN / 专用 DSN / 隔离 / 危险 / 拼装」哪一类？没人答 ⇒ 真库腿的前置条件是敞开的
+    pg_test_env_registry_test.go:530: 测试读的 env "COOLDOWN_MARKER  ← cmd/gateway/upstream_cooldown_test.go" 不在事实源、也不在登记册 pg_test_env_registry.tsv 里 ⇒ 它属于「整体 DSN / 专用 DSN / 隔离 / 危险 / 拼装」哪一类？没人答 ⇒ 真库腿的前置条件是敞开的
+    pg_test_env_registry_test.go:530: 测试读的 env "TEST_UPSTREAM_COOLDOWN_DSN  ← cmd/gateway/upstream_cooldown_test.go" 不在事实源、也不在登记册 pg_test_env_registry.tsv 里 ⇒ 它属于「整体 DSN / 专用 DSN / 隔离 / 危险 / 拼装」哪一类？没人答 ⇒ 真库腿的前置条件是敞开的
+    pg_test_env_registry_test.go:546: 测试文件 4276 个、env 名 141 个（事实源承载 34 个）；登记册 112 条、未登记 3、死条目 0
+--- FAIL: TestStructuredRegistryCensusCoversEveryCandidate (0.11s)
+    structured_registry_census_test.go:315: 有 3 个「像登记册」的结构化文件没在 scripts/ursmcheck/structured-registry-census.json 里归属：
+          cmd/config-drift-plugin/plugin-manifest.json
+          cmd/sse-break-analysis-plugin/plugin-manifest.json
+          cmd/upstream-cooldown-plugin/plugin-manifest.json
+        ★ 新增这样的文件必须二选一：
+          ① kind=registry ⇒ ★ 写出它的**读方**（★ 它是门读的输入 ⇒ ⇒ 掏空它会让门瞎）
+          ② kind=excluded ⇒ ★ 写出**实质理由**（★ 文档证据 / 测试夹具 / 规则文件……）
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	9.936s
+FAIL
+
+======== E5. 收口第一轮：四个台账已改、快照用未修的生成器刷新 ⇒ 原先 5 条回绿，但牵出 TestAdminRoutesSnapshotRowsAreWellFormed ========
+# 来源：/tmp/l117-audit/upstream5_fix_run1.log
+2026/11/25 22:28:32 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+=== RUN   TestAdminRoutesSnapshotMatchesGenerator
+--- PASS: TestAdminRoutesSnapshotMatchesGenerator (2.91s)
+=== RUN   TestAdminRoutesSnapshotRowCount
+--- PASS: TestAdminRoutesSnapshotRowCount (2.65s)
+=== RUN   TestAdminRoutesSnapshotContainsSessionAnalyticsFamily
+--- PASS: TestAdminRoutesSnapshotContainsSessionAnalyticsFamily (0.00s)
+=== RUN   TestAdminRoutesSnapshotHasMethodPrefixRows
+--- PASS: TestAdminRoutesSnapshotHasMethodPrefixRows (2.59s)
+=== RUN   TestAdminRoutesSnapshotRowsAreWellFormed
+    admin_routes_snapshot_gate_test.go:394: 第 1 行的 path 不以 / 开头：""
+    admin_routes_snapshot_gate_test.go:394: 第 2 行的 path 不以 / 开头：""
+    admin_routes_snapshot_gate_test.go:394: 第 3 行的 path 不以 / 开头：""
+--- FAIL: TestAdminRoutesSnapshotRowsAreWellFormed (0.00s)
+=== RUN   TestAgentsMdRoundLabelUniqueInMain
+    agents_md_round_label_gate_test.go:127: ★ 主档里有 32 个 L 标记（范围 L76–L117）
+--- PASS: TestAgentsMdRoundLabelUniqueInMain (0.00s)
+=== RUN   TestAgentsMdRoundLabelNotLost
+    agents_md_round_label_gate_test.go:156: ★ 同时出现在主档与归档档的标记（历史同号或归档未摘净，非本门判据）：[79]
+    agents_md_round_label_gate_test.go:159: ★ 归档档内段头重复的标记（历史原因，非本门判据）：[21 74]
+--- PASS: TestAgentsMdRoundLabelNotLost (0.04s)
+=== RUN   TestAgentsMdRoundParaNumberingUniqueInBlock
+    agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 227 行（分布在 32 个轮块）、块内重复 0 组
+--- PASS: TestAgentsMdRoundParaNumberingUniqueInBlock (0.00s)
+=== RUN   TestAgentsMdRoundParaDetectorBites
+--- PASS: TestAgentsMdRoundParaDetectorBites (0.00s)
+=== RUN   TestAgentsMdRoundLabelDetectorBites
+--- PASS: TestAgentsMdRoundLabelDetectorBites (0.01s)
+=== RUN   TestRealDBLegsUseDeclaredDSNEnvNames
+    datasource_env_test.go:457: 扫到 368 个打开 PG 的测试文件、56 个 DSN 类变量名；事实源导出 34 个、豁免 25 个、未覆盖 0 个
+--- PASS: TestRealDBLegsUseDeclaredDSNEnvNames (1.46s)
+=== RUN   TestNoMergeConflictMarkersInTree
+    merge_conflict_marker_gate_test.go:250: ★ 冲突标记扫描：21718 个文件、0 处（★ git 认的文件 29327 个）
+--- PASS: TestNoMergeConflictMarkersInTree (2.45s)
+=== RUN   TestMergeConflictMarkerDetectorPositiveControl
+--- PASS: TestMergeConflictMarkerDetectorPositiveControl (0.09s)
+=== RUN   TestPGTestEnvRegistryCoversEveryGapName
+    pg_test_env_registry_test.go:546: 测试文件 4276 个、env 名 141 个（事实源承载 34 个）；登记册 115 条、未登记 0、死条目 0
+--- PASS: TestPGTestEnvRegistryCoversEveryGapName (0.84s)
+=== RUN   TestPGTestEnvRegistryClassesMatchFactsourceAndRunner
+    pg_test_env_registry_test.go:622: 测试文件 4276 个、env 名 141 个；事实源导出 34 个（其中 8 个没有测试读到：[AI_SESSION_MANAGER_DATABASE_URL D07_S01_ADMIN_URL D07_S01_PG_URL LLM_GATEWAY_DATABASE_URL TEST_ADMIN_500_DSN TEST_AUDIT_FRESH_SCHEMA_DB_URL TEST_DATA_INIT_DSN TEST_G6_TOOLS_DSN]）
+    pg_test_env_registry_test.go:624: 官方 runner 的 `env \` 块导出 19 个（其中 1 个不在事实源：[TEST_TENANT_DATABASE_URL]）
+--- PASS: TestPGTestEnvRegistryClassesMatchFactsourceAndRunner (0.83s)
+=== RUN   TestPGTestEnvRegistryScannerSelfCheck
+--- PASS: TestPGTestEnvRegistryScannerSelfCheck (0.00s)
+=== RUN   TestStructuredRegistryCensusCoversEveryCandidate
+--- PASS: TestStructuredRegistryCensusCoversEveryCandidate (0.08s)
+=== RUN   TestStructuredRegistryCensusEntriesAreWellFormed
+--- PASS: TestStructuredRegistryCensusEntriesAreWellFormed (0.08s)
+=== RUN   TestStructuredRegistryCensusBehaviorFlagIsHonest
+--- PASS: TestStructuredRegistryCensusBehaviorFlagIsHonest (0.02s)
+FAIL
+FAIL	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	14.157s
+FAIL
+
+======== E6. 生成器修前／修后对合成样本的输出 ＋ 仓内快照回到与已提交版本逐字节相同 ========
+# 来源：/tmp/l117-audit/route_generator_before_after.txt
+# 生成器对合成样本的输出（样本 sample/s.go，注册行号见下）
+## 样本
+     1	    package sample
+     2	    
+     3	    import "net/http"
+     4	    
+     5	    func f() {
+     6	    	mux := http.NewServeMux()
+     7	    	mux.HandleFunc("GET /pure/literal", nil)
+     8	    	mux.HandleFunc("GET "+manifest.Runtime.HealthPath, nil)
+     9	    	mux.HandleFunc("POST "+remediation.SuggestPath, nil)
+    10	    	mux.HandleFunc(method+" /plugins/{id}", nil)
+    11	    	mux.Handle("/debug/pprof/"+name, nil)
+    12	    	mux.HandleFunc("/plain", nil)
+    13	    	// mux.HandleFunc("/in-comment", nil)
+    14	    }
+## 修前（git show HEAD:scripts/audit/extract-admin-routes.sh）
+    '\tGET\tsample/s.go:8\n'
+    '\tPOST\tsample/s.go:9\n'
+    '/debug/pprof/\tANY\tsample/s.go:11\n'
+    '/plain\tANY\tsample/s.go:12\n'
+    '/pure/literal\tGET\tsample/s.go:7\n'
+## 修后（工作树）
+    '/debug/pprof/\tANY\tsample/s.go:11\n'
+    '/plain\tANY\tsample/s.go:12\n'
+    '/pure/literal\tGET\tsample/s.go:7\n'
+
+======== E7. 收口第二轮：关联各族（路由／真库腿／登记册／普查／掏空／POST 面／AGENTS／冲突标记）83 个顶层测试 0 FAIL ========
+# 来源：/tmp/l117-audit/upstream5_fix_run2.log
+2026/11/25 22:35:22 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+=== RUN   TestAdminRoutesFilesExist
+--- PASS: TestAdminRoutesFilesExist (0.00s)
+=== RUN   TestAdminRoutesSnapshotMatchesGenerator
+--- PASS: TestAdminRoutesSnapshotMatchesGenerator (2.80s)
+=== RUN   TestAdminRoutesSnapshotRowCount
+--- PASS: TestAdminRoutesSnapshotRowCount (2.67s)
+=== RUN   TestAdminRoutesSnapshotContainsSessionAnalyticsFamily
+--- PASS: TestAdminRoutesSnapshotContainsSessionAnalyticsFamily (0.00s)
+=== RUN   TestAdminRoutesSnapshotHasMethodPrefixRows
+--- PASS: TestAdminRoutesSnapshotHasMethodPrefixRows (2.77s)
+=== RUN   TestAdminRoutesSnapshotRowsAreWellFormed
+--- PASS: TestAdminRoutesSnapshotRowsAreWellFormed (0.00s)
+=== RUN   TestAdminRoutesGeneratorDocumentsKnownUnregisteredDeviation
+--- PASS: TestAdminRoutesGeneratorDocumentsKnownUnregisteredDeviation (0.00s)
+=== RUN   TestAdminRoutesGeneratorSkipsEmptyPathConcatenations
+--- PASS: TestAdminRoutesGeneratorSkipsEmptyPathConcatenations (0.05s)
+=== RUN   TestAgentsMdHasNoVerbatimArchiveDuplicate
+    agents_md_archive_duplicate_gate_test.go:115: ★ 主档 350 行 / 归档档 21879 行 ⇒ **0 段**逐字重复（★ 连续 ≥4 行的判据）
+--- PASS: TestAgentsMdHasNoVerbatimArchiveDuplicate (0.65s)
+=== RUN   TestAgentsMdArchiveDuplicateDetectorBites
+    agents_md_archive_duplicate_gate_test.go:179: ★ 量具自证：★ 塞入 4 行样本 ⇒ 检测器识别 4 行 ⇒ 判据有牙齿
+--- PASS: TestAgentsMdArchiveDuplicateDetectorBites (0.00s)
+=== RUN   TestAgentsMdRoundLabelUniqueInMain
+    agents_md_round_label_gate_test.go:127: ★ 主档里有 32 个 L 标记（范围 L76–L117）
+--- PASS: TestAgentsMdRoundLabelUniqueInMain (0.00s)
+=== RUN   TestAgentsMdRoundLabelNotLost
+    agents_md_round_label_gate_test.go:156: ★ 同时出现在主档与归档档的标记（历史同号或归档未摘净，非本门判据）：[79]
+    agents_md_round_label_gate_test.go:159: ★ 归档档内段头重复的标记（历史原因，非本门判据）：[21 74]
+--- PASS: TestAgentsMdRoundLabelNotLost (0.04s)
+=== RUN   TestAgentsMdRoundParaNumberingUniqueInBlock
+    agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 227 行（分布在 32 个轮块）、块内重复 0 组
+--- PASS: TestAgentsMdRoundParaNumberingUniqueInBlock (0.00s)
+=== RUN   TestAgentsMdRoundParaDetectorBites
+--- PASS: TestAgentsMdRoundParaDetectorBites (0.00s)
+=== RUN   TestAgentsMdRoundLabelDetectorBites
+--- PASS: TestAgentsMdRoundLabelDetectorBites (0.00s)
+=== RUN   TestAgentsMdSizeRatchet
+    agents_md_size_ratchet_test.go:108: ★ AGENTS.md = 306851 字节（上限 524288 / 下限 131072）≈ 76712 token（按 4B/token 粗算）
+--- PASS: TestAgentsMdSizeRatchet (0.00s)
+=== RUN   TestAgentsMdArchivePresent
+    agents_md_size_ratchet_test.go:134: ★ AGENTS-archive-20261031.md = 4430035 字节（★ 归档不进请求上下文 ⇒ 体积不敏感）
+--- PASS: TestAgentsMdArchivePresent (0.00s)
+=== RUN   TestAgentsMdRMarkerIndexPointsAtArchive
+    agents_md_size_ratchet_test.go:156: ★ 索引里有 23 条 R 标记
+--- PASS: TestAgentsMdRMarkerIndexPointsAtArchive (0.00s)
+=== RUN   TestAgentsMdSplitIsReal
+--- PASS: TestAgentsMdSplitIsReal (0.00s)
+=== RUN   TestAuditRegistryTableSync
+    audit_registry_table_sync_test.go:1413: ★ C9 读数：★ 规范源条目 **62**（★ 全部 F-编号项口径）｜★ 判得到 **34**｜★ 孤儿 **28**（★ 棘轮：★ 孤儿 ≤ 29、★ 被判 ≥ 25）
+--- PASS: TestAuditRegistryTableSync (0.02s)
+=== RUN   TestAuditRegistryTableSyncHasTeeth
+--- PASS: TestAuditRegistryTableSyncHasTeeth (0.02s)
+=== RUN   TestAuditRegistryTableSyncC10HasTeeth
+--- PASS: TestAuditRegistryTableSyncC10HasTeeth (0.01s)
+=== RUN   TestAuditRegistryTableSyncCoversWholeDoc
+--- PASS: TestAuditRegistryTableSyncCoversWholeDoc (0.03s)
+=== RUN   TestAuditRegistryTableSyncLetterFamilyShape
+--- PASS: TestAuditRegistryTableSyncLetterFamilyShape (0.00s)
+=== RUN   TestAuditRegistryTableSyncDefinitionPointBacklink
+--- PASS: TestAuditRegistryTableSyncDefinitionPointBacklink (0.07s)
+=== RUN   TestAuditRegistryWriteoffGate
+--- PASS: TestAuditRegistryWriteoffGate (0.02s)
+=== RUN   TestAuditRegistryWriteoffGateHasTeeth
+--- PASS: TestAuditRegistryWriteoffGateHasTeeth (0.05s)
+=== RUN   TestAuditRegistryWriteoffGateFixture
+--- PASS: TestAuditRegistryWriteoffGateFixture (0.00s)
+=== RUN   TestAuditRegistryWriteoffGateCodeBlockAwareness
+--- PASS: TestAuditRegistryWriteoffGateCodeBlockAwareness (0.00s)
+=== RUN   TestDatasourceEnvTargetGuardNoUnregisteredMismatch
+    datasource_env_target_guard_test.go:288: 事实源导出 34 个名字；探测到 2 条错配对，台账登记 2 条（未登记 0、腐化 0）
+--- PASS: TestDatasourceEnvTargetGuardNoUnregisteredMismatch (1.66s)
+=== RUN   TestDsnExclusiveRegistrySharedSpine
+--- PASS: TestDsnExclusiveRegistrySharedSpine (0.00s)
+=== RUN   TestRealDBLegsUseDeclaredDSNEnvNames
+    datasource_env_test.go:457: 扫到 368 个打开 PG 的测试文件、56 个 DSN 类变量名；事实源导出 34 个、豁免 25 个、未覆盖 0 个
+--- PASS: TestRealDBLegsUseDeclaredDSNEnvNames (1.31s)
+=== RUN   TestDatasourceEnvHasNoDeadEntries
+--- PASS: TestDatasourceEnvHasNoDeadEntries (0.63s)
+=== RUN   TestDbObjectCensusSnapshotIsWellFormed
+--- PASS: TestDbObjectCensusSnapshotIsWellFormed (0.02s)
+=== RUN   TestDbObjectCensusRejectsMalformedRows
+--- PASS: TestDbObjectCensusRejectsMalformedRows (0.00s)
+=== RUN   TestDbObjectCensusCarriesPerEnvCollectedAt
+--- PASS: TestDbObjectCensusCarriesPerEnvCollectedAt (0.00s)
+=== RUN   TestDbObjectCensusHeaderMatchesRecomputedSha
+--- PASS: TestDbObjectCensusHeaderMatchesRecomputedSha (0.06s)
+=== RUN   TestDbObjectCensusToolStillHasVerifyMode
+--- PASS: TestDbObjectCensusToolStillHasVerifyMode (0.00s)
+=== RUN   TestEnvSampleRegistryIncrementalGate
+    env_sample_registry_incremental_gate_test.go:273: ★ env 增量登记门：扫 3002 个 .go 文件、530 个 LLM_GATEWAY_* 变量；登记 483 个、存量豁免 88 个 ⇒ 未登记 0 个；覆盖率 100.0%（★ 基线 88 条 / 上限 88 条）★
+--- PASS: TestEnvSampleRegistryIncrementalGate (1.40s)
+=== RUN   TestEnvSampleRegistryGateDetectsNewUnregistered
+--- PASS: TestEnvSampleRegistryGateDetectsNewUnregistered (0.00s)
+=== RUN   TestScriptFamilyExclusionRegistryIsExact
+--- PASS: TestScriptFamilyExclusionRegistryIsExact (0.23s)
+=== RUN   TestCensusSendsExecutableSQL
+    index_reader_census_sql_test.go:191: 本机 PG 沙箱（llm-gateway-pg）不可用 ⇒ 跳过真库执行断言；文本断言仍由 TestCensusSendsExpandedIndexName 覆盖
+--- SKIP: TestCensusSendsExecutableSQL (0.07s)
+=== RUN   TestCensusSendsExpandedIndexName
+--- PASS: TestCensusSendsExpandedIndexName (0.09s)
+=== RUN   TestCensusMustNotFilterByColumnName
+--- PASS: TestCensusMustNotFilterByColumnName (0.00s)
+=== RUN   TestCensusMustReportWindowAndCapacity
+--- PASS: TestCensusMustReportWindowAndCapacity (0.12s)
+=== RUN   TestCensusZeroRowsIsNotNoReaders
+--- PASS: TestCensusZeroRowsIsNotNoReaders (0.06s)
+=== RUN   TestCensusMustReportTotalNotJustPrinted
+--- PASS: TestCensusMustReportTotalNotJustPrinted (0.08s)
+=== RUN   TestCensusParentIndexUsesCascadeAggregate
+--- PASS: TestCensusParentIndexUsesCascadeAggregate (0.00s)
+=== RUN   TestCensusMustNotClaimCronMembership
+--- PASS: TestCensusMustNotClaimCronMembership (0.00s)
+=== RUN   TestCensusNeverWrites
+--- PASS: TestCensusNeverWrites (0.00s)
+=== RUN   TestCensusSQLIsRealNotJustStubs
+--- PASS: TestCensusSQLIsRealNotJustStubs (0.00s)
+=== RUN   TestCensusBraceQuotesVarsBeforeCJK
+--- PASS: TestCensusBraceQuotesVarsBeforeCJK (0.00s)
+=== RUN   TestMagpieP0HookRegistryHasNoProductionCallers
+--- PASS: TestMagpieP0HookRegistryHasNoProductionCallers (0.35s)
+=== RUN   TestMagpieP1HookRegistryReferencesPolicyTable
+--- PASS: TestMagpieP1HookRegistryReferencesPolicyTable (0.00s)
+=== RUN   TestMagpieP1PolicyTableAndRegistryAgree
+--- PASS: TestMagpieP1PolicyTableAndRegistryAgree (0.00s)
+=== RUN   TestMagpieP1RegistryPhaseVocabularyIsSubsetOfSkeleton
+--- PASS: TestMagpieP1RegistryPhaseVocabularyIsSubsetOfSkeleton (0.00s)
+=== RUN   TestNoMergeConflictMarkersInTree
+    merge_conflict_marker_gate_test.go:250: ★ 冲突标记扫描：21718 个文件、0 处（★ git 认的文件 29327 个）
+--- PASS: TestNoMergeConflictMarkersInTree (2.47s)
+=== RUN   TestMergeConflictMarkerDetectorPositiveControl
+--- PASS: TestMergeConflictMarkerDetectorPositiveControl (0.09s)
+=== RUN   TestPeriodicReviewRegistryIsWellFormed
+--- PASS: TestPeriodicReviewRegistryIsWellFormed (0.02s)
+=== RUN   TestPeriodicReviewRegistryCommandsPointAtRealTests
+--- PASS: TestPeriodicReviewRegistryCommandsPointAtRealTests (0.03s)
+=== RUN   TestPeriodicReviewRegistryCoversTheHollowoutNegativeConclusion
+--- PASS: TestPeriodicReviewRegistryCoversTheHollowoutNegativeConclusion (0.02s)
+=== RUN   TestPGTestEnvRegistryCoversEveryGapName
+    pg_test_env_registry_test.go:546: 测试文件 4276 个、env 名 141 个（事实源承载 34 个）；登记册 115 条、未登记 0、死条目 0
+--- PASS: TestPGTestEnvRegistryCoversEveryGapName (0.91s)
+=== RUN   TestPGTestEnvRegistryClassesMatchFactsourceAndRunner
+    pg_test_env_registry_test.go:622: 测试文件 4276 个、env 名 141 个；事实源导出 34 个（其中 8 个没有测试读到：[AI_SESSION_MANAGER_DATABASE_URL D07_S01_ADMIN_URL D07_S01_PG_URL LLM_GATEWAY_DATABASE_URL TEST_ADMIN_500_DSN TEST_AUDIT_FRESH_SCHEMA_DB_URL TEST_DATA_INIT_DSN TEST_G6_TOOLS_DSN]）
+    pg_test_env_registry_test.go:624: 官方 runner 的 `env \` 块导出 19 个（其中 1 个不在事实源：[TEST_TENANT_DATABASE_URL]）
+--- PASS: TestPGTestEnvRegistryClassesMatchFactsourceAndRunner (0.92s)
+=== RUN   TestPGTestEnvRegistryScannerSelfCheck
+--- PASS: TestPGTestEnvRegistryScannerSelfCheck (0.00s)
+=== RUN   TestPostSurfaceProbeScriptExistsAndParses
+--- PASS: TestPostSurfaceProbeScriptExistsAndParses (0.00s)
+=== RUN   TestPostSurfaceClassifierExistsAndParses
+--- PASS: TestPostSurfaceClassifierExistsAndParses (0.09s)
+=== RUN   TestPostSurfaceProbeSQLHasNoBacktick
+--- PASS: TestPostSurfaceProbeSQLHasNoBacktick (0.00s)
+=== RUN   TestPostSurfaceProbeGuardIsReadOnly
+--- PASS: TestPostSurfaceProbeGuardIsReadOnly (0.00s)
+=== RUN   TestPostSurfaceClassifyViaFile
+--- PASS: TestPostSurfaceClassifyViaFile (0.05s)
+=== RUN   TestPostSurfaceLedgerVerdictsAreDerivable
+--- PASS: TestPostSurfaceLedgerVerdictsAreDerivable (0.02s)
+=== RUN   TestPostSurfaceLedgerEmptyInputIsEmpty
+--- PASS: TestPostSurfaceLedgerEmptyInputIsEmpty (0.02s)
+=== RUN   TestPostSurfaceLedgerVerdictTracksInput
+--- PASS: TestPostSurfaceLedgerVerdictTracksInput (0.04s)
+=== RUN   TestPostSurfaceLedgerCoversEveryRoute
+--- PASS: TestPostSurfaceLedgerCoversEveryRoute (0.00s)
+=== RUN   TestPostSurfaceLedgerVerdictsAreDerivableFromItsOwnInputs
+--- PASS: TestPostSurfaceLedgerVerdictsAreDerivableFromItsOwnInputs (0.00s)
+=== RUN   TestPostSurfaceUnsafeRoutesAreRealRoutes
+--- PASS: TestPostSurfaceUnsafeRoutesAreRealRoutes (0.00s)
+=== RUN   TestPostSurfaceProbeNeverEchoesDSN
+--- PASS: TestPostSurfaceProbeNeverEchoesDSN (0.03s)
+=== RUN   TestRunbook14323DefectReproducedOnRealDB
+--- PASS: TestRunbook14323DefectReproducedOnRealDB (0.00s)
+=== RUN   TestSection14375CensusScriptPinsBothCalibers
+--- PASS: TestSection14375CensusScriptPinsBothCalibers (0.00s)
+=== RUN   TestSection14397TodayLegPredicateIsEquivalentOnRealDB
+    section_14397_ursm_patrol_cost_test.go:313: SKIP：没有 TEST_DATABASE_URL ⇒ 无法在真库上验证谓词等价（★ 这道腿在 CI 里恒 SKIP ⇒ 其余各腿必须独立有效）
+--- SKIP: TestSection14397TodayLegPredicateIsEquivalentOnRealDB (0.00s)
+=== RUN   TestSharedRegistryIDsAreUnique
+    shared_registry_id_uniqueness_gate_test.go:92: ★ 登记表 62 行、★ 编号全部唯一
+--- PASS: TestSharedRegistryIDsAreUnique (0.00s)
+=== RUN   TestRegistryIDConflictDetectorRecognisesSyntheticDup
+--- PASS: TestRegistryIDConflictDetectorRecognisesSyntheticDup (0.00s)
+=== RUN   TestStructuredRegistryCensusCoversEveryCandidate
+--- PASS: TestStructuredRegistryCensusCoversEveryCandidate (0.10s)
+=== RUN   TestStructuredRegistryCensusEntriesAreWellFormed
+--- PASS: TestStructuredRegistryCensusEntriesAreWellFormed (0.09s)
+=== RUN   TestStructuredRegistryCensusBehaviorFlagIsHonest
+--- PASS: TestStructuredRegistryCensusBehaviorFlagIsHonest (0.02s)
+=== RUN   TestUnusedIndexReportPointsToReaderCensus
+--- PASS: TestUnusedIndexReportPointsToReaderCensus (0.03s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	20.422s
+
+======== F. 轮内最终代码树上的读数（final_job.sh；读数对象见文首哈希映射） ========
+# 来源：/tmp/l117-audit/final_tree.out
+HEAD=f97ce5a707d665f73455c422ee8aafb77a865c5c STATUS_LINES=0 fp0=7840f7c459cac449e4b4219539275b9124747f13cafd0f2577eff63e47a245b4 start=2026-11-25 22:42:28 load=83.19 50.58 70.10
+===== A. 发布读数 =====
+EXIT go_build=0 (43s) 22:43:11 load=107.10 61.14 73.10
+EXIT ursmcheck=0 (424s) 22:50:15 load=73.54 81.72 80.47
+URSMCHECK: ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	420.080s 
+EXIT scan=1 (341s) 22:55:56 load=80.15 117.59 100.74
+SCAN severity:   By severity:     BLOCK                  32     WARN                   2097  
+===== B. 扩展读数 =====
+EXIT go_vet=0 (15s) 22:56:11 load=78.27 115.30 100.21
+EXIT go_vet_window=0 (1s) 22:56:12 load=78.27 115.30 100.21
+EXIT go_pkgs=0 (164s) 22:58:56 load=44.99 89.30 92.38
+go_pkgs 逐包计数: ok=43 FAIL=0 no-test-files=1
+MODULE installer build=0 vet=0 test=0 ok=14 fail=0
+MODULE plugin-runtime/config build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/discovery build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/eventbus build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/ipc build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/reconciler build=0 vet=0 test=0 ok=1 fail=0
+MODULE plugin-runtime/supervisor build=0 vet=0 test=0 ok=1 fail=0
+EXIT web_tsc=0
+EXIT web_vitest=0  Test Files  380 passed | 1 skipped (381)       Tests  3842 passed | 2 skipped (3844) 
+EXIT web_build=0
+EXIT maestro=0 SELFTEST: PASS
+===== D. pre-push 钩子等价执行（套件限时：默认 300s；切流状态机 1200s；名义限时 60s 另行标注） =====
+EXIT audit_guards=0 (11s) 23:02:58 load=39.16 59.55 78.09
+ok  	github.com/kaixuan/llm-gateway-go/internal/rowsguard	4.325s
+ok  	github.com/kaixuan/llm-gateway-go/internal/errdiscard	4.298s
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbrows	0.012s
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsoncol	0.010s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramguard	0.015s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	10.315s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlreadguard	2.244s
+EXIT guards_sync=0 (0s) 23:02:58 load=39.16 59.55 78.09
+✅ 另有 8 个非 internal 条目已逐一校验存在性（命名约定不适用于它们，故不告警）
+✅ CI 未硬编码守卫包清单，且在跑的载体（.workflow）仍在跑 make guards*
+SUITES total=74 pass=70 fail=4
+FAILED: deploy_nocgo_build_test.sh(rc=1,55s) session_storage_audit_gate.sh(rc=1,0s) ursm_root_migration_runner_test.sh(rc=64,0s) verify_cgo_convention_test.sh(rc=1,9s)
+PASSED_BUT_OVER_60s: anthropic_reasoning_trace_contract_test.sh(64s) daily_regression_wiring_test.sh(194s) scan_secrets_placeholder_privilege_test.sh(77s)
+TREE_AFTER_SUITES: porcelain=0 lines
+HEAD_FROZEN=1 STATUS_IDENTICAL=1 STATUS_CLEAN=1 CONTENT_FROZEN_TRACKED=1 STATUS_AFTER_LINES=0 fp1=7840f7c459cac449e4b4219539275b9124747f13cafd0f2577eff63e47a245b4
+DONE 2026-11-25 23:13:59
+JOB_EXIT=0
+
+======== F2. 该轮读数里 web vitest：无失败用例 ========
+# 来源：/tmp/l117-audit/final_web_fail.txt
+# 最终读数里 web vitest：无失败用例（EXIT web_vitest=0；Test Files 380 passed | 1 skipped (381)；Tests 3842 passed | 2 skipped (3844)）
+ Test Files  380 passed | 1 skipped (381)
+      Tests  3842 passed | 2 skipped (3844)
+   Start at  23:00:28
+   Duration  87.90s (environment 36%, tests 35%, import 18%, transform 10%, worker 1%)
+
+======== F3. 首轮套件 4 败里的 3 套：同树、同代码、修正量具面条件后重跑（磁盘可用 7.8G ＋ PATH 前置 bash5） ========
+# 另 1 套 session_storage_audit_gate.sh 是既有环境红（审计镜像缺失），见 F 段。
+# 来源：/tmp/l117-audit/suites_rerun.txt
+# 三套环境红的同树重跑（HEAD=f97ce5a70，porcelain=0）
+# 修正的量具面条件：① 磁盘可用 7.8Gi（重跑前一刻）② PATH 前置 ~/sdk/bash5/bin（env bash ⇒ /Users/niuer/sdk/bash5/bin/bash = 5.2.0(1)-release）
+
+################ ursm_root_migration_runner_test.sh
+rc=0 (22s)
+[db] SEED_DATABASE_URL/LLM_GATEWAY_DATABASE_URL not set; using checked-in canonical seed
+ursm root migration runner regression tests: passed
+
+################ verify_cgo_convention_test.sh
+rc=0 (30s)
+PASS: CGO_ENABLED=0 builds storage/sqlite (both driver forms coexist)
+PASS: cgo boundary matches registry (8 packages)
+OK: verify cgo convention contract
+
+################ deploy_nocgo_build_test.sh
+rc=0 (72s)
+  [0;32mPASS[0m CGO_ENABLED=0 dep graph contains no package with cgo files
+  [0;34mINFO[0m storage/sqlite in dep graph; its cgo files are excluded by //go:build cgo (expected)
+
+───────────────────────────────────────────────────────────────
+ summary: 8 passed, 0 failed
+
+tree after: porcelain=0  disk avail: 6.1Gi
+
+======== F4. 磁盘读数（满盘的发现、占用大头、本会话自己回收的部分） ========
+# 来源：/tmp/l117-audit/disk.txt
+# 磁盘读数（2026-11-25 23:1x–23:2x；只读测量）
+## 发现时
+  /System/Volumes/Data 926Gi 总量：已用 891Gi、可用 204Mi、100%（df -h）
+  复现：CGO_ENABLED=0 go build -o <tmp> ./cmd/gateway ⇒ rc=1
+    github.com/kaixuan/llm-gateway-go/domains/integration: mkdir …/T/go-build…/b962/: no space left on device
+    github.com/kaixuan/llm-gateway-go/bg: mkdir …/T/go-build…/b229/: no space left on device
+## 占用大头（共享，未动）
+  ~/Library/Caches/go-build  123G   ← 全局 Go 构建缓存
+  主检出 .build-local         12G
+## 本会话自己回收的（只动自己的私有树与临时件）
+  …-l117/.build-local 2.3G ＋ …-l117fix/.build-local 4.5G ＋ 两棵树的 web/dist 24M ＋ /tmp/l117-audit 的打包产物；另移除已用完的冻结树 …-l117
+  回收前可用 175Mi → 回收后 7.8Gi
+
+======== F5. 再变基后的定向复跑（交接面 ＋ 路由／真库腿／登记册／普查／POST 面） ========
+# 来源：/tmp/l117-audit/post_rebase_gates.log
+2026/11/25 23:24:04 WARN log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts) env=LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+=== RUN   TestAdminRoutesFilesExist
+--- PASS: TestAdminRoutesFilesExist (0.01s)
+=== RUN   TestAdminRoutesSnapshotMatchesGenerator
+--- PASS: TestAdminRoutesSnapshotMatchesGenerator (3.04s)
+=== RUN   TestAdminRoutesSnapshotRowCount
+--- PASS: TestAdminRoutesSnapshotRowCount (2.50s)
+=== RUN   TestAdminRoutesSnapshotContainsSessionAnalyticsFamily
+--- PASS: TestAdminRoutesSnapshotContainsSessionAnalyticsFamily (0.00s)
+=== RUN   TestAdminRoutesSnapshotHasMethodPrefixRows
+--- PASS: TestAdminRoutesSnapshotHasMethodPrefixRows (2.45s)
+=== RUN   TestAdminRoutesSnapshotRowsAreWellFormed
+--- PASS: TestAdminRoutesSnapshotRowsAreWellFormed (0.00s)
+=== RUN   TestAdminRoutesGeneratorDocumentsKnownUnregisteredDeviation
+--- PASS: TestAdminRoutesGeneratorDocumentsKnownUnregisteredDeviation (0.00s)
+=== RUN   TestAdminRoutesGeneratorSkipsEmptyPathConcatenations
+--- PASS: TestAdminRoutesGeneratorSkipsEmptyPathConcatenations (0.04s)
+=== RUN   TestAgentsMdHasNoVerbatimArchiveDuplicate
+    agents_md_archive_duplicate_gate_test.go:115: ★ 主档 355 行 / 归档档 21879 行 ⇒ **0 段**逐字重复（★ 连续 ≥4 行的判据）
+--- PASS: TestAgentsMdHasNoVerbatimArchiveDuplicate (0.61s)
+=== RUN   TestAgentsMdArchiveDuplicateDetectorBites
+    agents_md_archive_duplicate_gate_test.go:179: ★ 量具自证：★ 塞入 4 行样本 ⇒ 检测器识别 4 行 ⇒ 判据有牙齿
+--- PASS: TestAgentsMdArchiveDuplicateDetectorBites (0.00s)
+=== RUN   TestAgentsMdRoundLabelUniqueInMain
+    agents_md_round_label_gate_test.go:127: ★ 主档里有 33 个 L 标记（范围 L76–L118）
+--- PASS: TestAgentsMdRoundLabelUniqueInMain (0.00s)
+=== RUN   TestAgentsMdRoundLabelNotLost
+    agents_md_round_label_gate_test.go:156: ★ 同时出现在主档与归档档的标记（历史同号或归档未摘净，非本门判据）：[79]
+    agents_md_round_label_gate_test.go:159: ★ 归档档内段头重复的标记（历史原因，非本门判据）：[21 74]
+--- PASS: TestAgentsMdRoundLabelNotLost (0.04s)
+=== RUN   TestAgentsMdRoundParaNumberingUniqueInBlock
+    agents_md_round_label_gate_test.go:302: ★ R7：主档里段首编号 231 行（分布在 33 个轮块）、块内重复 0 组
+--- PASS: TestAgentsMdRoundParaNumberingUniqueInBlock (0.00s)
+=== RUN   TestAgentsMdRoundParaDetectorBites
+--- PASS: TestAgentsMdRoundParaDetectorBites (0.00s)
+=== RUN   TestAgentsMdRoundLabelDetectorBites
+--- PASS: TestAgentsMdRoundLabelDetectorBites (0.01s)
+=== RUN   TestAgentsMdSizeRatchet
+    agents_md_size_ratchet_test.go:108: ★ AGENTS.md = 310319 字节（上限 524288 / 下限 131072）≈ 77579 token（按 4B/token 粗算）
+--- PASS: TestAgentsMdSizeRatchet (0.00s)
+=== RUN   TestAgentsMdArchivePresent
+    agents_md_size_ratchet_test.go:134: ★ AGENTS-archive-20261031.md = 4430035 字节（★ 归档不进请求上下文 ⇒ 体积不敏感）
+--- PASS: TestAgentsMdArchivePresent (0.00s)
+=== RUN   TestAgentsMdRMarkerIndexPointsAtArchive
+    agents_md_size_ratchet_test.go:156: ★ 索引里有 23 条 R 标记
+--- PASS: TestAgentsMdRMarkerIndexPointsAtArchive (0.00s)
+=== RUN   TestAgentsMdSplitIsReal
+--- PASS: TestAgentsMdSplitIsReal (0.00s)
+=== RUN   TestDatasourceEnvTargetGuardNoUnregisteredMismatch
+    datasource_env_target_guard_test.go:288: 事实源导出 34 个名字；探测到 2 条错配对，台账登记 2 条（未登记 0、腐化 0）
+--- PASS: TestDatasourceEnvTargetGuardNoUnregisteredMismatch (1.56s)
+=== RUN   TestRealDBLegsUseDeclaredDSNEnvNames
+    datasource_env_test.go:457: 扫到 368 个打开 PG 的测试文件、56 个 DSN 类变量名；事实源导出 34 个、豁免 25 个、未覆盖 0 个
+--- PASS: TestRealDBLegsUseDeclaredDSNEnvNames (1.11s)
+=== RUN   TestDatasourceEnvHasNoDeadEntries
+--- PASS: TestDatasourceEnvHasNoDeadEntries (0.74s)
+=== RUN   TestNoMergeConflictMarkersInTree
+    merge_conflict_marker_gate_test.go:250: ★ 冲突标记扫描：21718 个文件、0 处（★ git 认的文件 29327 个）
+--- PASS: TestNoMergeConflictMarkersInTree (2.35s)
+=== RUN   TestMergeConflictMarkerDetectorPositiveControl
+--- PASS: TestMergeConflictMarkerDetectorPositiveControl (0.11s)
+=== RUN   TestPGTestEnvRegistryCoversEveryGapName
+    pg_test_env_registry_test.go:546: 测试文件 4276 个、env 名 141 个（事实源承载 34 个）；登记册 115 条、未登记 0、死条目 0
+--- PASS: TestPGTestEnvRegistryCoversEveryGapName (0.80s)
+=== RUN   TestPGTestEnvRegistryClassesMatchFactsourceAndRunner
+    pg_test_env_registry_test.go:622: 测试文件 4276 个、env 名 141 个；事实源导出 34 个（其中 8 个没有测试读到：[AI_SESSION_MANAGER_DATABASE_URL D07_S01_ADMIN_URL D07_S01_PG_URL LLM_GATEWAY_DATABASE_URL TEST_ADMIN_500_DSN TEST_AUDIT_FRESH_SCHEMA_DB_URL TEST_DATA_INIT_DSN TEST_G6_TOOLS_DSN]）
+    pg_test_env_registry_test.go:624: 官方 runner 的 `env \` 块导出 19 个（其中 1 个不在事实源：[TEST_TENANT_DATABASE_URL]）
+--- PASS: TestPGTestEnvRegistryClassesMatchFactsourceAndRunner (0.78s)
+=== RUN   TestPGTestEnvRegistryScannerSelfCheck
+--- PASS: TestPGTestEnvRegistryScannerSelfCheck (0.00s)
+=== RUN   TestPostSurfaceProbeScriptExistsAndParses
+--- PASS: TestPostSurfaceProbeScriptExistsAndParses (0.01s)
+=== RUN   TestPostSurfaceClassifierExistsAndParses
+--- PASS: TestPostSurfaceClassifierExistsAndParses (0.09s)
+=== RUN   TestPostSurfaceProbeSQLHasNoBacktick
+--- PASS: TestPostSurfaceProbeSQLHasNoBacktick (0.00s)
+=== RUN   TestPostSurfaceProbeGuardIsReadOnly
+--- PASS: TestPostSurfaceProbeGuardIsReadOnly (0.00s)
+=== RUN   TestPostSurfaceClassifyViaFile
+--- PASS: TestPostSurfaceClassifyViaFile (0.06s)
+=== RUN   TestPostSurfaceLedgerVerdictsAreDerivable
+--- PASS: TestPostSurfaceLedgerVerdictsAreDerivable (0.02s)
+=== RUN   TestPostSurfaceLedgerEmptyInputIsEmpty
+--- PASS: TestPostSurfaceLedgerEmptyInputIsEmpty (0.02s)
+=== RUN   TestPostSurfaceLedgerVerdictTracksInput
+--- PASS: TestPostSurfaceLedgerVerdictTracksInput (0.04s)
+=== RUN   TestPostSurfaceLedgerCoversEveryRoute
+--- PASS: TestPostSurfaceLedgerCoversEveryRoute (0.00s)
+=== RUN   TestPostSurfaceLedgerVerdictsAreDerivableFromItsOwnInputs
+--- PASS: TestPostSurfaceLedgerVerdictsAreDerivableFromItsOwnInputs (0.00s)
+=== RUN   TestPostSurfaceUnsafeRoutesAreRealRoutes
+--- PASS: TestPostSurfaceUnsafeRoutesAreRealRoutes (0.00s)
+=== RUN   TestPostSurfaceProbeNeverEchoesDSN
+--- PASS: TestPostSurfaceProbeNeverEchoesDSN (0.03s)
+=== RUN   TestRunbook14323DefectReproducedOnRealDB
+--- PASS: TestRunbook14323DefectReproducedOnRealDB (0.00s)
+=== RUN   TestSection14397TodayLegPredicateIsEquivalentOnRealDB
+    section_14397_ursm_patrol_cost_test.go:313: SKIP：没有 TEST_DATABASE_URL ⇒ 无法在真库上验证谓词等价（★ 这道腿在 CI 里恒 SKIP ⇒ 其余各腿必须独立有效）
+--- SKIP: TestSection14397TodayLegPredicateIsEquivalentOnRealDB (0.00s)
+=== RUN   TestStructuredRegistryCensusCoversEveryCandidate
+--- PASS: TestStructuredRegistryCensusCoversEveryCandidate (0.08s)
+=== RUN   TestStructuredRegistryCensusEntriesAreWellFormed
+--- PASS: TestStructuredRegistryCensusEntriesAreWellFormed (0.08s)
+=== RUN   TestStructuredRegistryCensusBehaviorFlagIsHonest
+--- PASS: TestStructuredRegistryCensusBehaviorFlagIsHonest (0.02s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	16.719s
+
+======== F6. 最后一次变基后的 Go 侧验证（build／vet／domains/authentication／admin／全量 ursmcheck〔显式跳过会真调 docker 的一条〕） ========
+# 来源：/tmp/l117-audit/final2.out
+HEAD=6a13a3e33 base=820fcc4f0 start=2026-11-26 00:07:50 load=18.32 29.50 31.17
+EXIT go_build=0 (55s)
+EXIT go_vet_admin_auth_gateway=0 (5s)
+EXIT test_domains_authentication=0 (6s) ok  	github.com/kaixuan/llm-gateway-go/domains/authentication	5.151s
+EXIT test_admin=0 (133s) ok  	github.com/kaixuan/llm-gateway-go/admin	116.023s
+EXIT ursmcheck_skip_docker_test=143 (1169s) 
+DONE 2026-11-26 00:30:38
+
+# 说明（事后补注，正文未改）：上面的全量 ursmcheck 运行在 Docker 守护进程无响应期间挂住——
+#   至少两道会真调 docker 的门（TestMonitorScriptsConvergeOnAContractExitCode 之外的 check-v1-family-retirement.sh probe）无限等待，
+#   于 00:3x 手动终止（只杀本会话自己的进程）。build／vet／domains/authentication／admin 四项在读数期间完成且有效。
+#   随后的替代读数（PATH 前置一个立即报错的 docker 桩）见 F7。
+
+======== G. 部署阻断级登记的取证：820fcc4f0 起 API Key 鉴权路径引用未投递的 api_keys.capabilities ========
+# 只读取证；结论与处置边界见 AGENTS 块 ⑤、⑨。
+# 来源：/tmp/l117-audit/capability_landmine.txt
+# 部署阻断级登记的取证（只读；采集于 2026-11-26 00:08:19；树 HEAD=6a13a3e33，基点 820fcc4f0）
+
+## 1) 上游提交 820fcc4f0 的改动面（没有任何迁移文件）
+820fcc4f0 2026-11-26 00:00:56 huangzhouzixuan
+feat(capability): W4.2 能力绑 Key 仓储层贯通 —— 读取面+写入口全链路
+
+ admin/handler.go                                   |   4 +
+ admin/keys.go                                      | 106 +++++++++++-
+ admin/keys_capabilities_test.go                    | 188 +++++++++++++++++++++
+ admin/keys_create_statement_test.go                |  11 +-
+ domains/authentication/keystore_sync.go            |   8 +-
+ domains/authentication/keystore_sync_test.go       |   8 +-
+ domains/authentication/verifier.go                 |  21 ++-
+ domains/authentication/verifier_pgx_test.go        |   3 +-
+ domains/authentication/verifier_reject_log_test.go |   3 +-
+ 9 files changed, 335 insertions(+), 17 deletions(-)
+
+## 2) 全仓唯一创建 api_keys.capabilities 的文件（仓根散目录 migrations/，不属投递通道）
+migrations/20261125000001_api_keys_capabilities.sql:7:    ADD COLUMN IF NOT EXISTS capabilities jsonb NOT NULL DEFAULT '[]'::jsonb;
+migrations/20261125000001_api_keys_capabilities.sql:9:CREATE INDEX IF NOT EXISTS idx_api_keys_capabilities
+文件全文：
+    -- W4.2: 会话能力绑 Key —— api_keys 增加 capabilities JSONB 列。
+    -- 能力 ID 词表见 internal/capability（单一事实源：session.audit 等 6 项）。
+    -- 空 '[]' 表示未购买任何会话能力；请求面鉴权 fail-closed（缺能力即 403）。
+    -- GIN 索引支持 W4.3 渠道商视角按能力过滤 Key。
+    
+    ALTER TABLE public.api_keys
+        ADD COLUMN IF NOT EXISTS capabilities jsonb NOT NULL DEFAULT '[]'::jsonb;
+    
+    CREATE INDEX IF NOT EXISTS idx_api_keys_capabilities
+        ON public.api_keys USING GIN (capabilities);
+    
+    COMMENT ON COLUMN public.api_keys.capabilities IS
+        '会话能力清单（internal/capability 词表）：api_keys 级可售卖功能授权，[] 表示未授权';
+
+## 3) 投递通道里名字含 capabilit 的迁移建的是什么（都不是 api_keys.capabilities）
+  installer/cmd/llm-gw-installer/embeddata/startup/612_native_responses_capability.down.sql
+      DROP TABLE IF EXISTS credential_model_capabilities;
+  installer/cmd/llm-gw-installer/embeddata/startup/612_native_responses_capability.sql
+      ALTER TABLE public.credential_model_bindings ;CREATE TABLE IF NOT EXISTS credential_model_capabilities ;
+  sql/migrations/startup/045_model_capability_fields.sql
+      ADD COLUMN IF NOT EXISTS;ALTER TABLE models_canonical;
+  sql/migrations/startup/612_native_responses_capability.down.sql
+      DROP TABLE IF EXISTS credential_model_capabilities;
+  sql/migrations/startup/612_native_responses_capability.sql
+      ALTER TABLE public.credential_model_bindings ;CREATE TABLE IF NOT EXISTS credential_model_capabilities ;
+  sql/migrations/startup/613_native_responses_stream_capability.down.sql
+      ALTER TABLE public.credential_model_capabilities;DROP CONSTRAINT IF EXISTS credential_model_capabilities_capability_check;
+  sql/migrations/startup/613_native_responses_stream_capability.sql
+      ALTER TABLE public.credential_model_capabilities;DROP CONSTRAINT IF EXISTS credential_model_capabilities_capability_check;
+  通道内容里提到 api_keys.capabilities / api_keys_capabilities 的迁移文件数：0
+
+## 4) 生产代码里对这一列的引用（非测试文件）
+admin/keys.go:622:		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id, capabili
+admin/keys.go:628:		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, capabilities)
+admin/keys.go:1204:		SET capabilities = COALESCE($1::jsonb, '[]'::jsonb)
+domains/authentication/keystore_sync.go:255:// store key) and ak.capabilities (W4.2 会话能力绑 Key).
+domains/authentication/keystore_sync.go:276:		COALESCE(ak.capabilities, '[]'::jsonb)
+domains/authentication/verifier.go:544:			COALESCE(ak.capabilities, '[]'::jsonb)
+
+## 5) 热路径的失败处理（keystore_sync.go）
+		}
+		// DB down at boot: a local snapshot (if any) bridges the gap with
+		// its last-known state while the loop keeps retrying the full load.
+		if n := kv.tryLoadSnapshot(); n > 0 {
+			slog.Warn("key store: initial full load failed, serving from local snapshot until the database recovers",
+				"error", err, "keys", n)
+		} else {
+			slog.Warn("key store: initial full load failed, retrying on next tick (lazy verification active)",
+				"error", err)
+		}
+	} else {
+		kv.keyStoreFromSnapshot.Store(false)
+		kv.saveSnapshotQuietly()
+		slog.Info("key store: full load complete", "keys", kv.keyStoreLen())
+	}
+				if err := kv.keyStoreFullLoad(ctx); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					slog.Warn("key store: full refresh failed, replica unchanged", "error", err)
+					continue
+				}
+				lastFull = time.Now()
+				kv.keyStoreFromSnapshot.Store(false)
+				kv.saveSnapshotQuietly()
+				slog.Info("key store: full refresh complete", "keys", kv.keyStoreLen())
+				continue
+			}
+			if err := kv.keyStoreSyncDelta(ctx, interval); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				// DB outage posture: warn and keep serving from the replica.
+				slog.Warn("key store: delta sync failed, replica unchanged (serving from memory)", "error", err)
+				continue
+			}
+
+## 6) 逐请求校验里的同一条查询（verifier.go）
+
+	var appID int64
+	var info KeyInfo
+	err := kv.dbPool.QueryRow(ctx, `
+		SELECT
+			ak.id,
+			ak.tenant_id,
+			ak.application_id,
+			app.code AS application_code,
+			COALESCE(ak.key_prefix, '') AS key_prefix,
+			app.default_client_profile,
+			ak.owner_user,
+			ak.rate_limit_rpm,
+			ak.rate_limit_concurrent,
+			ak.rate_limit_tpm,
+			COALESCE(ak.key_tier, 'default') AS key_tier,
+			ak.budget_usd::float8,
+			COALESCE(ak.status, 'active') AS status,
+			ak.key_alias,
+			app.customer_id,
+			ak.expires_at,
+			COALESCE(ak.is_system, FALSE),
+			COALESCE(ak.capabilities, '[]'::jsonb)
+		FROM api_keys ak
+		JOIN applications app ON app.id = ak.application_id
+		WHERE ak.key_hash = $1
+		  AND ak.enabled = TRUE
+
+## 7) 有没有针对列缺失（42703）的降级
+  domains/authentication、admin/keys.go、admin/handler.go 中匹配 42703|UndefinedColumn|column.*does not exist 的非测试行数：2

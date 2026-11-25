@@ -32,6 +32,15 @@
 #   · 没有方法前缀 ⇒ method 列 = **`ANY`**（哨兵值，不是源码里的字面量）。
 #   · 只认**首参是 Go 字符串字面量**的调用；首参是常量/变量/拼接的抽不出来
 #     （见下面的「已知不注册」第 ③ 条）。
+#     ★ 2026-11-25 订正（本会话系列第 29 轮）：`"GET "+表达式` 这种
+#     【字面量方法前缀 ＋ 拼接路径】的形态此前会被吐成一行 **path 为空**的登记
+#     （实现只匹配到字面量前缀 `"GET "`）⇒ 一有人这么写，快照一刷新就会被
+#     「行格式良好」门拒掉（上游 29727b3ba 实测撞到）⇒ 现在：剥掉方法前缀后
+#     path 为空的调用**整条跳过**，并在下面第 ③ 条登记。
+#     ★ 仍保留的历史边界（如实登记）：字面量前缀**非空**的拼接照旧按前缀
+#     登记为一行 —— 例：cmd/gateway/pprof_server.go:25 的 "/debug/pprof/"+name
+#     记成 "/debug/pprof/"（其实是 6 条命名 profile 路由，见 ③ 末尾）。
+#     本仓的 POST 面台账以这一行为准 ⇒ 扩口径会连带改台账 ⇒ 本轮不扩。
 #   · 排除 `_test.go`（测试里的 mux 不是生产面）。
 #   · 排除**注释里**的调用（注释不是声明）。脚本按 Go 的字符串/注释状态机
 #     逐行剥离注释 ⇒ 注释里的 `mux.HandleFunc(...)` 不会被当成登记。
@@ -70,14 +79,25 @@
 #      只在 `DINGTALK_SIGN_SECRET` 非空时才被注册（cmd/gateway/main.go:7646-7657）。
 #      ⇒ 源码声明了，线上**可能**没有。
 #
-#   ③ **常量/变量间接引用（★ 4 条注册抽不出来）**
+#   ③ **常量/变量间接引用（★ 7 条注册抽不出来）**
 #      首参不是字面量的注册，本脚本抽不出（它只认字面量）：
 #        admin/sanitize_rules_handler.go:20  → "/api/admin/sanitize-rules"
 #        admin/sanitize_rules_handler.go:21  → "/api/admin/sanitize-rules/"
 #        admin/journal_handlers.go:34         → "/api/admin/dispatch/journal/"
 #        cmd/gateway/plugin_apiproxy_init.go:88 → method+" /plugins/{pluginId}/api/{rest...}"
 #          （method ∈ {GET,POST,PUT,PATCH,DELETE} ⇒ 运行时是 5 条注册）
+#        plugin-runtime/remediation/child/server.go:62 → "GET "+manifest.Runtime.HandshakePath
+#          （插件子进程自己的 mux、走 Unix socket；三份清单里都是 "/handshake"）
+#        plugin-runtime/remediation/child/server.go:70 → "GET "+manifest.Runtime.HealthPath
+#          （三份清单里都是 "/healthz"）
+#        plugin-runtime/remediation/child/server.go:73 → "POST "+remediation.SuggestPath
+#          （plugin-runtime/remediation/protocol.go:14 ⇒ "/internal/remediation/v1/suggest"）
+#          ★ 后 3 条是 2026-11-25 上游 29727b3ba 带进来的「字面量方法前缀＋拼接路径」形态
 #      ⇒ 这几条路径**不出现在本清单里**，但它们**在线上是存在的**。
+#      ★ 另有一条「半抽出来」的（历史边界，见头部 ①）：
+#        cmd/gateway/pprof_server.go:25     → "/debug/pprof/"+name
+#          （name ∈ {allocs,block,goroutine,heap,mutex,threadcreate} ⇒ 运行时是 6 条注册）
+#          在清单里记成一行 path 为 "/debug/pprof/" 的登记（与 :19 那条同 path）。
 #
 #   ④ **接收者不叫 `mux` 的注册（★ 12 条，不在本清单里）**
 #      本仓只有两个**别的** ServeMux 用别的接收者名注册：
@@ -305,6 +325,12 @@ BEGIN { inblock = 0 }
 		if (match(q, /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE) /)) {
 			meth = substr(q, 1, RLENGTH - 1)
 			path = substr(q, RLENGTH + 1)
+		}
+		# ★ 剥掉方法前缀后 path 为空 ⇒ 这不是一条完整登记（多半是 "GET "+表达式 这种
+		#   拼接：只匹配到了字面量前缀）⇒ 整条跳过（头部 ① 与 ③；2026-11-25 订正：
+		#   此前会吐出一行 path 为空的登记 ⇒ 快照一刷新就被「行格式良好」门拒掉）。
+		if (path == "") {
+			next
 		}
 		rel = FILENAME
 		# 去掉仓根前缀 ⇒ 快照里的 source_file 是**相对仓根**的路径（可跨 checkout 比较）
