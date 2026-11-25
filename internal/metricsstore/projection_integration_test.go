@@ -135,6 +135,28 @@ VALUES
 	apply("983g_request_metrics_daily_history.sql")
 	apply("983g_request_metrics_daily_history.sql")
 
+	t.Run("legacy_watermark_ignores_973_projected_identity", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `INSERT INTO public.request_metrics
+			(request_id,tenant_id,occurred_at,occurred_date,billing_date,status)
+			VALUES (chr(1)||jsonb_build_array('tenant-a','newest')::text, 'tenant-a',
+			'2026-11-26 00:00Z','2026-11-26','2026-11-26','success')`); err != nil {
+			t.Fatal(err)
+		}
+		var at time.Time
+		var requestID string
+		if err := tx.QueryRow(ctx, watermarkSQL).Scan(&at, &requestID); err != nil {
+			t.Fatal(err)
+		}
+		if requestID != "r1" || !at.Equal(time.Date(2026, 11, 23, 0, 10, 0, 0, time.UTC)) {
+			t.Fatalf("legacy cursor moved to %q at %v", requestID, at)
+		}
+	})
+
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
 	processor := NewProjectionProcessor(db)

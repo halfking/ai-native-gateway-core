@@ -58,6 +58,8 @@ type watermark struct {
 }
 
 // watermarkSQL 读取已落库的最大复合游标。
+// 973 reserves the chr(1) prefix for terminal projections stored in the same
+// table. A projected request may be ahead of the legacy writer's own cursor.
 //
 // ★ ORDER BY (occurred_at DESC, request_id DESC) + LIMIT 1：与查询侧的
 //
@@ -82,6 +84,7 @@ type watermark struct {
 const watermarkSQL = `
 	SELECT occurred_at, request_id
 	FROM request_metrics
+	WHERE NOT starts_with(request_id, chr(1))
 	ORDER BY occurred_at DESC, request_id DESC
 	LIMIT 1
 `

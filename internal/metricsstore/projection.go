@@ -216,7 +216,9 @@ func (p *ProjectionProcessor) ProcessBatch(ctx context.Context, batchSize int) (
 		return 0, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'true'"); err != nil {
+	// The batch is bounded, but the partitioned input and lateral joins can
+	// trigger expensive JIT compilation even when only a few keys are pending.
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'true'; SET LOCAL jit = off"); err != nil {
 		return 0, err
 	}
 

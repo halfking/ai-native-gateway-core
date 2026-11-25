@@ -9,6 +9,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const personRankFacts = `FROM public.request_metrics_projection
@@ -91,7 +93,8 @@ func readPersonRankCounts(ctx context.Context, q Querier, coverage ProjectionCov
 	defer rows.Close()
 	counts := make(map[int64]int64)
 	for rows.Next() {
-		var packed []byte
+		// Consume the packet before Next invalidates the driver's buffer.
+		var packed pgtype.DriverBytes
 		if err := rows.Scan(&packed); err != nil {
 			return nil, err
 		}
