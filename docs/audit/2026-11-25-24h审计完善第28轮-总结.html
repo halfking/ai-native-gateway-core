@@ -47,7 +47,7 @@
 <body>
 <div class="wrap">
   <h1>24 小时审计与完善 · 第 28 轮总结</h1>
-  <div class="sub">2026-11-25 06:11 起 ｜ 审计窗口内 222 笔提交（非合并 168） ｜ 主档 <code>docs/operations/2026-11-23-211配置优化执行报告.md</code> §9.30 ㉓-44 ｜ 提交 <code>`5da9a7208`（Go 侧读数对象）</code></div>
+  <div class="sub">2026-11-25 06:11 起 ｜ 审计窗口内 222 笔提交（非合并 168） ｜ 主档 <code>docs/operations/2026-11-23-211配置优化执行报告.md</code> §9.30 ㉓-44 ｜ 提交 <code>47a4ebfdb</code>（读数对象）</div>
 
   <h2>① 结论 / 根因</h2>
   <div class="kpi">
@@ -87,14 +87,14 @@
   <h2>③ 测试命令与结果</h2>
   <div class="card">
     <table>
-      <tr><th>命令 / 范围</th><th>合并后基线 <code>32be90f2a</code></th><th>最终树 <code>5da9a7208</code></th></tr>
+      <tr><th>命令 / 范围</th><th>合并后基线 <code>32be90f2a</code></th><th>最终树 <code>47a4ebfdb</code></th></tr>
       <tr><td><code>go build ./...</code></td><td><span class="pill p-ok">EXIT 0</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
-      <tr><td><code>go test ./scripts/ursmcheck/ -count=1 -timeout 1800s</code></td><td><span class="pill p-ok">ok 339.907s</span> 四项冻结全 1</td><td><span class="pill p-ok">ok 310.019s</span> 指纹首尾相同</td></tr>
-      <tr><td>24h 变更包 <code>go vet</code> / <code>go test</code></td><td><span class="pill p-ok">vet 0</span> <span class="pill p-ok">33 ok / 0 FAIL</span></td><td><span class="pill p-fail">vet 0 · 42 ok / 0 FAIL</span></td></tr>
-      <tr><td><code>installer</code> 模块 build / vet / test</td><td><span class="pill p-ok">14 包 ok</span></td><td><span class="pill p-fail">build/vet/test 均 0、14 包 ok</span></td></tr>
+      <tr><td><code>go test ./scripts/ursmcheck/ -count=1 -timeout 1800s</code></td><td><span class="pill p-ok">ok 339.907s</span> 四项冻结全 1</td><td><span class="pill p-ok">ok 310.604s</span> 指纹首尾相同</td></tr>
+      <tr><td>24h 变更包 <code>go vet</code> / <code>go test</code></td><td><span class="pill p-ok">vet 0</span> <span class="pill p-ok">33 ok / 0 FAIL</span></td><td><span class="pill p-ok">vet 0 · 43 ok / 0 FAIL</span></td></tr>
+      <tr><td><code>installer</code> 模块 build / vet / test</td><td><span class="pill p-ok">14 包 ok</span></td><td><span class="pill p-ok">build/vet/test 均 0、14 包 ok</span></td></tr>
       <tr><td><code>plugin-runtime</code> 6 个模块</td><td><span class="pill p-ok">全绿</span></td><td><span class="pill p-ok">6 个模块 全绿</span></td></tr>
       <tr><td><code>scripts/checks/fresh-install-smoke.sh</code></td><td><span class="pill p-ok">PASS</span> 四阶段；交接凭证 433 条、接管 372/372、容器零残留</td><td><span class="pill p-na">未重跑（相关文件其后无改动）</span></td></tr>
-      <tr><td><code>web</code>：vue-tsc / vitest / build</td><td>0 错 ／ <span class="pill p-fail">6 红</span> ／ EXIT 0</td><td><span class="pill p-ok">0 红</span> ／ 3825 通过 ／ EXIT 0</td></tr>
+      <tr><td><code>web</code>：vue-tsc / vitest / build</td><td>0 错 ／ <span class="pill p-fail">6 红</span> ／ EXIT 0</td><td><span class="pill p-ok">0 红</span> ／ 3839 通过 ／ EXIT 0</td></tr>
       <tr><td><code>web-mobile</code>：vue-tsc / vitest</td><td>0 错 ／ <span class="pill p-fail">13 红</span>（基线 11）</td><td><span class="pill p-fail">11 红</span> ／ 9309 通过 ／ EXIT 1</td></tr>
       <tr><td>maestro <code>selftest.mjs</code></td><td><span class="pill p-ok">PASS</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
       <tr><td><code>web-tests</code>（Playwright）</td><td><span class="pill p-na">未执行：未装依赖、需在线环境</span></td><td><span class="pill p-na">同左</span></td></tr>
@@ -183,7 +183,7 @@
     <p class="note">本轮零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。所有修复在私有工作树上完成，逐文件暂存后提交。</p>
   </div>
 
-  <div class="footer">读数对象 5da9a7208（Go 侧）与 b03f94f7e（web、模块），私有工作树、内容指纹首尾相同；本轮提交 fa1338d75 / 823ccc6c3 / 8e2b86bfc / 4607925b5 / b03f94f7e / 5da9a7208，撤回 ddc6aed19；零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。</div>
+  <div class="footer">读数对象 47a4ebfdb（最终提交上的 go build 与全量 ursmcheck；扩展包、模块与前端读数取自 ab0c0b5b1；内容指纹首尾相同；已并入 origin/main b36089b1d）；本轮提交 fa1338d75 / 823ccc6c3 / 8e2b86bfc / 4607925b5 / b03f94f7e / 5da9a7208 / ee41e80bc / c3922dd97 / 47a4ebfdb 与三次合并，撤回 ddc6aed19；零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。</div>
 </div>
 </body>
 </html>
