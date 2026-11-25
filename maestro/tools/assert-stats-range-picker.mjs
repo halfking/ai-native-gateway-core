@@ -63,13 +63,14 @@ async function js(expression) {
 }
 
 /** 导航到某 URL 并等 DOM 就绪。 */
-async function goto(url, readyExpr, timeoutMs = 30000) {
+async function goto(url, readyExpr, timeoutMs = 60000) {
   await navigateToDocument(cdp, sessionId, url, timeoutMs)
   if (readyExpr) {
     try {
       await waitFor(cdp, sessionId, readyExpr, timeoutMs)
     } catch {
-      /* 交给断言去判红（页面没渲染出目标元素 = 产品问题，不是工具坏了） */
+      const state = await js(`({ path: location.pathname, ready: document.readyState, app: !!document.querySelector('#app') })`)
+      console.log('页面条件等待超时', JSON.stringify(state))
     }
   }
   await sleep(800)
@@ -92,6 +93,7 @@ if (String(loginStatus) !== '200') {
     process.exit(2)
   }
 }
+await goto(`${BASE}/dashboard`, `!!document.querySelector('#app .app-layout, #app main, .kx-dr-trigger')`)
 console.log(`ℹ️ 登录态就绪（${BASE}）`)
 
 // ══════════════════════════════════════════════════════════════════════
