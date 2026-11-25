@@ -4075,6 +4075,7 @@ sctx: {
     detailPage: {
       date: '日期',
       dimension: '维度',
+      estimatedCost: '估算费用（USD）',
       empty: '所选日期和维度没有请求记录。',
       unassigned: '未分配',
       previous: '上一页',

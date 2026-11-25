@@ -74,7 +74,7 @@ watch([day, group, number, () => props.report, () => props.trafficScope], async 
             <th scope="col">{{ t('rr.col.errorRate') }}</th>
             <th scope="col">{{ t('rr.col.cacheHitRatio') }}</th>
             <th scope="col">{{ t('rr.col.latencyP95') }} (ms)</th>
-            <th scope="col">{{ money ? t('rr.col.estimatedCost') : t('rr.col.creditsCharged') }}</th>
+            <th scope="col">{{ money ? t('rr.detailPage.estimatedCost') : t('rr.col.creditsCharged') }}</th>
           </tr></thead>
           <tbody>
             <tr v-for="row in page.rows" :key="row.key">
@@ -84,7 +84,7 @@ watch([day, group, number, () => props.report, () => props.trafficScope], async 
               <td>{{ (row.totals.error_rate * 100).toFixed(1) }}%</td>
               <td>{{ row.totals.cache_hit_ratio == null ? '—' : `${(row.totals.cache_hit_ratio * 100).toFixed(1)}%` }}</td>
               <td>{{ row.totals.latency_measured_requests ? row.totals.latency_p95_ms : '—' }}</td>
-              <td v-if="money">{{ row.totals.usd_measured_requests && row.totals.estimated_cost_cents != null ? `${row.totals.estimated_cost_cents} ${row.totals.currency}` : '—' }}</td>
+              <td v-if="money">{{ row.totals.usd_measured_requests && row.totals.estimated_cost_cents != null ? `${row.totals.currency} ${row.totals.estimated_cost_cents / 100}` : '—' }}</td>
               <td v-else>{{ row.totals.credits_charged }}</td>
             </tr>
           </tbody>

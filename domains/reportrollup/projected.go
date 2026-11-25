@@ -236,17 +236,21 @@ func projectedFactsSQL(where, columns string, materialized bool) string {
 }
 
 func projectedGrainSQL(where string, groups []string, fullReport bool) string {
-	// The displayed credential and key rows each have one ID, independent of
-	// source attribution. Aggregate their samples together before computing ranks.
-	sets := strings.Join(groups, ", ")
-	flags, measureKeys, errorKeys := projectedGrainKeys(sets, fullReport)
-	errorSets := strings.Join(grainErrorGroups(groups), ", ")
 	facts := projectedFactsSQL(where, "*", fullReport)
 	if len(groups) == 1 && groups[0] == projectedModelGroup {
 		// Reuse the narrow tenant scan for model measures and errors. An
 		// inlined CTE reads the same bitmap heap blocks for each aggregate.
 		facts = projectedFactsSQL(where, "raw_model_name, status, kind, "+projectedMeasureInputs, true)
 	}
+	return facts + projectedGrainAggregates(groups, fullReport)
+}
+
+func projectedGrainAggregates(groups []string, fullReport bool) string {
+	// The displayed credential and key rows each have one ID, independent of
+	// source attribution. Aggregate their samples together before computing ranks.
+	sets := strings.Join(groups, ", ")
+	flags, measureKeys, errorKeys := projectedGrainKeys(sets, fullReport)
+	errorSets := strings.Join(grainErrorGroups(groups), ", ")
 	measures := `, measures AS (
 		SELECT ` + flags + measureKeys + projectedAdditiveMeasures + `,
 			percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)
@@ -268,7 +272,7 @@ func projectedGrainSQL(where string, groups []string, fullReport bool) string {
 			FROM additive LEFT JOIN ranks USING (tenant_id)
 		)`
 	}
-	return facts + measures + ` SELECT ` + projectedGrainColumns + `, NULL::text,
+	return measures + ` SELECT ` + projectedGrainColumns + `, NULL::text,
 		requests, successes, input_tokens, output_tokens, cache_read, cache_write, usd_cents, 'USD',
 		credits, 0::float8, coalesce(latency_ranks[1],0), coalesce(latency_ranks[2],0),
 		(latency_coverage>0)::int::float8, 0::bigint,

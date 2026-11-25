@@ -724,7 +724,7 @@ describe('⑧ 参数下发', () => {
     const daily = vi.mocked(fetchReportDailyPage)
     daily.mockClear()
     daily.mockImplementation(async q => ({ day: q.day, group: q.group, projection, page: {
-      number: q.page, page_size: 50, total: 51, rows: [{ key: 'model-1', totals: totals() }],
+      number: q.page, page_size: 50, total: 51, rows: [{ key: 'model-1', totals: totals({ usd_measured_requests: 1 }) }],
     } }))
     const w = await mountView()
     await byId(w, 'rr-load').trigger('click')
@@ -737,6 +737,7 @@ describe('⑧ 参数下发', () => {
     expect(mSum).toHaveBeenCalledTimes(previous)
     expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ start: '2026-10-01', end: '2026-10-07', day: '2026-10-07', group: 'model', page: 1 }), expect.anything())
     expect(byId(w, 'rr-day-detail').text()).toContain('model-1')
+    expect(byId(w, 'rr-day-detail').text()).toContain('USD 12.34')
     await byId(w, 'rr-detail-next').trigger('click')
     await flushPromises()
     expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ day: '2026-10-07', group: 'model', page: 2 }), expect.anything())

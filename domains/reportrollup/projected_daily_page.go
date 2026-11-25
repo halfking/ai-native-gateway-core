@@ -56,11 +56,17 @@ func BuildProjectedDailyPage(ctx context.Context, q Querier, view View, filter G
 	if err != nil || len(first) == 0 {
 		return page, err
 	}
-	where += fmt.Sprintf(` AND (%s, %s) IN (SELECT * FROM unnest($%d::text[], $%d::text[]))`,
-		grain.first, grain.second, len(args)+1, len(args)+2)
+	if page.Total > page.PageSize {
+		where += fmt.Sprintf(` AND (%s, %s) IN (SELECT * FROM unnest($%d::text[], $%d::text[]))`,
+			grain.first, grain.second, len(args)+1, len(args)+2)
+		args = append(args, first, second)
+	}
+	columns := "report_date, " + grain.columns + ", status, kind, " + projectedMeasureInputs
+	statement := projectedFactsSQL(where, columns, true) +
+		projectedGrainAggregates([]string{"(report_date, " + grain.columns + ")"}, false)
 	rows := make(map[string]*grainAccumulator, len(first))
 	var date string
-	if err := readProjectedGroups(ctx, q, projectedGrainSQL(where, []string{"(report_date, " + grain.columns + ")"}, false), append(args, first, second),
+	if err := readProjectedGroups(ctx, q, statement, args,
 		func(_ groupKind, row grainScanRow) {
 			date = row.date.Format("2006-01-02")
 			getAccStr(rows, grain.key(row)).add(row)

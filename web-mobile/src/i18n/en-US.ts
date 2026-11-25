@@ -4042,6 +4042,7 @@ sctx: {
     detailPage: {
       date: 'Date',
       dimension: 'Dimension',
+      estimatedCost: 'Estimated cost (USD)',
       empty: 'No requests for this date and dimension.',
       unassigned: 'Unassigned',
       previous: 'Previous',
