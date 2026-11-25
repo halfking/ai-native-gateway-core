@@ -87,6 +87,7 @@
       <tr><td>13</td><td><code>Makefile</code>、<code>tests/scan_secrets_placeholder_privilege_test.sh</code></td><td>代上游收口：两条新门接进快门 <code>guards-gate-scripts</code>；扫描器已知清单补登新 runner</td><td><span class="pill p-ok">登记册门 230/0</span> 扫描器 10/0</td></tr>
       <tr><td>14</td><td><code>tests/deploy_ssh_retry_test.sh</code>、<code>Makefile</code>、<code>tests/gate_scripts_caller_registry.tsv</code></td><td>代上游收口：夹具自造临时密钥文件（被测库在同级 deploy-lib 仓库，自 11-05 起要求密钥文件存在）；修好后接进快门并从豁免表删掉旧行</td><td><span class="pill p-ok">21/0</span> 登记册门 227/0</td></tr>
       <tr><td>15</td><td><code>tests/deploy_211_contract_test.sh</code></td><td>代上游收口一条假红：「迁移」锚点改为真正执行重放的那一行，锚点找不到时如实报「找不到锚点」；真实引擎未动</td><td><span class="pill p-ok">135/0</span> 变异 3/3 咬住</td></tr>
+      <tr><td>16</td><td><code>storage/sqlite/journal.go</code>（新）、<code>domains/reconciliation/attempt_outbox.go</code>、<code>cmd/gateway/attempt_journal.go</code>（新）、<code>tests/verify_cgo_convention_test.sh</code> 等 8 个文件</td><td>owner 指示「按建议执行」⇒ cgo 边界注入式候选合入 main：打开日志收进 storage/sqlite、对账包不导入驱动、main.go 行数不变；登记册 6 → 8（两个仅测试）</td><td><span class="pill p-ok">两道 cgo 门回绿</span> 全量 urSM ok 331.026s</td></tr>
     </table>
   </div>
 
@@ -155,7 +156,7 @@
       <tr><td><span class="pill p-p2">P2</span></td><td>AGENTS.md：L87 整块、L108 段头、L79 ⑪⑫ 丢失；L71 归档未摘净；无门</td><td><code>570087c16</code>、<code>34b4a9a6f</code></td><td><span class="pill p-ok">已恢复＋新门</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>L107 记录「不照搬退役/后继框架」与事实相反（<code>e7e03cdb8</code> 带进了整套框架）</td><td>L107</td><td><span class="pill p-ok">已就地订正</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>maestro 判定：非 0/1/2 的退出码一律当 PASS（被杀的 Maestro ⇒ PASS）</td><td><code>fc580c5fd</code></td><td><span class="pill p-ok">已修 <code>050e06131</code></span></td></tr>
-      <tr><td><span class="pill p-p2">P2</span></td><td>cgo 边界漂移：<code>domains/reconciliation/attempt_outbox.go</code> 无条件空导入 go-sqlite3 ⇒ cgo=1 闭包 6 → 39 个包；cgo=0 二进制上该 outbox 打不开（实测 Ping 报 stub 错），退回直写。生产今天不受影响（影子台账开关默认关闭）</td><td><code>cdd155fff</code></td><td><span class="pill p-hold">登记（修法待 owner）</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>cgo 边界漂移：<code>domains/reconciliation/attempt_outbox.go</code> 无条件空导入 go-sqlite3 ⇒ cgo=1 闭包 6 → 39 个包；cgo=0 二进制上该 outbox 打不开（实测 Ping 报 stub 错），退回直写。生产今天不受影响（影子台账开关默认关闭）</td><td><code>cdd155fff</code></td><td><span class="pill p-ok">已修 <code>0248b4c93</code></span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>默认路径向生产机 scp 脚本到可预测的 /tmp 路径并签 super_admin JWT</td><td><code>a6797a559</code></td><td><span class="pill p-hold">登记</span></td></tr>
       <tr><td><span class="pill p-p1">P1 潜伏</span></td><td>W3 外部钩子：休眠；接线后来源判定失效、凭据头外送、无熔断无观测</td><td><code>22fcf788c</code>、<code>742367828</code></td><td><span class="pill p-ok">现状声明</span> <span class="pill p-hold">修复待 owner</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>探测口径静默屏蔽只修一半；低版本清单补登后的锁影响；域数订正漏 4 个 README</td><td><code>19123218a</code>、<code>9d5b1db65</code>、<code>ccc28f2d3</code></td><td><span class="pill p-ok">README 已修</span> <span class="pill p-hold">其余登记</span></td></tr>
@@ -167,11 +168,11 @@
   <div class="card">
     <table>
       <tr><th>对象</th><th>判定</th><th>动作</th></tr>
-      <tr><td><code>codex/reconciliation-upgrade</code></td><td>2 笔已被主线吸收；检查点是未获生产授权的 V2 功能（相对当前 main 差异 320 个路径：30 个已与 main 相同、239 个不同、51 个 main 上没有；内存合并 32 处冲突；带入 <code>983d</code>／<code>988b</code> 两个新迁移；尖端自身可编译、改动包单测与 installer 通过，但门禁包有 3 道、web 有 5 条红是分支带来的）</td><td><span class="pill p-hold">保留在本机（已询问 owner、未获答复）</span></td></tr>
+      <tr><td><code>codex/reconciliation-upgrade</code></td><td>2 笔已被主线吸收；检查点是未获生产授权的 V2 功能（相对当前 main 差异 320 个路径：30 个已与 main 相同、239 个不同、51 个 main 上没有；内存合并 32 处冲突；带入 <code>983d</code>／<code>988b</code> 两个新迁移；尖端自身可编译、改动包单测与 installer 通过，但门禁包有 3 道、web 有 5 条红是分支带来的）</td><td><span class="pill p-ok">已推远端侧分支保存（owner 指示「按建议执行」）</span></td></tr>
       <tr><td>worktree <code>/private/tmp/maincheck</code></td><td>干净、无独有提交</td><td><span class="pill p-ok">已删除</span></td></tr>
       <tr><td>worktree <code>reconciliation-release-preview</code></td><td>335 个暂存文件：278 个与升级分支尖端相同；57 个不在其尖端，其中 52 个的内容在升级分支与 main 的历史里都找不到——同一特性的另一条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>，没有 <code>988b</code>）；尖端自身可编译、改动包单测与 installer 通过，但门禁包有 8 道、web 有 5 条红是分支带来的；对当前 main 冲突 25 处</td><td><span class="pill p-ok">已提交为保全分支 <code>codex/reconciliation-release-preview</code> 后删除</span></td></tr>
       <tr><td>worktree <code>reconciliation-upgrade</code></td><td>干净、等于分支尖端</td><td><span class="pill p-ok">已删除，分支保留</span></td></tr>
-      <tr><td>同级其他检出（只读清点）</td><td>与本仓同远端另有 3 个检出，本仓之外 11 个非主 worktree：8 个干净的临时树 5–20 小时无改动、1 个残缺检出、1 个带未进 main 的未跟踪文档、1 个 2.6 小时前还在用</td><td><span class="pill p-hold">属别的车道，未处置；是否扩面清理待 owner</span></td></tr>
+      <tr><td>同级其他检出（只读清点）</td><td>与本仓同远端另有 3 个检出，本仓之外 11 个非主 worktree：8 个干净的临时树 5–20 小时无改动、1 个残缺检出、1 个带未进 main 的未跟踪文档、1 个 2.6 小时前还在用</td><td><span class="pill p-ok">已删 9 个临时树；l1l5 文档已保全（owner 指示「按建议执行」）</span></td></tr>
       <tr><td>6 个 stash</td><td>全部过时或已被吸收</td><td><span class="pill p-hold">未丢弃（不可逆、未授权）</span></td></tr>
     </table>
   </div>
@@ -179,9 +180,9 @@
   <h2>⑦ 遗留风险与待 owner 决策</h2>
   <div class="card">
     <ul>
-      <li><span class="tag">cgo 边界</span> —— 两道门口径不同：依赖图绊线按惯例拆 <code>//go:build cgo</code> 即可回绿；登记册门要求 cgo=1 闭包里只有登记的 6 个包能到达 go-sqlite3（让日志走 storage 层，或更新登记册与 CGO 边界）。证据：<code>docs/audit/evidence/2026-11-25-round28-prepush-suites-and-cgo-boundary.txt</code>。候选实现已备好：本地分支 <code>wip/cgo-boundary-inject-20261125</code>（<code>bc22d1444</code>，未推送、未合并）——注入式，登记册 6 → 8（两个仅测试）；两道门在候选上回绿、四个变异全咬住；证据 <code>docs/audit/evidence/2026-11-25-round28-cgo-boundary-candidate.txt</code>。</li>
-      <li><span class="tag">同级检出的清理</span> —— 是否把 worktree 清理扩到同级检出：<code>llm-gateway-go</code> 与 <code>llm-gateway-go-5</code> 登记的 8 个干净临时树可删（提交都在 main）；<code>llm-gateway-go-5-l1l5</code> 须先把那份未跟踪文档保全；两个检出正被别的会话使用。清单见证据 <code>docs/audit/evidence/2026-11-25-round28-sibling-checkouts-survey.txt</code>。</li>
-      <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两者是同一特性的两条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>／<code>988b</code>）：并入要先定哪条线为准，删除任一个都会丢掉别处没有的内容。两条线都「健康但未就绪」：共有的 V2 前端改动打破 4 条既有 web 契约测试，并入前须对账并重生成台账（证据：<code>docs/audit/evidence/2026-11-25-round28-local-branches-validity.txt</code>）。两个分支目前都只在本地。已向 owner 询问四个选项、未获答复；按纪律不并不删不推。若只求防本机丢失，可推到远端侧分支（已核实不触发 CI）。</li>
+      <li><span class="tag">cgo 边界</span> —— 两道门口径不同：依赖图绊线按惯例拆 <code>//go:build cgo</code> 即可回绿；登记册门要求 cgo=1 闭包里只有登记的 6 个包能到达 go-sqlite3（让日志走 storage 层，或更新登记册与 CGO 边界）。证据：<code>docs/audit/evidence/2026-11-25-round28-prepush-suites-and-cgo-boundary.txt</code>。候选实现已备好：本地分支 <code>wip/cgo-boundary-inject-20261125</code>（<code>bc22d1444</code>，未推送、未合并）——注入式，登记册 6 → 8（两个仅测试）；两道门在候选上回绿、四个变异全咬住；证据 <code>docs/audit/evidence/2026-11-25-round28-cgo-boundary-candidate.txt</code>。<b>已执行</b>：候选已合入 main（合并提交 <code>0248b4c93</code>），两道 cgo 门在 main 上回绿，候选分支已删。</li>
+      <li><span class="tag">同级检出的清理</span> —— 是否把 worktree 清理扩到同级检出：<code>llm-gateway-go</code> 与 <code>llm-gateway-go-5</code> 登记的 8 个干净临时树可删（提交都在 main）；<code>llm-gateway-go-5-l1l5</code> 须先把那份未跟踪文档保全；两个检出正被别的会话使用。清单见证据 <code>docs/audit/evidence/2026-11-25-round28-sibling-checkouts-survey.txt</code>。<b>已执行</b>：l1l5 的未跟踪文档先保全为分支，9 个临时 worktree 已删；三个主检出、l1l5、reqlogs 与并行车道的部署树未动。</li>
+      <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两者是同一特性的两条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>／<code>988b</code>）：并入要先定哪条线为准，删除任一个都会丢掉别处没有的内容。两条线都「健康但未就绪」：共有的 V2 前端改动打破 4 条既有 web 契约测试，并入前须对账并重生成台账（证据：<code>docs/audit/evidence/2026-11-25-round28-local-branches-validity.txt</code>）。两个分支目前都只在本地。已向 owner 询问四个选项、未获答复；按纪律不并不删不推。若只求防本机丢失，可推到远端侧分支（已核实不触发 CI）。<b>已执行（owner 指示「按建议执行」）</b>：扫描无新凭据后，两个分支已推到 origin 与 github 的同名侧分支保存；未并入，本地分支保留。</li>
       <li><span class="tag">W3 外部钩子</span> —— 是否上线；上线前须先修来源判定、凭据头脱敏、熔断与观测、流式空正文、改写体校验。</li>
       <li><span class="tag">登录 captcha 计数</span> —— 是否给服务端失败计数加 TTL 或重置端点（目前只绕开了 UI 登录）。</li>
       <li><span class="tag">maestro runner</span> —— 预置会话默认开启且在生产机落文件（判定口径「未知退出码当绿」已补修 <code>050e06131</code>）。</li>

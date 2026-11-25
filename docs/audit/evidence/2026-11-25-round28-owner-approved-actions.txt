@@ -1,0 +1,88 @@
+# owner 指示「按建议执行」后的三项执行（第 28 轮收尾，2026-11-25 15:1x–16:0x）
+# 依据：owner 于 2026-11-25 15:1x 回复「请按建议执行」。我方建议共三条（此前均在回复里逐条列明）：
+#   ① 两个本地分支：先跑敏感信息扫描，再原样推到 origin 与 github 的同名侧分支保存（不进 main、不触发 CI）；
+#   ② 同级检出的 worktree：删 8 个干净的临时树与 1 个残缺检出；llm-gateway-go-5-l1l5 先把未跟踪文档保全到分支；三个主检出与 llm-gateway-go-5-reqlogs 不动；
+#   ③ cgo 边界：把注入式候选合进 main、重跑门禁后推送，再删候选分支。
+# 其余登记项（6 个 stash、W3 外部钩子、maestro 预置会话等）我方建议本就是维持现状或待 owner 定 ⇒ 未动。
+# 说明：原始输出来自 /tmp/l108-audit/logs（/tmp 会被系统清理，这里留副本）。零生产写、零部署、零 schema 变更。
+
+===== ③ cgo 边界：注入式候选合入 main =====
+第一次合并（05e79df34，基于 4ec9cf9ef）：读数全绿（专项读数全 0、全量 scripts/ursmcheck ok 365.160s、扫描 BLOCK 32／WARN 2073），
+  但推送前检查发现上游在读数期间前进到 76e7b6ece（14 个文件：文档、AGENTS.md、证据档、k6-scripts/mixed-load-test.js；与候选的 8 个文件零重叠）⇒ 未推送。
+第二次合并（0248b4c93，父提交 76e7b6ece ＋ bc22d1444）：在新 main 上重做合并，读数重跑 ⇒ 已推送。
+HEAD=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc frozen=1 start=2026-11-25 15:36:16
+EXIT build_cgo1=0
+EXIT build_cgo0=0
+EXIT vet_cgo1=0
+EXIT vet_cgo0=0
+EXIT test_cgo1=0    4 ok 
+EXIT test_cgo0=0 ok  	github.com/kaixuan/llm-gateway-go/domains/reconciliation	0.036s
+EXIT cgo_registry_gate=0 PASS: CGO_ENABLED=0 builds storage/sqlite (both driver forms coexist)|PASS: cgo boundary matches registry (8 packages)|
+EXIT cgo_nocgo_gate=0 pass=8 fail=0
+EXIT admin_routes_snapshot_gate=0 ok
+sqlite3_in_cgo0_graph_of_gateway=0
+HEAD_END=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc end=2026-11-25 15:38:04
+--- 发布读数（编译 ＋ 全量门禁 ＋ 扫描）---
+HEAD=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc HEAD_FROZEN=1 START=2026-11-25 15:38:04
+EXIT go_build=0
+EXIT ursmcheck=0 ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	331.026s 
+EXIT scan=1
+HEAD_END=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc CONTENT_FROZEN=1 END=2026-11-25 15:48:18
+  扫描 WARN 2073 → 2095（净 +22）：与上一次扫描逐行比对 ⇒ 新增 24 条全部落在上游新进的文件里
+    （docs/audit/evidence/2026-11-25-request-logs-withdrawn-attempt/** 22 条、docs/audit/2026-11-25-request-logs-超时优化总结.md 1 条、AGENTS.md 行号移动 1 条；另 2 条因行号移动消失）
+  ⇒ 合并涉及的 8 个文件上 BLOCK 0、WARN 0。
+--- 推送后 ---
+  本地、origin/main、github/main 三处一致为 0248b4c93；候选分支 wip/cgo-boundary-inject-20261125 已删（其提交 bc22d1444 已在 main 的历史里）；
+  共享主工作树上两道门：verify_cgo_convention_test.sh ⇒ PASS: cgo boundary matches registry (8 packages)；deploy_nocgo_build_test.sh ⇒ PASS 8 / FAIL 0。
+
+===== ① 两个本地分支：扫描后推到远端侧分支 =====
+--- 敏感信息扫描（钩子同参：bash 5、--tracked-only、--baseline；在各自的隔离树上跑）---
+  codex/reconciliation-upgrade @ 5a6b63c51: BLOCK                  27 | WARN                   2017
+  codex/reconciliation-release-preview @ c43c3e63f: BLOCK                  30 | WARN                   2021
+  与 main（BLOCK 32）逐条比对（同文件＋同类别）：
+    升级分支 27 条 BLOCK：0 条是 main 上没有的。
+    保全分支 30 条 BLOCK：3 条是 main 上没有的——domains/reportrollup/realdb_e2e_test.go:550/555/560 DB_CONNSTRING；
+      逐条看过：isScratchDB 的单元测试字面量（用户名 u、口令长度 1、主机 h、库名 SCRATCH／llm_gateway）= 占位夹具，不是真实凭据；
+      被拦只因那棵树自带的扫描器基线是旧版（main 上同一文件、同样 4 处字面量已在豁免基线内）。
+  ⇒ 推送两个分支不会公开任何新凭据。
+--- 推送后读回 ---
+== remote side branches (read back 2026-11-25 16:00:39) ==
+origin   codex/reconciliation-upgrade             5a6b63c51462a3641c8e6c3494aad8772c9ecf00
+origin   codex/reconciliation-release-preview     c43c3e63f6d02acd7b445be09fb2946041e79690
+github   codex/reconciliation-upgrade             5a6b63c51462a3641c8e6c3494aad8772c9ecf00
+github   codex/reconciliation-release-preview     c43c3e63f6d02acd7b445be09fb2946041e79690
+local tips: 5a6b63c51462a3641c8e6c3494aad8772c9ecf00 c43c3e63f6d02acd7b445be09fb2946041e79690
+main: HEAD=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc origin/main=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc github/main=0248b4c93b540f6eca21ae5d6d3eb470d75a18fc
+local branches: codex/reconciliation-release-preview c43c3e63f;codex/reconciliation-upgrade 5a6b63c51;main 0248b4c93;
+worktrees (this repo): 1
+  未并入 main、未删除本地分支（建议里没有删；内容已在两个远端，是否删本地分支由 owner 定）。CI：两棵树里的工作流与 main 相同，只在 main 与 v* 标签触发。
+
+===== ② 同级检出：保全后删除 9 个临时 worktree =====
+--- 保全 l1l5 的未跟踪文档（git 底层命令：临时索引 → 写树 → commit-tree → 建分支；不碰该工作树的分支、索引与文件）---
+l1l5 preservation branch (in llm-gateway-go-5 repo):
+a12dd3e4677648d1fea2f96f164b7aa8a9816f27 preserve: llm-gateway-go-5-l1l5 工作树里的未跟踪文档（2026-11-25 第 28 轮清理前保全；只含这一个文件；原工作树的分支、索引与文件均未改动）
+
+ ...2026-11-25-owner-axis-pending-items-analysis.md | 393 +++++++++++++++++++++
+ 1 file changed, 393 insertions(+)
+l1l5 worktree after: branch=feat/211-config-todos-l1l5 HEAD=55f5bb18d status=[?? docs/audit/evidence/2026-11-25-owner-axis-pending-items-analysis.md;]
+preservation branch on any remote: 0
+--- 删除（动手前逐个复核：干净／只有文件缺失、HEAD 在各自 origin/main 里、无进程占用；第一个 zsh 版本因变量名覆盖 PATH 未执行任何删除，改用 Python 重做）---
+dry run (pass --go to act)
+SKIP (missing or not registered): llm-gateway-go   /private/tmp/gate_base
+SKIP (missing or not registered): llm-gateway-go   /private/tmp/ir_check2
+SKIP (missing or not registered): llm-gateway-go   /private/tmp/om3
+SKIP (missing or not registered): llm-gateway-go   /private/tmp/om4
+SKIP (missing or not registered): llm-gateway-go-5 /private/tmp/wt-base4
+SKIP (missing or not registered): llm-gateway-go-5 /private/tmp/wt-base5
+SKIP (missing or not registered): llm-gateway-go-5 $TMPDIR/tmp.6CluWO2SdR/base
+SKIP (missing or not registered): llm-gateway-go-5 $TMPDIR/tmp.uOZqx8MmiE/base
+SKIP (missing or not registered): llm-gateway-go-5 $TMPDIR/tmp.LtqXZamCAk/base
+-- llm-gateway-go worktrees now:
+     /Users/niuer/workspace/ai-native-tools/llm-gateway/.git/modules/llm-gateway-go  76832a9ac [main]
+-- llm-gateway-go-5 worktrees now:
+     /Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-5          76e7b6ece [main]
+     /private/tmp/gw-l113-deploy                                                  76e7b6ece (detached HEAD)
+     /Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-5-l1l5     55f5bb18d [feat/211-config-todos-l1l5]
+     /Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-5-reqlogs  b36089b1d (detached HEAD)
+REFUSED_OR_FAILED=0
+  新出现的 /private/tmp/gw-l113-deploy 是并行车道的 L113 轮部署树（正在使用）⇒ 未动；llm-gateway-go-5-l1l5 与 llm-gateway-go-5-reqlogs 按建议未动。
