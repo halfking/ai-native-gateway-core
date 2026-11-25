@@ -255,7 +255,58 @@ func piRequestCols() []string {
 		"ts", "request_status", "success", "error_kind", "failure_stage", "failure_detail_code",
 		"upstream_status_code", "client_model", "outbound_model", "canonical_model", "provider_id", "credential_id",
 		"client_protocol", "client_endpoint", "agent_name", "latency_ms", "prompt_tokens", "completion_tokens",
-		"total_tokens", "stream_interrupted", "routing_attempts", "request_preview",
+		"total_tokens", "stream_interrupted", "routing_attempts", "is_auto_request", "request_preview",
+	}
+}
+
+// piEvidenceSelectItems 从请求账本投影的 SQL 文本里数出选择项、并取出每项的输出名。
+//
+//	★ 为什么要从文本数：sqlmock 的模拟行是手写的 ⇒ 列数会**跟着 Scan 走**而不是跟着 SQL 走
+//	  ⇒ 2026-11-26 在 211 上实测：SQL 选了 23 列、Scan 只有 22 个目标 ⇒ database/sql 报
+//	  「expected 23 destination arguments in Scan, not 22」⇒ 请求账本整路降级，而单测全绿。
+//	  括号内的逗号（LEFT(COALESCE(…), 300)、CASE 表达式）不算分隔符。
+func piEvidenceSelectItems(t *testing.T) []string {
+	t.Helper()
+	text := strings.ReplaceAll(piEvidenceRequestCols, "`", "")
+	items, depth, start := []string{}, 0, 0
+	for i, r := range text {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				items = append(items, strings.TrimSpace(text[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	items = append(items, strings.TrimSpace(text[start:]))
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		name := it
+		if k := strings.LastIndex(strings.ToUpper(it), " AS "); k >= 0 {
+			name = it[k+4:]
+		} else if k := strings.LastIndex(it, "."); k >= 0 {
+			name = it[k+1:]
+		}
+		names = append(names, strings.TrimSpace(name))
+	}
+	return names
+}
+
+// 请求账本投影的列数、列名、顺序必须与测试夹具（也就是 Scan 的目标顺序）逐项一致。
+func TestEvidenceRequestSelectListMatchesScan(t *testing.T) {
+	got := piEvidenceSelectItems(t)
+	want := piRequestCols()
+	if len(got) != len(want) {
+		t.Fatalf("投影选了 %d 列，Scan 夹具只有 %d 列:\n got %v\nwant %v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("第 %d 列不一致：SQL 选出 %q，Scan 按 %q 接", i+1, got[i], want[i])
+		}
 	}
 }
 
@@ -281,7 +332,7 @@ func TestQueueEvidence_ReturnsAllSourcesAndDegradesPerSource(t *testing.T) {
 			time.Date(2026, 11, 25, 0, 56, 28, 0, time.Now().Location()), "failure", false, "output_policy_blocked",
 			"upstream", "output_policy_blocked", nil,
 			"glm-5.3-flash", "glm-5.3-flash", nil, 32, 62,
-			"openai-responses", nil, "minimax-code", 7063, 158787, 0, 158787, false, nil, `{"model":"glm-5.3-flash"}`))
+			"openai-responses", nil, "minimax-code", 7063, 158787, 0, 158787, false, nil, true, `{"model":"glm-5.3-flash"}`))
 	// ② 上游尝试：这一路查询失败 ⇒ 只留一句说明。
 	mock.ExpectQuery("FROM candidate_failure_logs_hot").WithArgs("req-1", "default", 10).
 		WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
@@ -296,7 +347,8 @@ func TestQueueEvidence_ReturnsAllSourcesAndDegradesPerSource(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "title", "root_cause", "plan_kind", "enabled", "auto_execute", "hit_count", "success_count", "failure_count", "last_status"}))
 	mock.ExpectQuery("FROM error_playbook_entries").WithArgs("output_policy_blocked", 5).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "title", "root_cause", "plan_kind", "enabled", "auto_execute", "hit_count", "success_count", "failure_count", "last_status"}).
-			AddRow(3, "输出守卫格式类拦截", "上游断流", "prompt", true, false, 12, 0, 0, "awaiting_approval"))
+			// last_status 给 NULL：它是可空列（从未执行过的条目就是空的），按 string 接会整路报错。
+			AddRow(3, "输出守卫格式类拦截", "上游断流", "prompt", true, false, 12, 0, 0, nil))
 
 	rec := httptest.NewRecorder()
 	h.handleQueueEvidence(rec, piAdminRequest(http.MethodGet, "/x", "super_admin", "default"), 7)
@@ -309,6 +361,7 @@ func TestQueueEvidence_ReturnsAllSourcesAndDegradesPerSource(t *testing.T) {
 		`"provider_id":32`, `"error_kind":"output_policy_blocked"`,
 		`"session_context":[]`, `"upstream_attempts":[]`, `"error_window":[]`, `"service_logs":[]`, `"verifications":[]`,
 		`"covers_window":false`, `"title":"输出守卫格式类拦截"`, `"degraded":[`,
+		`"is_auto_request":true`, "上游断流",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("取证响应缺 %s\n%s", want, body)
@@ -316,6 +369,13 @@ func TestQueueEvidence_ReturnsAllSourcesAndDegradesPerSource(t *testing.T) {
 	}
 	if !strings.Contains(body, "upstream attempts unavailable") {
 		t.Errorf("上游尝试一路失败没有如实留说明: %s", body)
+	}
+	// 请求账本与手册这两路必须是**算出来的**，不能出现在降级清单里
+	//（2026-11-26 的 211 实测：前者因 Scan 列数不匹配、后者因可空列按 string 接而整路降级）。
+	for _, bad := range []string{"request ledger unavailable", "playbook: read failed"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("这一路不该降级，却出现了 %q: %s", bad, body)
+		}
 	}
 	// 空值字段不出现（不是 null 占位）。
 	if strings.Contains(body, `"upstream_status_code":null`) || strings.Contains(body, `"credential_id":null`) {
