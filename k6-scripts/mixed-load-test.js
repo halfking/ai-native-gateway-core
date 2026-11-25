@@ -30,16 +30,18 @@ export let options = {
 };
 
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8782';
-const API_KEY = [REDACTED:secret] || 'test-key-placeholder';
+const API_KEY = (__ENV.API_KEY || 'test-key-placeholder');
 
 // 模拟不同的模型选择
-const MODELS = [
-  'gpt-3.5-turbo',
-  'gpt-4',
-  'claude-3-sonnet',
-  'claude-3-haiku',
-  'gemini-pro',
-];
+const MODELS = (__ENV.MODELS
+  ? __ENV.MODELS.split(',')
+  : [
+    'gpt-3.5-turbo',
+    'gpt-4',
+    'claude-3-sonnet',
+    'claude-3-haiku',
+    'gemini-pro',
+  ]);
 
 // 模拟不同的用户消息
 const USER_MESSAGES = [
@@ -56,8 +58,8 @@ const USER_MESSAGES = [
 export function setup() {
   // 尝试登录获取管理员session（用于20%的管理操作）
   const loginRes = http.post(`${BASE_URL}/api/auth/token`, JSON.stringify({
-    username: [REDACTED:account] || 'admin',
-    password: [REDACTED:secret] || 'password',
+    username: __ENV.ADMIN_USER || 'admin',
+    password: __ENV.ADMIN_PASSWORD || 'password',
   }), {
     headers: { 'Content-Type': 'application/json' },
   });
@@ -89,7 +91,7 @@ export default function (data) {
     const params = {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `[REDACTED:secret]`,
+        'Authorization': `Bearer ${API_KEY}`,
       },
       timeout: '30s',
     };
