@@ -660,6 +660,7 @@
 /audit/export	GET	mcp/control.go:151	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /capabilities	GET	mcp/control.go:113	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:19	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/debug/pprof/	ANY	cmd/gateway/pprof_server.go:25	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/cmdline	ANY	cmd/gateway/pprof_server.go:20	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/profile	ANY	cmd/gateway/pprof_server.go:21	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /debug/pprof/symbol	ANY	cmd/gateway/pprof_server.go:22	unknown				not-probed-unresolved	★ 静态分级：解析不出
