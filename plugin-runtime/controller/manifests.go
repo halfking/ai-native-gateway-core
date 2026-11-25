@@ -17,15 +17,26 @@ import (
 
 var pluginIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
+func validateEnabledPluginIDs(ids []string) error {
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !pluginIDPattern.MatchString(id) {
+			return fmt.Errorf("invalid enabled plugin id %q", id)
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate enabled plugin id %q", id)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
 func scan(cfg *config.Config) (map[string]*root.Manifest, error) {
+	if err := validateEnabledPluginIDs(cfg.Plugins.Enabled); err != nil {
+		return nil, err
+	}
 	result := make(map[string]*root.Manifest, len(cfg.Plugins.Enabled))
 	for _, id := range cfg.Plugins.Enabled {
-		if !pluginIDPattern.MatchString(id) {
-			return nil, fmt.Errorf("invalid enabled plugin id %q", id)
-		}
-		if result[id] != nil {
-			return nil, fmt.Errorf("duplicate enabled plugin id %q", id)
-		}
 		dir := filepath.Join(cfg.Plugins.Directory, id)
 		path := filepath.Join(dir, "current", "plugin-manifest.json")
 		if _, err := os.Lstat(filepath.Join(dir, "current")); os.IsNotExist(err) {

@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/errorplaybook"
 	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility"
 	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/controller"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -49,6 +50,7 @@ var (
 //	  某个依赖为 nil ⇒ 对应路由不进闭集 ⇒ api 形态方案在归一化期被
 //	  fail-fast 拒绝（诚实语义：不宣传一个不可执行的动作）。
 type PlaybookDeps struct {
+	PluginController *controller.Controller
 	// ForceRecoverCredential：单凭据强制恢复（admin.Handler.ForceRecoverCredential
 	// 的单一真源实现；body: {"credential_id": 123}）。
 	ForceRecoverCredential func(ctx context.Context, credID int64) ([]string, error)
@@ -162,11 +164,15 @@ func initErrorPlaybook(ctx context.Context, sqlDB *sql.DB, deps PlaybookDeps) (
 	//   数据面异常（模型归因缺失/计费口径缺口/会话维度缺失）随同一窗口
 	//   进手册（条目 = 迁移 999a 六条 data_maintenance:*）。探测器只读、
 	//   零写入、失败不阻断主链路（包装器语义：inner 失败原样上抛）。
-	source := errorplaybook.ErrorSource(errorplaybook.NewSQLSource(sqlDB))
+	sqlSource := errorplaybook.NewSQLSource(sqlDB)
+	source := errorplaybook.ErrorSource(sqlSource)
 	if dq := errorplaybook.NewDataQualitySource(source, sqlDB, loadDataQualityConfig); dq != nil {
 		source = dq
 	}
 	worker := errorplaybook.NewWorker(engine, source, loadErrorPlaybookConfig, playbookInterval())
+	if deps.PluginController != nil {
+		worker.WithRemediation(errorplaybook.NewRemediation(sqlSource, store, deps.PluginController))
+	}
 	worker.Start(ctx)
 
 	slog.Info("error_playbook: components constructed",

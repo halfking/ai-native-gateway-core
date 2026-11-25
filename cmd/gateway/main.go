@@ -7960,7 +7960,7 @@ func main() {
 		//	③ IndexRefresh 命中 nil 接收者时 RefreshOnce 返回 (false, nil) ⇒
 		//	   路由回 200「索引已刷新」——**什么都没刷却报成功**。
 		//	⇒ 装配期显式判空后再装接口。
-		pbDeps := PlaybookDeps{}
+		pbDeps := PlaybookDeps{PluginController: pluginController}
 		if autoIndexRefresher != nil {
 			pbDeps.IndexRefresh = autoIndexRefresher
 		}

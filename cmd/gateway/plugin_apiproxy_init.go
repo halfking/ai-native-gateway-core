@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	pluginruntime "github.com/kaixuan/llm-gateway-go/plugin-runtime"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/remediation"
 )
 
 type pluginEntitlementAuthorizer interface {
@@ -38,6 +39,10 @@ func registerPluginAPIProxyWithCapabilities(mux *http.ServeMux, secret []byte, p
 	gateEnabled := entitlementGateEnabled()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pluginID := r.PathValue("pluginId")
+		if remediation.IsPluginID(pluginID) {
+			http.NotFound(w, r)
+			return
+		}
 		base := pluginBaseFor(pluginID)
 		if base == "" {
 			http.Error(w, "plugin not running", http.StatusBadGateway)

@@ -19,7 +19,7 @@ func (c *Controller) probeHealth(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if state.Status == "crashed" || state.Status == "stopped" || c.desired[state.PluginID] == nil || c.disabled[state.PluginID] {
+		if !c.inScope(state.PluginID) || state.Status == "crashed" || state.Status == "stopped" || c.desired[state.PluginID] == nil || c.disabled[state.PluginID] {
 			continue
 		}
 		c.mu.RLock()

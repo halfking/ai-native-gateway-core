@@ -685,3 +685,58 @@ func TestControllerRetainsAcceptedBundleAfterFailedRecovery(t *testing.T) {
 		t.Fatalf("old accepted bundle was not retried: %d starts", starts.Load())
 	}
 }
+
+func TestControllerOptionalBundleFailureIsolatesPeriodicReconciliation(t *testing.T) {
+	plugins, path := fixture(t)
+	writeConfig(t, path, plugins, "missing, one, two")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := Start(ctx, Options{
+		ConfigPath: path, Interval: time.Hour,
+		OptionalPlugins: []string{"missing", "one", "two"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for c.BaseURL("two") == "" {
+		select {
+		case <-ctx.Done():
+			t.Fatal("healthy optional bundles failed to start")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Keep the first bundle absent and switch both other bundles on disk.
+	// One fails readiness and rolls back while the healthy peer advances.
+	writePlugin(t, plugins, "one", "2.0.0", true)
+	writePlugin(t, plugins, "two", "2.0.0", false)
+	if err := c.Reconcile(ctx); err == nil {
+		t.Fatal("failed optional deployments were not reported")
+	} else if !strings.Contains(err.Error(), "missing") || !strings.Contains(err.Error(), "one") {
+		t.Fatalf("reconciliation did not report both failed optional bundles: %v", err)
+	}
+	assertVersion(t, c, "one", "1.0.0")
+	assertVersion(t, c, "two", "2.0.0")
+
+	writePlugin(t, plugins, "missing", "1.0.0", false)
+	writePlugin(t, plugins, "one", "2.0.0", false)
+	if err := c.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion(t, c, "missing", "1.0.0")
+	assertVersion(t, c, "one", "2.0.0")
+	assertVersion(t, c, "two", "2.0.0")
+}
+
+func TestControllerRejectsDuplicateOptionalPluginIDs(t *testing.T) {
+	plugins, path := fixture(t)
+	writeConfig(t, path, plugins, "one, one")
+	c, err := Start(context.Background(), Options{ConfigPath: path, OptionalPlugins: []string{"one"}})
+	if c != nil {
+		c.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "duplicate enabled plugin id") {
+		t.Fatalf("duplicate optional plugin was not rejected: %v", err)
+	}
+}

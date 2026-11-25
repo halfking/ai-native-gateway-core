@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	root "github.com/kaixuan/llm-gateway-go/plugin-runtime"
@@ -23,6 +24,9 @@ type runtimeAdapter struct{ c *Controller }
 func (a *runtimeAdapter) List(_ context.Context, filter reconciler.RegistryFilter) ([]*reconciler.RegistryPlugin, error) {
 	var result []*reconciler.RegistryPlugin
 	for id, m := range a.c.desired {
+		if !a.c.inScope(id) {
+			continue
+		}
 		enabled := !a.c.disabled[id]
 		if filter.EnabledOnly && !enabled {
 			continue
@@ -96,6 +100,9 @@ func (a *runtimeAdapter) ListAll() []*dto.ProcessState {
 	a.c.mu.RLock()
 	defer a.c.mu.RUnlock()
 	for _, state := range states {
+		if !a.c.inScope(state.PluginID) {
+			continue
+		}
 		status := dto.StatusStopped
 		switch {
 		case state.Status == "crashed" || a.c.unhealthy[state.PluginID]:
@@ -213,6 +220,10 @@ func waitReady(ctx context.Context, socket string, m *root.Manifest) error {
 		hs, err := root.HandshakeContext(ctx, client, "http://unix", m.Runtime.HandshakePath, m)
 		if err == nil && (hs.Status != "ready" || hs.PluginVersion != m.PluginVersion) {
 			err = errors.New("handshake not ready or version mismatch")
+		}
+		if err == nil && slices.Contains(m.Capabilities, root.CapabilityErrorRemediation) &&
+			!slices.Contains(hs.Capabilities, root.CapabilityErrorRemediation) {
+			err = errors.New("handshake missing error-remediation capability")
 		}
 		if err == nil {
 			req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix"+m.Runtime.HealthPath, nil)

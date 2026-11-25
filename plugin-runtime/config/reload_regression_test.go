@@ -250,3 +250,55 @@ func TestWatch_AtomicReplace(t *testing.T) {
 	
 	t.Logf("SUCCESS: watch survived atomic replace and caught 3 changes (8080→9001→9002→9003)")
 }
+
+func TestRejectedConfigDeduplicatesValidationFailureByParsedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gateway.yaml")
+	initial := &Config{Server: ServerConfig{Host: "localhost", Port: 8080}, Plugins: PluginsConfig{Directory: dir}}
+	r, err := NewConfigReloader(initial, NewValidator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+	r.(*configReloader).configPath = path
+
+	writeInvalid := func(comment string, port int) {
+		t.Helper()
+		data := fmt.Sprintf("%s\nserver:\n  host: localhost\n  port: %d\nplugins:\n  directory: %q\n", comment, port, dir)
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reloadInvalid := func() Rejection {
+		t.Helper()
+		if err := r.Reload(context.Background()); err == nil {
+			t.Fatal("invalid listen port was accepted")
+		}
+		rejection, ok := RejectionOf(r)
+		if !ok || !rejection.Invalid {
+			t.Fatalf("validation failure not visible: %+v %t", rejection, ok)
+		}
+		return rejection
+	}
+
+	writeInvalid("", 0)
+	first := reloadInvalid()
+	writeInvalid("# changed comment", 0)
+	if _, ok := RejectionOf(r); ok {
+		t.Fatal("replaced file matched an older rejection before reload")
+	}
+	if second := reloadInvalid(); first != second {
+		t.Fatalf("comment-only rewrite changed rejection ID: %x != %x", first.ID, second.ID)
+	}
+	writeInvalid("", -1)
+	if different := reloadInvalid(); first == different {
+		t.Fatal("different rejected config reused the earlier hash")
+	}
+	auditConfigFile(t, path, dir, 8080)
+	if err := r.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := RejectionOf(r); ok {
+		t.Fatal("accepted config still reports a rejection")
+	}
+}

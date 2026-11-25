@@ -64,7 +64,7 @@ func nonAPIReply(resp *http.Response, req *http.Request) *Error {
 	resp.ContentLength = int64(len(body))
 	resp.TransferEncoding = nil
 	resp.Body = io.NopCloser(bytes.NewReader(body))
-	return &Error{Kind: KindUpstreamDown, StatusCode: http.StatusBadGateway, Message: message, Body: body}
+	return &Error{Kind: KindUpstreamDown, StatusCode: http.StatusBadGateway, SyntheticStatus: true, Message: message, Body: body}
 }
 
 func peekReplyPrefix(br *bufio.Reader) ([]byte, error) {

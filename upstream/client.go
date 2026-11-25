@@ -57,6 +57,8 @@ type Error struct {
 	// StatusCode is the upstream HTTP status code when the response
 	// was readable (0 for pure network errors like connection reset).
 	StatusCode int
+	// SyntheticStatus marks a gateway-generated status without a matching upstream reply.
+	SyntheticStatus bool
 	// RetryAfter is the upstream-requested wait duration parsed from
 	// X-RateLimit-Reset or Retry-After response headers.
 	RetryAfter time.Duration
