@@ -117,6 +117,7 @@ type Candidate struct {
 	RawModel         string  `json:"model_name"`               // upstream name: COALESCE(outbound_model_name, raw_model_name)
 	OfferRawModel    string  `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
 	StandardizedName string  `json:"standardized_name"`
+	CanonicalID      *int    `json:"canonical_id,omitempty"`
 	SuccessRate      float64 `json:"success_rate"`
 	P95LatencyMs     int     `json:"p95_latency_ms"`
 	P50LatencyMs     int     `json:"p50_latency_ms"` // 2026-07-20: 用于 concurrency-aware latency scoring
@@ -1275,7 +1276,7 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		SELECT DISTINCT ON (c.id, mo.raw_model_name)
 		       c.id::int, p.id::int, p.base_url, p.protocol,
 		       COALESCE(mo.outbound_model_name, mo.raw_model_name),
-		       mo.raw_model_name, COALESCE(mo.billing_mode, 'per_token')
+		       mo.raw_model_name, COALESCE(mo.billing_mode, 'per_token'), mo.canonical_id
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -1320,7 +1321,7 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 	seen := make(map[string]struct{})
 	for rows.Next() {
 		var candidate Candidate
-		if err := rows.Scan(&candidate.CredentialID, &candidate.ProviderID, &candidate.BaseURL, &candidate.Protocol, &candidate.RawModel, &candidate.OfferRawModel, &candidate.BillingMode); err != nil {
+		if err := rows.Scan(&candidate.CredentialID, &candidate.ProviderID, &candidate.BaseURL, &candidate.Protocol, &candidate.RawModel, &candidate.OfferRawModel, &candidate.BillingMode, &candidate.CanonicalID); err != nil {
 			return nil, err
 		}
 		key := fmt.Sprintf("%d|%s", candidate.CredentialID, candidate.OfferRawModel)
@@ -1962,7 +1963,8 @@ SELECT
 			-- JSONB projection of the provider_endpoint_protocols rows
 			-- (see pep_lateral LATERAL below). Empty array preserves the
 			-- legacy single-endpoint fallback.
-			pep_lateral.endpoints AS native_endpoints
+			pep_lateral.endpoints AS native_endpoints,
+			mo.canonical_id
 			FROM matched mo
 			JOIN credential_model_bindings cmb_mode ON cmb_mode.id = mo.id
 			JOIN credentials c ON c.id = mo.credential_id
@@ -2329,6 +2331,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.RecentCacheRate,
 			&cand.RecentCacheSamples,
 			&nativeEndpointsJSON,
+			&cand.CanonicalID,
 		); err != nil {
 			return nil, err
 		}

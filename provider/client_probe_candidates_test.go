@@ -184,6 +184,9 @@ func TestGetProbeCandidates(t *testing.T) {
 	found := false
 	for _, c := range cands {
 		if c.CredentialID == defCredID {
+			if c.CanonicalID == nil || *c.CanonicalID != canonicalID {
+				t.Errorf("candidate canonical ID = %v, want %d", c.CanonicalID, canonicalID)
+			}
 			found = true
 			break
 		}
@@ -230,6 +233,9 @@ func TestGetProbeCandidates(t *testing.T) {
 	foundRuntime := false
 	for _, c := range runtimeCands {
 		if c.CredentialID == defCredID && c.OfferRawModel == "probe-test-alias" {
+			if c.CanonicalID == nil || *c.CanonicalID != canonicalID {
+				t.Errorf("candidate canonical ID = %v, want %d", c.CanonicalID, canonicalID)
+			}
 			foundRuntime = true
 			break
 		}
