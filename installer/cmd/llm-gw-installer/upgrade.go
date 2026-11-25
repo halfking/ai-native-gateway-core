@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kaixuan/llm-gateway-go/installer/internal/dbinit"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/upgrader"
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,11 @@ func runUpgradeAction(action, masterURL, channel string, offline bool, offlinePa
 			containerName := "kx-citus"
 
 			applier := upgrader.NewOfflineApplier(dataDir, backupDir, composeFile, containerName)
+			applier.UpgradeStartup = func(sqlDir string, files []string) error {
+				runner := dbinit.NewRunner(containerName, "kxuser", "llm_gateway", sqlDir)
+				runner.StartupFiles = files
+				return runner.UpgradeSchema(func(message string) { fmt.Println(message) })
+			}
 			return applier.ApplyOfflinePackage(offlinePackage, dataDir)
 		}
 		return runUpgradeApply(masterURL, currentVersion, channel, dataDir)

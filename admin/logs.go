@@ -1964,6 +1964,10 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LIMIT $3
 	`, start, end, limit)
 	if err != nil {
+		if r.Context().Err() == context.Canceled {
+			w.WriteHeader(499) // Client closed the request.
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -1984,7 +1988,12 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
-	if writeAggRowsErr(w, "logs.listTopModels", rows.Err()) {
+	rowsErr := rows.Err()
+	if rowsErr != nil && r.Context().Err() == context.Canceled {
+		w.WriteHeader(499) // Client closed the request.
+		return
+	}
+	if writeAggRowsErr(w, "logs.listTopModels", rowsErr) {
 		return
 	}
 	if items == nil {

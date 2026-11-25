@@ -14,13 +14,65 @@ import (
 )
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+var startupSQLFilename = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]*\.sql$`)
+var offlineImageReference = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.:/-]*$`)
+var offlineImageTag = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$`)
+var offlineImageID = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // Manifest 离线升级包清单
 type Manifest struct {
-	Version  string         `json:"version"`   // 版本号，如 v1.14.0
-	BuildSeq int            `json:"build_seq"` // 构建序号
-	SHA256   string         `json:"sha256"`    // 整包 SHA256（可选）
-	Files    []FileChecksum `json:"files"`     // 文件清单
+	Version       string         `json:"version"`   // 版本号，如 v1.14.0
+	BuildSeq      int            `json:"build_seq"` // 构建序号
+	SHA256        string         `json:"sha256"`    // 整包 SHA256（可选）
+	Files         []FileChecksum `json:"files"`     // 文件清单
+	MigrationMode string         `json:"migration_mode,omitempty"`
+	AppImage      string         `json:"app_image,omitempty"`
+	AppImageID    string         `json:"app_image_id,omitempty"`
+}
+
+func (m *Manifest) installerImageTag() (string, error) {
+	tag := strings.TrimPrefix(m.Version, "v")
+	if !offlineImageTag.MatchString(tag) || !offlineImageReference.MatchString(m.AppImage) || !offlineImageID.MatchString(m.AppImageID) {
+		return "", fmt.Errorf("invalid installer package image reference, image ID or version tag")
+	}
+	for _, file := range m.Files {
+		if file.Path == "images.tar" {
+			return tag, nil
+		}
+	}
+	return "", fmt.Errorf("installer package is missing a verified images.tar entry")
+}
+
+// installerStartupFiles returns the checksum-verified startup file order for
+// an installer-startup package. Legacy archives use their original layout.
+func installerStartupFiles(manifest *Manifest) ([]string, error) {
+	if manifest.MigrationMode == "" {
+		return nil, nil
+	}
+	if manifest.MigrationMode != "installer-startup" {
+		return nil, fmt.Errorf("unknown offline migration mode %q", manifest.MigrationMode)
+	}
+	var files []string
+	seen := make(map[string]bool)
+	for _, entry := range manifest.Files {
+		path := filepath.ToSlash(filepath.Clean(entry.Path))
+		if !strings.HasPrefix(path, "migrations/") {
+			continue
+		}
+		name, ok := strings.CutPrefix(path, "migrations/startup/")
+		if !ok || path != entry.Path || !startupSQLFilename.MatchString(name) || strings.HasSuffix(name, ".down.sql") {
+			return nil, fmt.Errorf("invalid installer startup migration path %q", entry.Path)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate installer startup migration %q", name)
+		}
+		seen[name] = true
+		files = append(files, name)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("installer startup migration list is empty")
+	}
+	return files, nil
 }
 
 // FileChecksum 文件校验和

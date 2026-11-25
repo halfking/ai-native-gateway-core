@@ -118,6 +118,10 @@ func HandleProjectedSessionDashboard(w http.ResponseWriter, r *http.Request, db 
 }
 
 func writeProjectedSessionError(ctx context.Context, w http.ResponseWriter, status int, code, message string, err error) {
+	if ctx.Err() == context.Canceled {
+		w.WriteHeader(499) // Client closed the request.
+		return
+	}
 	slog.ErrorContext(ctx, message, "code", code, "error", err)
 	writeErrorJSON(w, status, code, message, "")
 }

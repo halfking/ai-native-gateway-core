@@ -2,14 +2,33 @@ package admin
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
+
+func TestListTopModelsCanceledRequest(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), "postgres://fixture@127.0.0.1:1/fixture?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/logs/top-models", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	(&Handler{db: pool}).listTopModels(response, request)
+	if response.Code != 499 {
+		t.Fatalf("canceled top-models status = %d, want 499", response.Code)
+	}
+}
 
 // TestPopularModelsHotSQL_TargetsHotTable pins the SQL constant to the
 // correct source. Regression guard for the 2026-08-26 fix that switched
