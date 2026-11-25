@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/storage/sqlite"
 )
 
 // The fixture DDL intentionally targets public, the same schema as the report.
@@ -593,11 +594,12 @@ INSERT INTO maas_credit_consumption_buckets (tenant_id,bucket_start,credits,requ
 }
 
 func testAttemptOutboxReplay(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	requireAttemptJournal(t)
 	store := NewAttemptRecorder(pool)
 	interrupted, interrupt := context.WithCancel(ctx)
 	defer interrupt()
 	path := filepath.Join(t.TempDir(), "attempts.db")
-	outbox, err := openAttemptOutbox(ctx, path, func(_ context.Context, event attemptEvent) error {
+	outbox, err := openAttemptOutbox(ctx, path, sqlite.OpenJournal, func(_ context.Context, event attemptEvent) error {
 		// Simulate a committed PostgreSQL write followed by process interruption
 		// before the outbox has acknowledged the SQLite record.
 		err := store.applyEvent(ctx, event)
@@ -624,7 +626,7 @@ func testAttemptOutboxReplay(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	if err := outbox.Close(); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := openAttemptOutbox(ctx, path, store.applyEvent)
+	recovered, err := openAttemptOutbox(ctx, path, sqlite.OpenJournal, store.applyEvent)
 	if err != nil {
 		t.Fatal(err)
 	}

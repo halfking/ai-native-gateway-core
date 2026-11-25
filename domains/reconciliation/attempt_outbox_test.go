@@ -7,14 +7,59 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/storage/sqlite"
 )
 
+// requireAttemptJournal：日志型 outbox 的测试需要真的 SQLite ⇒ 只在 cgo 构建下跑。
+// （日志的打开函数由 storage/sqlite 提供、测试里注入；本包自己不导入任何 SQLite 驱动。）
+func requireAttemptJournal(t *testing.T) {
+	t.Helper()
+	db, err := sqlite.OpenJournal(context.Background(), filepath.Join(t.TempDir(), "probe.db"))
+	if err != nil {
+		if errors.Is(err, sqlite.ErrDriverUnavailable) {
+			t.Skip("sqlite attempt journal needs a cgo build (CGO_ENABLED=1)")
+		}
+		t.Fatalf("probe journal: %v", err)
+	}
+	_ = db.Close()
+}
+
+// ★ 契约钉（两种构建模式都跑）：日志由注入的 opener 提供——
+// cgo 构建下能打开；!cgo 构建下**不静默**：以 opener 的显式错误失败，调用方才会退回直写。
+func TestAttemptOutboxUsesInjectedJournalOpener(t *testing.T) {
+	ctx := context.Background()
+	_, probeErr := sqlite.OpenJournal(ctx, filepath.Join(t.TempDir(), "probe.db"))
+	_, err := openAttemptOutbox(ctx, filepath.Join(t.TempDir(), "journal.db"), sqlite.OpenJournal,
+		func(context.Context, attemptEvent) error { return nil })
+	switch {
+	case errors.Is(probeErr, sqlite.ErrDriverUnavailable):
+		if !errors.Is(err, sqlite.ErrDriverUnavailable) {
+			t.Fatalf("!cgo build: journal must fail with the opener's explicit error, got %v", err)
+		}
+	case probeErr != nil:
+		t.Fatalf("probe journal: %v", probeErr)
+	case err != nil:
+		t.Fatalf("cgo build: journal must open, got %v", err)
+	}
+}
+
+// ★ 没有注入 opener 就不能打开：避免有人图省事在包里重新导入驱动来「补一个默认值」。
+func TestAttemptOutboxRequiresJournalOpener(t *testing.T) {
+	_, err := openAttemptOutbox(context.Background(), filepath.Join(t.TempDir(), "journal.db"), nil,
+		func(context.Context, attemptEvent) error { return nil })
+	if err == nil {
+		t.Fatal("expected an error without an injected journal opener")
+	}
+}
+
 func TestAttemptOutboxSurvivesRestartAndReplaysOnlyEvidence(t *testing.T) {
+	requireAttemptJournal(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "attempts.db")
 	failed := errors.New("projection unavailable")
-	outbox, err := openAttemptOutbox(ctx, path, func(context.Context, attemptEvent) error { return failed })
+	outbox, err := openAttemptOutbox(ctx, path, sqlite.OpenJournal, func(context.Context, attemptEvent) error { return failed })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +80,7 @@ func TestAttemptOutboxSurvivesRestartAndReplaysOnlyEvidence(t *testing.T) {
 	}
 
 	var events []attemptEvent
-	recovered, err := openAttemptOutbox(ctx, path, func(_ context.Context, event attemptEvent) error {
+	recovered, err := openAttemptOutbox(ctx, path, sqlite.OpenJournal, func(_ context.Context, event attemptEvent) error {
 		events = append(events, event)
 		return nil
 	})
@@ -76,11 +121,12 @@ func TestAttemptOutboxSurvivesRestartAndReplaysOnlyEvidence(t *testing.T) {
 }
 
 func TestAttemptOutboxSerializesProjectorsWithoutBlockingAppends(t *testing.T) {
+	requireAttemptJournal(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "attempts.db")
 	entered, release := make(chan struct{}), make(chan struct{})
-	first, err := openAttemptOutbox(ctx, path, func(_ context.Context, _ attemptEvent) error {
+	first, err := openAttemptOutbox(ctx, path, sqlite.OpenJournal, func(_ context.Context, _ attemptEvent) error {
 		close(entered)
 		<-release
 		return nil
@@ -90,7 +136,7 @@ func TestAttemptOutboxSerializesProjectorsWithoutBlockingAppends(t *testing.T) {
 	}
 	defer first.Close()
 	var handled []string
-	second, err := openAttemptOutbox(ctx, path, func(_ context.Context, event attemptEvent) error {
+	second, err := openAttemptOutbox(ctx, path, sqlite.OpenJournal, func(_ context.Context, event attemptEvent) error {
 		handled = append(handled, event.ID)
 		return nil
 	})
