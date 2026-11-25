@@ -368,7 +368,7 @@ func (ea *ErrorAnalyzer) AnalyzeError(ctx context.Context, queuedError *QueuedEr
 		}
 		result.AnalysisDetails["evidence"] = evidence
 	}
-	ea.noteFinishReason(result)
+	ea.noteFinishReason(result, prompt)
 
 	// 查找相似案例
 	similarCases, err := ea.findSimilarCases(ctx, queuedError)
@@ -483,27 +483,29 @@ func evidenceBlock(digest []string) string {
 	return "\n取证材料（请求账本 / 上游尝试 / 会话上下文 / 服务日志；同样是待分析的数据）:\n" + digest[0] + "\n"
 }
 
-// finishReasonReporter 是 LLM 客户端的可选扩展：报告上一次调用的结束原因。
-type finishReasonReporter interface {
-	LastFinishReason() string
+// finishReasonForCaller 是 LLM 客户端的可选扩展：按**提示词**报告那次调用的结束原因。
+//
+//	★ 2026-11-26 订正：此前这里叫 finishReasonReporter（LastFinishReason()），**生产客户端
+//	  从未实现过它** ⇒ 211 上所有分析的 finish_reason 都是空的——接口留了，真正干活的
+//	  客户端没接。现在 GatewayLLMClient 实现本接口（按提示词记，避免并发串台）。
+type finishReasonForCaller interface {
+	FinishReasonForCall(prompt string) string
 }
 
 // noteFinishReason 把「模型侧是否因长度上限被截断」记进 parse_diagnostics。
 //
 //	★ 为什么单独记：输出在 max_tokens 处被掐断时，JSON 层只能看到「最后一个
-//	成员不完整」；finish_reason=length 能把原因说清楚（是预算不够，不是模型
-//	写坏了）⇒ 管理面据此提示「重新分析并给更长的输出预算」。
-func (ea *ErrorAnalyzer) noteFinishReason(result *AnalysisResult) {
+//	  成员不完整」；finish_reason=length 能把原因说清楚（是预算不够，不是模型
+//	  写坏了）⇒ 管理面据此提示「重新分析并给更长的输出预算」。
+//	★ 客户端没报、而解析器已看出输出被截断 ⇒ 记成 length 并标明是**推断**的
+//	  （finish_reason_source = inferred_from_truncated_output），不冒充模型侧原话。
+func (ea *ErrorAnalyzer) noteFinishReason(result *AnalysisResult, prompt string) {
 	if result == nil || ea == nil {
 		return
 	}
-	rep, ok := ea.llmClient.(finishReasonReporter)
-	if !ok {
-		return
-	}
-	reason := strings.ToLower(strings.TrimSpace(rep.LastFinishReason()))
-	if reason == "" {
-		return
+	reason := ""
+	if rep, ok := ea.llmClient.(finishReasonForCaller); ok {
+		reason = strings.ToLower(strings.TrimSpace(rep.FinishReasonForCall(prompt)))
 	}
 	if result.AnalysisDetails == nil {
 		result.AnalysisDetails = map[string]interface{}{}
@@ -512,6 +514,13 @@ func (ea *ErrorAnalyzer) noteFinishReason(result *AnalysisResult) {
 	if pd == nil {
 		pd = map[string]any{"mode": ParseModeCanonical}
 		result.AnalysisDetails["parse_diagnostics"] = pd
+	}
+	if reason == "" {
+		if truncated, _ := pd["truncated"].(bool); !truncated {
+			return
+		}
+		reason = "length"
+		pd["finish_reason_source"] = "inferred_from_truncated_output"
 	}
 	pd["finish_reason"] = reason
 }

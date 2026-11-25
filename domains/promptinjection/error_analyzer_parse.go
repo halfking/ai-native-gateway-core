@@ -579,3 +579,123 @@ func runeTruncate(s string, n int) string {
 	}
 	return b.String() + "…"
 }
+
+// ── 截断修复 ───────────────────────────────────────────────────────────────
+
+// repairTruncatedJSON 把「在半路被掐断」的 JSON 文本补成语法完整的文档。
+//
+//	返回 (补好的文本, 被丢掉的成员, 是否做了修复)。文本没有未闭合的括号 ⇒ ok=false。
+//
+//	★ 为什么需要它（2026-11-26 实测）：输出额度用完时，最常见的断点是**某个字符串
+//	  的中间**（模型写到半句话就停了）。逐成员打捞在这种断点上无能为力——打捞的
+//	  切分锚点是「与首个键行同缩进的键行」，而未闭合的引号会让后面的一切都成了
+//	  「字符串的一部分」⇒ 一个成员都切不出来 ⇒ 整条回答被当成散文 ⇒ 连前面已经
+//	  完整写出的根因、分类、建议都丢了，而且不标记截断。
+//	★ 做法：丢掉**没写完的那个成员**（它的值本来就不完整），补齐所有未闭合的括号，
+//	  再交给严格解码——解出来的每个成员都是模型完整写出的。
+//	★ 被丢掉的成员以键名登记（键名没写出来时记 truncated-member），调用方据此
+//	  标记「输出被截断」⇒ 置信度封顶、不进自动应用。
+func repairTruncatedJSON(text string) (string, []string, bool) {
+	var (
+		stack           []truncFrame // 未闭合的 { [（连同它在父对象里的键名）
+		inString        bool
+		escaped         bool
+		lastDelim       = -1 // 字符串之外最近的 { [ , 的下标
+		lastColon       = -1 // 字符串之外最近的 : 的下标
+		pendingKey      string
+		lastStringStart = -1
+		lastStringEnd   = -1
+	)
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+				lastStringEnd = i
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+			lastStringStart = i
+		case '{', '[':
+			stack = append(stack, truncFrame{open: c, key: pendingKey})
+			lastDelim = i
+			pendingKey = ""
+		case '}', ']':
+			if len(stack) == 0 || (stack[len(stack)-1].open == '{') != (c == '}') {
+				return "", nil, false // 括号错配：不是截断，交给别的路径
+			}
+			stack = stack[:len(stack)-1]
+		case ',':
+			lastDelim = i
+			pendingKey = ""
+		case ':':
+			lastColon = i
+			// 紧挨着冒号前面的那个字符串是键。
+			if lastStringEnd >= 0 && strings.TrimSpace(text[lastStringEnd+1:i]) == "" && lastStringStart >= 0 {
+				pendingKey = strings.Trim(unescapeJSONString(text[lastStringStart:lastStringEnd+1]), `"`)
+			}
+		}
+	}
+	if len(stack) == 0 {
+		return "", nil, false // 没有未闭合的括号 ⇒ 不是被截断的
+	}
+
+	cut := len(text)
+	var lost []string
+	// 丢失成员按**路径**登记（例：analysis_details.patch.diff），与逐成员打捞同一口径。
+	path := make([]string, 0, len(stack)+1)
+	for _, f := range stack {
+		if f.key != "" {
+			path = append(path, f.key)
+		}
+	}
+	name := strings.Join(append(path, pendingKey), ".")
+	if strings.HasSuffix(name, ".") {
+		name = strings.TrimSuffix(name, ".") + ".truncated-member"
+	}
+	if inString {
+		// 停在字符串中间：这个成员没写完 ⇒ 整个丢掉，退到最近的分隔符之后。
+		cut = lastDelim + 1
+		lost = append(lost, name)
+	} else {
+		// 不在字符串里：看最后一个值是不是写完了的完整 JSON 值。
+		from := lastDelim
+		if lastColon > from {
+			from = lastColon
+		}
+		tail := strings.TrimSpace(text[from+1:])
+		if tail != "" && !json.Valid([]byte(tail)) {
+			// 数字 / 关键字写到一半（例：0. / tru / nul）⇒ 同样丢掉这个成员。
+			cut = lastDelim + 1
+			lost = append(lost, name)
+		}
+	}
+
+	out := text[:cut]
+	for len(stack) > 0 {
+		out = strings.TrimRight(out, " \t\r\n")
+		// 先补右括号、再去它前面的尾随逗号：stripTrailingCommas 只认「逗号后紧跟 } ]」。
+		// 从里往外逐层补 ⇒ 内层对象先闭合。
+		if stack[len(stack)-1].open == '{' {
+			out = stripTrailingCommas(out + "}")
+		} else {
+			out = stripTrailingCommas(out + "]")
+		}
+		stack = stack[:len(stack)-1]
+	}
+	return out, lost, true
+}
+
+// truncFrame 是截断修复扫描时的一个未闭合容器：左括号 + 它在父对象里的键名。
+type truncFrame struct {
+	open byte
+	key  string
+}

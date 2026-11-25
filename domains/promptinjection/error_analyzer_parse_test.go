@@ -731,3 +731,91 @@ func TestParseAnalysisResponse_ProseFallbackSkipsIntroLine(t *testing.T) {
 		t.Errorf("root_cause = %q", r.RootCause)
 	}
 }
+
+// ── 截断修复（2026-11-26）────────────────────────────────────────────────────
+
+// 输出在**字符串中间**被截断——额度用完时最常见的断点。此前这种回答一个成员都打捞
+// 不出来（未闭合的引号让后面的一切都成了字符串的一部分）⇒ 整条被当成散文 ⇒
+// 连前面完整写出的根因与建议都丢了，而且不标记截断。
+func TestParseAnalysisResponse_CutInsideStringKeepsCompleteMembers(t *testing.T) {
+	pretty := `{"root_cause":"上游流被掐断","error_category":"upstream_interrupted","confidence":0.8,
+	"suggested_fix":"重试","fix_plan":{"summary":"重试即可","manual_steps":[{"step":1,"title":"重试","kind":"client","risk":"low"},{"step":2,"title":"核对日`
+	single := `{"root_cause":"x","error_category":"upstream_interrupted","confidence":0.9,"suggested_fix":"重试一下再`
+
+	for name, in := range map[string]string{"pretty": pretty, "single-line": single} {
+		r, diag := parseAnalysisResponse(in)
+		if r == nil {
+			t.Fatalf("%s: 截断输出一条都没救回来: %+v", name, diag)
+		}
+		if diag.Mode != ParseModeSalvaged || !diag.Truncated {
+			t.Errorf("%s: 应为 salvaged+truncated，得 %+v", name, diag)
+		}
+		// ★ 断点之前完整写出的成员一个都不能丢。
+		if r.RootCause == "" || r.ErrorCategory != "upstream_interrupted" {
+			t.Errorf("%s: 完整成员没保住: %+v", name, r)
+		}
+		if name == "pretty" && r.SuggestedFix == "" {
+			t.Errorf("pretty: 断点在 fix_plan 里，前面的 suggested_fix 必须保住: %+v", r)
+		}
+		if name == "single-line" && r.SuggestedFix != "" {
+			t.Errorf("single-line: 被截断的正是 suggested_fix 本身，不该编出半句: %q", r.SuggestedFix)
+		}
+		if r.ConfidenceScore != salvagedConfidenceCap {
+			t.Errorf("%s: 截断结果置信度 = %v, want 封顶 %v", name, r.ConfidenceScore, salvagedConfidenceCap)
+		}
+		if len(diag.LostKeys) == 0 {
+			t.Errorf("%s: 被丢掉的成员要如实登记: %v", name, diag.LostKeys)
+		}
+	}
+	// 丢失成员按路径登记：断点在 fix_plan.manual_steps 里那个成员的 title 上。
+	if _, diag := parseAnalysisResponse(pretty); diag.LostKeys[0] != "fix_plan.manual_steps.title" {
+		t.Errorf("丢失成员应按路径登记，得 %v", diag.LostKeys)
+	}
+	if _, diag := parseAnalysisResponse(single); diag.LostKeys[0] != "suggested_fix" {
+		t.Errorf("丢失成员应按路径登记，得 %v", diag.LostKeys)
+	}
+}
+
+func TestParseAnalysisResponse_CutInsideNumberLiteralOrFirstNestedMember(t *testing.T) {
+	cases := map[string]struct{ in, lost string }{
+		"number":  {`{"root_cause":"x","error_category":"upstream_interrupted","confidence":0.`, "confidence"},
+		"literal": {`{"root_cause":"x","error_category":"upstream_interrupted","is_false_positive":tru`, "is_false_positive"},
+		"nested":  {`{"root_cause":"x","fix_plan":{"summary":"重`, "fix_plan.summary"},
+	}
+	for name, c := range cases {
+		r, diag := parseAnalysisResponse(c.in)
+		if r == nil || r.RootCause != "x" {
+			t.Fatalf("%s: 应读出根因，得 %+v / %+v", name, r, diag)
+		}
+		if !diag.Truncated || len(diag.LostKeys) != 1 || diag.LostKeys[0] != c.lost {
+			t.Errorf("%s: 应标记截断并登记 %s，得 %+v", name, c.lost, diag)
+		}
+	}
+}
+
+func TestRepairTruncatedJSON_OnlyTouchesUnclosedText(t *testing.T) {
+	// 已经闭合的文档：不是截断，不动。
+	if _, _, ok := repairTruncatedJSON(`{"a":1,"b":[1,2]}`); ok {
+		t.Errorf("闭合的文档不该被当成截断")
+	}
+	// 括号错配：不是截断，不修（交给逐成员打捞）。
+	if _, _, ok := repairTruncatedJSON(`{"a":1]`); ok {
+		t.Errorf("括号错配不该按截断修")
+	}
+	// 成员之后断掉（带尾逗号）：补齐后必须能严格解码，且没有成员丢失。
+	closed, lost, ok := repairTruncatedJSON(`{"a":1,"b":"x",`)
+	if !ok || len(lost) != 0 {
+		t.Fatalf("成员之后截断: ok=%v lost=%v", ok, lost)
+	}
+	if _, err := decodeStrictOrdered(closed); err != nil {
+		t.Errorf("补齐后应能严格解码: %q (%v)", closed, err)
+	}
+	// 字符串里出现的括号与逗号不算结构符。
+	closed, lost, ok = repairTruncatedJSON(`{"a":"a{b,}c","d":{"e":"f","g":"h[","i":"cut`)
+	if !ok || len(lost) != 1 || lost[0] != "d.i" {
+		t.Fatalf("字符串里的括号不该影响路径: ok=%v lost=%v", ok, lost)
+	}
+	if _, err := decodeStrictOrdered(closed); err != nil {
+		t.Errorf("补齐后应能严格解码: %q (%v)", closed, err)
+	}
+}

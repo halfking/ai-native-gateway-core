@@ -35,11 +35,14 @@ package promptinjection
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,7 +62,20 @@ type GatewayLLMClient struct {
 	baseURL  string
 
 	httpClient *http.Client
+
+	// finishReasons 按**提示词**记最近一次回答的结束原因（finish_reason）。
+	// ★ 为什么按提示词而不是「最近一次」：定向分析与后台 worker 可能并发共用同一个
+	//   客户端 ⇒ 只存「最近一次」会把别的调用的结束原因记到这条分析头上。
+	finishReasons sync.Map // prompt 哈希 → finish_reason
 }
+
+// analyzerMaxTokens 是分析回答的输出额度。
+//
+//	★ 2026-11-26 实测调大（4000 → 8000；211 上 glm-5.3-flash 经网关对 4000/8000/16000 均接受）：
+//	  分析模型带推理，**推理过程的 token 计入输出额度**（回一个「ok」就用掉 51 个推理
+//	  token）⇒ 4000 里先扣推理、剩下的才轮到正式 JSON；本轮又让模型多输出结构化修正
+//	  方案 ⇒ 211 首批 6 条新分析里 2 条在额度处被截断（结构化方案那一段丢失）。
+const analyzerMaxTokens = 8000
 
 // NewGatewayLLMClient 创建网关 LLM 客户端。
 //
@@ -125,8 +141,8 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 				"content": prompt,
 			},
 		},
-		"temperature": 0.3,  // 降低随机性，提高一致性
-		"max_tokens":  4000, // 足够的响应空间
+		"temperature": 0.3, // 降低随机性，提高一致性
+		"max_tokens":  analyzerMaxTokens,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -168,6 +184,7 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			TotalTokens int `json:"total_tokens"`
@@ -189,5 +206,26 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 		return "", 0, fmt.Errorf("analysis endpoint returned empty content")
 	}
 
+	c.finishReasons.Store(promptFinishKey(prompt), strings.ToLower(strings.TrimSpace(apiResp.Choices[0].FinishReason)))
+
 	return content, apiResp.Usage.TotalTokens, nil
+}
+
+// FinishReasonForCall 返回某次调用（按提示词）得到的结束原因；没有记录 ⇒ 空串。
+// 它是分析端可选扩展 finishReasonForCaller 的实现。
+func (c *GatewayLLMClient) FinishReasonForCall(prompt string) string {
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.finishReasons.Load(promptFinishKey(prompt)); ok {
+		reason, _ := v.(string)
+		return reason
+	}
+	return ""
+}
+
+// promptFinishKey 是提示词的哈希（提示词很长，不原样留作键）。
+func promptFinishKey(prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return hex.EncodeToString(sum[:])
 }
