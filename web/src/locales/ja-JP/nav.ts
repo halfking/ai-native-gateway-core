@@ -18,6 +18,7 @@ export default {
     operationsOverview: '運営サマリー',
     liveTopology: "リアルタイムトポロジ",
     liveStageTree: "リクエスト段階ツリー",
+    analyticsPlugin: "分析プラグイン（例）",
     overview: "概要",
     tenantModels: "標準モデル",
     tenantAccount: "マイアカウント",

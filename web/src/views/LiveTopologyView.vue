@@ -40,6 +40,7 @@ import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
 import type { GatewayModuleKey, TopoNode } from '../types/liveTopology'
 import { DEFAULT_TOPO_FILTERS, type TopoFilters } from '../types/liveTopology'
+import { isHiddenNavPath } from '../config/navHidden'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -47,6 +48,12 @@ const router = useRouter()
 
 const { connection, initialDataReceived } = useLiveStream()
 const topo = useLiveTopology()
+
+// 2026-11-25（owner 指令）：阶段树菜单暂时隐藏 ⇒ /live 顶栏的页内入口与菜单
+// 同口径一并撤下（直达 /live2 路由保留）。复用 navHidden 路径清单作为唯一判据：
+// 将来从清单里移除 /live2，菜单与本入口会**同时**恢复，不会出现「菜单藏了、
+// 页内入口还开着」的口径分叉。
+const showStageTreeEntry = !isHiddenNavPath('/live2')
 
 const selectedNodeId = ref<string | null>(null)
 const selectedRequestId = ref<string | null>(null)
@@ -356,8 +363,11 @@ function onSelectModel(model: string) {
 
       <!-- 入口：请求阶段树（live2）—— owner 2026-11-16「加入到系统的实时拓扑页」。
            放在顶栏与过滤栏同层：过滤条件已经常驻顶层，两个实时页的入口互见。
-           2026-11-17（owner「打开功能」轮）：入口恢复（此前随菜单一并暂时撤下）。 -->
+           2026-11-17（owner「打开功能」轮）：入口恢复（此前随菜单一并暂时撤下）。
+           2026-11-25（owner 指令）：阶段树菜单暂时隐藏（navHidden 清单）⇒
+           页内入口与菜单口径一致，一并撤下；直达 /live2 路由保留。 -->
       <router-link
+        v-if="showStageTreeEntry"
         class="live-topology__stagetree"
         to="/live2"
         data-testid="live-stage-tree-link"

@@ -20,6 +20,7 @@ export default {
     activateActionTip: '前往啟用本機',
     liveTopology: "即時拓撲",
     liveStageTree: "請求階段樹",
+    analyticsPlugin: "資料分析插件（示例）",
     overview: "總覽",
     tenantModels: "標準模型",
     tenantAccount: "我的帳號",

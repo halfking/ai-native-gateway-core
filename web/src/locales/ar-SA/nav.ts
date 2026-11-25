@@ -18,6 +18,7 @@ export default {
     operationsOverview: 'نظرة عامة على العمليات',
     liveTopology: 'الطبولوجية المباشرة',
     liveStageTree: 'شجرة مراحل الطلب',
+    analyticsPlugin: '\u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u062a\u062d\u0644\u064a\u0644\u0627\u062a (\u0645\u062b\u0627\u0644)',
     overview: "نظرة عامة",
     tenantModels: "النماذج القياسية",
     tenantAccount: "حسابي",

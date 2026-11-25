@@ -19,6 +19,7 @@ export default {
     activateAction: 'Activar',
     liveTopology: 'Topología en vivo',
     liveStageTree: 'Árbol de etapas',
+    analyticsPlugin: 'Plugin de an\u00e1lisis (ejemplo)',
     overview: "Resumen",
     tenantModels: "Modelos estándar",
     tenantAccount: "Mi cuenta",

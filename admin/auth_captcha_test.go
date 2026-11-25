@@ -184,6 +184,112 @@ func TestLoginFailureCounter_IsolatesClients(t *testing.T) {
 	}
 }
 
+// ── 失败计数的存活窗口（TTL）────────────────────────────────────────────────
+//
+// ★ 这组判据钉的是 2026-11-25 第 30 轮的**候选实现**（★ 待 owner 放行 ★）：
+//   在加窗口之前，失败计数**永不过期** ⇒ 而 captcha_required 时走不到密码校验
+//   （闸门在 bcrypt 之前）⇒ **成功不可达** ⇒ 计数永不清 ⇒ 该 IP 被永久锁死。
+//   ⇒ 加了窗口后：★ 过期即视为 0（闸门会自愈）、★ 过期后的新失败**从头计**
+//   （不是接着旧计数加）、★ 窗口是**滑动**的（每次失败都把起点往后推）。
+// ★ 用**假时钟**注入（★ 计数器暴露 now 字段 ★）⇒ 不必真等 15 分钟。
+
+// newTestFailureCounter 返回一个计数器 ＋ 它的假时钟指针。
+func newTestFailureCounter() (*loginFailureCounter, *time.Time) {
+	c := newLoginFailureCounter()
+	now := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return now }
+	return c, &now
+}
+
+// TestCaptchaFailureTTL_IsPinnedTo15Minutes 把**窗口长度本身**钉死。
+// ★ 为什么要有这条：★ 下面那组 TTL 判据都是**相对 CaptchaFailureTTL** 写的
+//   （★ 假时钟按常量推进 ★）⇒ ⇒ **改常量不会让它们变红** ⇒ ⇒ 窗口长度被悄悄改成
+//   1 分钟或 24 小时时，**没有任何判据会叫**。
+//   ⇒ ⇒ 所以窗口长度必须**单独钉一条**：★ 改它＝改判据 ⇒ 必须显式改这条测试 ★★。
+func TestCaptchaFailureTTL_IsPinnedTo15Minutes(t *testing.T) {
+	if CaptchaFailureTTL != 15*time.Minute {
+		t.Fatalf("CaptchaFailureTTL = %v, want 15m（★ 窗口长度是被显式决定的：★ 改它必须同时改这条判据 ★）", CaptchaFailureTTL)
+	}
+}
+
+func TestLoginFailureCounter_TTLExpiresAndSelfHeals(t *testing.T) {
+	c, now := newTestFailureCounter()
+	for i := 0; i < CaptchaFailureThreshold; i++ {
+		c.fail("1.2.3.4")
+	}
+	if !c.required("1.2.3.4") {
+		t.Fatal("setup: at threshold the captcha must be required")
+	}
+	// 窗口内：仍然锁着
+	*now = now.Add(CaptchaFailureTTL - time.Minute)
+	if !c.required("1.2.3.4") {
+		t.Fatal("inside the TTL window the captcha must still be required")
+	}
+	// 窗口外：★ 自愈 ★（这是这次改动的全部意义）
+	*now = now.Add(2 * time.Minute)
+	if c.required("1.2.3.4") {
+		t.Fatal("after the TTL the counter must expire ⇒ the captcha must NOT be required")
+	}
+	if got := c.consecutive("1.2.3.4"); got != 0 {
+		t.Fatalf("consecutive after TTL = %d, want 0", got)
+	}
+	if got := c.size(); got != 0 {
+		t.Fatalf("counter size after TTL = %d, want 0（过期条目必须被剪掉 ⇒ 内存有界）", got)
+	}
+}
+
+func TestLoginFailureCounter_TTLDoesNotAccumulateAcrossWindows(t *testing.T) {
+	c, now := newTestFailureCounter()
+	c.fail("1.2.3.4")
+	c.fail("1.2.3.4")
+	if got := c.consecutive("1.2.3.4"); got != 2 {
+		t.Fatalf("consecutive = %d, want 2", got)
+	}
+	// 过期 ⇒ 新的一次失败必须**从头计**（不是 2+1=3 ⇒ 否则又锁死）
+	*now = now.Add(CaptchaFailureTTL + time.Minute)
+	c.fail("1.2.3.4")
+	if got := c.consecutive("1.2.3.4"); got != 1 {
+		t.Fatalf("consecutive after a stale window = %d, want 1（过期后必须从头计）", got)
+	}
+	if c.required("1.2.3.4") {
+		t.Fatal("a single failure in a fresh window must not require a captcha")
+	}
+}
+
+func TestLoginFailureCounter_WindowSlidesOnEachFailure(t *testing.T) {
+	c, now := newTestFailureCounter()
+	c.fail("1.2.3.4")
+	// 滑到窗口边缘（但仍在窗口内）
+	*now = now.Add(CaptchaFailureTTL - time.Minute)
+	c.fail("1.2.3.4")
+	if got := c.consecutive("1.2.3.4"); got != 2 {
+		t.Fatalf("consecutive = %d, want 2（窗口内连续失败应当累加）", got)
+	}
+	// ★ 再过「原窗口长度」也不该过期：★ 因为最后一次失败把窗口起点往后推了
+	*now = now.Add(CaptchaFailureTTL - time.Minute)
+	if got := c.consecutive("1.2.3.4"); got != 2 {
+		t.Fatalf("consecutive = %d, want 2（★ 窗口是滑动的：最后一次失败刷新了起点 ★）", got)
+	}
+}
+
+func TestLoginFailureCounter_ResetClearsBothMaps(t *testing.T) {
+	c, _ := newTestFailureCounter()
+	c.fail("1.2.3.4")
+	c.fail("1.2.3.4")
+	c.reset("1.2.3.4")
+	if got := c.consecutive("1.2.3.4"); got != 0 {
+		t.Fatalf("consecutive after reset = %d, want 0", got)
+	}
+	if got := c.size(); got != 0 {
+		t.Fatalf("counter size after reset = %d, want 0", got)
+	}
+	// 复位后的一次失败必须从 1 起算（★ 不能继承复位前的计数 ★）
+	c.fail("1.2.3.4")
+	if got := c.consecutive("1.2.3.4"); got != 1 {
+		t.Fatalf("consecutive after reset+fail = %d, want 1", got)
+	}
+}
+
 // ── PNG 渲染 ────────────────────────────────────────────────────────────────
 
 // TestRenderCaptchaPNG_NoPlaintextAnswer 是本文件最关键的一条判据。
