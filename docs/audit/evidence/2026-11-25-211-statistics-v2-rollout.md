@@ -70,3 +70,22 @@ ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	7.490s
 987_provider_invoice_evidence.sql 6bb0dc4760c805fedf3774d797203f41a448db4b45c69d74c629b0f302ffa5c8
 988_provider_invoice_usage_buckets.sql 3a46a04e819cc540c8590d6a02ab6c7bf33c6888860421948341959877186086
 ```
+
+## Maestro 线上复验
+
+Maestro 2.11.0、Chrome 158.0.8127.88、Node 22.23.3，测试目标均为槽 a 的构建 3274。现役产品提交保持 `6f099525`，以下修正只更新本地测试脚本。
+
+- 运营统计 flow 18 通过。看板探针匹配实际 V2 路径并对新请求核对范围，修正后主探针 26 条、自定义及七个预设 5 条、列表深链 5 条均通过。
+- 会话分析 flow 16 通过。原测试截图有效高度 3457，Top5 区块底部 3701。采用 1440×4800 测试视口后，原可见性断言通过。探针复用浏览器页面，按实际总览重定向路径断言，最终 65 条通过。排序筛选探针 20 条通过。
+- 两套 flow 和各层探针的通过读数来自逐层重跑。首次带旧 API 路径和旧总览路径的失败结果不作为产品异常。
+
+```text
+flow 18  flow rc=0 FAILED=0
+stats range  RESULT: PASS（26 条）
+custom range and presets  RESULT: PASS（5 条）
+deep links  RESULT: PASS（5 条）
+flow 16  flow rc=0 FAILED=0
+session analytics  RESULT: PASS（65 条）
+ranking filter  RESULT: PASS（20 条）
+SELFTEST: PASS
+```
