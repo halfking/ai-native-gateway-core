@@ -315,3 +315,33 @@ jobs:
             ./plugin-runtime \
             ./routingopt
           go test -race -count=1 -timeout 300s ./admin -run 'Concurrent|NoRace|Parallel'
+
+  package-forensics:
+    name: Forensics package gate (W4.4)
+    needs: build-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+          cache: true
+
+      - name: Build and verify delivery package
+        run: |
+          ./scripts/package-forensics.sh --out "$RUNNER_TEMP/dist"
+          # 门禁：包必须可解压、二进制必须可执行
+          cd "$RUNNER_TEMP/dist"
+          tar xzf llm-gateway-forensics-*.tar.gz
+          test -x llm-gateway-forensics-*/bin/sessionforensics
+          llm-gateway-forensics-*/bin/sessionforensics help > /dev/null
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forensics-package
+          path: ${{ runner.temp }}/dist/llm-gateway-forensics-*.tar.gz
+          retention-days: 14
