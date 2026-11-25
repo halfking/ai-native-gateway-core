@@ -43,7 +43,7 @@ func TestChargeRequest_IdempotentConcurrentReplay_RealDB(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO tenant_credit_wallets (tenant_id, granted_balance, purchased_balance, balance_credits)
-		VALUES ($1, 1000000, 1000000, 2000000)
+		VALUES ($1, 1, 1999999, 2000000)
 	`, tenant); err != nil {
 		t.Fatalf("create test wallet: %v", err)
 	}
@@ -133,8 +133,21 @@ func TestChargeRequest_IdempotentConcurrentReplay_RealDB(t *testing.T) {
 	if posted != first {
 		t.Fatalf("posted total=%d, returned=%d", posted, first)
 	}
-	if rows == 0 || rows > 2 {
-		t.Fatalf("consume rows=%d; want one or legitimate pool split (max two for this fixture)", rows)
+	if rows != 2 {
+		t.Fatalf("consume rows=%d; want one posting for each wallet pool", rows)
+	}
+	var grantedBalanceAfter, purchasedBalanceAfter int64
+	if err := pool.QueryRow(ctx, `
+		SELECT max(balance_after) FILTER (WHERE pool = 'granted'),
+		       max(balance_after) FILTER (WHERE pool = 'purchased')
+		FROM credit_ledger_with_current_month
+		WHERE tenant_id = $1 AND ref_type = 'request' AND ref_id = $2 AND entry_type = 'consume'
+	`, tenant, requestID).Scan(&grantedBalanceAfter, &purchasedBalanceAfter); err != nil {
+		t.Fatalf("read ledger balances: %v", err)
+	}
+	if grantedBalanceAfter != 1999999 || purchasedBalanceAfter != 2000000-first {
+		t.Fatalf("ledger balance_after granted=%d purchased=%d, want %d and %d",
+			grantedBalanceAfter, purchasedBalanceAfter, 1999999, 2000000-first)
 	}
 	var balance int64
 	if err := pool.QueryRow(ctx, `SELECT balance_credits FROM tenant_credit_wallets WHERE tenant_id = $1`, tenant).Scan(&balance); err != nil {

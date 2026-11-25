@@ -51,6 +51,25 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 		    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
 
+		-- Existing baseline installs may have created the table without the
+		-- key that model-rate upserts use. Keep any existing usable arbiter.
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1
+		        FROM pg_catalog.pg_index i
+		        JOIN pg_catalog.pg_attribute a
+		          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+		        WHERE i.indrelid = 'public.model_credit_rates'::regclass
+		          AND i.indisunique AND i.indisvalid AND i.indimmediate
+		          AND i.indpred IS NULL AND i.indnkeyatts = 1
+		          AND a.attname = 'canonical_id'
+		    ) THEN
+		        CREATE UNIQUE INDEX uq_model_credit_rates_canonical_id
+		            ON public.model_credit_rates (canonical_id);
+		    END IF;
+		END $$;
+
 		ALTER TABLE model_credit_rates
 		    ADD COLUMN IF NOT EXISTS credits_per_1m_cache_in BIGINT,
 		    ADD COLUMN IF NOT EXISTS credits_per_1m_cache_out BIGINT,

@@ -503,6 +503,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureApiKeyAutoProfileIdentity(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureAPIKeyCapabilities(migCtx); err != nil {
+		return err
+	}
 	// 2026-11-11（48h 审计）：migration 832 的启动自愈。211 实测该迁移被跳过
 	//（schema_migrations 已到 956 而 832/833 缺席 ⇒ 文件链的版本水位线越过了
 	// 这两笔），bg/pricing_baseline_reconcile.go 每轮对账成功却写不进健康面
