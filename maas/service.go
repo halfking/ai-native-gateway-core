@@ -219,6 +219,17 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 	if err != nil {
 		return 0, err
 	}
+
+	var granted, purchased int64
+	err = tx.QueryRow(ctx, `
+		SELECT granted_balance, purchased_balance FROM tenant_credit_wallets WHERE tenant_id = $1 FOR UPDATE
+	`, tenantID).Scan(&granted, &purchased)
+	if err != nil {
+		return 0, err
+	}
+
+	// balance_after tracks the wallet, which excludes subscription quota.
+	// Stage each posting with the running balance while holding the wallet lock.
 	if subID > 0 && quota > 0 {
 		use := min64(remaining, quota)
 		if use > 0 {
@@ -230,19 +241,11 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 			if err != nil {
 				return 0, err
 			}
-			if err := s.writeLedgerDetail(ctx, tx, tenantID, "consume", -use, string(PoolSubscription), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
+			if err := s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, "consume", -use, granted+purchased, string(PoolSubscription), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
 				return 0, err
 			}
 			remaining -= use
 		}
-	}
-
-	var granted, purchased int64
-	err = tx.QueryRow(ctx, `
-		SELECT granted_balance, purchased_balance FROM tenant_credit_wallets WHERE tenant_id = $1 FOR UPDATE
-	`, tenantID).Scan(&granted, &purchased)
-	if err != nil {
-		return 0, err
 	}
 
 	if remaining > 0 {
@@ -250,7 +253,7 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 		if useGranted > 0 {
 			granted -= useGranted
 			remaining -= useGranted
-			if err := s.writeLedgerDetail(ctx, tx, tenantID, "consume", -useGranted, string(PoolGranted), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
+			if err := s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, "consume", -useGranted, granted+purchased, string(PoolGranted), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
 				return 0, err
 			}
 		}
@@ -260,7 +263,7 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 			return 0, &InsufficientCreditsError{TenantID: tenantID, Required: amount, Available: quota + granted + purchased}
 		}
 		purchased -= remaining
-		if err := s.writeLedgerDetail(ctx, tx, tenantID, "consume", -remaining, string(PoolPurchased), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
+		if err := s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, "consume", -remaining, granted+purchased, string(PoolPurchased), "request", requestID, "", ownerUser, 0, ledgerDetail); err != nil {
 			return 0, err
 		}
 	}
@@ -732,21 +735,7 @@ func (s *Service) writeLedger(ctx context.Context, tx pgx.Tx, tenantID, entryTyp
 		SELECT COALESCE(granted_balance, 0) + COALESCE(purchased_balance, 0)
 		FROM tenant_credit_wallets WHERE tenant_id = $1
 	`, tenantID).Scan(&balance)
-	return s.writeLedgerDetail(ctx, tx, tenantID, entryType, amount, pool, refType, refID, note, "", 0, nil)
-}
-
-// writeLedgerDetail is the 935-shaped ledger writer: owner_user / campaign_id
-// / detail (可解释账单五因子) ride alongside the legacy columns. The three
-// extras are all optional — empty owner, 0 campaign and nil detail reproduce
-// the pre-935 row shape exactly. Balance is read from the wallet at call
-// time (legacy writeLedger semantics).
-func (s *Service) writeLedgerDetail(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount int64, pool, refType, refID, note, ownerUser string, campaignID int64, detail []byte) error {
-	var balance int64
-	_ = tx.QueryRow(ctx, `
-		SELECT COALESCE(granted_balance, 0) + COALESCE(purchased_balance, 0)
-		FROM tenant_credit_wallets WHERE tenant_id = $1
-	`, tenantID).Scan(&balance)
-	return s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, entryType, amount, balance, pool, refType, refID, note, ownerUser, campaignID, detail)
+	return s.writeLedgerWithBalance(ctx, tx, tenantID, entryType, amount, balance, pool, refType, refID, note)
 }
 
 func (s *Service) writeLedgerWithBalance(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount, balanceAfter int64, pool, refType, refID, note string) error {
