@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEnsureAPIKeyCapabilities_RealDB(t *testing.T) {
 	env := newGuardEnv(t)
@@ -28,5 +31,25 @@ func TestEnsureAPIKeyCapabilities_RealDB(t *testing.T) {
 	}
 	if legacy != "[]" || granted != `["session.audit"]` || newDefault != "[]" || method != "gin" {
 		t.Fatalf("legacy=%s granted=%s new=%s index=%s", legacy, granted, newDefault, method)
+	}
+}
+
+func TestEnsureAPIKeyCapabilitiesRejectsIncompatibleObjects_RealDB(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drift string
+	}{
+		{name: "same_name_btree", drift: `CREATE INDEX idx_api_keys_capabilities ON public.api_keys (id)`},
+		{name: "wrong_default", drift: `ALTER TABLE public.api_keys ALTER COLUMN capabilities SET DEFAULT '["session.audit"]'::jsonb`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newGuardEnv(t)
+			env.exec(t, `CREATE TABLE public.api_keys (id INT PRIMARY KEY, capabilities JSONB NOT NULL DEFAULT '[]'::jsonb)`)
+			env.exec(t, tc.drift)
+			err := env.d.ensureAPIKeyCapabilities(env.ctx)
+			if err == nil || !strings.Contains(err.Error(), "API key capabilities schema requires") {
+				t.Fatalf("expected incompatible schema error, got %v", err)
+			}
+		})
 	}
 }
