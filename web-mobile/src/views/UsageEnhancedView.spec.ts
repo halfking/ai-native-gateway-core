@@ -282,10 +282,18 @@ describe('① 权限档 admin（本仓第一个「有租户维度但缺角色下
     }
   })
 
-  it('①-8 注册旧版用量路由和新版同期对比路由', () => {
-    const src = goSrc('admin/handler.go')
-    expect(src).toContain('mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))')
-    expect(src).toContain('h.registerRequestMetricsV2Routes(mux)')
+  it('①-8 ★★★★★ usage/ 前缀注册行逐字对表（历史 :1267 → :1297 → :1332 → :1339 → :1342，行号已漂 5 次 ⇒ 2026-11-26 起按结构锚点判，不钉行号）', () => {
+    const lines = goSrc('admin/handler.go').split('\n')
+    const needle = 'HandleFunc("/api/admin/usage/",'
+    const hits = lines.filter((l) => l.includes(needle))
+    // ★ 唯一存在性：前缀注册必须恰好一条（搬家/改名时这条红 ⇒ 重新对表）。
+    expect(hits, `/api/admin/usage/ 注册行必须恰好一条（实得 ${hits.length} 条）`).toHaveLength(1)
+    expect(hits[0]).toMatch(/h\.admin\(h\.HandleUsageAdmin\)/)
+    // ★ 同族相邻注册同档：request-reconciliation 也是 h.admin。
+    const rr = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/usage/request-reconciliation",'))
+    expect(rr, '找不到 request-reconciliation 注册行').toBeGreaterThan(-1)
+    expect(lines[rr]).toMatch(/h\.admin\(h\.handleRequestReconciliation\)/)
+    expect(lines.some((line) => line.includes('h.registerRequestMetricsV2Routes(mux)'))).toBe(true)
     expect(goSrc('admin/request_metrics_v2_routes.go')).toContain('mux.HandleFunc("/api/admin/usage/v2/period-compare", h.admin(h.handleUsagePeriodCompareV2))')
   })
 

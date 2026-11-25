@@ -319,12 +319,8 @@ const KNOWN_FALSE_POSITIVE: { key: string; note: string }[] = [
   { key: 'views/DispatchJournalView.spec.ts:24 cmd/gateway/main.go:7305', note: '现行 :8609 `journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)`（admin 档结论成立）' },
   { key: 'views/NodesView.spec.ts:259 admin/handler.go:896-904', note: '该段现行是 SetStateManager/SetFpSlots 一带；「tenant_admin 对 /api/admin/** 403」的注释段已随合并漂走，结论由 AdminMiddleware/SuperAdminMiddleware 实现承载' },
   { key: 'views/SessionContextView.vue:7 admin/handler.go:1368', note: '现行 :1598 `/api/system/session-context/` 注册（前缀在 /api/system 的事实仍在）' },
-  { key: 'views/StorageAndLogConfigView.vue:4 admin/handler.go:1182', note: '现行 :1388 `mux.HandleFunc("/api/admin/storage/config", h.superAdmin(...))`（superAdmin 真门结论成立）' },
-  { key: 'views/StorageAndLogConfigView.vue:5 admin/handler.go:1188', note: '现行 :1394 `mux.HandleFunc("/api/admin/logs/config", h.superAdmin(...))`' },
-  { key: 'views/StorageMigrationStateView.vue:10 admin/handler.go:962', note: '现行 :1391 `storage/migration-state` 注册 + :1108 `admin := h.admin` 局部别名（无角色下限结论成立）' },
   { key: 'views/SubscriptionTiersView.vue:10 cmd/gateway/main.go:7188', note: '现行 :8482 echo group 注册' },
   { key: 'views/TaskProfileView.vue:7 admin/handler.go:1488', note: '现行 :1715 `RegisterTaskProfileRoutes(mux, admin)`' },
-  { key: 'views/TurnsFilterOptionsView.vue:10 admin/handler.go:962', note: '现行 :1579 `turns/sessions/filter-options` 注册 + :1108 别名行' },
 ]
 
 const REGISTERED: string[] = [...KNOWN_DRIFT, ...KNOWN_FALSE_POSITIVE.map((f) => f.key)]
@@ -445,8 +441,8 @@ describe('④ 名单规模', () => {
     expect(KNOWN_DRIFT).toHaveLength(0)
   })
 
-  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 73 条（逐条定性过，不是债；12h-audit 20261017 轮订正 3 条假阳性引用后删登记；2026-11-25 菜单 PC 对齐轮 +50 −2：隔离树归因 HEAD 同红 54 条全部预存 ⇒ 登记并逐条给现行行号，删 2 条已漂修的旧 key）', () => {
-    expect(KNOWN_FALSE_POSITIVE).toHaveLength(73)
+  it('④-1b ★★★★ KNOWN_FALSE_POSITIVE 恰好 69 条（逐条定性过，不是债；12h-audit 20261017 轮订正 3 条假阳性引用后删登记；2026-11-25 菜单 PC 对齐轮 +50 −2；2026-11-26 行号订正轮 −4：五个 views 行号族订正到现行行号后，四个 .vue 模块头引用判「对上」⇒ 按纪律删登记，防名单变免死金牌）', () => {
+    expect(KNOWN_FALSE_POSITIVE).toHaveLength(69)
   })
 
   it('④-2 ★★ 名单里每一条的 Go 文件都得真实存在（否则是笔误不是债）', () => {
