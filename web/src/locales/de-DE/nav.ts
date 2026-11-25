@@ -20,6 +20,7 @@ export default {
     activateActionTip: 'Diese Instanz aktivieren',
     liveTopology: 'Live-Topologie',
     liveStageTree: 'Anfrage-Stufenbaum',
+    analyticsPlugin: 'Analytics-Plugin (Beispiel)',
     overview: "Übersicht",
     tenantModels: "Standardmodelle",
     tenantAccount: "Mein Konto",

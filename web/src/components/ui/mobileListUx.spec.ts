@@ -201,7 +201,11 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   ★ 这是【登记表自身重复】的第一个实例 ⇒ 已补断言兜住
   //     （见「登记表自身不得有重复的 (文件, 行号)」那条）——
   //     此前登记集收进 `Set` 会被去重 ⇒ 重复项对既有断言**完全不可见**。
-  ['src/views/tenant/MaaSBillsView.vue', 125, '月账单内嵌表（账期聚合行，title-key=period_ym）：/tenant/bills 无账单详情页，本视图无二级目的地'],
+  // ⚠ 行号锚点：2026-11-25 由 125 改为 128（+3）。
+  //   原因：DailyReconciliationPanel 接入轮在该文件的 <template> 头部插入了 3 行
+  //   （PageBackLink + DailyReconciliationPanel 三行）⇒ 其后行号整体 +3。
+  //   ★ 契约语义未变（月账单内嵌表仍无 compact 入口、无二级目的地）⇒ 只重锁行号。
+  ['src/views/tenant/MaaSBillsView.vue', 128, '月账单内嵌表（账期聚合行，title-key=period_ym）：/tenant/bills 无账单详情页，本视图无二级目的地'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 354 改为 355。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
