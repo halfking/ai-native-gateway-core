@@ -65,7 +65,6 @@ const error = ref('')
 const sourceFilter = ref<EntrySource | ''>('')
 const enabledFilter = ref<'all' | 'enabled' | 'disabled'>('all')
 
-const hasData = computed(() => entries.value.length > 0 || execs.value.length > 0 || stats.value !== null)
 
 const FILTERED_SOURCES = PLAYBOOK_SOURCES
 

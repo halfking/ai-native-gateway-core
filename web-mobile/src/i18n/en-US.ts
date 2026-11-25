@@ -4318,7 +4318,7 @@ sctx: {
     reload: 'Reload',
     readonlyNote: 'Read-only on mobile: entry editing, execution and rollback live on desktop. This page shows entries, execution history and stats.',
     nope: 'This account cannot view the error playbook (super admin only).',
-    never: 'never',
+    never: 'Never',
     enabled: 'Enabled',
     disabled: 'Disabled',
     filter: { source: 'Entry source', enabled: 'Enabled state', all: 'All', enabledOnly: 'Enabled only', disabledOnly: 'Disabled only' },
