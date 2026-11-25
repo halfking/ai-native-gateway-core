@@ -210,7 +210,8 @@
 <tr><td><code>go build ./...</code></td><td><span class="tag t-green">EXIT=0</span></td><td>合并后重跑；仅 vendor 警告。</td></tr>
 <tr><td><code>go test ./scripts/ursmcheck/... -count=1</code></td><td><span class="tag t-green">ok 452.251s / EXIT=0</span></td><td>全量门禁（含 9 道 AGENTS 交接面门）零红；比本轮前 258.219s 慢，原因是<b>并行车道同时在跑 chrome/compile</b>（读数环境差异、非代码差异）。</td></tr>
 <tr><td><code>go test ./scripts/ursmcheck/ -run TestAgentsMd -v</code></td><td><span class="tag t-green">9/9 PASS</span></td><td>含逐字重复门、轮块标签门、R 标记索引门、体积棘轮门、分档真实性门 ＋ 3 道<b>量具自证</b>门（防止判据恒绿）。</td></tr>
-<tr><td><code>web</code> vitest</td><td><span class="tag t-green">3,839 通过 / 0 红</span></td><td>合并后复跑；<code>web-mobile</code> 11 红 ＝ <b>与第 28 轮同一批</b>（行号锚点漂移族）⇒ 非本轮引入。</td></tr>
+<tr><td><code>web</code> vitest</td><td><span class="tag t-green">3,839 通过 / 0 红</span></td><td>合并后复跑（380 文件：379 passed ＋ 1 skipped；86.76s）；<code>web-mobile</code> 11 红 ＝ <b>与第 28 轮同一批</b>（行号锚点漂移族）⇒ 非本轮引入。</td></tr>
+<tr><td>vitest 控制台告警</td><td><span class="tag t-amber">只登记</span></td><td>dot reporter 那一次多报一行「<code>Errors 1 error</code>」，default reporter 复跑<b>无该行</b>且 0 失败 ⇒ 判为瞬时非确定性；另有 <code>[intlify] Not found 'ops.overview.accessErrorsHint' / 'dashboard.board.heroErrors' in 'zh' locale</code> ⇒<b>实测 8 个 locale 全都有这两个键</b> ⇒ 该 'zh' 是<b>测试夹具里的局部 bundle</b>、非生产缺键 ⇒<b>既有现象、不代改</b>。</td></tr>
 <tr><td><code>bash tests/verify_cgo_convention_test.sh</code></td><td><span class="tag t-green">EXIT=0（8 packages）</span></td><td>登记册门；<code>CGO_ENABLED=0</code> 依赖图已不含 go-sqlite3。</td></tr>
 <tr><td><code>bash tests/deploy_nocgo_build_test.sh</code></td><td><span class="tag t-green">EXIT=0（8 PASS / 0 FAIL）</span></td><td>nocgo 构建门；cgo 边界 <b>39 → 8</b>。</td></tr>
 <tr><td>cgo 四变异自证</td><td><span class="tag t-green">4/4 咬住</span></td><td>对<b>上游已合入</b>的那份实现独立复跑；四次还原后 md5 逐字节一致。</td></tr>
