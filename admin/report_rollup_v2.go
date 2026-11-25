@@ -15,14 +15,18 @@ import (
 )
 
 func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	section := r.PathValue("section")
+	prepareDownload := r.Method == http.MethodHead && section == "export"
+	if r.Method != http.MethodGet && !prepareDownload {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	section := r.PathValue("section")
 	if section != "summary" && section != "dimensions" && section != "export" && section != "daily" {
 		writeError(w, http.StatusNotFound, "unknown report-rollup resource")
 		return
+	}
+	if section == "export" {
+		w.Header().Set("Cache-Control", "no-store")
 	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "request metrics are unavailable")
@@ -77,6 +81,16 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
+	if prepareDownload {
+		// The browser validates the session and range before its native download.
+		// Only the GET builds the workbook.
+		if err := h.readProjectedReport(ctx, start, end, func(pgx.Tx, reportrollup.ProjectionCoverage) error { return nil }); err != nil {
+			writeProjectedReportError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if section == "daily" {
 		h.handleProjectedDailyPage(ctx, w, r, start, end, view, filter, trafficScope)
 		return
@@ -114,6 +128,8 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case personPage > 0:
 			rep, err = reportrollup.BuildProjectedPersonPage(ctx, q, start, end, filter, p, personPage)
+		case section == "export":
+			rep, err = reportrollup.BuildProjectedWorkbookReport(ctx, q, start, end, view, filter, names, daily, p)
 		case scope == "":
 			rep, err = reportrollup.BuildProjectedReport(ctx, q, start, end, view, filter, names, daily, p)
 		default:

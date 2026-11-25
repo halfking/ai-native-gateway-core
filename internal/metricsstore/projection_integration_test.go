@@ -1821,6 +1821,32 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 				if err != nil {
 					t.Fatal(err)
 				}
+				workbookSource := &historyQueryProbe{Querier: tx}
+				workbook, err := reportrollup.BuildProjectedWorkbookReport(ctx, workbookSource, start, day, tc.view, tc.filter, reportrollup.Names{}, true, fullCoverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				filtered := tc.filter.TenantID != "" || tc.filter.Person != ""
+				if workbookSource.publishedPage != (wantPublished && !filtered) {
+					t.Fatalf("workbook read published=%v for %+v, want %v", workbookSource.publishedPage, tc, wantPublished && !filtered)
+				}
+				for _, field := range []struct {
+					name string
+					got  any
+					want any
+				}{
+					{"total", workbook.Totals, full.Totals}, {"top errors", workbook.ErrorBreakdown, full.ErrorBreakdown},
+					{"days", workbook.Days, full.Days}, {"providers", workbook.Providers, full.Providers},
+					{"credentials", workbook.Credentials, full.Credentials}, {"tenants", workbook.Tenants, full.Tenants},
+					{"people", workbook.Persons, full.Persons}, {"keys", workbook.APIKeys, full.APIKeys},
+					{"daily models", workbook.DailyModels, full.DailyModels}, {"daily providers", workbook.DailyProviders, full.DailyProviders},
+					{"daily credentials", workbook.DailyCredentials, full.DailyCredentials}, {"daily tenants", workbook.DailyTenants, full.DailyTenants},
+					{"daily people", workbook.DailyPersons, full.DailyPersons}, {"daily keys", workbook.DailyAPIKeys, full.DailyAPIKeys},
+				} {
+					if !reflect.DeepEqual(field.got, field.want) {
+						t.Fatalf("workbook %s differs from full report for %+v", field.name, tc)
+					}
+				}
 				models := make([]reportrollup.DailyGroupRow, 0, len(full.DailyModels))
 				for _, model := range full.DailyModels {
 					models = append(models, reportrollup.DailyGroupRow{Date: model.Date, Key: model.RawModelName, Name: model.RawModelName,
@@ -1848,7 +1874,6 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 						}
 						combined = append(combined, page.Rows...)
 					}
-					filtered := tc.filter.TenantID != "" || tc.filter.Person != ""
 					if probe.publishedPage != (wantPublished && !filtered) {
 						t.Fatalf("%s published page = %v for %+v, want %v", group, probe.publishedPage, tc, wantPublished && !filtered)
 					}
@@ -1887,6 +1912,33 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 		}
 		publish()
 		check(true)
+		t.Run("unpublished_empty_day_cannot_leak_old_workbook_rows", func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, `DELETE FROM public.request_metrics_projection WHERE occurred_at >= $1 AND occurred_at < $2`, start, day); err != nil {
+				t.Fatal(err)
+			}
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, day, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			probe := &historyQueryProbe{Querier: tx}
+			export, err := reportrollup.BuildProjectedWorkbookReport(ctx, probe, start, day, reportrollup.ViewInternal, reportrollup.GrainFilter{}, reportrollup.Names{}, true, coverage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !probe.publishedPage || export.Days[0].Totals.RequestCount != 0 || len(export.DailyPersons) == 0 {
+				t.Fatalf("empty and published days should share the workbook: published=%v", probe.publishedPage)
+			}
+			for _, row := range export.DailyPersons {
+				if row.Date != day.Format(time.DateOnly) {
+					t.Fatalf("workbook returned stale person rows for %s", row.Date)
+				}
+			}
+		})
 		exec(`UPDATE public.request_metrics_projection SET total_tokens=total_tokens+7
 			WHERE tenant_id='page-a' AND occurred_at >= '2026-11-05 00:00+08' AND occurred_at < '2026-11-06 00:00+08'`)
 		check(false)

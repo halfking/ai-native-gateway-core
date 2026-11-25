@@ -123,9 +123,13 @@ func grainMetricHeader() []cell {
 // 时效因子），一律填真实值。br 传该分组的错误分布，
 // 「主要错误」列取次数最多的 error_kind（并列取字典序，保证多次导出稳定）。
 func grainMetricRow(t Totals, score float64, br map[string]int64) []cell {
-	row := []cell{
+	return appendGrainMetrics(nil, t, score, br)
+}
+
+func appendGrainMetrics(row []cell, t Totals, score float64, br map[string]int64) []cell {
+	row = append(row,
 		intCell(t.RequestCount), intCell(t.SuccessCount), intCell(t.ErrorCount), numCell(t.ErrorRate),
-	}
+	)
 	if score >= 0 {
 		row = append(row, numCell(score))
 	} else {
@@ -160,9 +164,9 @@ func grainMetricRow(t Totals, score float64, br map[string]int64) []cell {
 	return row
 }
 
-// grainSummaryRows 汇总 sheet：总计 + 六维分节。
-func grainSummaryRows(rep *GrainReport) [][]cell {
-	rows := make([][]cell, 0, 128)
+// grainSummaryHeader carries the coverage notes and the same generated
+// timestamp on each continuation worksheet.
+func grainSummaryHeader(rep *GrainReport) [][]cell {
 	title := "供应商对帐报表（汇总）"
 	caliber := caliberText(rep.View)
 	sourceLabel := "快照口径"
@@ -175,18 +179,20 @@ func grainSummaryRows(rep *GrainReport) [][]cell {
 		caliber = "全部请求流量，含探测和自检"
 		if rep.View == ViewInternal || rep.View == ViewKey {
 			caliber = "业务请求流量，积分为请求归属"
+		} else if rep.Filter.BusinessOnly {
+			caliber = "业务请求流量"
 		}
 	}
-	rows = append(rows,
-		[]cell{boldStrCell(title)},
-		[]cell{
+	rows := [][]cell{
+		{boldStrCell(title)},
+		{
 			strCell("区间: " + rep.Start.Format("2006-01-02") + " ~ " + rep.End.Format("2006-01-02")),
 			strCell("生成时间: " + time.Now().UTC().Format("2006-01-02 15:04:05 UTC")),
 			strCell("口径: " + caliber),
 			strCell(sourceLabel + ": " + rep.Source),
 		},
-		[]cell{},
-	)
+		{},
+	}
 	if p := rep.Projection; p != nil {
 		rows = append(rows, []cell{strCell("请求统计，实际过账见积分账本，账单及逐次发送见日对账。"),
 			strCell(fmt.Sprintf("自然日时区 %s，数据截止 %s（不含该时刻）", p.Timezone, p.Through.Format(time.RFC3339)))})
@@ -197,70 +203,115 @@ func grainSummaryRows(rep *GrainReport) [][]cell {
 			rows = append(rows, []cell{strCell(fmt.Sprintf("%d 条请求缺少 USD 金额或使用其他币种。", *n))})
 		}
 	}
-
-	emit := func(dim string, rowsOut *[][]cell) {
-		*rowsOut = append(*rowsOut, []cell{boldStrCell(dim)})
-		*rowsOut = append(*rowsOut, append([]cell{boldStrCell("维度值"), boldStrCell("名称")}, grainMetricHeader()...))
-	}
-
-	// 总计
-	emit("总计", &rows)
-	rows = append(rows, append([]cell{strCell("全部"), strCell("")},
-		grainMetricRow(rep.Totals, ProviderQualityScore(rep.Totals), rep.ErrorBreakdown)...))
-
-	// 按供应商（带质量评分 —— 只有供应商粒度的评分语义成立）。
-	emit("按供应商", &rows)
-	for _, p := range rep.Providers {
-		label := strconv.FormatInt(p.ProviderID, 10)
-		name := p.ProviderName
-		if p.ProviderID == UnassignedID {
-			label, name = unassignedLabel, ""
-		}
-		rows = append(rows, append([]cell{strCell(label), strCell(name)},
-			grainMetricRow(p.Totals, p.QualityScore, p.ErrorBreakdown)...))
-	}
-
-	// 按凭据
-	emit("按凭据", &rows)
-	for _, c := range rep.Credentials {
-		label := strconv.FormatInt(c.CredentialID, 10)
-		name := c.CredentialName
-		if c.CredentialID == UnassignedID {
-			label, name = unassignedLabel, ""
-		} else if c.ProviderID != nil {
-			name = name + " @ " + idLabel(*c.ProviderID, c.ProviderName)
-		}
-		rows = append(rows, append([]cell{strCell(label), strCell(name)}, grainMetricRow(c.Totals, c.QualityScore, c.ErrorBreakdown)...))
-	}
-
-	// 「按模型」分节**故意不进导出**：对帐人明确要求整个模型的统计列表只作
-	// 页面上的折叠菜单（辅助挑选模型名做筛选），原则上不导出——它有几百
-	// 行且不需要签字。模型口径的逐日数据仍在「按天×模型」sheet 里，
-	// 对帐真要用模型维度时从那里取。
-
-	// 按租户
-	emit("按租户", &rows)
-	for _, t := range rep.Tenants {
-		rows = append(rows, append([]cell{strCell(t.TenantID), strCell("")}, grainMetricRow(t.Totals, t.QualityScore, t.ErrorBreakdown)...))
-	}
-
-	// 按用户（租户 + 人员）
-	emit("按用户", &rows)
-	for _, p := range rep.Persons {
-		rows = append(rows, append([]cell{strCell(p.Person), strCell(p.TenantID)}, grainMetricRow(p.Totals, p.QualityScore, p.ErrorBreakdown)...))
-	}
-
-	// 按 apikey
-	emit("按apikey", &rows)
-	for _, k := range rep.APIKeys {
-		label := strconv.FormatInt(k.APIKeyID, 10)
-		name := k.APIKeyName
-		if k.APIKeyID == UnassignedID {
-			label, name = unassignedLabel, ""
-		}
-		rows = append(rows, append([]cell{strCell(label), strCell(name)}, grainMetricRow(k.Totals, k.QualityScore, k.ErrorBreakdown)...))
-	}
 	return rows
+}
+
+type grainSummarySection struct {
+	label   string
+	count   int
+	dataRow func(int) []cell
+}
+
+func grainSummarySections(rep *GrainReport) []grainSummarySection {
+	cells := make([]cell, 0, 2+len(grainMetricHeader()))
+	metricRow := func(label, name string, totals Totals, score float64, errors map[string]int64) []cell {
+		return appendGrainMetrics(append(cells[:0], strCell(label), strCell(name)), totals, score, errors)
+	}
+	return []grainSummarySection{
+		{"总计", 1, func(_ int) []cell {
+			return metricRow("全部", "", rep.Totals, ProviderQualityScore(rep.Totals), rep.ErrorBreakdown)
+		}},
+		{"按供应商", len(rep.Providers), func(i int) []cell {
+			p := rep.Providers[i]
+			label, name := strconv.FormatInt(p.ProviderID, 10), p.ProviderName
+			if p.ProviderID == UnassignedID {
+				label, name = unassignedLabel, ""
+			}
+			return metricRow(label, name, p.Totals, p.QualityScore, p.ErrorBreakdown)
+		}},
+		{"按凭据", len(rep.Credentials), func(i int) []cell {
+			c := rep.Credentials[i]
+			label, name := strconv.FormatInt(c.CredentialID, 10), c.CredentialName
+			if c.CredentialID == UnassignedID {
+				label, name = unassignedLabel, ""
+			} else if c.ProviderID != nil {
+				name += " @ " + idLabel(*c.ProviderID, c.ProviderName)
+			}
+			return metricRow(label, name, c.Totals, c.QualityScore, c.ErrorBreakdown)
+		}},
+		// Models are exported in daily sheets, as kept by the summary contract.
+		{"按租户", len(rep.Tenants), func(i int) []cell {
+			t := rep.Tenants[i]
+			return metricRow(t.TenantID, "", t.Totals, t.QualityScore, t.ErrorBreakdown)
+		}},
+		{"按用户", len(rep.Persons), func(i int) []cell {
+			p := rep.Persons[i]
+			return metricRow(p.Person, p.TenantID, p.Totals, p.QualityScore, p.ErrorBreakdown)
+		}},
+		{"按apikey", len(rep.APIKeys), func(i int) []cell {
+			k := rep.APIKeys[i]
+			label, name := strconv.FormatInt(k.APIKeyID, 10), k.APIKeyName
+			if k.APIKeyID == UnassignedID {
+				label, name = unassignedLabel, ""
+			}
+			return metricRow(label, name, k.Totals, k.QualityScore, k.ErrorBreakdown)
+		}},
+	}
+}
+
+type grainSummarySegment struct {
+	section grainSummarySection
+	title   []cell
+	start   int
+	count   int
+}
+
+func grainSummarySheets(rep *GrainReport, widths []float64, limit int) []sheetSheet {
+	head := grainSummaryHeader(rep)
+	columns := append([]cell{boldStrCell("维度值"), boldStrCell("名称")}, grainMetricHeader()...)
+	capacity := limit - len(head)
+	var sheets []sheetSheet
+	var payload []grainSummarySegment
+	used := 0
+	finish := func() {
+		segments := payload
+		part := sheetSheet{name: grainSheetPartName(SheetGrainSummary, len(sheets)+1), rows: head, widths: widths, dataCount: used}
+		part.dataRow = func(i int) []cell {
+			for _, seg := range segments {
+				if i < seg.count+2 {
+					switch i {
+					case 0:
+						return seg.title
+					case 1:
+						return columns
+					default:
+						return seg.section.dataRow(seg.start + i - 2)
+					}
+				}
+				i -= seg.count + 2
+			}
+			return nil
+		}
+		sheets = append(sheets, part)
+		payload, used = nil, 0
+	}
+	for _, section := range grainSummarySections(rep) {
+		title := []cell{boldStrCell(section.label)}
+		for offset := 0; ; {
+			if capacity-used < 2+min(1, section.count-offset) {
+				finish()
+			}
+			count := min(section.count-offset, capacity-used-2)
+			payload = append(payload, grainSummarySegment{section: section, title: title, start: offset, count: count})
+			used += count + 2
+			offset += count
+			if offset == section.count {
+				break
+			}
+		}
+	}
+	finish()
+	return sheets
 }
 
 // grainDayRows 按天 sheet。
@@ -283,136 +334,120 @@ func grainDayRows(rep *GrainReport) [][]cell {
 	return rows
 }
 
-// grainDayGroupRows 按天 × <group 维度> sheet（图表数据源）。
-//
-// 六个维度里有两种行类型：模型是 DailyModelRow（只有 RawModelName），其余是
-// DailyGroupRow（有 Key + Name）。这里先归一成 (日期, 取值, 名称) 三元组再排，
-// 免得两条几乎一样的循环各写一遍、排��规则还各自漂移。
-func grainDayGroupRows(rep *GrainReport, group GrainGroup) [][]cell {
+type grainWorkbookDimension struct {
+	group GrainGroup
+	rows  []DailyGroupRow
+}
+
+func grainWorkbookDimensions(rep *GrainReport) ([]grainWorkbookDimension, []DailyModelRow) {
+	groups := []grainWorkbookDimension{
+		{GrainGroupProvider, rep.DailyProviders},
+		{GrainGroupCredential, rep.DailyCredentials},
+		{GrainGroupTenant, rep.DailyTenants},
+		{GrainGroupPerson, rep.DailyPersons},
+		{GrainGroupAPIKey, rep.DailyAPIKeys},
+	}
+	for i, group := range groups {
+		groups[i].rows = orderedWorkbookRows(group.rows, func(a, b DailyGroupRow) bool {
+			return a.Date < b.Date || (a.Date == b.Date && a.Key < b.Key)
+		})
+	}
+	models := orderedWorkbookRows(rep.DailyModels, func(a, b DailyModelRow) bool {
+		return a.Date < b.Date || (a.Date == b.Date && a.RawModelName < b.RawModelName)
+	})
+	return groups, models
+}
+
+// Projected reports already return ordered rows. Keep the caller's slices
+// unchanged when exporting a report built by another caller.
+func orderedWorkbookRows[T any](rows []T, less func(T, T) bool) []T {
+	if !sort.SliceIsSorted(rows, func(i, j int) bool { return less(rows[i], rows[j]) }) {
+		rows = append([]T(nil), rows...)
+		sort.SliceStable(rows, func(i, j int) bool { return less(rows[i], rows[j]) })
+	}
+	return rows
+}
+
+func grainDayGroupSheet(group GrainGroup, groups []grainWorkbookDimension, models []DailyModelRow, dateRange []cell, widths []float64) sheetSheet {
 	label := group.Label()
 	header := []cell{boldStrCell("日期"), boldStrCell(label)}
 	if group != GrainGroupModel {
-		// 模型行没有独立的展示名，其余维度有「取值 + 名称」两列，
-		// 交接数据时对方需要能对上人看的名字而不只是内部 key。
 		header = append(header, boldStrCell("名称"))
 	}
-
-	type dayKey = grainDayKey
-	byKey, errByKey := grainDailyTotals(rep, group)
-
-	sorted := make([]dayKey, 0, len(byKey))
-	for k := range byKey {
-		sorted = append(sorted, k)
+	s := sheetSheet{
+		name: group.SheetName(), widths: widths,
+		rows: [][]cell{{boldStrCell("按天 × " + label + "明细")}, dateRange, {}, append(header, grainMetricHeader()...)},
 	}
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].date != sorted[j].date {
-			return sorted[i].date < sorted[j].date
-		}
-		return sorted[i].value < sorted[j].value
-	})
-
-	rows := [][]cell{
-		{boldStrCell("按天 × " + label + "明细")},
-		{strCell("区间: " + rep.Start.Format("2006-01-02") + " ~ " + rep.End.Format("2006-01-02"))},
-		{},
-		append(header, grainMetricHeader()...),
-	}
-	for _, k := range sorted {
-		lead := []cell{strCell(k.date), strCell(k.value)}
-		if group != GrainGroupModel {
-			lead = append(lead, strCell(k.name))
-		}
-		rows = append(rows, append(lead, grainMetricRow(byKey[k], -1, errByKey[k])...))
-	}
-	return rows
-}
-
-// grainDailyTotals 按 group 维度抽 (日期,取值[,名称]) → 度量/错误分布。
-func grainDailyTotals(rep *GrainReport, group GrainGroup) (map[grainDayKey]Totals, map[grainDayKey]map[string]int64) {
-	totals := map[grainDayKey]Totals{}
-	errs := map[grainDayKey]map[string]int64{}
+	cells := make([]cell, 0, len(header)+len(grainMetricHeader()))
 	if group == GrainGroupModel {
-		for _, m := range rep.DailyModels {
-			k := grainDayKey{date: m.Date, value: m.RawModelName}
-			totals[k] = m.Totals
-			if len(m.ErrorBreakdown) > 0 {
-				errs[k] = m.ErrorBreakdown
+		s.dataCount = len(models)
+		s.dataRow = func(i int) []cell {
+			row := models[i]
+			return appendGrainMetrics(append(cells[:0], strCell(row.Date), strCell(row.RawModelName)), row.Totals, -1, row.ErrorBreakdown)
+		}
+		return s
+	}
+	for _, dim := range groups {
+		if dim.group == group {
+			s.dataCount = len(dim.rows)
+			s.dataRow = func(i int) []cell {
+				row := dim.rows[i]
+				return appendGrainMetrics(append(cells[:0], strCell(row.Date), strCell(row.Key), strCell(row.Name)), row.Totals, -1, row.ErrorBreakdown)
 			}
-		}
-		return totals, errs
-	}
-	var rows []DailyGroupRow
-	switch group {
-	case GrainGroupProvider:
-		rows = rep.DailyProviders
-	case GrainGroupCredential:
-		rows = rep.DailyCredentials
-	case GrainGroupTenant:
-		rows = rep.DailyTenants
-	case GrainGroupPerson:
-		rows = rep.DailyPersons
-	case GrainGroupAPIKey:
-		rows = rep.DailyAPIKeys
-	}
-	for _, g := range rows {
-		k := grainDayKey{date: g.Date, value: g.Key, name: g.Name}
-		totals[k] = g.Totals
-		if len(g.ErrorBreakdown) > 0 {
-			errs[k] = g.ErrorBreakdown
+			break
 		}
 	}
-	return totals, errs
+	return s
 }
 
-// grainDayKey 「按天×维度」的行标识。name 参与比较只为稳定排序，不影响归并。
-type grainDayKey struct {
-	date  string
-	value string
-	name  string
+func grainDetailSheet(groups []grainWorkbookDimension, models []DailyModelRow, dateRange []cell, widths []float64) sheetSheet {
+	head := []cell{boldStrCell("日期"), boldStrCell("维度"), boldStrCell("取值"), boldStrCell("名称")}
+	s := sheetSheet{
+		name: SheetGrainDetail, widths: widths,
+		rows:      [][]cell{{boldStrCell("按天明细（长表）")}, dateRange, {}, append(head, grainMetricHeader()...)},
+		dataCount: len(models),
+	}
+	for _, dim := range groups {
+		s.dataCount += len(dim.rows)
+	}
+	cells := make([]cell, 0, len(head)+len(grainMetricHeader()))
+	s.dataRow = func(i int) []cell {
+		for _, dim := range groups {
+			if i < len(dim.rows) {
+				row := dim.rows[i]
+				lead := append(cells[:0], strCell(row.Date), strCell(dim.group.Label()), strCell(row.Key), strCell(row.Name))
+				return appendGrainMetrics(lead, row.Totals, -1, row.ErrorBreakdown)
+			}
+			i -= len(dim.rows)
+		}
+		row := models[i]
+		lead := append(cells[:0], strCell(row.Date), strCell(grainGroupLabel[GrainGroupModel]), strCell(row.RawModelName), strCell(""))
+		return appendGrainMetrics(lead, row.Totals, -1, nil)
+	}
+	return s
 }
 
-// grainDetailRows 按天明细 tidy 长表：日期/维度/取值/名称/度量。六个维度
-// 纵向堆叠，Excel 里可直接数据透视。
-func grainDetailRows(rep *GrainReport) [][]cell {
-	rows := [][]cell{
-		{boldStrCell("按天明细（长表）")},
-		{strCell("区间: " + rep.Start.Format("2006-01-02") + " ~ " + rep.End.Format("2006-01-02"))},
-		{},
-		append([]cell{boldStrCell("日期"), boldStrCell("维度"), boldStrCell("取值"), boldStrCell("名称")}, grainMetricHeader()...),
+// Every part has the original heading rows and a disjoint slice of the data.
+func appendGrainDetailSheets(sheets []sheetSheet, sheet sheetSheet, limit int) []sheetSheet {
+	perSheet := limit - len(sheet.rows)
+	if sheet.dataCount <= perSheet {
+		return append(sheets, sheet)
 	}
-	emitGroups := func(dim string, groups []DailyGroupRow) {
-		sorted := append([]DailyGroupRow(nil), groups...)
-		sort.Slice(sorted, func(i, j int) bool {
-			if sorted[i].Date != sorted[j].Date {
-				return sorted[i].Date < sorted[j].Date
-			}
-			return sorted[i].Key < sorted[j].Key
-		})
-		for _, g := range sorted {
-			rows = append(rows, append([]cell{
-				strCell(g.Date), strCell(dim), strCell(g.Key), strCell(g.Name),
-			}, grainMetricRow(g.Totals, -1, g.ErrorBreakdown)...))
-		}
+	for offset := 0; offset < sheet.dataCount; offset += perSheet {
+		part := sheet
+		part.name = grainSheetPartName(sheet.name, offset/perSheet+1)
+		part.dataCount = min(perSheet, sheet.dataCount-offset)
+		part.dataRow = func(i int) []cell { return sheet.dataRow(offset + i) }
+		sheets = append(sheets, part)
 	}
-	emitGroups("供应商", rep.DailyProviders)
-	emitGroups("凭据", rep.DailyCredentials)
-	emitGroups("租户", rep.DailyTenants)
-	emitGroups("用户", rep.DailyPersons)
-	emitGroups("apikey", rep.DailyAPIKeys)
-	// 模型逐日明细直接由 DailyModels 派生（它已是「按天×模型」口径）。
-	models := append([]DailyModelRow(nil), rep.DailyModels...)
-	sort.Slice(models, func(i, j int) bool {
-		if models[i].Date != models[j].Date {
-			return models[i].Date < models[j].Date
-		}
-		return models[i].RawModelName < models[j].RawModelName
-	})
-	for _, m := range models {
-		rows = append(rows, append([]cell{
-			strCell(m.Date), strCell("模型"), strCell(m.RawModelName), strCell(""),
-		}, grainMetricRow(m.Totals, -1, nil)...))
+	return sheets
+}
+
+func grainSheetPartName(name string, part int) string {
+	if part == 1 {
+		return name
 	}
-	return rows
+	return fmt.Sprintf("%s (%d)", name, part)
 }
 
 // grainWidths 汇总/按天 sheet 的列宽。
@@ -438,23 +473,24 @@ func grainWidths(withDim bool) []float64 {
 // 没法下钻的代价」。那个理由在**缺省**口径下依然成立，所以 detail 缺省为
 // true、老调用方拿到的还是全量；这里补的是**显式要汇总**的那条通路。
 func BuildGrainWorkbookBytes(rep *GrainReport, group GrainGroup, detail bool) ([]byte, error) {
-	summaryWidths := grainWidths(true)
+	return buildWorkbookBytes(grainWorkbookSheets(rep, group, detail, maxWorksheetRows))
+}
+
+func grainWorkbookSheets(rep *GrainReport, group GrainGroup, detail bool, limit int) []sheetSheet {
+	sheets := grainSummarySheets(rep, grainWidths(true), limit)
+	if !detail {
+		return sheets
+	}
 	dayWidths := grainWidths(false)
-	// 「按天×X」有 2 列（日期/取值）或 3 列（多一个名称）两种形态。
-	groupWidths := append([]float64{12, 22}, dayWidths...)
+	groupWidths := []float64{12, 22}
 	if group != GrainGroupModel {
-		groupWidths = append([]float64{12, 22, 26}, dayWidths...)
+		groupWidths = append(groupWidths, 26)
 	}
+	groupWidths = append(groupWidths, dayWidths...)
 	detailWidths := append([]float64{12, 10, 22, 26}, dayWidths...)
-	sheets := []sheetSheet{
-		{name: SheetGrainSummary, rows: grainSummaryRows(rep), widths: summaryWidths},
-	}
-	if detail {
-		sheets = append(sheets,
-			sheetSheet{name: SheetGrainDays, rows: grainDayRows(rep), widths: dayWidths},
-			sheetSheet{name: group.SheetName(), rows: grainDayGroupRows(rep, group), widths: groupWidths},
-			sheetSheet{name: SheetGrainDetail, rows: grainDetailRows(rep), widths: detailWidths},
-		)
-	}
-	return buildWorkbookBytes(sheets)
+	sheets = append(sheets, sheetSheet{name: SheetGrainDays, rows: grainDayRows(rep), widths: dayWidths})
+	dateRange := []cell{strCell("区间: " + rep.Start.Format("2006-01-02") + " ~ " + rep.End.Format("2006-01-02"))}
+	dimensions, models := grainWorkbookDimensions(rep)
+	sheets = appendGrainDetailSheets(sheets, grainDayGroupSheet(group, dimensions, models, dateRange, groupWidths), limit)
+	return appendGrainDetailSheets(sheets, grainDetailSheet(dimensions, models, dateRange, detailWidths), limit)
 }

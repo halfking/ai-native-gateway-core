@@ -4,11 +4,87 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGrainWorkbookContinuationRows(t *testing.T) {
+	day := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rep := &GrainReport{Start: day, End: day, View: ViewProvider, Filter: GrainFilter{BusinessOnly: true}, Projection: &ProjectionCoverage{Through: day.AddDate(0, 0, 1)}}
+	var expected []string
+	for i := range 17 {
+		person := fmt.Sprintf("member-%02d", i)
+		expected = append(expected, person)
+		rep.Persons = append(rep.Persons, PersonRow{Person: person})
+		rep.DailyPersons = append(rep.DailyPersons, DailyGroupRow{Date: day.Format(time.DateOnly), Key: person})
+	}
+	const limit = 12
+	sheets := grainWorkbookSheets(rep, GrainGroupPerson, true, limit)
+	books, err := buildWorkbookBytes(sheets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(books), int64(len(books)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{SheetGrainSummary, GrainGroupPerson.SheetName(), SheetGrainDetail} {
+		var actual []string
+		var count int
+		for i, sheet := range sheets {
+			if sheet.name != prefix && !strings.HasPrefix(sheet.name, prefix+" (") {
+				continue
+			}
+			count++
+			if sheet.name != grainSheetPartName(prefix, count) {
+				t.Fatalf("unexpected sheet sequence %q", sheet.name)
+			}
+			f, err := zr.Open(fmt.Sprintf("xl/worksheets/sheet%d.xml", i+1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ws struct {
+				Rows []struct {
+					Number int      `xml:"r,attr"`
+					Texts  []string `xml:"c>is>t"`
+				} `xml:"sheetData>row"`
+			}
+			if err := xml.NewDecoder(f).Decode(&ws); err != nil {
+				f.Close()
+				t.Fatal(err)
+			}
+			f.Close()
+			if len(ws.Rows) > limit || len(ws.Rows) < 4 {
+				t.Fatalf("%s has %d rows", sheet.name, len(ws.Rows))
+			}
+			heading := false
+			for j, row := range ws.Rows {
+				if row.Number != j+1 {
+					t.Fatalf("%s row number %d, want %d", sheet.name, row.Number, j+1)
+				}
+				heading = heading || slices.Contains(row.Texts, "请求数")
+				for _, value := range row.Texts {
+					if strings.HasPrefix(value, "member-") {
+						actual = append(actual, value)
+					}
+					if strings.Contains(value, "含探测") {
+						t.Fatalf("business export labeled as probe-inclusive on %s", sheet.name)
+					}
+				}
+			}
+			if !heading {
+				t.Fatalf("%s has no metric heading", sheet.name)
+			}
+		}
+		if count < 2 || !slices.Equal(actual, expected) {
+			t.Fatalf("%s produced %d sheets with members %v, want %v", prefix, count, actual, expected)
+		}
+	}
+}
 
 // TestWriteWorkbook_RoundTrip —— xlsx 回读测试：zip 解包 + XML 解析双 sheet、
 // 单元格类型/样式、中文 sheet 名、特殊字符转义。writer 是手写的，此测试是

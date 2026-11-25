@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -76,6 +77,7 @@ const (
 	ProjectedSummaryTotals       ProjectedSummaryScope = "totals"
 	ProjectedSummaryDistribution ProjectedSummaryScope = "distribution"
 	projectedSummaryPersonPage   ProjectedSummaryScope = "person_page"
+	projectedWorkbook            ProjectedSummaryScope = "workbook"
 )
 
 func (scope ProjectedSummaryScope) includesDistribution() bool {
@@ -174,8 +176,16 @@ func projectedInternalGroups(scope ProjectedSummaryScope) []string {
 }
 
 func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []string {
-	if scope == "" {
+	if scope == "" || scope == projectedWorkbook {
 		groups := grainGroupSets(daily)
+		if scope == projectedWorkbook {
+			// The workbook has neither a range model sheet nor a provider/model
+			// sheet. Published daily rows also supply the daily model sheet.
+			groups = slices.DeleteFunc(groups, func(set string) bool {
+				return set == projectedModelGroup || set == "(provider_id, raw_model_name)" ||
+					(!daily && set == "(report_date, raw_model_name)")
+			})
+		}
 		for i := range groups {
 			groups[i] = projectedOwnerKeys.Replace(groups[i])
 		}
@@ -345,7 +355,7 @@ func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFi
 	}
 	args := []any{coverage.From, coverage.Through, coverage.Timezone, projectedBusinessOnly(view, filter)}
 	where, args := projectedGrainWhere(filter, args)
-	return readProjectedGroups(ctx, q, projectedGrainSQL(where, groups, scope == ""), args, sink)
+	return readProjectedGroups(ctx, q, projectedGrainSQL(where, groups, scope == "" || scope == projectedWorkbook), args, sink)
 }
 
 func readProjectedGroups(ctx context.Context, q Querier, query string, args []any, sink func(groupKind, grainScanRow)) error {

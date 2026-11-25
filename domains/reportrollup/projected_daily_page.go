@@ -137,27 +137,15 @@ func readPublishedDailyPage(ctx context.Context, q Querier, view View, filter Gr
 		if err != nil {
 			return true, err
 		}
-		amount, err := cell.amount.Float64Value()
+		acc, err := cell.publishedAccumulator(ranks)
 		if err != nil {
-			return true, fmt.Errorf("read daily detail amount: %w", err)
-		}
-		cell.row.costCents = amount.Float64
-		if cell.samples.size() > 0 {
-			if len(ranks) != 2 {
-				return true, fmt.Errorf("published daily detail lacks latency ranks")
-			}
-			cell.row.p50w, cell.row.p95w, cell.row.w = ranks[0], ranks[1], 1
-		}
-		acc := &grainAccumulator{}
-		acc.add(cell.row)
-		for kind, count := range cell.errors {
-			acc.add(grainScanRow{kind: kind, errKindCount: count})
+			return true, err
 		}
 		key := cell.key
 		if group == GrainGroupPerson {
 			key = personKey(tenantID, key)
 		}
-		page.Rows = append(page.Rows, grain.resultRow(cell.row.date.Format("2006-01-02"), key, acc))
+		page.Rows = append(page.Rows, grain.resultRow(cell.row.date.Format("2006-01-02"), key, &acc))
 	}
 	return true, rows.Err()
 }

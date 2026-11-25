@@ -275,6 +275,26 @@ type dailyHistoryCell struct {
 	errors    map[string]int64
 }
 
+func (cell dailyHistoryCell) publishedAccumulator(ranks []float64) (grainAccumulator, error) {
+	var acc grainAccumulator
+	amount, err := cell.amount.Float64Value()
+	if err != nil {
+		return acc, fmt.Errorf("read daily detail amount: %w", err)
+	}
+	cell.row.costCents = amount.Float64
+	if cell.samples.size() > 0 {
+		if len(ranks) != 2 {
+			return acc, fmt.Errorf("published daily detail lacks latency ranks")
+		}
+		cell.row.p50w, cell.row.p95w, cell.row.w = ranks[0], ranks[1], 1
+	}
+	acc.add(cell.row)
+	for kind, count := range cell.errors {
+		acc.add(grainScanRow{kind: kind, errKindCount: count})
+	}
+	return acc, nil
+}
+
 func scanDailyHistoryCell(rows pgx.Rows, extra ...any) (dailyHistoryCell, error) {
 	var c dailyHistoryCell
 	c.row.projection = &projectedMeasures{}
