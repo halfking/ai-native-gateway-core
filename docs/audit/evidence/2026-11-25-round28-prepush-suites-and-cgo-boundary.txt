@@ -94,3 +94,22 @@ tests/verify_cgo_convention_test.sh: CGO_ENABLED=1 闭包里只有登记的 6 �
 --- 另登记（属 deploy-lib 仓库，未动） ---
  密钥缺失路径上，同级库第 252 行 "${#SSH_RETRY_KEY_ARGS[@]}" 在 bash 3.2 + set -u 下报 unbound variable
  （仍以 rc=1 失败，但错误信息不再是 "injected SSH key missing"）；bash 5 下不出现。
+
+===== E. deploy_211_contract_test.sh：锚点假红（提交 0062e13cc） =====
+--- before（e6c01cb4a）---
+ 结果: 134 通过, 1 失败     FAIL 绑定体检的位置太晚（迁移/起容器已经动过了）
+--- 引擎 scripts/deploy-seamless-docker.sh 的真实顺序（未改） ---
+ 2937: dd_check_slot_binding                         ← 槽位↔端口绑定体检（先于一切写动作）
+ 2953: REVISION_SEQ="$DD_REVISION_SEQ"
+ 2962:     bash "$REVISION_SEQ" || die "…"           ← 迁移重放真正执行
+ 3033: DD_CANDIDATE_CONTAINER="$(dd_container_name …)" ← 起候选容器
+  122: DD_REVISION_SEQ="$(…)/apply-db-revision-sequence.sh"   ← 只是定义路径（2ae7a12e8，2026-11-23 挪到顶部）
+--- 根因 ---
+ 测试的「迁移」锚点是 grep -n 'REVISION_SEQ=' 的首个匹配 ⇒ 命中第 122 行（DD_REVISION_SEQ=…）⇒ 2937 被判成晚于迁移。
+ 修法：锚点改为 grep -nE '^[[:space:]]*bash "\$REVISION_SEQ"'（首个匹配＝2962）；三个锚点任一为空 ⇒ 报「找不到锚点」。
+--- after（0062e13cc，真实引擎） ---
+ 结果: 135 通过, 0 失败     ok 绑定体检发生在迁移重放与起容器之前（脱节时一个字节都不写）
+--- 变异自证（DEPLOY_211_ENGINE 指向 /tmp 下的引擎临时副本；真实引擎 git status 无改动） ---
+ M1 体检挪到迁移重放之后            => rc=1 | 134 通过, 1 失败 | FAIL 绑定体检的位置太晚（迁移/起容器已经动过了）
+ M2 引擎改了重放的写法（锚点消失）  => rc=1 | 134 通过, 1 失败 | FAIL 绑定体检顺序断言找不到锚点（体检=2937 / 迁移重放=无 / 起候选容器=3033）…
+ M3 体检调用被删掉                  => rc=1 | 134 通过, 1 失败 | FAIL 绑定体检顺序断言找不到锚点（体检=无 / 迁移重放=2961 / 起候选容器=3032）…
