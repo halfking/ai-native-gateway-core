@@ -148,6 +148,12 @@ const projectedGrainColumns = `date_group, provider_group, credential_group, mod
 
 var projectedOwnerKeys = strings.NewReplacer("provider_id, credential_id", "credential_id", "tenant_id, api_key_id", "api_key_id")
 
+func projectedProviderDistribution(view View) bool {
+	return view == ViewProvider || view == ViewCredential
+}
+
+var projectedTenantPersonGroups = []string{"(tenant_id)", "(tenant_id, person)"}
+
 func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []string {
 	if scope == "" {
 		groups := grainGroupSets(daily)
@@ -159,10 +165,10 @@ func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []
 	groups := []string{"()", "(report_date)"}
 	if scope == ProjectedSummaryDistribution {
 		groups = append(groups, "(raw_model_name)")
-		if view == ViewProvider || view == ViewCredential {
+		if projectedProviderDistribution(view) {
 			groups = append(groups, "(provider_id)")
 		} else {
-			groups = append(groups, "(tenant_id)", "(tenant_id, person)")
+			groups = append(groups, projectedTenantPersonGroups...)
 		}
 	}
 	return groups
@@ -194,15 +200,14 @@ func projectedGrainKeys(sets string, owners bool) (flags, measureKeys, errorKeys
 	return flags, measureKeys, errorKeys
 }
 
-func projectedGrainSQL(where string, daily bool, view View, scope ProjectedSummaryScope) string {
+func projectedGrainSQL(where string, groups []string, fullReport bool) string {
 	// The displayed credential and key rows each have one ID, independent of
 	// source attribution. Aggregate their samples together before computing ranks.
-	groups := projectedGrainGroups(daily, view, scope)
 	sets := strings.Join(groups, ", ")
-	flags, measureKeys, errorKeys := projectedGrainKeys(sets, scope == "")
+	flags, measureKeys, errorKeys := projectedGrainKeys(sets, fullReport)
 	errorSets := strings.Join(grainErrorGroups(groups), ", ")
 	materialization := "MATERIALIZED"
-	if scope != "" {
+	if !fullReport {
 		// The smaller grouping sets leave fewer columns live. Inline each scan
 		// so PostgreSQL can prune columns and push down the error filter.
 		materialization = "NOT MATERIALIZED"
@@ -234,14 +239,24 @@ func projectedGrainSQL(where string, daily bool, view View, scope ProjectedSumma
 }
 
 func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFilter, daily bool, coverage ProjectionCoverage, scope ProjectedSummaryScope, sink func(groupKind, grainScanRow)) error {
-	if eligibleDailyHistory(view, filter, coverage, scope) {
-		if used, err := runDailyHistory(ctx, q, view, filter, coverage, scope, sink); used || err != nil {
+	groups := projectedGrainGroups(daily, view, scope)
+	if eligibleDailyHistory(filter, coverage, scope) {
+		used, err := runDailyHistory(ctx, q, view, filter, coverage, scope, sink)
+		if err != nil {
 			return err
+		}
+		if used {
+			if scope == ProjectedSummaryTotals || projectedProviderDistribution(view) {
+				return nil
+			}
+			// Published history covers totals and models. Query tenant and
+			// person groups in the same snapshot without repeating those ranks.
+			groups = projectedTenantPersonGroups
 		}
 	}
 	args := []any{coverage.From, coverage.Through, coverage.Timezone, projectedBusinessOnly(view, filter)}
 	where, args := projectedGrainWhere(filter, args)
-	rows, err := q.Query(ctx, projectedGrainSQL(where, daily, view, scope), args...)
+	rows, err := q.Query(ctx, projectedGrainSQL(where, groups, scope == ""), args...)
 	if err != nil {
 		return fmt.Errorf("aggregate request metrics report: %w", err)
 	}

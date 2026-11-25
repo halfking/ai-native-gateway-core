@@ -72,9 +72,9 @@ func RebuildDailyHistory(ctx context.Context, tx *sql.Tx, day string) error {
 	return err
 }
 
-func eligibleDailyHistory(view View, filter GrainFilter, coverage ProjectionCoverage, scope ProjectedSummaryScope) bool {
+func eligibleDailyHistory(filter GrainFilter, coverage ProjectionCoverage, scope ProjectedSummaryScope) bool {
 	if !filter.empty() || coverage.Timezone != dailyHistoryZone || !coverage.Through.After(coverage.From) ||
-		(scope != ProjectedSummaryTotals && !(scope == ProjectedSummaryDistribution && (view == ViewProvider || view == ViewCredential))) {
+		(scope != ProjectedSummaryTotals && scope != ProjectedSummaryDistribution) {
 		return false
 	}
 	loc, err := time.LoadLocation(dailyHistoryZone)
@@ -102,10 +102,16 @@ const historyFactsSelect = `SELECT (p.occurred_at AT TIME ZONE '` + dailyHistory
 
 const historyFactsFilter = `p.source_fact_id IS NOT NULL AND (NOT $3::boolean OR p.traffic_class='business')`
 
-func dailyHistorySQL(fullyPublished, contiguousGap, distribution bool) string {
+func dailyHistorySQL(fullyPublished, contiguousGap, distribution, providers bool) string {
 	selection := ""
 	if !distribution {
 		selection = " AND dimension='total'"
+	} else if !providers {
+		selection = " AND dimension<>'provider'"
+	}
+	rawSelection := ""
+	if distribution && !providers {
+		rawSelection = " WHERE dimension<>'provider'"
 	}
 	var input string
 	switch {
@@ -120,7 +126,7 @@ func dailyHistorySQL(fullyPublished, contiguousGap, distribution bool) string {
 		  AND p.occurred_at < ($5::date::timestamp AT TIME ZONE '` + dailyHistoryZone + `')
 	)` + historyCellsSQL(distribution) + `, history AS (` + historyPublishedSelect + selection + `
 		AND (report_date < $4::date OR report_date >= $5::date)
-		UNION ALL SELECT * FROM raw_cells
+		UNION ALL SELECT * FROM raw_cells` + rawSelection + `
 	)`
 	default:
 		input = `WITH clean_days AS MATERIALIZED (
@@ -138,7 +144,7 @@ func dailyHistorySQL(fullyPublished, contiguousGap, distribution bool) string {
 		SELECT ` + historyKeys + `, ` + historyMeasures + `, errors
 		FROM public.request_metrics_daily_history JOIN clean_days ON day=report_date
 		WHERE business_only=$3` + selection + `
-		UNION ALL SELECT * FROM raw_cells
+		UNION ALL SELECT * FROM raw_cells` + rawSelection + `
 	)`
 	}
 	return input + ` SELECT report_date, dimension, group_key, ` + historyMeasures + `, errors FROM history`
@@ -185,7 +191,7 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 	if contiguousGap {
 		args = append(args, firstMissing.Time, lastMissing.Time.AddDate(0, 0, 1))
 	}
-	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, scope == ProjectedSummaryDistribution), args...)
+	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, scope == ProjectedSummaryDistribution, projectedProviderDistribution(view)), args...)
 	if err != nil {
 		return true, fmt.Errorf("read daily request history: %w", err)
 	}

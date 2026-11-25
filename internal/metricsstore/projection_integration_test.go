@@ -1459,6 +1459,7 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 			}{
 				{reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution},
 				{reportrollup.ViewProvider, reportrollup.ProjectedSummaryTotals},
+				{reportrollup.ViewInternal, reportrollup.ProjectedSummaryDistribution},
 				{reportrollup.ViewInternal, reportrollup.ProjectedSummaryTotals},
 			} {
 				want, err := reportrollup.BuildProjectedReport(ctx, tx, start, end, tc.view, filter, reportrollup.Names{}, false, coverage)
@@ -1466,7 +1467,13 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 					t.Fatal(err)
 				}
 				want.Models = []reportrollup.ModelRow{}
-				want.DailyModels, want.Credentials, want.APIKeys, want.Tenants, want.Persons = nil, nil, nil, nil, nil
+				want.DailyModels, want.Credentials, want.APIKeys = nil, nil, nil
+				if tc.view == reportrollup.ViewInternal {
+					want.Providers = nil
+				}
+				if tc.view != reportrollup.ViewInternal || tc.scope == reportrollup.ProjectedSummaryTotals {
+					want.Tenants, want.Persons = nil, nil
+				}
 				if tc.scope == reportrollup.ProjectedSummaryTotals {
 					want.Providers, want.ModelTotals = nil, nil
 				}
