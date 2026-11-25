@@ -365,7 +365,11 @@ func TestQuotaVerdictHorizonCoversPeriodicReset(t *testing.T) {
 	}
 	_, bindingHorizon := unavailableBindingHorizonForKind("http_429", verdict, 5)
 	probeHorizon := probeBackoffForDirectOutcomeKind(verdict, "http_429", ProbeRootCauseNode, 5)
-	if bindingHorizon != probeHorizon {
+	// ★ 2026-11-25 第 28 轮：horizon() 每次调用各自取一次 time.Now()（time.Until 到
+	//   重置点）⇒ 两次调用的结果可以相差几个纳秒（实测 30 次里 2 次恰好差 1ns）⇒
+	//   严格相等是偶发假红。本门钉的是「两处同源」而不是「同一纳秒」：容许 1ms 以内
+	//   的取时抖动（时长本身是小时量级 ⇒ 秒级以上的真实分歧照样被抓）。
+	if skew := bindingHorizon - probeHorizon; skew > time.Millisecond || skew < -time.Millisecond {
 		t.Fatalf("periodic: binding cooldown (%s) and probe next retry (%s) must agree",
 			bindingHorizon, probeHorizon)
 	}
