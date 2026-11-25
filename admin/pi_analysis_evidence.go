@@ -38,7 +38,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
-// 各路取证的条数与时间上限（单路超时合计远小于分析器给的 8s 总预算）。
+// piEvidenceTotalTimeout 是一次取证的**总**预算（与分析器的 evidenceGatherTimeout 一致）。
+//
+//	★ 2026-11-26 订正：此前这个总预算只是「写在注释里」——每一步各自从 Background
+//	  起 3s 超时、不看调用方的截止时间 ⇒ 最坏六步 × 3s，分析会被拖住 18s，与
+//	  「8s 总预算、永不阻塞分析」的说法不符。现在 Gather 内部真正执行它：总预算 =
+//	  min(调用方的截止时间, 本值)；每一步仍有自己的上限（且不超过总预算）；预算用尽后
+//	  剩余各路直接标「预算用尽」并跳过。是变量只为测试能调短。
+var piEvidenceTotalTimeout = 8 * time.Second
+
+// 各路取证的条数与时间上限。
 const (
 	piEvidenceStepTimeout     = 3 * time.Second
 	piEvidenceSessionSpan     = 30 * time.Minute
@@ -83,6 +92,12 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 	}
 	started := g.now()
 	b := &promptinjection.EvidenceBundle{GatheredAt: started}
+	// ★ 总预算（见 piEvidenceTotalTimeout）：调用方给了更早的截止时间 ⇒ 以它为准。
+	budget := piEvidenceBudget{deadline: time.Now().Add(piEvidenceTotalTimeout), total: piEvidenceTotalTimeout}
+	if dl, ok := ctx.Deadline(); ok && dl.Before(budget.deadline) {
+		budget.deadline, budget.total = dl, time.Until(dl)
+	}
+	run := func(name string, fn func(context.Context) error) { g.step(b, name, budget, fn) }
 	if target.TenantID == "" {
 		target.TenantID = "default"
 	}
@@ -90,7 +105,7 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 	requestErrKind := ""
 	if target.RequestID != "" {
 		// ① 请求账本。
-		g.step(b, "request ledger", func(c context.Context) error {
+		run("request ledger", func(c context.Context) error {
 			row, err := g.requestRow(c, target)
 			if err != nil {
 				return err
@@ -104,7 +119,7 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 			return nil
 		})
 		// ② 上游尝试。
-		g.step(b, "upstream attempts", func(c context.Context) error {
+		run("upstream attempts", func(c context.Context) error {
 			part, err := g.attemptRows(c, target)
 			if err != nil {
 				return err
@@ -124,7 +139,7 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 
 	// ③ 会话上下文。
 	if target.SessionID != "" {
-		g.step(b, "session context", func(c context.Context) error {
+		run("session context", func(c context.Context) error {
 			rows, err := g.sessionRows(c, target)
 			if err != nil {
 				return err
@@ -141,7 +156,7 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 	}
 	if kind != "" {
 		finalKind := kind
-		g.step(b, "same-kind error distribution", func(c context.Context) error {
+		run("same-kind error distribution", func(c context.Context) error {
 			part, err := g.errorWindowRows(c, target.TenantID, finalKind)
 			if err != nil {
 				return err
@@ -159,9 +174,15 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 
 	// ⑥ 错误处理手册（可选系统：表不在场 ⇒ 标成「这一路没算出来」，不冒充「没有条目」）。
 	for _, et := range piEvidenceDedupe([]string{target.ErrorType, piEvidenceString(target.ErrorDetails, "error_kind")}) {
-		part, err := g.playbookEntries(ctx, et)
+		c, cancel, ok := budget.stepCtx()
+		if !ok {
+			b.NoteDegraded("playbook", budget.note("playbook"))
+			break
+		}
+		part, err := g.playbookEntries(c, et)
+		cancel()
 		if err != nil {
-			b.NoteDegraded("playbook", "playbook: read failed: "+piEvidenceTruncate(err.Error(), piEvidenceNoteRunes))
+			b.NoteDegraded("playbook", budget.failureNote("playbook", err))
 			break
 		}
 		if part.Degraded != "" {
@@ -179,18 +200,73 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 	return b, nil
 }
 
+// piEvidenceBudget 是一次取证的**总**预算：截止时间 + 实际生效的时长（写进说明里）。
+type piEvidenceBudget struct {
+	deadline time.Time
+	total    time.Duration
+}
+
+// note 是「预算用尽」的说明（写出实际生效的预算，不写死默认值）。
+func (bu piEvidenceBudget) note(name string) string {
+	return fmt.Sprintf("%s: evidence budget exhausted (limit %s); this part of the evidence is missing",
+		name, bu.total.Round(time.Millisecond))
+}
+
+// timeoutNote 是「这一步的截止时间到了」的说明：要分「这一路自己超时」与「总预算用尽」——
+// 两者的处置不同（前者调大单路上限，后者是库里当时就是慢）。
+func (bu piEvidenceBudget) timeoutNote(name string) string {
+	if !time.Now().Before(bu.deadline) {
+		return bu.note(name)
+	}
+	return fmt.Sprintf("%s: query timed out (limit %s); this part of the evidence is missing", name, piEvidenceStepTimeout)
+}
+
+// failureNote 把一步取证的**非超时**错误写成说明。
+func (bu piEvidenceBudget) failureNote(name string, err error) string {
+	return fmt.Sprintf("%s unavailable: %s", name, piEvidenceTruncate(err.Error(), piEvidenceNoteRunes))
+}
+
+// isStepTimeout 判定一步取证是否因截止时间而失败。
+//
+//	★ 看**上下文是否已到期**，不看错误内容：截止时间到了之后，驱动报什么错各不相同
+//	  （pgx 报 context deadline exceeded、pq / sqlmock 报 canceling query due to user
+//	  request）⇒ 按错误内容判会把超时归成普通的「不可用」，把「库里当时慢」写成「查询出错」。
+func isStepTimeout(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() != nil
+}
+
+// stepCtx 给一步取证造上下文。
+//
+//	★ 不继承调用方的取消：按需取证的 HTTP 请求断开不该把已经发出去的只读查询半途
+//	  掐掉——那只会让「为什么没取到」多一种难以复现的原因。但**总预算必须管用**：
+//	  预算已用尽 ⇒ ok=false（调用方标「预算用尽」）；否则这一步的截止时间取
+//	  「自己的上限」与「总预算」中更早的那个。
+func (bu piEvidenceBudget) stepCtx() (context.Context, context.CancelFunc, bool) {
+	now := time.Now()
+	if !now.Before(bu.deadline) {
+		return nil, nil, false
+	}
+	stepDeadline := now.Add(piEvidenceStepTimeout)
+	if bu.deadline.Before(stepDeadline) {
+		stepDeadline = bu.deadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), stepDeadline)
+	return ctx, cancel, true
+}
+
 // step 跑一路取证：独立超时 + panic 收口；失败只在 Notes 里留一句。
-func (g *PIEvidenceGatherer) step(b *promptinjection.EvidenceBundle, name string, fn func(ctx context.Context) error) {
+func (g *PIEvidenceGatherer) step(b *promptinjection.EvidenceBundle, name string, budget piEvidenceBudget, fn func(ctx context.Context) error) {
 	defer func() {
 		if r := recover(); r != nil {
 			b.NoteDegraded(name, fmt.Sprintf("%s: internal error: %v", name, r))
 			slog.Error("pi_analysis: evidence step panicked", "step", name, "panic", r)
 		}
 	}()
-	// ★ 不继承调用方的取消：按需取证的 HTTP 请求断开、或后台分析的外层超时，
-	//   都不该把已经发出去的只读查询半途掐掉——那只会让「为什么没取到」
-	//   多一种难以复现的原因。真正的上限是这里的超时。
-	ctx, cancel := context.WithTimeout(context.Background(), piEvidenceStepTimeout)
+	ctx, cancel, ok := budget.stepCtx()
+	if !ok {
+		b.NoteDegraded(name, budget.note(name))
+		return
+	}
 	defer cancel()
 	started := g.now()
 	err := fn(ctx)
@@ -199,11 +275,11 @@ func (g *PIEvidenceGatherer) step(b *promptinjection.EvidenceBundle, name string
 	if err == nil {
 		return
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		b.NoteDegraded(name, fmt.Sprintf("%s: query timed out (limit %s); this part of the evidence is missing", name, piEvidenceStepTimeout))
+	if isStepTimeout(ctx, err) {
+		b.NoteDegraded(name, budget.timeoutNote(name))
 		return
 	}
-	b.NoteDegraded(name, fmt.Sprintf("%s unavailable: %s", name, piEvidenceTruncate(err.Error(), piEvidenceNoteRunes)))
+	b.NoteDegraded(name, budget.failureNote(name, err))
 }
 
 func (g *PIEvidenceGatherer) now() time.Time {
