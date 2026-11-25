@@ -116,9 +116,7 @@ pies AS (
 
 const boardResultSQL = `SELECT projection.backfill_complete, projection.updated_at, projection.pending_since, to_jsonb(summary),
 	coalesce((SELECT jsonb_object_agg(dimension, items) FROM pies), '{}'::jsonb),
-	coalesce((SELECT json_agg(t ORDER BY t.bucket) FROM trends t), '[]'::json),
-	coalesce((SELECT json_agg(t ORDER BY t.bucket, t.model) FROM
-		(SELECT bucket, series AS model, requests, tokens, credits, cost_usd FROM chart_points) t), '[]'::json),
+	` + boardTimeSeriesSQL + `,
 	coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.total_cost_usd DESC, p.provider_id)
 		FROM (SELECT * FROM providers ORDER BY total_cost_usd DESC, provider_id LIMIT 50) p), '[]'::jsonb)
 FROM projection CROSS JOIN summary`
@@ -223,8 +221,13 @@ trends AS (
 
 func scanRequestBoard(ctx context.Context, db requestStatsDB, sql string, args []any, withoutJIT bool) (RequestBoard, error) {
 	var board RequestBoard
+	var trends, models []byte
 	err := readRequestStatsRow(ctx, db, sql, args, withoutJIT, &board.Ready, &board.UpdatedAt, &board.PendingSince,
-		&board.Summary, &board.Pies, &board.Trends, &board.ModelPoints, &board.ProviderRows)
+		&board.Summary, &board.Pies, &trends, &models, &board.ProviderRows)
+	if err != nil {
+		return board, err
+	}
+	board.Trends, board.ModelPoints, err = decodeBoardTimeSeries(trends, models)
 	return board, err
 }
 

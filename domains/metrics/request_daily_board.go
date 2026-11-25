@@ -161,7 +161,7 @@ summary AS (
 top_models AS MATERIALIZED (
 	SELECT key FROM pie_groups WHERE dimension='models' ORDER BY requests DESC, key LIMIT 6
 ),
-trend_inputs AS (
+trend_inputs AS NOT MATERIALIZED (
 	SELECT bucket, is_total, model, requests, tokens, credits, cost_usd, success, latency_sum, latency_count
 	FROM public.request_metrics_board_series JOIN clean_days USING (day)
 	WHERE minutes=` + minutes + seriesScope + ` AND is_total
@@ -210,6 +210,8 @@ func boardDailyBucketCounts(query BoardQuery, minutes string) string {
 	// A single tenant scope and traffic class each supply one row per model and
 	// bucket. If published days start and end on bucket boundaries, their rows
 	// cannot overlap each other or the grouped rows from uncovered timestamps.
+	// The layout check selects one branch before reading trend_inputs. Inlining
+	// that input avoids buffering it separately from bucket_counts.
 	return `bucket_layout AS MATERIALIZED (
 		SELECT NOT EXISTS (
 			SELECT FROM clean_days
