@@ -129,6 +129,10 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "domains/reconciliation/report_integration_test.go",
 		guard: reconciliationFixtureGuardProblems,
 	},
+	"REQUEST_METRICS_TEST_DSN": {
+		path:  "internal/metricsstore/projection_integration_test.go",
+		guard: requestMetricsFixtureGuardProblems,
+	},
 	// ★★ 2026-11-23（合并轮六 · 代上游登记）：★ maas 计费幂等真库腿
 	// （maas/charge_idempotency_realdb_test.go，★ 上游 aac6602ab 带进来）。
 	// ★ 守卫形态与 maasBills 同款（current_database() 的 `_test` 后缀）⇒
@@ -271,10 +275,26 @@ func reconciliationFixtureGuardProblems(body string) []string {
 	return problems
 }
 
+// requestMetricsFixtureGuardProblems checks that the projection test only writes to an empty fixture.
+func requestMetricsFixtureGuardProblems(body string) []string {
+	var problems []string
+	if !strings.Contains(body, `HasPrefix(database, "request_metrics_fixture_")`) {
+		problems = append(problems, "destructive fixture-name-prefix guard")
+	}
+	if !strings.Contains(body, `tables != 0`) {
+		problems = append(problems, "empty-database guard")
+	}
+	if !strings.Contains(body, `t.Fatalf("expected an empty owned fixture`) {
+		problems = append(problems, "guard fails loudly instead of skipping")
+	}
+	return problems
+}
+
 // reconciliationInstalledFixtureGuardProblems 断言「安装态 schema」腿的自守卫仍然有牙
 // （★ 形态与 reconciliationFixtureGuardProblems **不同**：★ 它要求库名**同时**具备
-//   前缀 `reconciliation_` 与后缀 `_test`，★ 且**不**要求 public 表数为 0
-//   ——★ 因为它要读的是【已安装】的 schema，不是空库 ⇒ ⇒ 共用一把尺会判错形态）。
+//
+//	前缀 `reconciliation_` 与后缀 `_test`，★ 且**不**要求 public 表数为 0
+//	——★ 因为它要读的是【已安装】的 schema，不是空库 ⇒ ⇒ 共用一把尺会判错形态）。
 func reconciliationInstalledFixtureGuardProblems(body string) []string {
 	var problems []string
 	require := func(ok bool, property string) {
@@ -290,7 +310,8 @@ func reconciliationInstalledFixtureGuardProblems(body string) []string {
 
 // reconciliationTransportFixtureGuardProblems 断言 transport 腿的自守卫仍然有牙
 // （★ 形态：库名前缀 `reconciliation_transport_fixture_` 且 public 表数必须为 0
-//   ——★ 它要在空库里建 canonical 迁移 ⇒ 又与前两把尺都不同 ⇒ 各用各的尺）。
+//
+//	——★ 它要在空库里建 canonical 迁移 ⇒ 又与前两把尺都不同 ⇒ 各用各的尺）。
 func reconciliationTransportFixtureGuardProblems(body string) []string {
 	var problems []string
 	require := func(ok bool, property string) {

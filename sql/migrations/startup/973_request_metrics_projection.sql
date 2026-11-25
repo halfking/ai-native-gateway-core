@@ -1,7 +1,9 @@
 \set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
-SET LOCAL statement_timeout = '2min';
+-- The two indexes and the identity constraint can scan existing request_metrics partitions.
+-- Keep lock acquisition bounded independently of that scan.
+SET LOCAL statement_timeout = '10min';
 
 ALTER TABLE public.request_metrics
     ADD COLUMN IF NOT EXISTS raw_model_name text,
