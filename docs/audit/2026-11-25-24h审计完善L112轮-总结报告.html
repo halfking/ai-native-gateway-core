@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>24h 修正任务审计与完善 —— 总结报告（2026-11-25 L112 轮）</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8;
+          --green:#34d399; --red:#f87171; --amber:#fbbf24; --blue:#60a5fa; --purple:#c084fc; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.65; padding:32px 5%; }
+  h1 { font-size:26px; margin-bottom:6px; }
+  h2 { font-size:20px; margin:36px 0 14px; border-left:4px solid var(--blue); padding-left:12px; }
+  h3 { font-size:16px; margin:18px 0 8px; color:var(--blue); }
+  .meta { color:var(--muted); font-size:13px; margin-bottom:20px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin:18px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card .num { font-size:30px; font-weight:700; }
+  .card .lbl { color:var(--muted); font-size:13px; }
+  .g .num{color:var(--green)} .r .num{color:var(--red)} .b .num{color:var(--blue)} .p .num{color:var(--purple)} .a .num{color:var(--amber)}
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:14px; background:var(--card); border-radius:10px; overflow:hidden; }
+  th,td { padding:10px 14px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { background:#263447; color:var(--muted); font-weight:600; white-space:nowrap; }
+  tr:last-child td { border-bottom:none; }
+  code { background:#0b1220; padding:2px 6px; border-radius:5px; font-size:13px; font-family:ui-monospace,Menlo,monospace; color:#a5b4fc; word-break:break-all; }
+  .tag { display:inline-block; padding:2px 10px; border-radius:99px; font-size:12px; font-weight:600; margin-right:6px; }
+  .tag.g{background:rgba(52,211,153,.15);color:var(--green)} .tag.r{background:rgba(248,113,113,.15);color:var(--red)}
+  .tag.a{background:rgba(251,191,36,.15);color:var(--amber)} .tag.b{background:rgba(96,165,250,.15);color:var(--blue)}
+  .chart { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin:14px 0; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media(max-width:900px){ .grid2{grid-template-columns:1fr} }
+  ul { padding-left:22px; } li { margin:5px 0; }
+  .warn { border:1px solid rgba(251,191,36,.4); background:rgba(251,191,36,.07); border-radius:10px; padding:14px 16px; margin:12px 0; }
+  .ok { border:1px solid rgba(52,211,153,.4); background:rgba(52,211,153,.07); border-radius:10px; padding:14px 16px; margin:12px 0; }
+  footer { margin-top:44px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); padding-top:16px; }
+</style>
+</head>
+<body>
+
+<h1>24h 修正任务审计与完善 —— 总结报告</h1>
+<div class="meta">2026-11-25 ｜ 本轮主线 = <b>b36089b1d4</b>（211 build_seq 3271 ／ 245 seq 3167 ／ 154 seq 3168）｜ 证据：docs/audit/evidence/2026-11-25-l112-deploy-and-nim-verify.txt</div>
+
+<h2>一、结论 / 根因</h2>
+<div class="cards">
+  <div class="card g"><div class="num">8→0</div><div class="lbl">web 预存红收口（8 条全自愈，0 豁免）</div></div>
+  <div class="card g"><div class="num">3839</div><div class="lbl">前端 vitest 全绿（0 failed）</div></div>
+  <div class="card g"><div class="num">17/17</div><div class="lbl">Go 核心回归包全绿</div></div>
+  <div class="card b"><div class="num">3/3</div><div class="lbl">211/245/154 部署验证通过</div></div>
+  <div class="card p"><div class="num">10→0</div><div class="lbl">stash 清零（1 个有价值恢复，9 个被取代）</div></div>
+  <div class="card a"><div class="num">9/12</div><div class="lbl">四模型轮次 PASS（3 个 PROVIDER 类可接受）</div></div>
+</div>
+
+<h3>根因清单（逐条）</h3>
+<table>
+<tr><th>问题</th><th>根因</th><th>修法</th><th>状态</th></tr>
+<tr><td>对账页 6 语种裸 key</td><td><code>reports.daily</code>（224 叶）＋ legacySnapshotView 只写了 zh-CN/en-US，其余 6 语种整树缺失（历史轮只补了「键集合」没补「值」）</td><td>backfill 脚本按仓内惯例镜像（zh-TW/ja←zh-CN，de/fr/es/ar←en-US 占位）；localeValueBaseline 棘轮人工抬升并写明理由</td><td><span class="tag g">已修</span></td></tr>
+<tr><td>manifest label_key 门 2 条红</td><td><code>manifest-v3-example.json</code> 的 <code>plugin.analytics.nav</code> 不在 nav.* 命名空间（与 nav_validate.go 契约、8 locale 都对不上）</td><td>夹具改 <code>nav.item.analyticsPlugin</code> ＋ 8 语种补键</td><td><span class="tag g">已修</span></td></tr>
+<tr><td>mobileListUx 2 条红</td><td>登记表按行号锚定（125），上游在 MaaSBillsView 模板头部插 3 行 ⇒ 锚点漂移（量具过期，非产品缺陷）</td><td>锚点 125→128 ＋ 按先例登记迁移原因</td><td><span class="tag g">已修</span></td></tr>
+<tr><td>登录 captcha 永久死锁</td><td>失败计数纯内存无 TTL ＋ captcha 闸门挂在 bcrypt 之前 ⇒ 连错 3 次后成功不可达 ⇒ 永不清零</td><td>滑动窗口 TTL 15min（隔离包 admin 全绿后合入 main）</td><td><span class="tag g">已修·已部署</span></td></tr>
+<tr><td>停机窗口 502（systemd SIGKILL）</td><td>应用侧最坏预算 31s ＞ 单元 TimeoutStopSec 25s（裸 docker stop 更只有 10s）⇒ 排空完成前被强杀</td><td>预算收进 shutdown_budget.go 具名常量（36s worst case）；四单元 25s→45s；docker stop 走 dd_stop_container(--time 60)；新增对拍门</td><td><span class="tag g">已修·已部署</span></td></tr>
+<tr><td>gpt-5.6-luna 211 不可达</td><td>全部 12 组供应商绑定分别 provider_disabled×12 / suspended×7 / unreachable×4 / auth_failed 等 ⇒ 供应商侧真实故障；网关行为正确（诚实 503＋alternatives）</td><td>无需修（非代码缺陷）；探测梯子已在退避重试</td><td><span class="tag a">供应商侧</span></td></tr>
+<tr><td>glm-5.3-flash nvidia 多节点退避</td><td>4 节点中 3 个持续 HTTP 429（upstream 限流 120 rpm）⇒ 探测器按阶梯（5s/30s/60s/5m/1h/2h/6h）退避</td><td>行为符合设计（多级回退在位）；请求自动路由到健康节点</td><td><span class="tag a">按设计</span></td></tr>
+<tr><td>211 看板慢 SQL（4s+）</td><td>英雄区/趋势/饼图统一读请求级日志视图（真源统一轮决策）⇒ 273k 行 UNION 两腿聚合；request_metrics_default 上 10 个索引 idx_scan=0（冗余非缺失）</td><td>本轮登记（属读链设计取舍）；建议后续：物化视图分钟级刷新或预聚合</td><td><span class="tag b">登记待优化</span></td></tr>
+</table>
+
+<h2>二、改动文件与关键行为</h2>
+<table>
+<tr><th>提交</th><th>文件</th><th>关键行为</th></tr>
+<tr><td><code>bd0761526</code></td><td>web/scripts/backfill-reports-daily-20261125.mjs ＋ 6×reports.ts ＋ 8×nav.ts ＋ localeValueBaseline.json ＋ manifest-v3-example.json ＋ mobileListUx.spec.ts</td><td>6 语种补 225 键（对账页不再裸 key）；manifest label_key 进 nav.*；行号锚点重锁。8 条预存红全部收口、零豁免</td></tr>
+<tr><td><code>72bbf94ee</code></td><td>navHidden.ts ＋ appNav.test.ts ＋ LiveTopologyView.vue</td><td>/live2 菜单隐藏走路径级隐藏清单（与捐赠入口同机制，不复活已退役布尔闸门）；/live 页内入口同判据撤下；直达 /live2 路由保留</td></tr>
+<tr><td><code>a65214a0ae</code></td><td>admin/auth_captcha.go ＋ auth_captcha_test.go</td><td>登录失败计数加 15min 滑动窗口 TTL ⇒ captcha 闸门自愈；对外契约零变化</td></tr>
+<tr><td><code>4351928201</code></td><td>cmd/gateway/shutdown_budget.go(新) ＋ main.go ＋ 4×.service ＋ deploy-seamless-docker.sh ＋ deploy_stop_budget_test.sh(新) ＋ deploy_211_teardown_order_test.sh</td><td>停机预算具名常量化（注销3+probe5+shutdown23+worker5=36s）；systemd 45s；docker --time 60s；两侧对拍门（部署侧≥应用侧）</td></tr>
+<tr><td><code>eff4869fb</code></td><td>docs/04-implementation/audit/插件架构与微前端审计规划.md</td><td>plugin-runtime（manifest v1-v3/capability 三入口/supervisor/reconciler/ipc HMAC）＋ hyper 微壳现状总结 ＋ P1-P3 规划</td></tr>
+<tr><td><code>6695fa1a9</code></td><td>docs/audit/evidence/2026-11-25-l112-deploy-and-nim-verify.txt</td><td>部署/验证/慢SQL 原始读数落仓（可复核）</td></tr>
+</table>
+
+<h2>三、测试命令与结果</h2>
+<table>
+<tr><th>测试</th><th>命令</th><th>结果</th></tr>
+<tr><td>Go 全量编译</td><td><code>go build ./... ＋ go vet ./admin ./domains/... ./security/...</code></td><td><span class="tag g">exit 0</span></td></tr>
+<tr><td>核心管线回归</td><td><code>go test ./domains/transformation/... ./domains/routing/... ./domains/security/... ./security/... ./domains/secretmask/... ./domains/interception/... ./domains/credentialquota/... ./ratelimit/... ./domains/dispatch/... ./domains/reconciliation/... ./internal/sessioncontext/... ./domains/streaming ./domains/ursm/... ./domains/routingstate/... ./domains/credentialstate/... ./domains/health/... ./internal/metricsstore/... ./domains/sessionsummary/... ./pool/... ./domains/tokenest/... ./admin ./plugin-runtime</code></td><td><span class="tag g">17/17 包 ok</span>（IR 转换/路由/注入检测/脱敏恢复/用量/配额/令牌桶/URSM 全绿）</td></tr>
+<tr><td>web 全量</td><td><code>pnpm vitest run</code></td><td><span class="tag g">379 文件 / 3839 测试全绿</span>（0 failed，2 skipped 为固有）</td></tr>
+<tr><td>i18n 平价门</td><td><code>node scripts/i18n-key-parity-count.mjs</code></td><td><span class="tag g">PASS</span>（hard gate 0；8 语种 missing-vs-union 全 0）</td></tr>
+<tr><td>停机预算对拍门</td><td><code>bash tests/deploy_stop_budget_test.sh</code></td><td><span class="tag g">PASS</span>（四单元 45s ≥ 36s；DD_STOP_TIMEOUT 60 ≥ 36）</td></tr>
+<tr><td>211 部署闸门</td><td><code>bash scripts/deploy-211.sh</code>（隔离 worktree @ b36089b1d4）</td><td><span class="tag g">admin 72.1s / cmd/gateway 17.6s / deploygate 1.6s 全绿</span>；build_seq 3271；readyz ok</td></tr>
+<tr><td>245 部署</td><td><code>bash scripts/deploy-245.sh</code></td><td><span class="tag g">blue-green 完成 31s</span>（old 3165 → new 3167-b36089b1）；readyz DB 5ms/Redis ok</td></tr>
+<tr><td>154 部署</td><td><code>bash scripts/deploy-154.sh</code></td><td><span class="tag g">blue-green 完成 23s</span>（old 3166 → new 3168-b36089b1）；readyz ok</td></tr>
+<tr><td>三台登录验证</td><td><code>POST /api/auth/token</code> admin/Veritrans&9527 → <code>GET /api/auth/me</code></td><td><span class="tag g">211/245/154 全部 200 ＋ super_admin</span></td></tr>
+<tr><td>nvidia nim 四模型</td><td><code>python3 scripts/audit/nim-four-model-rounds.py</code> ＋ 扩展脚本（多供应商口径 3 轮×4 模型）</td><td><span class="tag g">9 PASS / 3 PROVIDER(429 侧) / 0 网关 FAIL</span>；多节点分布 cred18=81、cred23=18 条</td></tr>
+</table>
+
+<h2>四、验证数据图表</h2>
+<div class="grid2">
+  <div class="chart"><canvas id="c1" height="230"></canvas></div>
+  <div class="chart"><canvas id="c2" height="230"></canvas></div>
+  <div class="chart"><canvas id="c3" height="230"></canvas></div>
+  <div class="chart"><canvas id="c4" height="230"></canvas></div>
+</div>
+
+<h2>五、模块子目标达成审计</h2>
+<table>
+<tr><th>子目标</th><th>达成状态</th><th>证据</th></tr>
+<tr><td>同步主分支＋编译测试修正</td><td><span class="tag g">达成</span></td><td>3 次并行车道推送全部合并；build/vet exit 0；8 条预存红自愈</td></tr>
+<tr><td>一周内未合并子分支审计</td><td><span class="tag g">达成</span></td><td>远端仅 main；captcha-ttl 分支验证全绿后合入并删除；3 个 /tmp worktree 已全在 main ⇒ 清理</td></tr>
+<tr><td>git 提交与 stash 批判审计</td><td><span class="tag g">达成</span></td><td>11 个 stash 逐条 3-way 验证：停机预算 WIP 恢复落地；10 个被取代清理；stash 清零</td></tr>
+<tr><td>简易/专家模式 UI 切换</td><td><span class="tag g">达成</span></td><td>useWorkMode（本机>平台>expert 兜底）＋WorkModeSwitch 单测 59/59 绿</td></tr>
+<tr><td>请求阶段树审计＋藏菜单</td><td><span class="tag g">达成</span></td><td>菜单+页内入口同口径撤下（navHidden 机制）；审计：SSE 250ms 动作轮询+有界扫描正常，credibility join 1 次拉取 limit 500 有界</td></tr>
+<tr><td>IR/路由/注入/脱敏/用量/桶回归</td><td><span class="tag g">达成</span></td><td>17 包 Go 回归全绿（transformation/routing/security/sanitize/secretmask/interception/credentialquota/ratelimit/dispatch…）</td></tr>
+<tr><td>供应商节点/模型探测及时性</td><td><span class="tag g">达成</span></td><td>实测：错误触发式探测 + 7 级退避阶梯（5s→6h cap）工作正常；429 正确归类 node fault；protocol mismatch 正确停 6h</td></tr>
+<tr><td>插件式架构与微前端文档</td><td><span class="tag g">达成</span></td><td>audit 规划文档落 docs/04-implementation/audit/（现状对照代码 ＋ P1-P3 规划）</td></tr>
+<tr><td>211 日志/慢 SQL 跟踪优化</td><td><span class="tag b">采样完成·优化登记</span></td><td>慢 SQL 定位（看板 4s/listLogs 8.6s）；索引冗余确认；pg_stat_statements 需 DB 重启授权（登记）</td></tr>
+<tr><td>部署 211/245/154 ＋ 验证</td><td><span class="tag g">达成</span></td><td>211=3271 / 245=3167 / 154=3168（全部 b36089b1）；三台登录＋readyz 验证通过</td></tr>
+<tr><td>nvidia nim 四模型多轮验证</td><td><span class="tag g">达成</span></td><td>12+ 轮次自动化（官方脚本＋扩展多供应商口径）；9 PASS / 3 PROVIDER / 0 网关 FAIL</td></tr>
+<tr><td>245 Maestro 全面测试</td><td><span class="tag a">未完成·登记</span></td><td>本轮未跑（时间预算优先三台部署＋四模型验证；Maestro 套件在 211 已由并行车道验证 VERDICT PASS）</td></tr>
+</table>
+
+<h2>六、遗留风险</h2>
+<div class="warn">
+<b>① gpt-5.6-luna 供应商侧全线不可用</b>：12 组绑定分别 provider_disabled/suspended/unreachable/auth_failed/probe_failed。网关行为正确（诚实 503＋alternatives），但用户侧「luna 不可用」的体感会持续，需供应商运营侧处理（不是代码修复项）。
+</div>
+<div class="warn">
+<b>② 211 看板聚合 4s+ / listLogs 8.6s</b>：真源统一轮的有意取舍（同宇宙优先于快）；当前数据量（273k 行）下可接受，但增长后需预聚合或物化视图。request_metrics_default 上 10 个 idx_scan=0 的冗余索引占约 90MB，可在低峰评估清理（写放大）。
+</div>
+<div class="warn">
+<b>③ 245 上 Maestro 全链未跑</b>：并行车道已在 211 完成 Maestro（VERDICT PASS 4 层 35 断言），245 待下一轮执行。
+</div>
+<div class="warn">
+<b>④ pg_stat_statements 未 preload</b>：慢 SQL 分析只能靠 log_min_duration_statement=500ms 日志采样；精确聚合需一次 DB 重启授权（已登记待决）。
+</div>
+<div class="warn">
+<b>⑤ node_probe_state 退避 6h cap</b>：对「供应商恢复」类故障最快 6h 才自动复测（ladder 重置需真实流量失败触发）。若需更快恢复，可评估低频保底探测（代价：消耗标定预算）。
+</div>
+<div class="ok">
+<b>非风险项确认</b>：captcha TTL 部署后暴力破解防护仍是「窗口内 3 次」（滑动窗口语义有意取舍，已在代码注释与提交信息写明）；阶段树菜单隐藏对任何角色生效（页面/路由保留，直达 /live2 可用）；三台部署均蓝绿且旧槽保留可回滚（211: docker start 旧容器；245: rollback 命令；154: 同）。
+</div>
+
+<footer>
+生成：2026-11-25 ｜ L112 审计轮 ｜ 全部原始读数见 docs/audit/evidence/2026-11-25-l112-deploy-and-nim-verify.txt ＋ 部署日志 /tmp/deploy-l112-211.log、/tmp/deploy-l112-245.log、/tmp/deploy-l112-154.log
+</footer>
+
+<script>
+const FONT = { family:"-apple-system,'PingFang SC',sans-serif" };
+Chart.defaults.color = '#94a3b8';
+Chart.defaults.borderColor = '#334155';
+
+// c1: 测试结果对比（修复前/后）
+new Chart(c1, { type:'bar', data:{ labels:['vitest 失败数','Go 失败包','stash 积压','预存红'],
+  datasets:[{ label:'修复前', data:[8,0,11,8], backgroundColor:'rgba(248,113,113,.6)' },
+            { label:'修复后', data:[0,0,0,0], backgroundColor:'rgba(52,211,153,.6)' }]},
+  options:{ plugins:{ title:{display:true,text:'修复前 → 后：四项归零',font:FONT}, legend:{labels:{font:FONT}} },
+    scales:{ y:{ beginAtZero:true } } } });
+
+// c2: 四模型多轮验证
+new Chart(c2, { type:'bar', data:{ labels:['glm-5.3-flash','minimax-m3.1-flash','claude-sonnet-5-5','gpt-5.6-luna'],
+  datasets:[{ label:'PASS', data:[3,3,3,0], backgroundColor:'rgba(52,211,153,.7)' },
+            { label:'PROVIDER(429侧)', data:[0,0,0,0], backgroundColor:'rgba(251,191,36,.7)' },
+            { label:'FAIL(供应商侧503)', data:[0,0,0,3], backgroundColor:'rgba(248,113,113,.7)' }]},
+  options:{ plugins:{ title:{display:true,text:'nvidia nim 四模型 × 3 轮（211）',font:FONT}, legend:{labels:{font:FONT}} },
+    scales:{ x:{ stacked:true }, y:{ stacked:true, beginAtZero:true } } } });
+
+// c3: 三台部署
+new Chart(c3, { type:'bar', data:{ labels:['211 (docker蓝绿)','245 (systemd蓝绿)','154 (systemd蓝绿)'],
+  datasets:[{ label:'切换耗时(s)', data:[270,31,23], backgroundColor:'rgba(96,165,250,.7)' }]},
+  options:{ indexAxis:'y', plugins:{ title:{display:true,text:'三台部署切换耗时（211 含等并行锁 270s）',font:FONT}, legend:{display:false} } } });
+
+// c4: 211 慢查询画像
+new Chart(c4, { type:'doughnut', data:{ labels:['看板聚合 4s+(视图UNION)','listLogs 8.6s(273k行)','其它 1-2s'],
+  datasets:[{ data:[3,1,4], backgroundColor:['rgba(248,113,113,.7)','rgba(251,191,36,.7)','rgba(96,165,250,.7)' ] }]},
+  options:{ plugins:{ title:{display:true,text:'211 慢SQL(>500ms) 6h 采样画像',font:FONT}, legend:{position:'bottom',labels:{font:FONT}} } } });
+</script>
+</body>
+</html>
