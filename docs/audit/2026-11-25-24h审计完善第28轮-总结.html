@@ -80,6 +80,7 @@
       <tr><td>8</td><td>文档软链、4 个 README、W3 集成指南</td><td>悬空软链重定向；域数 69⇒83；集成指南加现状声明</td><td><span class="pill p-ok">已核</span></td></tr>
       <tr><td>9</td><td><code>verify-211-captcha-ttl.sh</code>、<code>pipefail_race_ledger.tsv</code>、<code>cjk_var_sites.tsv</code>、<code>structured-registry-census.json</code>、<code>dashboard_session_summaries_window_test.go</code>、示例清单 <code>manifest-v3-example.json</code></td><td>代上游收口主干 6 条红（纯上游树 <code>6c18bf92c</code> 同条件对照同红）：修一个真站点、裁决 6 个 pipefail 候选、登记 1 个夹具、示例键改对、时间窗门扩展</td><td><span class="pill p-ok">5 组门绿</span> 变异 2/2</td></tr>
       <tr><td>10</td><td><code>bg/node_probe_quota_verdict_test.go</code></td><td>修一条既有偶发假红：两次各取时钟的时长被要求严格相等（30 次 2 败、各差 1 纳秒）⇒ 容许 1ms 抖动</td><td><span class="pill p-ok">200 次 0 败</span> 变异仍红</td></tr>
+      <tr><td>11</td><td><code>pipefail_race_ledger.tsv</code>、范围收窄候选清单</td><td>上游停机预算修复改了 shell 没同步两份生成器台账 ⇒ 重生成；2 个新候选点按实测（19 B／41 B ≤ PIPE_BUF）裁决</td><td><span class="pill p-ok">pipefail 全族绿</span></td></tr>
     </table>
   </div>
 
