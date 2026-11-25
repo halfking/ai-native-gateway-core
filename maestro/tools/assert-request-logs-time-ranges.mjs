@@ -161,24 +161,26 @@ const PAGE_HELPERS = `(() => {
       }
       return { status: r.status, ms, body }
     },
-    // 档位 ⇒ 期望窗口（浏览器本地时区的日历日；与页面 timeRange() 同口径）。
+    // 档位 ⇒ 期望窗口（浏览器本地时区的日历日）。
+    // ★ 口径（2026-11-25「查询窗口 ≡ 显示窗口」轮）：页头每个档位的查询窗口都等于
+    //   选择器显示的窗口，日历型档位一律到当天**结束**（23:59:59.999）——
+    //   「今天 / 本月」走页面预设分支；其余走 custom 分支，选择器的日界标记
+    //   「23:59」由 utils/requestLogsWindow.ts 补齐到 23:59:59.999。
     windows() {
       const now = new Date()
       const at = (y, m, d, h, mi, s, ms) => new Date(y, m, d, h, mi, s, ms)
       const dayStart = (off) => at(now.getFullYear(), now.getMonth(), now.getDate() - off, 0, 0, 0, 0)
-      // 面板档位的 end 是 'YYYY-MM-DD 23:59'（分钟精度 ⇒ 23:59:00.000）；
-      // 「今天」走页面自己的 TimePreset 分支（23:59:59.999）。
-      const endOf = (d, tail) => at(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, tail ? 59 : 0, tail ? 999 : 0)
+      const endOf = (d) => at(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999)
       const w = {
-        today: { from: iso(dayStart(0)), to: iso(endOf(dayStart(0), true)) },
-        yesterday: { from: iso(dayStart(1)), to: iso(endOf(dayStart(1), false)) },
-        last7d: { from: iso(dayStart(6)), to: iso(endOf(dayStart(0), false)) },
-        last14d: { from: iso(dayStart(13)), to: iso(endOf(dayStart(0), false)) },
-        last30d: { from: iso(dayStart(29)), to: iso(endOf(dayStart(0), false)) },
-        thisMonth: { from: iso(at(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0)), to: iso(endOf(dayStart(0), false)) },
+        today: { from: iso(dayStart(0)), to: iso(endOf(dayStart(0))) },
+        yesterday: { from: iso(dayStart(1)), to: iso(endOf(dayStart(1))) },
+        last7d: { from: iso(dayStart(6)), to: iso(endOf(dayStart(0))) },
+        last14d: { from: iso(dayStart(13)), to: iso(endOf(dayStart(0))) },
+        last30d: { from: iso(dayStart(29)), to: iso(endOf(dayStart(0))) },
+        thisMonth: { from: iso(at(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0)), to: iso(endOf(dayStart(0))) },
         lastMonth: {
           from: iso(at(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0)),
-          to: iso(endOf(at(now.getFullYear(), now.getMonth(), 0, 0, 0, 0, 0), false)),
+          to: iso(endOf(at(now.getFullYear(), now.getMonth(), 0, 0, 0, 0, 0))),
         },
       }
       return w
@@ -240,6 +242,18 @@ async function installHelpers() {
 }
 
 const ui = () => js('window.__rlq.ui()')
+/**
+ * 触发器范围文案首尾相差的天数。文案形态（shortRangeLabel）：同年 'MM/DD HH:mm – MM/DD HH:mm'，
+ * 跨年带年份 'YYYY/MM/DD HH:mm – …'；无年份的按当年解释（跨年且不带年份时不成立 ⇒ NaN ⇒ 判红）。
+ */
+function rangeTextSpanDays(text) {
+  const m = /(?:(\d{4})\/)?(\d{2})\/(\d{2}) (\d{2}):(\d{2})\s*[^\d]+\s*(?:(\d{4})\/)?(\d{2})\/(\d{2}) (\d{2}):(\d{2})/.exec(text || '')
+  if (!m) return Number.NaN
+  const thisYear = new Date().getFullYear()
+  const a = new Date(+(m[1] || thisYear), +m[2] - 1, +m[3], +m[4], +m[5]).getTime()
+  const b = new Date(+(m[6] || thisYear), +m[7] - 1, +m[8], +m[9], +m[10]).getTime()
+  return Math.abs(b - a) / 86400000
+}
 const api = (params) => js(`window.__rlq.api(${JSON.stringify(params)})`)
 const fetchLog = () => js('window.__rlqF.log.map((e) => ({ id: e.id, url: e.url, state: e.state, status: e.status, ms: e.ms, aborted: e.aborted, error: e.error, count: e.body ? e.body.count : null, items: e.body && e.body.items ? e.body.items.length : null, window: e.body ? { start: e.body.query_window_start, end: e.body.query_window_end } : null, clamped: e.body ? "window_clamped" in e.body : null, lane: e.body ? e.body.traffic_lane : null }))')
 const fetchLogLen = () => js('window.__rlqF.log.length')
@@ -346,6 +360,20 @@ await waitSettled(150000)
 const uA = await ui()
 check('A6 加载完成后加载块与进度条撤掉', !uA.loadingBlock && !uA.loadingBar)
 check('A7 默认档（近 24 小时）加载完成且无报错', uA.errorBanner.length === 0 && (!uA.empty || uA.total === 0), `rows=${uA.rows} total=${uA.total}`)
+// A8：默认档「近 24 小时」在选择器上显示的就是这个档（修前显示成「自定义 ｜ 24 天」）。
+//    语言无关的判法：拿触发器上的档名与面板里 last24h 档位的文字逐字比。
+{
+  await js(`document.querySelector('[data-testid="kx-dr-trigger"]').click(); true`)
+  await waitFor(cdp, sessionId, `!!document.querySelector('[data-testid="kx-dr-panel"] [data-testid="kx-dr-preset-last24h"]')`, 10000, 100)
+  const chip24 = await js(`document.querySelector('[data-testid="kx-dr-panel"] [data-testid="kx-dr-preset-last24h"]').textContent.trim()`)
+  const range24 = await js(`(() => { const r = document.querySelector('.kx-dr-trigger__range'); return r ? r.textContent.trim() : '' })()`)
+  const labelDefault = uA.preset
+  // 关掉面板（点触发器）
+  await js(`document.querySelector('[data-testid="kx-dr-trigger"]').click(); true`)
+  check('A8 默认档在选择器上显示为「近 24 小时」档（不是「自定义 ｜ 24 天」）', labelDefault === chip24, `触发器=${labelDefault} / 档位=${chip24} / 范围=${range24}`)
+  const spanDays = rangeTextSpanDays(range24)
+  check('A9 默认档显示的范围跨度 ≈ 1 天（修前是 24 天）', Number.isFinite(spanDays) && spanDays > 0.9 && spanDays < 1.1, `范围=${range24}（${Number.isFinite(spanDays) ? spanDays.toFixed(2) + ' 天' : '解析不出'}）`)
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // B. 八个档位逐个切换：请求窗口 == 档位窗口；响应窗口 == 请求窗口；界面 == 响应
@@ -544,15 +572,24 @@ function responseOk(r, win, status, probe) {
     r.ms < budget
   )
 }
+// ★ 活流量漂移容差：窗口结束于「今天结束」的查询是**开放**的——两次请求之间会有新
+//   请求落库 ⇒ 第 2 页请求的 count 比第 1 页略大（211 实测几秒内 +1 ~ +22）。
+//   逐字相等会把活流量判成缺陷（假红）。容差 = max(100, 0.1%)：结构性错误（口径漏了
+//   一整类状态）是成千上万的差距，容差不掩盖它。
+function driftOk(a, b) {
+  return Math.abs((a || 0) - (b || 0)) <= Math.max(100, Math.ceil(Math.max(a || 0, b || 0) * 0.001))
+}
 function page2Ok(r1, r2, win) {
   const i1 = (r1.body && r1.body.items) || []
   const i2 = (r2.body && r2.body.items) || []
-  const count = r1.body && r1.body.count
+  // 第 2 页该有几行，以**第 2 页自己那次请求**的 count 为准（漂移只增不减）。
+  const count = r2.body ? r2.body.count : undefined
   return (
     r1.status === 200 &&
     r2.status === 200 &&
     r2.body &&
-    r2.body.count === count &&
+    r2.body.count >= r1.body.count &&
+    driftOk(r1.body.count, r2.body.count) &&
     Date.parse(r2.body.query_window_start) === Date.parse(win.from) &&
     Date.parse(r2.body.query_window_end) === Date.parse(win.to) &&
     i2.length === Math.min(50, Math.max(0, count - 50)) &&
@@ -591,8 +628,10 @@ for (let round = 1; round <= MATRIX_ROUNDS; round++) {
       if (!page2Ok(page1, page2, win)) {
         details.push(`分页: p1=${(page1.body.items || []).length} p2=${(page2.body.items || []).length} count=${page1.body.count}/${page2.body.count}`)
       }
-      // 跨条件不变式：各状态计数之和 == 全量计数（口径完备、不重不漏）
-      const sumOk = STATUSES.filter((k) => k).reduce((acc, k) => acc + byStatus[k], 0) === byStatus.all
+      // 跨条件不变式：各状态计数之和 == 全量计数（口径完备、不重不漏；带活流量漂移容差）
+      const statusSum = STATUSES.filter((k) => k).reduce((acc, k) => acc + byStatus[k], 0)
+      const sumOk = driftOk(statusSum, byStatus.all)
+      if (!sumOk) details.push(`状态计数之和 ${statusSum} ≠ 全量 ${byStatus.all}`)
       maxMs[probe ? 'probe' : 'biz'] = Math.max(maxMs[probe ? 'probe' : 'biz'], slowest)
       counts[probe][id] = byStatus.all
       check(
