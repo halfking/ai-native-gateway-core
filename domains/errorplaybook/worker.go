@@ -27,10 +27,11 @@ type ErrorSource interface {
 //	★ 复用 bg.SpawnLoop（panic 收口 + 指数退避监督）——PI 分析 worker 同款。
 //	★ 配置每轮从 cfgFn 重读（settings 热加载即时生效）。
 type Worker struct {
-	engine   *Engine
-	source   ErrorSource
-	cfgFn    func() Config
-	interval time.Duration
+	engine      *Engine
+	source      ErrorSource
+	cfgFn       func() Config
+	interval    time.Duration
+	remediation *Remediation
 
 	// watermark 初始 = 启动前 15 分钟（重启后有一个小回看窗口，不丢事件）。
 	watermark time.Time
@@ -54,6 +55,12 @@ func NewWorker(engine *Engine, source ErrorSource, cfgFn func() Config, interval
 		interval:  interval,
 		watermark: time.Now().Add(-15 * time.Minute),
 	}
+}
+
+// WithRemediation configures the optional templates before the worker starts.
+func (w *Worker) WithRemediation(pilot *Remediation) *Worker {
+	w.remediation = pilot
+	return w
 }
 
 // Start 启动循环（幂等：worker 由装配侧调用一次）。
@@ -109,6 +116,9 @@ func (w *Worker) runOnce(ctx context.Context) error {
 
 	now := w.engine.nowFn()
 	until := now.Add(-2 * time.Second) // 避开在途写入的边界行
+	if w.remediation != nil {
+		defer w.remediation.run(ctx, until, w.interval)
+	}
 	//	★ 2026-11-22 审计轮修正（P1-4）：水位线改由**已处理**分组自行推进，
 	//	故这里不再采用 FetchWindow 返回的 maxTS（它覆盖全部 20 个分组 ⇒
 	//	会把「本轮被 cap 挡下、未处理」的分组也一并消费掉 ⇒ 静默永久丢弃）。

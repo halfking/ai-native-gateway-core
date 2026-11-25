@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lib/pq"
 	"strings"
 	"time"
 )
@@ -636,9 +637,26 @@ func (s *SQLStore) GetExecution(ctx context.Context, id int64) (Execution, error
 
 // ListExecutions 管理面执行列表。
 func (s *SQLStore) ListExecutions(ctx context.Context, entryID int64, status, errorType string, limit, offset int) ([]Execution, int, error) {
+	return s.ListVisibleExecutions(ctx, entryID, status, errorType, limit, offset, true, false)
+}
+
+// ListVisibleExecutions filters platform-only recommendations before pagination.
+func (s *SQLStore) ListVisibleExecutions(ctx context.Context, entryID int64, status, errorType string, limit, offset int, includeRecommendations, recommendationsOnly bool) ([]Execution, int, error) {
+	if recommendationsOnly && !includeRecommendations {
+		return []Execution{}, 0, nil
+	}
 	where := []string{"TRUE"}
 	args := []interface{}{}
 	pos := 1
+	if recommendationsOnly {
+		where = append(where, "executed_by = ANY($1)")
+		args = append(args, pq.Array(recommendationActors()))
+		pos++
+	} else if !includeRecommendations {
+		where = append(where, "executed_by <> ALL($1)")
+		args = append(args, pq.Array(recommendationActors()))
+		pos++
+	}
 	if entryID > 0 {
 		where = append(where, fmt.Sprintf("entry_id = $%d", pos))
 		args = append(args, entryID)
@@ -783,9 +801,15 @@ func (s *SQLStore) EntrySummary(ctx context.Context) (EntrySummaryStats, error) 
 
 // ExecutionSummary 手册侧统计（管理面 /stats）。
 func (s *SQLStore) ExecutionSummary(ctx context.Context) (ExecutionStats, error) {
+	return s.VisibleExecutionSummary(ctx, true)
+}
+
+// VisibleExecutionSummary uses the same visibility rule as ListVisibleExecutions.
+func (s *SQLStore) VisibleExecutionSummary(ctx context.Context, includeRecommendations bool) (ExecutionStats, error) {
 	out := ExecutionStats{Last24h: map[string]int64{}}
+	const visibility = `($1 OR executed_by <> ALL($2))`
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM error_playbook_executions`).Scan(&out.Total)
+		`SELECT COUNT(*) FROM error_playbook_executions WHERE `+visibility, includeRecommendations, pq.Array(recommendationActors())).Scan(&out.Total)
 	if err != nil {
 		if isNotProvisioned(err) {
 			return out, ErrNotProvisioned
@@ -794,8 +818,8 @@ func (s *SQLStore) ExecutionSummary(ctx context.Context) (ExecutionStats, error)
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT status, COUNT(*) FROM error_playbook_executions
-		WHERE created_at > NOW() - interval '24 hours'
-		GROUP BY status`)
+		WHERE created_at > NOW() - interval '24 hours' AND `+visibility+`
+		GROUP BY status`, includeRecommendations, pq.Array(recommendationActors()))
 	if err != nil {
 		return out, fmt.Errorf("summarize executions failed: %w", err)
 	}

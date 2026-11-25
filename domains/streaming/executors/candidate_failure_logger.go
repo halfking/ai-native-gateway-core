@@ -233,6 +233,7 @@ func (w *CandidateFailureWriter) buildRow(
 		}
 	}
 
+	var observedStatus bool
 	kind := errorsx.ErrorKind("")
 	if ue != nil {
 		kind = ue.Kind
@@ -240,6 +241,7 @@ func (w *CandidateFailureWriter) buildRow(
 		if ue.StatusCode > 0 {
 			sc := ue.StatusCode
 			row.UpstreamStatusCode = &sc
+			observedStatus = !ue.SyntheticStatus
 		}
 		if len(ue.Body) > 0 {
 			// Sanitize the raw upstream body BEFORE truncation so that any
@@ -266,6 +268,7 @@ func (w *CandidateFailureWriter) buildRow(
 		sc := sb.StatusCode()
 		if sc > 0 {
 			row.UpstreamStatusCode = &sc
+			observedStatus = true
 		}
 		if raw := sb.Body(); raw != "" {
 			body := string(errorsx.SanitizeErrorText([]byte(raw), 1024))
@@ -297,6 +300,12 @@ func (w *CandidateFailureWriter) buildRow(
 	retryable := errorsx.EffectiveRetryable(kind)
 	row.Retryable = &retryable
 	row.Context = recoveryContext(extraContext, projection)
+	// Only target statuses need provenance for the cooldown template.
+	const statusObserved = "upstream_http_status_observed"
+	delete(row.Context, statusObserved)
+	if observedStatus && (*row.UpstreamStatusCode == 429 || *row.UpstreamStatusCode == 502) {
+		row.Context[statusObserved] = true
+	}
 	return row
 }
 

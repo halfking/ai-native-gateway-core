@@ -1,0 +1,3 @@
+schema_version: 1
+invalid_config: compare_with_last_accepted_configuration
+unapplied_config: review_approved_configuration

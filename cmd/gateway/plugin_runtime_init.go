@@ -8,6 +8,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/remediation"
 
 	_ "github.com/kaixuan/llm-gateway-go/plugins/all"
 )
@@ -48,6 +49,9 @@ func ScanPlugins(pluginsDir string, reg *pluginruntime.Registry) ([]*pluginrunti
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "plugin %s manifest invalid: %v\n", e.Name(), err)
 			continue
+		}
+		if remediation.IsPluginID(m.PluginID) {
+			continue // the background pilot is owned by the configuration-managed controller
 		}
 		reg.SetPlugin(&pluginruntime.PluginState{
 			PluginID: m.PluginID, PluginVersion: m.PluginVersion, Status: "discovered",

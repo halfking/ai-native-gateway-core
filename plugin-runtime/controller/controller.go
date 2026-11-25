@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,7 +26,10 @@ type Options struct {
 	Registry      *root.Registry
 	Capabilities  *root.CapabilityRegistry
 	SigningPubkey string
-	Ready         func(context.Context, string, *root.Manifest) error
+	// OptionalPlugins start in the background and reconcile independently.
+	// Changes to the enabled list are applied as one configuration transaction.
+	OptionalPlugins []string
+	Ready           func(context.Context, string, *root.Manifest) error
 }
 
 // Controller owns every process, watcher, and transport it starts. A controller
@@ -38,7 +42,8 @@ type Controller struct {
 	mu             sync.RWMutex // protects the public view of actual ready manifests
 	actual         map[string]*root.Manifest
 	unhealthy      map[string]bool
-	healthFailures map[string]int // protected by opMu; observations are not desired config
+	healthFailures map[string]int    // protected by opMu; observations are not desired config
+	scope          func(string) bool // transaction scope protected by opMu
 	desired        map[string]*root.Manifest
 	disabled       map[string]bool
 	cfg            *config.Config
@@ -75,6 +80,9 @@ func Start(ctx context.Context, options Options) (*Controller, error) {
 	if err := config.NewValidator().Validate(&cfg); err != nil {
 		return nil, err
 	}
+	if err := validateEnabledPluginIDs(cfg.Plugins.Enabled); err != nil {
+		return nil, err
+	}
 	// Unix socket paths have a small platform limit; macOS's default temporary
 	// directory is often too long even before a plugin ID is appended.
 	runtimeDir, err := os.MkdirTemp("/tmp", "gateway-runtime-")
@@ -106,8 +114,13 @@ func Start(ctx context.Context, options Options) (*Controller, error) {
 	if err == nil {
 		err = c.reloader.OnReload(c.applyConfig)
 	}
+	required, optional := c.splitConfig()
 	if err == nil {
-		err = c.Reconcile(ctx)
+		var desired map[string]*root.Manifest
+		desired, err = scan(&required)
+		if err == nil {
+			err = c.transact(ctx, desired)
+		}
 	}
 	if err == nil {
 		err = c.reloader.Watch(lifeCtx, options.ConfigPath)
@@ -124,19 +137,59 @@ func Start(ctx context.Context, options Options) (*Controller, error) {
 		defer c.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		if len(optional) > 0 {
+			c.reconcileBackground(lifeCtx)
+		}
 		for {
 			select {
 			case <-lifeCtx.Done():
 				return
 			case <-ticker.C:
-				if err := c.Reconcile(lifeCtx); err != nil && lifeCtx.Err() == nil {
-					log.Printf("plugin runtime reconcile: %v", err)
-				}
+				c.reconcileBackground(lifeCtx)
 			}
 		}
 	}()
 	context.AfterFunc(lifeCtx, func() { _ = c.Close() })
 	return c, nil
+}
+
+func (c *Controller) isOptional(id string) bool {
+	return slices.Contains(c.options.OptionalPlugins, id)
+}
+
+func (c *Controller) splitConfig() (config.Config, []string) {
+	required := *c.cfg
+	required.Plugins.Enabled = nil
+	var optional []string
+	for _, id := range c.cfg.Plugins.Enabled {
+		if c.isOptional(id) {
+			optional = append(optional, id)
+		} else {
+			required.Plugins.Enabled = append(required.Plugins.Enabled, id)
+		}
+	}
+	return required, optional
+}
+
+func (c *Controller) inScope(id string) bool {
+	return c.scope == nil || c.scope(id)
+}
+
+func (c *Controller) transactScoped(ctx context.Context, desired map[string]*root.Manifest, scope func(string) bool) error {
+	c.scope = scope
+	defer func() { c.scope = nil }()
+	return c.transact(ctx, desired)
+}
+
+// ConfigRejection reports rejected bytes that still differ from accepted config.
+func (c *Controller) ConfigRejection() (config.Rejection, bool) {
+	return config.RejectionOf(c.reloader)
+}
+
+func (c *Controller) reconcileBackground(ctx context.Context) {
+	if err := c.Reconcile(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("plugin runtime reconcile: %v", err)
+	}
 }
 
 // Reload commits configuration only after its runtime transaction succeeds.
@@ -186,17 +239,50 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	desired, err := scan(c.cfg)
-	if err != nil {
-		// A rejected deployment must not prevent recovery of already accepted
-		// processes. Keep the scan error visible while reconciling their pinned
-		// bundles; on initial startup there is no accepted state to fall back to.
+	required, optional := c.splitConfig()
+	if len(optional) == 0 {
+		desired, err := scan(c.cfg)
+		if err == nil {
+			return c.transact(ctx, desired)
+		}
 		if len(c.desired) == 0 {
 			return err
 		}
 		return errors.Join(err, c.transact(ctx, cloneManifestMap(c.desired)))
 	}
-	return c.transact(ctx, desired)
+
+	// Keep the accepted desired manifest for other scopes. A failed proposal
+	// must not withdraw their readiness, advance their crash counters or
+	// roll back an unrelated upgrade completed in this cycle.
+	desired, scanErr := scan(&required)
+	if scanErr != nil {
+		desired = cloneManifestMap(c.desired)
+	} else {
+		for id, old := range c.desired {
+			if c.isOptional(id) {
+				desired[id] = old
+			}
+		}
+	}
+	err := errors.Join(scanErr, c.transactScoped(ctx, desired, func(id string) bool { return !c.isOptional(id) }))
+	for _, id := range optional {
+		if ctx.Err() != nil {
+			return errors.Join(err, ctx.Err())
+		}
+		cfg := *c.cfg
+		cfg.Plugins.Enabled = []string{id}
+		found, scanErr := scan(&cfg)
+		if scanErr != nil && c.desired[id] == nil {
+			err = errors.Join(err, scanErr)
+			continue
+		}
+		desired := cloneManifestMap(c.desired)
+		if scanErr == nil {
+			desired[id] = found[id]
+		}
+		err = errors.Join(err, scanErr, c.transactScoped(ctx, desired, func(candidate string) bool { return candidate == id }))
+	}
+	return err
 }
 
 func (c *Controller) transact(ctx context.Context, desired map[string]*root.Manifest) error {
@@ -220,7 +306,7 @@ func (c *Controller) transact(ctx context.Context, desired map[string]*root.Mani
 		// Failed and stopped processes also need identity and index cleanup
 		// when they disappear from the desired set.
 		for _, state := range c.sup.ProcessSnapshot() {
-			if desired[state.PluginID] == nil || c.disabled[state.PluginID] {
+			if c.inScope(state.PluginID) && (desired[state.PluginID] == nil || c.disabled[state.PluginID]) {
 				err = errors.Join(err, c.stop(state.PluginID))
 			}
 		}
@@ -236,7 +322,7 @@ func (c *Controller) transact(ctx context.Context, desired map[string]*root.Mani
 	// deletes or corrupts the original files. Keep each running version pinned.
 	c.mu.RLock()
 	for id, actual := range c.actual {
-		if desired := c.desired[id]; desired != nil && desired.PluginVersion == actual.PluginVersion {
+		if desired := c.desired[id]; c.inScope(id) && desired != nil && desired.PluginVersion == actual.PluginVersion {
 			c.desired[id] = actual
 		}
 	}
@@ -247,6 +333,9 @@ func (c *Controller) transact(ctx context.Context, desired map[string]*root.Mani
 func (c *Controller) restore(ctx context.Context, previous map[string]*root.Manifest) error {
 	var errs []error
 	for _, state := range c.sup.ProcessSnapshot() {
+		if !c.inScope(state.PluginID) {
+			continue
+		}
 		c.mu.RLock()
 		actual := c.actual[state.PluginID]
 		c.mu.RUnlock()
@@ -256,6 +345,9 @@ func (c *Controller) restore(ctx context.Context, previous map[string]*root.Mani
 		}
 	}
 	for id, old := range previous {
+		if !c.inScope(id) {
+			continue
+		}
 		c.mu.RLock()
 		actual := c.actual[id]
 		c.mu.RUnlock()
@@ -284,17 +376,45 @@ func cloneManifestMap(source map[string]*root.Manifest) map[string]*root.Manifes
 func (c *Controller) BaseURL(id string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	// Keep readiness and the process snapshot in the same lifecycle generation.
-	ready := c.actual[id] != nil && !c.unhealthy[id]
-	if !ready || c.ctx.Err() != nil {
-		return ""
-	}
-	for _, state := range c.sup.ProcessSnapshot() {
-		if state.PluginID == id && state.Status != "crashed" && state.Status != "stopped" && state.SocketPath != "" {
-			return "unix://" + state.SocketPath
-		}
+	if state, ok := c.readyProcess(id); ok {
+		return "unix://" + state.SocketPath
 	}
 	return ""
+}
+
+// CapabilityEndpoint identifies one ready process and its accepted manifest version.
+type CapabilityEndpoint struct {
+	SocketPath string
+	Version    string
+	PID        int
+}
+
+// ReadyCapability resolves a gateway-originated v2 capability against one
+// ready generation of the accepted manifest and private socket.
+func (c *Controller) ReadyCapability(id, capability string) CapabilityEndpoint {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	m := c.actual[id]
+	if m == nil || m.SchemaVersion != 2 || !slices.Contains(m.Capabilities, capability) ||
+		!slices.Contains(m.Permissions, capability) || !c.capabilities.Allows(id, capability) {
+		return CapabilityEndpoint{}
+	}
+	if state, ok := c.readyProcess(id); ok {
+		return CapabilityEndpoint{SocketPath: state.SocketPath, Version: m.PluginVersion, PID: state.Pid}
+	}
+	return CapabilityEndpoint{}
+}
+
+// Call with c.mu held so manifest readiness and the process are from the same generation.
+func (c *Controller) readyProcess(id string) (root.PluginState, bool) {
+	if c.actual[id] != nil && !c.unhealthy[id] && c.ctx.Err() == nil {
+		for _, state := range c.sup.ProcessSnapshot() {
+			if state.PluginID == id && state.Status != "crashed" && state.Status != "stopped" && state.SocketPath != "" {
+				return state, true
+			}
+		}
+	}
+	return root.PluginState{}, false
 }
 
 // Manifest returns an independent copy of the manifest actually made ready.

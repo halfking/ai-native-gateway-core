@@ -350,7 +350,7 @@ func (h *ErrorPlaybookHandler) handleExecutions(w http.ResponseWriter, r *http.R
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	execs, total, err := h.store.ListExecutions(r.Context(), entryID, status, errorType, limit, offset)
+	execs, total, err := h.store.ListVisibleExecutions(r.Context(), entryID, status, errorType, limit, offset, canViewRecommendations(r), r.URL.Query().Get("recommendations") == "only")
 	if err != nil {
 		h.writeStoreErr(w, "list playbook executions", err)
 		return
@@ -392,7 +392,16 @@ func (h *ErrorPlaybookHandler) handleExecutionItem(w http.ResponseWriter, r *htt
 		h.writeStoreErr(w, "get playbook execution", err)
 		return
 	}
+	if errorplaybook.IsRecommendationActor(rec.ExecutedBy) && !canViewRecommendations(r) {
+		h.writeStoreErr(w, "get playbook execution", errorplaybook.ErrNotFound)
+		return
+	}
 	writeJSON(w, http.StatusOK, rec)
+}
+
+func canViewRecommendations(r *http.Request) bool {
+	auth := GetAuthContext(r)
+	return auth != nil && auth.Role == "super_admin" && auth.TenantID == "default"
 }
 
 // revertExecution 按快照回滚一次执行。
@@ -408,6 +417,10 @@ func (h *ErrorPlaybookHandler) revertExecution(w http.ResponseWriter, r *http.Re
 	rec, err := h.store.GetExecution(r.Context(), id)
 	if err != nil {
 		h.writeStoreErr(w, "get playbook execution", err)
+		return
+	}
+	if errorplaybook.IsRecommendationActor(rec.ExecutedBy) && !canViewRecommendations(r) {
+		h.writeStoreErr(w, "get playbook execution", errorplaybook.ErrNotFound)
 		return
 	}
 	if rec.Status != errorplaybook.StatusSucceeded && rec.Status != errorplaybook.StatusFailed {
@@ -481,7 +494,7 @@ func (h *ErrorPlaybookHandler) handleStats(w http.ResponseWriter, r *http.Reques
 	// ★ 审计轮（2026-11-21）：条目统计改 SQL 聚合（EntrySummary）——
 	//   原实现走 ListEntries(Limit 200) 逐行累加 ⇒ 条目 >200 时静默欠数。
 	entrySummary, entryErr := h.store.EntrySummary(r.Context())
-	execSummary, execErr := h.store.ExecutionSummary(r.Context())
+	execSummary, execErr := h.store.VisibleExecutionSummary(r.Context(), canViewRecommendations(r))
 
 	stats := map[string]interface{}{
 		"engine_wired": h.engine != nil,

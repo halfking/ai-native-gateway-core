@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "plugin_id": "config-drift",
+  "display_name": "Configuration drift suggestions",
+  "plugin_version": "1.0.0",
+  "build_seq": 1,
+  "channel": "pilot",
+  "gateway_compatibility": {
+    "api_contract": "gateway-plugin-v2"
+  },
+  "runtime": {
+    "entrypoint": "config-drift",
+    "protocol": "http-unix-socket",
+    "health_path": "/healthz",
+    "handshake_path": "/handshake"
+  },
+  "capabilities": [
+    "error-remediation"
+  ],
+  "permissions": [
+    "error-remediation"
+  ],
+  "pages": [],
+  "activation": {
+    "license_required": false
+  }
+}

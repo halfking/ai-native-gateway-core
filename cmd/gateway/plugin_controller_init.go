@@ -11,6 +11,7 @@ import (
 	pluginruntime "github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	runtimeconfig "github.com/kaixuan/llm-gateway-go/plugin-runtime/config"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/controller"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/remediation"
 	"gopkg.in/yaml.v3"
 )
 
@@ -65,7 +66,7 @@ func normalizePluginListenHost(host string) string {
 }
 
 func startPluginController(ctx context.Context, path string, registry *pluginruntime.Registry, capabilities *pluginruntime.CapabilityRegistry) (*controller.Controller, error) {
-	return controller.Start(ctx, controller.Options{ConfigPath: path, Registry: registry, Capabilities: capabilities, SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY")})
+	return controller.Start(ctx, controller.Options{ConfigPath: path, Registry: registry, Capabilities: capabilities, SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"), OptionalPlugins: remediation.PluginIDs()})
 }
 
 // Configuration-managed plugins must not also be modified by imperative APIs.

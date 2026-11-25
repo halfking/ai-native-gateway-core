@@ -2,8 +2,11 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -62,6 +65,25 @@ func MetricsOf(reloader ConfigReloader) map[string]int64 {
 // therefore be idempotent and support applying either configuration.
 type ReloadHandler func(ctx context.Context, oldConfig, newConfig *Config) error
 
+// Rejection identifies a completed failed reload while the rejected bytes
+// still match the file on disk. ID is for local audit deduplication.
+type Rejection struct {
+	ID      [32]byte
+	Invalid bool
+}
+
+type rejectedConfig struct {
+	rejection Rejection
+	fileHash  [32]byte
+}
+
+func RejectionOf(reloader ConfigReloader) (Rejection, bool) {
+	if source, ok := reloader.(interface{ rejection() (Rejection, bool) }); ok {
+		return source.rejection()
+	}
+	return Rejection{}, false
+}
+
 type configReloader struct {
 	holder     *ConfigHolder
 	validator  Validator
@@ -71,6 +93,7 @@ type configReloader struct {
 
 	mu       sync.RWMutex
 	reloadMu sync.Mutex
+	rejected *rejectedConfig // protected by reloadMu
 	wg       sync.WaitGroup
 	watching bool
 	stopCh   chan struct{}
@@ -299,14 +322,19 @@ func (r *configReloader) Reload(ctx context.Context) error {
 	// Load old config
 	oldConfig := r.holder.Get()
 
-	// Read and parse new config
-	newConfig, err := r.loadConfig(configPath)
+	r.rejected = nil
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-
-	// Validate new config
+	var next Config
+	newConfig := &next
+	if err := yaml.Unmarshal(data, newConfig); err != nil {
+		r.rememberRejection(oldConfig, nil, data, true)
+		return fmt.Errorf("load config: parse yaml: %w", err)
+	}
 	if err := r.validator.Validate(newConfig); err != nil {
+		r.rememberRejection(oldConfig, newConfig, data, true)
 		return fmt.Errorf("validate config: %w", err)
 	}
 
@@ -322,6 +350,9 @@ func (r *configReloader) Reload(ctx context.Context) error {
 					failures = append(failures, fmt.Errorf("rollback handler %d: %w", j, rollbackErr))
 				}
 			}
+			if ctx.Err() == nil {
+				r.rememberRejection(oldConfig, newConfig, data, false)
+			}
 			return errors.Join(failures...)
 		}
 	}
@@ -330,19 +361,54 @@ func (r *configReloader) Reload(ctx context.Context) error {
 	return nil
 }
 
-// loadConfig loads and parses the configuration file.
-func (r *configReloader) loadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+const maxDriftConfigBytes = 1 << 20
+
+func (r *configReloader) rememberRejection(old, desired *Config, data []byte, invalid bool) {
+	if len(data) > maxDriftConfigBytes {
+		return
+	}
+	actualBytes, _ := json.Marshal(old) // Config contains only JSON-native values.
+	actualHash := sha256.Sum256(actualBytes)
+	fileHash := sha256.Sum256(data)
+	desiredHash := fileHash
+	if desired != nil {
+		proposed, _ := json.Marshal(desired)
+		desiredHash = sha256.Sum256(proposed)
+	}
+	pair := [64]byte{}
+	copy(pair[:32], actualHash[:])
+	copy(pair[32:], desiredHash[:])
+	r.rejected = &rejectedConfig{
+		rejection: Rejection{ID: sha256.Sum256(pair[:]), Invalid: invalid},
+		fileHash:  fileHash,
+	}
+}
+
+func (r *configReloader) rejection() (Rejection, bool) {
+	if !r.reloadMu.TryLock() {
+		return Rejection{}, false
+	}
+	defer r.reloadMu.Unlock()
+	if r.rejected == nil {
+		return Rejection{}, false
+	}
+	r.mu.RLock()
+	path := r.configPath
+	r.mu.RUnlock()
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return Rejection{}, false
+	}
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return Rejection{}, false
 	}
-
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxDriftConfigBytes+1))
+	if err != nil || len(data) > maxDriftConfigBytes || sha256.Sum256(data) != r.rejected.fileHash {
+		return Rejection{}, false
 	}
-
-	return &config, nil
+	return r.rejected.rejection, true
 }
 
 // GetConfig returns the current configuration.
