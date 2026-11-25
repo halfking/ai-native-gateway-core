@@ -150,11 +150,11 @@
     <div v-if="activeTab === 'results'" class="table-container">
       <!-- ★ 2026-11-25：存量「解析失败」的占位结论 —— 一键重解析（只读已存的响应，不调用模型）。 -->
       <div class="chain-note-banner" v-if="parseFailedCount > 0" data-testid="pi-parse-failed-banner">
-        <strong>{{ t('%s.parseFailedBannerTitle', { n: parseFailedCount }) }}</strong>
-        <span>{{ t('%s.parseFailedBannerBody') }}</span>
+        <strong>{{ t('common.piAnalysis.forensics.parseFailedBannerTitle', { n: parseFailedCount }) }}</strong>
+        <span>{{ t('common.piAnalysis.forensics.parseFailedBannerBody') }}</span>
         <span v-if="bulkReparseNote" data-testid="pi-parse-failed-result">{{ bulkReparseNote }}</span>
         <button class="btn-secondary" :disabled="bulkReparsing" @click="reparseAll">
-          {{ bulkReparsing ? '…' : t('%s.reparseAllButton') }}
+          {{ bulkReparsing ? '…' : t('common.piAnalysis.forensics.reparseAllButton') }}
         </button>
       </div>
       <table class="data-table">
@@ -250,7 +250,7 @@
                   <div class="timeline-bar done"></div>
                   <div class="timeline-step" data-testid="pi-timeline-fix-applied">
                     <div class="timeline-dot done"></div>
-                    <div class="timeline-label">{{ t('%s.timelineFixApplied') }}</div>
+                    <div class="timeline-label">{{ t('common.piAnalysis.forensics.timelineFixApplied') }}</div>
                     <div class="timeline-time">{{ formatTime(detailData.applied_at) }}</div>
                   </div>
                 </template>
@@ -258,7 +258,7 @@
                   <div class="timeline-bar done"></div>
                   <div class="timeline-step" data-testid="pi-timeline-last-verify">
                     <div class="timeline-dot done"></div>
-                    <div class="timeline-label">{{ t('%s.timelineLastVerify') }}</div>
+                    <div class="timeline-label">{{ t('common.piAnalysis.forensics.timelineLastVerify') }}</div>
                     <div class="timeline-time">
                       <span class="status" :class="verdictClass(verdictOf(lastVerification))">{{ verdictLabel(verdictOf(lastVerification)) }}</span>
                     </div>
@@ -371,7 +371,7 @@
                       <span class="badge badge-info">#{{ a.attempt_index }}</span>
                       <span>{{ a.provider_id }} / {{ a.model }}</span>
                       <span class="badge badge-warning">{{ a.error_kind }}</span>
-                      <span v-if="a.upstream_status_code" class="status status-error">t('common.piAnalysis.forensics.factUpstreamStatus') {{ a.upstream_status_code }}</span>
+                      <span v-if="a.upstream_status_code" class="status status-error">{{ t('common.piAnalysis.forensics.factUpstreamStatus') }} {{ a.upstream_status_code }}</span>
                       <span class="muted">{{ formatTime(a.ts) }} · {{ a.latency_ms }} ms</span>
                     </div>
                     <p>{{ a.error_message }}</p>
@@ -547,7 +547,7 @@
                   <div class="rule-card" v-for="(c, i) in fixPlan.config_changes" :key="i">
                     <div class="rule-card-head"><code>{{ c.target }}</code></div>
                     <div class="action-params">
-                      t('common.piAnalysis.forensics.currentValue'): <code>{{ c.current || '—' }}</code> → t('common.piAnalysis.forensics.proposedValue'): <code>{{ c.proposed }}</code>
+                      {{ t('common.piAnalysis.forensics.currentValue') }}: <code>{{ c.current || '—' }}</code> → {{ t('common.piAnalysis.forensics.proposedValue') }}: <code>{{ c.proposed }}</code>
                     </div>
                   </div>
                 </div>
@@ -573,21 +573,21 @@
                       </span>
                     </div>
                     <div class="detail-item" v-if="fixPlan.deploy.targets?.length">
-                      <label>t('common.piAnalysis.forensics.planTargets'):</label><span>{{ fixPlan.deploy.targets.join(', ') }}</span>
+                      <label>{{ t('common.piAnalysis.forensics.planTargets') }}:</label><span>{{ fixPlan.deploy.targets.join(', ') }}</span>
                     </div>
                   </div>
                   <div class="rule-card" v-for="(st, i) in fixPlan.deploy.steps || []" :key="i"><p>{{ st }}</p></div>
-                  <div class="action-reason" v-if="fixPlan.deploy.rollback">t('common.piAnalysis.forensics.planRollback'): {{ fixPlan.deploy.rollback }}</div>
+                  <div class="action-reason" v-if="fixPlan.deploy.rollback">{{ t('common.piAnalysis.forensics.planRollback') }}: {{ fixPlan.deploy.rollback }}</div>
                 </div>
 
                 <div class="detail-sub" v-if="fixPlan.verification" data-testid="pi-plan-verify">
                   <h4>{{ t('common.piAnalysis.forensics.planVerifyTitle') }}</h4>
                   <div class="detail-grid">
                     <div class="detail-item" v-if="fixPlan.verification.method">
-                      <label>t('common.piAnalysis.forensics.verifyMethodLabel'):</label><span>{{ verifyMethodLabel(fixPlan.verification.method) }}</span>
+                      <label>{{ t('common.piAnalysis.forensics.verifyMethodLabel') }}:</label><span>{{ verifyMethodLabel(fixPlan.verification.method) }}</span>
                     </div>
                     <div class="detail-item" v-if="fixPlan.verification.expect">
-                      <label>t('common.piAnalysis.forensics.verifyExpect'):</label><span>{{ fixPlan.verification.expect }}</span>
+                      <label>{{ t('common.piAnalysis.forensics.verifyExpect') }}:</label><span>{{ fixPlan.verification.expect }}</span>
                     </div>
                   </div>
                 </div>
@@ -645,8 +645,8 @@
                     <label>{{ t('common.piAnalysis.forensics.verdictLabel') }}:</label>
                     <span class="status" :class="verdictClass(verdictOf(verifyResult))">{{ verdictLabel(verdictOf(verifyResult)) }}</span>
                   </div>
-                  <div class="detail-item"><label>t('common.piAnalysis.forensics.verifyAtLabel'):</label><span>{{ formatTime(verifyResult.at) }}</span></div>
-                  <div class="detail-item"><label>t('common.piAnalysis.forensics.verifyByLabel'):</label><span>{{ verifyResult.by }}</span></div>
+                  <div class="detail-item"><label>{{ t('common.piAnalysis.forensics.verifyAtLabel') }}:</label><span>{{ formatTime(verifyResult.at) }}</span></div>
+                  <div class="detail-item"><label>{{ t('common.piAnalysis.forensics.verifyByLabel') }}:</label><span>{{ verifyResult.by }}</span></div>
                 </div>
                 <div class="rule-card" v-for="(c, i) in verifyResult.checks || []" :key="i">
                   <div class="rule-card-head">
@@ -656,18 +656,18 @@
                   </div>
                   <div class="detail-grid" v-if="c.detail">
                     <div class="detail-item" v-if="c.detail.originally_matched">
-                      <label>t('common.piAnalysis.forensics.detailOriginally'):</label><span>{{ noneText(c.detail.originally_matched) }}</span>
+                      <label>{{ t('common.piAnalysis.forensics.detailOriginally') }}:</label><span>{{ noneText(c.detail.originally_matched) }}</span>
                     </div>
                     <div class="detail-item" v-if="c.detail.now_matched">
-                      <label>t('common.piAnalysis.forensics.detailNow'):</label><span>{{ noneText(c.detail.now_matched) }}</span>
+                      <label>{{ t('common.piAnalysis.forensics.detailNow') }}:</label><span>{{ noneText(c.detail.now_matched) }}</span>
                     </div>
                     <div class="detail-item" v-if="c.detail.still_matching">
-                      <label>t('common.piAnalysis.forensics.detailStill'):</label><span>{{ noneText(c.detail.still_matching) }}</span>
+                      <label>{{ t('common.piAnalysis.forensics.detailStill') }}:</label><span>{{ noneText(c.detail.still_matching) }}</span>
                     </div>
                     <div class="detail-item" v-if="typeof c.detail.rule_count === 'number'">
                       {{ t('common.piAnalysis.forensics.detailRuleCount', { n: c.detail.rule_count }) }}
                     </div>
-                    <div class="detail-item" v-if="c.detail.layer"><label>t('common.piAnalysis.forensics.detailLayer'):</label><span>{{ c.detail.detail }}</span></div>
+                    <div class="detail-item" v-if="c.detail.layer"><label>{{ t('common.piAnalysis.forensics.detailLayer') }}:</label><span>{{ c.detail.detail }}</span></div>
                     <div class="detail-item" v-if="typeof c.detail.queue_rows === 'number'">
                       {{ t('common.piAnalysis.forensics.detailRecurrence', { q: c.detail.queue_rows, f: c.detail.failure_rows ?? 0 }) }}
                     </div>
