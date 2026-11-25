@@ -26,7 +26,7 @@
 #                         211 的口令在仓内既有资产 scripts/maestro-simple-expert-mode-test.sh）
 #   MAESTRO_DRIVER_PORT   Maestro 用的 CDP 端口（默认 9222；**被占用则顺延**，绝不复用那个浏览器）
 #   SA_CDP_PORT           第二层探针用的 CDP 端口（默认 9223；同上）
-#   MAESTRO_SCREEN_SIZE   视口（默认 1440x1400；web 驱动固定 1024x625 ⇒ 必须覆写）
+#   MAESTRO_SCREEN_SIZE   视口（默认 1440x4800）
 #   FLOW                  指定 flow（默认 maestro/flows/16-session-analytics-system.yaml）
 #
 # ★ 每次运行都是**干净起点**（2026-11-20 批判式审计修正）：
@@ -65,8 +65,9 @@ SA_CDP_PORT="${SA_CDP_PORT:-9223}"
 #     ③ ★ **真旋钮是 Maestro 的 `--screen-size`（本变量）**，不是 Chrome 的
 #        `--window-size` —— 误改 Chrome 窗口时实测截图仍是 1440x**1257**
 #        （Maestro 自己按 `--screen-size` 设 device metrics）⇒ 记下来免得再踩。
-#   ⇒ 3600 > 3329（最高锚点）⇒ 所有锚点进入视口。
-SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x3600}"
+# 2026-11-25 V2 现场读数：3600 配置的实际截图高 3457，Top5 区块底部 Y=3701，
+# Top10 表头仍在下方。加高测试视口，保留原有的表头可见性断言。
+SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x4800}"
 FLOW="${FLOW:-maestro/flows/16-session-analytics-system.yaml}"
 REPORT_ROOT="${ROOT}/maestro/reports"
 # ★ Chrome 日志写进 reports/ **内部** ⇒ 目录必须先建：新鲜 worktree/新 checkout 里
@@ -207,7 +208,7 @@ start_chrome() {
   #     截图仍是 1440x1257 ⇒ Maestro 自己按 --screen-size 设 device metrics。
   nohup "${CHROME_BIN}" --headless=new --remote-debugging-port="${port}" \
     --user-data-dir="${profile}" --no-first-run --no-default-browser-check \
-    --disable-gpu --lang=zh-CN --window-size="${SA_WINDOW_SIZE:-1440,3600}" about:blank \
+    --disable-gpu --lang=zh-CN --window-size="${SA_WINDOW_SIZE:-1440,4800}" about:blank \
     >"${REPORT_ROOT}/.chrome-${port}.log" 2>&1 &
   CHROME_PIDS+=("$!")
   for _ in $(seq 1 30); do

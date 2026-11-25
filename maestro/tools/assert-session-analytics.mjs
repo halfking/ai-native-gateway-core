@@ -34,7 +34,7 @@
 //
 // 用法：node assert-session-analytics.mjs --cdp http://127.0.0.1:9223 \
 //         --url https://llm.itestu.cn --user admin --password '...'
-import { connect, openPage, evaluate } from './cdp-client.mjs'
+import { connect, openPage, evaluate, navigateToDocument } from './cdp-client.mjs'
 import { summarize, EXIT_FAIL } from './result.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, v, i, a) => {
@@ -68,7 +68,9 @@ function gauge(name, detail = '') {
 }
 
 const { cdp } = await connect(CDP_URL)
-let sessionId = (await openPage(cdp, 'about:blank')).sessionId
+const page = await openPage(cdp, 'about:blank')
+let sessionId = page.sessionId
+const viewport = { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 // ── 响应记录器：抓「页面自己收到的那份响应」──────────────────────────────
@@ -133,26 +135,16 @@ function capturedApiWithStatus(fragment) {
 }
 
 async function goto(url, waitMs = 6000) {
-  const created = await cdp.send('Target.createTarget', { url: 'about:blank' })
-  const { sessionId: sid } = await cdp.send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
-  await cdp.send('Page.enable', {}, sid)
-  await cdp.send('Network.enable', {}, sid)
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid)
-  await evaluate(cdp, sid, `location.href = ${JSON.stringify(url)}`)
+  await cdp.send('Emulation.setDeviceMetricsOverride', viewport, sessionId)
+  await navigateToDocument(cdp, sessionId, url, 45000)
   await sleep(waitMs)
-  const { sessionId: sid2 } = await cdp.send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
-  await cdp.send('Page.enable', {}, sid2)
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid2)
-  sessionId = sid2
   return evaluate(cdp, sessionId, 'location.href')
 }
 async function reattach() {
-  const targets = await cdp.send('Target.getTargets')
-  const page = targets.targetInfos.filter(t => t.type === 'page').pop()
   const { sessionId: sid } = await cdp.send('Target.attachToTarget', { targetId: page.targetId, flatten: true })
   await cdp.send('Page.enable', {}, sid)
   await cdp.send('Network.enable', {}, sid)
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid)
+  await cdp.send('Emulation.setDeviceMetricsOverride', viewport, sid)
   sessionId = sid
 }
 const js = async (expr) => {
