@@ -271,8 +271,12 @@ describe('① 读数：分母必须写在这里，不许只报「孤儿有几条
     // ★★ 先钉**形状**再验命中 —— 批 140 变异 K07 实测出的洞：
     //   只验「每种形态命中数 > 0」的话，**删掉 P_PREFIX_RES 里的一项**之后，
     //   `hits` 数组也跟着变短，循环不再检查被删的那一项 ⇒ ①-3 变成空洞。
-    expect(PREFIX_RES).toHaveLength(3)
-    expect(PREFIX_FORM_NAMES).toHaveLength(3)
+    // ★ 2026-11-25 菜单 PC 对齐轮：3 → 4（新增形态④「模板赋值/属性绑定」——
+    //   `const key = \`rr.evidence.values.${v}\`` 与
+    //   `:context-key="\`statisticsHelp.pages.${c}\`"` 都不带 `t(` 前缀，
+    //   三条正则全漏 ⇒ 59 键假孤儿。判据改 4 对 4。）
+    expect(PREFIX_RES).toHaveLength(4)
+    expect(PREFIX_FORM_NAMES).toHaveLength(4)
     for (let i = 0; i < hits.length; i++) {
       expect(hits[i], `${PREFIX_FORM_NAMES[i]} 一个都没抓到 ⇒ 覆盖面退化了`).toBeGreaterThan(0)
     }

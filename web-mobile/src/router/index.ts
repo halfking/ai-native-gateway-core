@@ -690,6 +690,21 @@ const routes: RouteRecordRaw[] = [
     meta: { titleKey: 'sc.title', requiresAuth: true },
   },
   {
+    // ★ 错误处理手册（2026-11-25 菜单 PC 对齐轮；PC 端 2026-11-21 落地同款读面）。
+    //   权限档**第三类（过度限制）**：注册处 wrap = AdminMiddleware
+    //   （admin/error_playbook_handler.go:72-74，只认证不检 role），
+    //   但 entries/executions 两表**没有 tenant_id 列** ⇒ 平台级全局事实
+    //   ⇒ 抽屉席与 meta 都按 super_admin 挡（与 ops-overview 同理由）。
+    //   ⚠️ meta.requiresRole 由 hyper-wiring.ts:59 的 routeAllowedFor 消费
+    //   （深链同样被拦）；视图只发三个 GET，写端点一律不碰。
+    //   ⚠️ RegisterRoutes fail-closed（store/secret 缺失 ⇒ 端点不注册）
+    //   ⇒ 404 =「手册未装配」，按通用 404 文案披露，不伪装成请求失败。
+    path: '/error-playbook',
+    name: 'error-playbook',
+    component: () => import('@/views/ErrorPlaybookView.vue'),
+    meta: { titleKey: 'ep.title', requiresAuth: true, requiresRole: 'super_admin' },
+  },
+  {
     path: '/probe-queue',
     name: 'probe-queue',
     component: () => import('@/views/ProbeQueueView.vue'),
