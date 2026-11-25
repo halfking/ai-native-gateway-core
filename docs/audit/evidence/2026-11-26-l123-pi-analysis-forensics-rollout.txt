@@ -1,0 +1,84 @@
+# L123 轮证据档：PI 分析「取证 / 修正方案 / 复测」上线与三台验证
+# 2026-11-26 06:2x CST 取数；全部为现跑读数（非引用旧登记）。本档不含密钥、不含用户请求正文。
+
+## 一、提交面
+主干尖端：3b7f6a25c2（codeup origin/main ＝ github/main）。本轮 17 笔非合并提交（另 2 笔为并行车道同窗口的「12h 审计轮」，不属本轮）：
+  35da920879 feat(logging)        进程内「近期服务日志」环形缓冲
+  805bd87f6a feat(promptinjection) 容错解析 / 分析前取证 / 定向重分析 / 复测重放 / 请求失败发现
+  db889b5c4a feat(admin)          取证端点 / 修正方案视图 / 复测留痕 / 发现器接线 / 设置项
+  8d0e0f741f feat(web)            详情弹窗四块 ＋ 八语种 130 键
+  53e3be816a test(logging)        旋转测试间歇失败的根因（没等 lumberjack 后台协程）
+  f6374340f0 chore(audit)         路由清单快照刷新 ＋ 证据对拍表重钉（main.go 行号 +9）
+  a3b6028ea2 docs                 运维说明 docs/PI-ERROR-ANALYSIS-FORENSICS-2026-11-26.md
+  385ec6eaeb refactor(promptinjection) 四个新文件改 error_analyzer_ 前缀（迁移锚定门误当表名）
+  b4e6bf4493 docs(AGENTS)         L123 轮块
+  86cf597374 fix(promptinjection) 发现器排除纯探测组
+  1ce143242f fix(deploy-gate)     嵌套模块分箱（包就是模块根时记成 ./）
+  00a84eb6ce fix(web-mobile)      代上游收口 TS2532
+  117a82fe00 fix(admin)           取证采集器两处真库缺陷 ＋ 真库契约测试
+  96afbccabf fix(promptinjection) 分析回答被截断：额度 / 结束原因 / 截断修复
+  9135064802 fix(promptinjection) 输出额度取 6000
+  819df86305 fix(web)             17 处标签把翻译调用原样显示 ＋ 模板钉测
+  3b7f6a25c2 fix(admin)           取证采集器真正执行 8s 总预算
+本轮提交零迁移字节变更（范围内 db/ 下的两处改动来自并行车道的 44d58b891b）。
+改动量（c2df013a6d..3b7f6a25c2，含并行车道 2 笔）：72 文件，+13825 / −429。
+
+## 二、本地门禁（最终树）
+- go build ./... 0；go vet（改动包）0
+- go test：internal/logging / domains/promptinjection / settings / cmd/gateway / admin 全 ok（admin 含真库契约测试）
+- 全量 go test ./scripts/ursmcheck：ok 327.153s（3ed125c387）→ ok 365.790s（9db73d7b8d）→ ok 349.498s / 313.356s（部署闸门内）
+- 审计守卫 7 包 ok；钩子等价执行：敏感信息扫描带基线 32 BLOCK（沿用项，本轮改动文件上 0 条）；
+  tests/*.sh 74 套 72 过，余 2 套环境项（缺 redis:7.4.11-alpine 镜像；套件内部调 PATH 上的 bash 3.2）
+- web：vue-tsc 0 错；vitest 382 文件 / 3866 条全过；web-gates 失败 15 门 ＋ 2 自检与基线同批
+- 真库契约：TestRealDBPIEvidenceGathererContract 在一次性 PostgreSQL 17.12 上 3/3；
+  变异自证：撤回任一修复即复现 211 上的原话
+- 生产真实回答回归：245/154 存量 13 条原始响应 13/13 可读
+
+## 三、部署（标准脚本；顺序 211 → 245 → 154）
+部署前三台在役：211=137e7592@3280 / 245=137e7592@3174 / 154=137e7592@3175
+  （并行车道的本地提交，不在主干任何引用上；其「第四个跳过理由」bg/probe_gateway_plan.go 等至今未入主干）
+211（scripts/deploy-211.sh，蓝绿）共 6 次：00a84eb6(3281) → 117a82fe(3282) → 96afbcca(3283) → 91350648(3284)
+  → 819df863(3285) → 3b7f6a25(3286，槽 a @8781 接管；旧槽 b 保留可 docker start 回滚)
+  部署测试闸门：基线 c2df013a6d 那一轮 12 个包全绿（含 scripts/ursmcheck 349.498s、plugin-runtime/config）；
+  之后各轮按差异选包全绿。首轮成功之前有 3 次尝试未成：闸门嵌套模块缺陷 ×2、web-mobile 类型红 ×1（均已修）；
+  其后 5 次重部署都是实测后的返工（取证 Scan 列数与可空列 / 截断处理 / 输出额度 / 前端标签 / 取证总预算）。
+245（scripts/deploy-245.sh，systemd 蓝绿）共 3 次：91350648(3171) → 819df863(3172) → 3b7f6a25(3173 @8782；
+  总 321s / 切换 129s；nginx 仲裁 20 连接 ✓；DB 就绪 1s；管理员登录 200；凭据解密 creds=17 failed=0）
+154（scripts/deploy-154.sh，systemd 蓝绿，经 252 跳板）1 次：3b7f6a25(3174 @8781；总 293s / 切换 33s；
+  nginx 仲裁 20 连接 ✓；DB 就绪 1s；管理员登录 200；凭据解密 creds=17 failed=0；旧版 3175 保留可 rollback)
+
+## 四、三台验证（在主机本机签短期管理员令牌调用；密钥不出主机）
+鉴权（同款脚本，9 项）：
+  211 PASS / 245 PASS / 154 PASS
+  - 未鉴权 GET /api/admin/pi-analysis/stats → 401（三台；211/154 公网域名同样 401）
+  - tenant_admin（跨租户与同租户）：analyze / verify / reparse / reparse-failed → 403；
+    evidence 跨租户 → 403；同租户 → 200 且 service_log_meta.scoped_to_request=true；super_admin 不收窄
+取证 GET /queue/{id}/evidence（最终版）：
+  211：request 20 字段 / session 1 / attempts 10 / window 3 / playbook 1，degraded=[]，5ms
+  245：request 21 / session 20 / attempts 4 / window 3，degraded=[]，476ms
+  154：request 20 / session 20 / attempts 3 / window 3，degraded=[]，604ms
+批量重读 POST /results/reparse-failed：
+  211：{"scanned":2,"reparsed":2,"still_unparsable":0,"failed":0}
+  245（与 154 共用库）：{"scanned":12,"reparsed":12,"still_unparsable":0,"failed":0,"reparsed_queue_ids":[9..20]}
+  ⇒ 245/154 解析失败数 12 → 0；211 2 → 0
+复测 POST /queue/{id}/verify：
+  211 #10 → reproducing（11 次复发）；245 #23 → reproducing（4 次）；245 #21 → reproducing（18 次）；154 #25 → not_reproducing
+定向分析 POST /queue/{id}/analyze：245 #23 → 202 → analyzed（置信度 0.92，5 步方案）；
+  211 #10 一次 300s 超时（生产网关日志实证：glm-5.3-flash 上游换节点重试），后重试成功
+发现器（自动入队）：211 首小时 request_failed 6 条（04:25–04:49）；245/154 共用库 request_failed 持续产出（结果总数 16 → 18）
+页面级（独立配置目录的无头 Chrome，真实加载 https://llm.itestu.cn/admin/pi-analysis）：
+  登录态用户=系统管理员，版本 v2.6.2 · #3285/#3286；列表 9 行；点击第 10 行 → 详情弹窗：
+  时间线 / 请求账本 20 项 / 上游尝试 / 会话上下文 / 处置摘要 ＋ 5 步（类别与风险徽标）/ 部署与验证方式 / 复测；
+  点「运行复测」→ 「复测结论: 仍复现」＋时间与操作人；页面文本里原样显示的翻译调用 0 处
+  （修复前 17 处：13 处 t('…') 未入插值、4 处键前缀 %s.）
+生产部署后健康：healthz {"status":"ok","ready":true}；新进程首 12 分钟 ERROR 级日志 16 条，
+  与上一版同长度窗口 184 条为同几类既有噪声（recommend_v2 可用性过滤回退 / embeddings 503 /
+  provider profile collection failed / executor failed），无 PI 分析相关报错。
+
+## 五、复现命令（在目标主机本机执行；令牌须由该主机 LLM_GATEWAY_SECRET_KEY 现签，不入仓）
+  curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<port>/api/admin/pi-analysis/stats            # 401
+  curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:<port>/api/admin/pi-analysis/results?limit=200
+  curl -s -X POST  -H "Authorization: Bearer $TOKEN" http://127.0.0.1:<port>/api/admin/pi-analysis/results/reparse-failed
+  curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:<port>/api/admin/pi-analysis/queue/<id>/evidence
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:<port>/api/admin/pi-analysis/queue/<id>/verify
+端口：211 活跃槽 8781（蓝绿后在 8781/8783 间切换）；245 8782；154 8781。
