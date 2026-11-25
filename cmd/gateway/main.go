@@ -2012,7 +2012,7 @@ func main() {
 				backupDir = "./data/backups"
 			}
 			outboxCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			outbox, err := reconciliation.OpenAttemptOutbox(outboxCtx, backupDir, dbConn.Pool())
+			outbox, err := reconciliation.OpenAttemptOutbox(outboxCtx, backupDir, dbConn.Pool(), attemptJournalOpener)
 			cancel()
 			if err != nil {
 				slog.Error("supplier attempt shadow outbox unavailable; evidence will be written directly", "error", err)
