@@ -51,7 +51,23 @@ type requestStatsDB interface {
 
 const requestModelKey = "coalesce(nullif(outbound_model,''), nullif(client_model,''), '__unknown__')"
 
-const requestStatsAggregates = `
+const (
+	uniqueModelAggregate   = `count(DISTINCT nullif(` + requestModelKey + `,'__unknown__'))`
+	activeSessionAggregate = `count(DISTINCT (tenant_id, session_id)) FILTER (WHERE session_id IS NOT NULL)`
+)
+
+// Separate membership grouping lets PostgreSQL use hashing for exact counts
+// and aggregate the request measures without an ordered aggregate.
+func statsWithGroupedMembership(source string) string {
+	models := "(SELECT count(*) FROM (SELECT " + requestModelKey + " AS model FROM " + source +
+		" GROUP BY 1) AS models WHERE model <> '__unknown__')"
+	sessions := "(SELECT count(*) FROM (SELECT tenant_id, session_id FROM " + source +
+		" WHERE session_id IS NOT NULL GROUP BY tenant_id, session_id) AS sessions)"
+	return statsAggregates(models, sessions)
+}
+
+func statsAggregates(uniqueModels, activeSessions string) string {
+	return `
 	count(*) AS total_requests,
 	count(*) FILTER (WHERE status = 'success') AS success_count,
 	count(*) FILTER (WHERE status <> 'success') AS failed_count,
@@ -64,8 +80,8 @@ const requestStatsAggregates = `
 	count(*) FILTER (WHERE usage_source IN ('llm','corrected')) AS measured_token_requests,
 	count(cost_currency) AS currency_evidence_requests,
 	count(*) FILTER (WHERE cost_currency='USD') AS usd_evidence_requests,
-	count(DISTINCT nullif(` + requestModelKey + `,'__unknown__')) AS unique_models,
-	count(DISTINCT (tenant_id, session_id)) FILTER (WHERE session_id IS NOT NULL) AS active_sessions,
+	` + uniqueModels + ` AS unique_models,
+	` + activeSessions + ` AS active_sessions,
 	coalesce(sum(prompt_tokens),0) AS total_prompt_tokens,
 	coalesce(sum(completion_tokens),0) AS total_completion_tokens,
 	coalesce(sum(total_tokens),0) AS total_tokens,
@@ -83,6 +99,7 @@ const requestStatsAggregates = `
 	min(occurred_at) AS first_request_at,
 	max(occurred_at) AS last_request_at
 `
+}
 
 const requestCostAggregates = `
 	count(*) AS total_requests,
@@ -152,7 +169,7 @@ func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 	}
 
 	key, dimensions, groupBy, order := "", "", "", ""
-	aggregates := requestStatsAggregates
+	aggregates := statsAggregates(uniqueModelAggregate, activeSessionAggregate)
 	switch query.Group {
 	case "summary":
 	case "currency":
@@ -305,6 +322,11 @@ func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 			coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0) AS total_cost_usd`
 	}
 	itemSQL := "SELECT " + dimensions + aggregates + " FROM public.request_metrics_projection WHERE " + strings.Join(clauses, " AND ") + groupBy + order
+	if query.Group == "summary" {
+		itemSQL = `WITH summary_input AS NOT MATERIALIZED (
+			SELECT * FROM public.request_metrics_projection WHERE ` + strings.Join(clauses, " AND ") + `
+		) SELECT ` + statsWithGroupedMembership("summary_input") + ` FROM summary_input`
+	}
 	itemArraySQL := "SELECT coalesce(jsonb_agg(to_jsonb(items)), '[]'::jsonb) FROM (" + itemSQL + ") items"
 	if query.Group == "owner-directory" {
 		args = append(args, query.Limit, query.Offset)

@@ -103,32 +103,37 @@ bounded AS MATERIALIZED (
 		prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_write_tokens, credits_charged,
 		image_tokens, audio_tokens, video_tokens, cost_amount, cost_currency, usage_source,
 		cache_input_tokens, latency_ms, ttft_ms,
-		` + bucket + ` AS bucket, ` + boardModel + ` AS model
+		` + bucket + ` AS bucket, ` + boardModel + ` AS model,
+		nullif(agent_name,'') AS agent_key, host(client_ip) AS ip_key,
+		nullif(identity_hash,'') AS hash_key,
+		CASE WHEN status <> 'success' THEN ` + boardError + ` END AS error_key
 	FROM public.request_metrics_projection
 	WHERE ` + strings.Join(clauses, " AND ") + `
 	  AND (SELECT backfill_complete FROM projection)
 ),
 summary AS (
-	SELECT ` + requestStatsAggregates + `,
-		count(DISTINCT api_key_id) AS active_api_keys,
-		count(DISTINCT nullif(model,'__unknown__')) AS active_models,
-		count(DISTINCT provider_id) AS providers
-	FROM bounded
+	SELECT measured.*, unique_models AS active_models
+	FROM (
+		SELECT ` + statsWithGroupedMembership("bounded") + `,
+			count(DISTINCT api_key_id) AS active_api_keys,
+			count(DISTINCT provider_id) AS providers
+		FROM bounded
+	) measured
 ),
 pie_groups AS (
-	SELECT d.dimension, d.key,` + boardMeasures + `
-	FROM bounded b
-	CROSS JOIN LATERAL (VALUES
-		('clients', nullif(agent_name,'')),
-		('client_ips', host(client_ip)),
-		('identity_hashes', nullif(identity_hash,'')),
-		('models', model),
-		('errors', CASE WHEN status <> 'success' THEN ` + boardError + ` END),
-		('statuses', status),
-		('tenants', tenant_id)
-	) AS d(dimension, key)
-	WHERE d.key IS NOT NULL
-	GROUP BY d.dimension, d.key
+	SELECT CASE
+		WHEN GROUPING(agent_key)=0 THEN 'clients'
+		WHEN GROUPING(ip_key)=0 THEN 'client_ips'
+		WHEN GROUPING(hash_key)=0 THEN 'identity_hashes'
+		WHEN GROUPING(model)=0 THEN 'models'
+		WHEN GROUPING(error_key)=0 THEN 'errors'
+		WHEN GROUPING(status)=0 THEN 'statuses'
+		ELSE 'tenants'
+	END AS dimension,
+	coalesce(agent_key, ip_key, hash_key, model, error_key, status, tenant_id) AS key,
+	` + boardMeasures + `
+	FROM bounded
+	GROUP BY GROUPING SETS ((agent_key), (ip_key), (hash_key), (model), (error_key), (status), (tenant_id))
 ),
 providers AS (
 	SELECT provider_id,
@@ -146,7 +151,7 @@ providers AS (
 ranked_pies AS (
 	SELECT *, row_number() OVER (PARTITION BY dimension ORDER BY requests DESC, key) AS rank
 	FROM (
-		SELECT * FROM pie_groups
+		SELECT * FROM pie_groups WHERE key IS NOT NULL
 		UNION ALL
 		SELECT 'providers', provider_code, request_count, total_tokens, credits, total_cost_usd FROM providers
 	) groups
@@ -157,31 +162,28 @@ pies AS (
 	) ORDER BY rank) AS items
 	FROM ranked_pies WHERE rank <= 25 GROUP BY dimension
 ),
-model_trends AS (
-	SELECT bucket, model,` + boardMeasures + `,
+top_models AS (
+	SELECT key FROM pie_groups WHERE dimension='models'
+	ORDER BY requests DESC, key LIMIT 6
+),
+chart_points AS (
+	SELECT bucket,
+		CASE WHEN model IN (SELECT key FROM top_models) THEN model ELSE '__others__' END AS series,
+		` + boardMeasures + `,
 		count(*) FILTER (WHERE status='success') AS success,
 		sum(latency_ms) AS latency_sum, count(latency_ms) AS latency_count
-	FROM bounded GROUP BY bucket, model
+	FROM bounded GROUP BY bucket, series
 ),
 trends AS (
 	SELECT bucket, sum(requests) AS requests, sum(tokens) AS tokens, sum(credits) AS credits, sum(cost_usd) AS cost_usd,
 		sum(success) AS success, coalesce(sum(latency_sum)::float8/nullif(sum(latency_count),0),0) AS avg_latency_ms
-	FROM model_trends GROUP BY bucket
-),
-ranked_models AS (
-	SELECT model, row_number() OVER (ORDER BY sum(requests) DESC, model) AS rank
-	FROM model_trends GROUP BY model
-),
-chart_points AS (
-	SELECT bucket, CASE WHEN m.rank <= 6 THEN t.model ELSE '__others__' END AS model,
-		sum(requests) AS requests, sum(tokens) AS tokens, sum(credits) AS credits, sum(cost_usd) AS cost_usd
-	FROM model_trends t JOIN ranked_models m USING (model)
-	GROUP BY bucket, 2
+	FROM chart_points GROUP BY bucket
 )
 SELECT projection.backfill_complete, projection.updated_at, projection.pending_since, to_jsonb(summary),
 	coalesce((SELECT jsonb_object_agg(dimension, items) FROM pies), '{}'::jsonb),
 	coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.bucket) FROM trends t), '[]'::jsonb),
-	coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.bucket, t.model) FROM chart_points t), '[]'::jsonb),
+	coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.bucket, t.model) FROM
+		(SELECT bucket, series AS model, requests, tokens, credits, cost_usd FROM chart_points) t), '[]'::jsonb),
 	coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.total_cost_usd DESC, p.provider_id)
 		FROM (SELECT * FROM providers ORDER BY total_cost_usd DESC, provider_id LIMIT 50) p), '[]'::jsonb)
 FROM projection CROSS JOIN summary`

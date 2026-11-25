@@ -426,6 +426,38 @@ VALUES
 			t.Fatalf("analytics agent filters were not applied before aggregation: %+v %+v %v", board.Trends, board.Pies, err)
 		}
 	})
+	t.Run("board_model_series_use_window_rank", func(t *testing.T) {
+		exec(`
+INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,traffic_class,status,raw_model_name,
+ total_tokens,credits_charged,cost_amount,cost_currency,latency_ms)
+SELECT 'board-rank-'||n, 'board-rank-'||n, timestamptz '2026-11-30 03:00Z' + (n/9)*interval '15 min',
+ 'rank-tenant','business',CASE WHEN n=8 THEN 'timeout' ELSE 'success' END,
+ 'model-'||(CASE WHEN n=9 THEN 8 ELSE n END), n, n, n*0.01, 'USD', n*100
+FROM generate_series(1,9) n;`)
+		if _, err := processor.ProcessBatch(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		filter := query.MetricsFilter
+		filter.TenantID = "rank-tenant"
+		filter.StartTime = time.Date(2026, 11, 30, 3, 0, 0, 0, time.UTC)
+		filter.EndTime = filter.StartTime.Add(time.Hour)
+		board, err := metrics.ReadRequestBoard(ctx, pool, metrics.BoardQuery{MetricsFilter: filter, BucketMinutes: 15})
+		if err != nil || len(board.Trends) != 2 || len(board.ModelPoints) != 8 {
+			t.Fatalf("unexpected chart: %+v, %v", board, err)
+		}
+		first := board.Trends[0]
+		if first.Requests != 8 || first.Success != 7 || first.AvgLatencyMS != 450 || first.Tokens != 36 {
+			t.Fatalf("unexpected first bucket: %+v", first)
+		}
+		last := board.ModelPoints[len(board.ModelPoints)-1]
+		if last.Model != "model-8" || last.Tokens != 9 || !last.Bucket.Equal(board.Trends[1].Bucket) {
+			t.Fatalf("window-wide leader not retained in its second bucket: %+v", last)
+		}
+		others := board.ModelPoints[0]
+		if others.Model != "__others__" || others.Requests != 2 || others.Tokens != 13 || others.Credits != 13 || others.CostUSD != 0.13 {
+			t.Fatalf("unexpected combined models: %+v", others)
+		}
+	})
 	t.Run("projected_cost_and_cache_economics", func(t *testing.T) {
 		exec(`
 INSERT INTO public.session_summaries VALUES ('economic-a','tenant-a','review'), ('economic-other','tenant-b','other tenant');
