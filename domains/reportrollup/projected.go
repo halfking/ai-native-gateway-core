@@ -179,8 +179,8 @@ func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []
 	if scope == "" || scope == projectedWorkbook {
 		groups := grainGroupSets(daily)
 		if scope == projectedWorkbook {
-			// The workbook has neither a range model sheet nor a provider/model
-			// sheet. Published daily rows also supply the daily model sheet.
+			// Select the five range dimensions shown in the workbook. Published
+			// rows also supply the daily model sheet.
 			groups = slices.DeleteFunc(groups, func(set string) bool {
 				return set == projectedModelGroup || set == "(provider_id, raw_model_name)" ||
 					(!daily && set == "(report_date, raw_model_name)")
