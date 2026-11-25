@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
-import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
@@ -42,6 +42,13 @@ import {
 // ★ 2026-11-25：过期请求防护（请求序号）与加载态文案（按已等待秒数分档）。
 import { createLatestRequestGuard } from '../utils/latestRequestGuard'
 import { logsLoadingCopy } from '../utils/logsLoadingCopy'
+// ★ 2026-11-25：页头时间范围选择器 ⇒ 实际查询窗口的换算（查询窗口 ≡ 显示窗口）。
+import {
+  endOfDay,
+  headerPresetById,
+  pickerRangeToQueryWindow,
+  rollingHoursWindow,
+} from '../utils/requestLogsWindow'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
@@ -606,30 +613,20 @@ const kxPresets = computed(() => {
   ]
 })
 
-// 近 N 天滚动窗（含今天）→ 分钟级窗口（本地时区）。
-function rollingWindowMinute(daysBack: number): KxDateRange {
-  const now = new Date()
-  const start = new Date(now.getTime() - daysBack * 24 * 3600 * 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  return { start: fmt(start), end: fmt(now) }
-}
-
-// TimePreset（含滚动小时窗）→ KxDateRange 面板值；d3 无标准预设 id，用
-// rollingWindowMinute 表达（3 天=近 72h）。custom 未选完时给 24h 兜底窗。
+// TimePreset（含滚动小时窗）→ KxDateRange 面板值。
+// ★ 2026-11-25：显示的窗口必须与 timeRange() 真正去查的窗口**同口径**——此前
+//   rollingWindowMinute(daysBack) 按天算却被传了小时数（h24 ⇒ 24 天），默认档
+//   「近 24 小时」在选择器上显示成「自定义 ｜ 24 天前 – 现在」（211 实测）。
+//   d3 / d7（深链 ?preset=d3|d7 / ?hours=72|168 的滚动语义）显示为同样的滚动窗。
+// custom 未选完时给 24h 兜底窗。
 const kxRangeValue = computed<KxDateRange>(() => {
-  const hours: Partial<Record<TimePreset, number>> = { h1: 1, h6: 6, h24: 24 }
-  if (hours[timePreset.value]) return rollingWindowMinute(hours[timePreset.value]!)
-  if (timePreset.value === 'd3') return rollingWindowMinute(3)
-  if (timePreset.value === 'd7') {
-    return makeDateRangePresets('datetime', ['last7d'])[0].resolve()
-  }
+  const now = new Date()
+  const hours: Partial<Record<TimePreset, number>> = { h1: 1, h6: 6, h24: 24, d3: 72, d7: 168 }
+  if (hours[timePreset.value]) return rollingHoursWindow(now, hours[timePreset.value]!)
   if (timePreset.value === 'custom') {
-    return customRangeValue.value ?? rollingWindowMinute(1)
+    return customRangeValue.value ?? rollingHoursWindow(now, 24)
   }
   // today/thisWeek/thisMonth/thisYear → 自然日历窗（本地时区，最晚到今天结束）
-  const now = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   const dayKey = (d: Date) =>
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -649,17 +646,16 @@ const kxRangeValue = computed<KxDateRange>(() => {
     case 'thisYear':
       return { start: `${now.getFullYear()}-01-01 00:00`, end: endOfToday }
     default:
-      return rollingWindowMinute(1)
+      return rollingHoursWindow(now, 24)
   }
 })
 
 // 右上角统一选择器的 apply：把 Kx 范围映射回 TimePreset + customDateRange。
-// 能对齐标准预设的走预设分支（today/h24/d7/thisMonth 有对应 TimePreset），
-// 其余（昨天/近14天/近30天/自定义分钟级）一律落 custom（分钟级 ISO）。
+// 能对齐标准预设的走预设分支（today/h24/thisMonth 有对应 TimePreset 且窗口同口径），
+// 其余（昨天/近7天/近14天/近30天/上月/自定义分钟级）一律落 custom（分钟级 ISO）。
+// ★ 2026-11-25：映射表与「选择器范围 ⇒ 查询窗口」的换算集中在 utils/requestLogsWindow.ts
+//   （近 7 天不再走滚动 'd7'；日界 23:59 补齐到 23:59:59.999）——查询窗口 ≡ 显示窗口。
 function onHeaderRangeApply(range: KxDateRange) {
-  const presetById: Record<string, TimePreset> = {
-    today: 'today', last24h: 'h24', last7d: 'd7', thisMonth: 'thisMonth',
-  }
   let matched = ''
   for (const preset of kxPresets.value) {
     const r = preset.resolve()
@@ -668,15 +664,14 @@ function onHeaderRangeApply(range: KxDateRange) {
       break
     }
   }
-  const next = presetById[matched]
+  const next = headerPresetById[matched]
   if (next) {
     timePreset.value = next
     customDateRange.value = null
     onTimePresetChange()
     return
   }
-  const s = parseLocalMinute(range.start)
-  const e = parseLocalMinute(range.end)
+  const { start: s, end: e } = pickerRangeToQueryWindow(range)
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e <= s) return
   timePreset.value = 'custom'
   customDateRange.value = [s.toISOString(), e.toISOString()]
@@ -741,7 +736,9 @@ function timeRange() {
       break
     }
     case 'thisMonth':
-      start = new Date(now.getFullYear(), now.getMonth(), 1); break
+      // 2026-11-25：到**今天结束**（与选择器显示的「~ 今天 23:59」同口径；此前止于此刻）。
+      start = new Date(now.getFullYear(), now.getMonth(), 1)
+      end.setTime(endOfDay(now).getTime()); break
     case 'thisYear':
       start = new Date(now.getFullYear(), 0, 1); break
     case 'custom': {
