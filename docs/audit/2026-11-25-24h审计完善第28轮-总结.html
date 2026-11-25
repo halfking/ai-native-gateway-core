@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-11-25 24h 审计与完善 · 第 28 轮总结</title>
+<style>
+  :root { --ink:#1f2933; --muted:#6b7787; --line:#e4e9ee; --blue:#2b6cb0; --red:#c53030; --green:#2f855a; --amber:#b7791f; --bg:#f7f9fb; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; color:var(--ink); background:var(--bg); line-height:1.65; padding:32px 16px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  h2 { font-size: 19px; margin: 34px 0 14px; padding-left: 10px; border-left: 4px solid var(--blue); }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin-bottom:16px; }
+  table { width:100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f4f8; font-weight: 600; white-space: nowrap; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; background:#eef2f6; padding:1px 5px; border-radius:4px; }
+  .pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .p-ok { background:#e6f4ea; color:var(--green); } .p-fail { background:#fdeaea; color:var(--red); }
+  .p-hold { background:#fff6e0; color:var(--amber); } .p-p1 { background:#fdeaea; color:var(--red); }
+  .p-p2 { background:#fff6e0; color:var(--amber); } .p-p3 { background:#eef2f6; color:var(--muted); }
+  .p-na { background:#eef2f6; color:var(--muted); }
+  .bars { margin-top: 8px; }
+  .bar-row { display:flex; align-items:center; margin: 9px 0; gap:10px; }
+  .bar-label { width: 170px; font-size: 13px; flex-shrink:0; }
+  .bar-track { flex:1; background:#edf1f5; border-radius: 5px; height: 22px; position: relative; }
+  .bar-fill { height:100%; border-radius:5px; }
+  .bar-num { width: 150px; font-size: 12.5px; font-weight: 600; flex-shrink:0; text-align:right; }
+  .fill-blue { background:#6b9bd1; } .fill-green { background:#63a880; } .fill-red { background:#e07070; } .fill-amber { background:#e2b566; } .fill-gray { background:#a9b4c0; }
+  .flex2 { display:flex; gap: 30px; flex-wrap: wrap; align-items: center; }
+  .legend { font-size: 13.5px; min-width: 260px; }
+  .legend div { margin: 5px 0; display:flex; justify-content:space-between; gap: 12px; }
+  .dot { display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:7px; vertical-align: 1px; }
+  .kpi { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi .card { margin:0; padding:14px 16px; }
+  .kpi b { display:block; font-size: 24px; line-height:1.3; }
+  .kpi span { color: var(--muted); font-size: 12.5px; }
+  .note { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+  ul { padding-left: 20px; }
+  li { margin: 5px 0; font-size: 13.5px; }
+  .footer { color: var(--muted); font-size: 12px; margin-top: 30px; }
+  .tag { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>24 小时审计与完善 · 第 28 轮总结</h1>
+  <div class="sub">2026-11-25 06:11 起 ｜ 审计窗口内 222 笔提交（非合并 168） ｜ 主档 <code>docs/operations/2026-11-23-211配置优化执行报告.md</code> §9.30 ㉓-44 ｜ 提交 <code>47a4ebfdb</code>（读数对象）</div>
+
+  <h2>① 结论 / 根因</h2>
+  <div class="kpi">
+    <div class="card"><b>0</b><span>Go 侧红灯：构建、全量 <code>ursmcheck</code>、变更包测试、installer、plugin-runtime 全绿</span></div>
+    <div class="card"><b style="color:var(--red)">8</b><span>前端窗口内新增的红（web 6 ＋ web-mobile 2），同一引入提交</span></div>
+    <div class="card"><b>2</b><span>条 P1 定位成立；实现被并行车道更根本的修复取代（已撤回）</span></div>
+    <div class="card"><b style="color:var(--red)">2</b><span>AGENTS.md 交接面的整块/段头丢失事故（L87、L108）</span></div>
+    <div class="card"><b>3</b><span>已删除的不活跃 worktree；1 个保全分支；0 个分支被删</span></div>
+  </div>
+  <div class="card">
+    <ul>
+      <li><b>后端没有回归，回归在前端和记录里。</b> Go 侧在合并后的上游基线上全绿；8 个前端红全是窗口内新增（基线树上这些文件全绿），根因是提交 <code>cdd155fff</code> 把「日对账」前端带进主线时没补六语种译文和三处登记表。</li>
+      <li><b>request-logs 的两个 P1 来自同一笔提交 <code>af2bb4970</code>，本轮定位成立，但实现已被上游更根本的修复取代：</b>把 <code>lane=probe|probe_history</code> 并进语义变量 <code>includeProbe</code>，历史探测视图会显示全量流量；含探测查询被自动截到 12 小时。本轮最初把截窗「显示出来」；并行车道指出<b>截窗本身不该存在</b>——日历型预设的 end 落在未来，截出的窗口必然 0 行——于是撤掉截窗并把超时根因（分区统计信息陈旧）修掉，211 实测 26s → 0.4s。本轮撤回自己的实现，以上游为准。</li>
+      <li><b>交接面丢了两块而没有任何门会红：</b> L87 整块在人工解冲突的合并里被丢，L108 段头被顶部插入的新块覆盖。根因不是内容不存在（git 历史与报告侧都在），而是 AGENTS.md 的完整性没有判据。</li>
+      <li><b>「预存红」要相对窗口而不是相对上一轮：</b> 另一车道登记的「既有预存红」里，有 6 个在 24h 窗口起点并不存在。</li>
+      <li><b>未合并分支不是垃圾，也不能由清理动作代并：</b> <code>codex/reconciliation-upgrade</code> 的检查点是一整套未获生产授权的 V2 读面（19 个冲突路径、2 个新迁移），保留待 owner 决策。</li>
+    </ul>
+  </div>
+
+  <h2>② 改动文件与关键行为</h2>
+  <div class="card">
+    <table>
+      <tr><th>#</th><th>文件</th><th>关键行为</th><th>验证</th></tr>
+      <tr><td>—</td><td>（已撤回）<code>admin/logs.go</code>、<code>RequestLogsView.vue</code>、8 个 <code>requests.ts</code> 等 13 个文件</td><td><code>36c278858</code> ⇒ <code>ddc6aed19</code> 撤回；以上游 <code>71af786f6</code>／<code>c0dad181d</code> 为准</td><td><span class="pill p-ok">与上游 diff 为空</span></td></tr>
+      <tr><td>3</td><td><code>web/src/locales/{6 语种}/reports.ts</code><br><code>web/src/i18n/localeValueBaseline.json</code></td><td>补齐「日对账」块（224 个叶子键）与 <code>legacySnapshotView</code> 的六语种真实译文；7 个同形值按先例有理由地小幅调高 <code>sameAsSource</code>；与并行车道 <code>bd0761526</code> 的占位镜像版同题，合并时取真实译文、棘轮按真实译文重算</td><td><span class="pill p-ok">i18n 17 文件／118 条绿</span></td></tr>
+      <tr><td>4</td><td><code>mobileListUx.spec.ts</code><br><code>web-mobile/…/orphanLedger.spec.ts</code><br><code>web-mobile/…/dynamicKeys.spec.ts</code></td><td>三处登记表按事实更新（行号漂移、新 API 模块、两个动态前缀）</td><td><span class="pill p-ok">3 spec 绿</span></td></tr>
+      <tr><td>5</td><td><code>AGENTS.md</code><br><code>AGENTS-archive-20261031.md</code></td><td>从 git 历史逐字恢复 L87、L79、L108；L71 去重；L23 段头接回正文；L107 就地订正</td><td><span class="pill p-ok">9 门绿</span></td></tr>
+      <tr><td>6</td><td><code>scripts/ursmcheck/agents_md_round_label_gate_test.go</code>（新）</td><td>R5 主档内轮标记唯一；R6 轮块只许搬、不许丢</td><td>变异自证 2/2</td></tr>
+      <tr><td>7</td><td><code>internal/rowsguard/rowsguard.go</code>（＋测试）<br><code>discovery/alias_sync.go</code></td><td>门的接收者识别扩到类型断言形态；4 个循环补终检</td><td><span class="pill p-ok">918 循环 0 违规</span></td></tr>
+      <tr><td>8</td><td>文档软链、4 个 README、W3 集成指南</td><td>悬空软链重定向；域数 69⇒83；集成指南加现状声明</td><td><span class="pill p-ok">已核</span></td></tr>
+      <tr><td>9</td><td><code>verify-211-captcha-ttl.sh</code>、<code>pipefail_race_ledger.tsv</code>、<code>cjk_var_sites.tsv</code>、<code>structured-registry-census.json</code>、<code>dashboard_session_summaries_window_test.go</code>、示例清单 <code>manifest-v3-example.json</code></td><td>代上游收口主干 6 条红（纯上游树 <code>6c18bf92c</code> 同条件对照同红）：修一个真站点、裁决 6 个 pipefail 候选、登记 1 个夹具、示例键改对、时间窗门扩展</td><td><span class="pill p-ok">5 组门绿</span> 变异 2/2</td></tr>
+      <tr><td>10</td><td><code>bg/node_probe_quota_verdict_test.go</code></td><td>修一条既有偶发假红：两次各取时钟的时长被要求严格相等（30 次 2 败、各差 1 纳秒）⇒ 容许 1ms 抖动</td><td><span class="pill p-ok">200 次 0 败</span> 变异仍红</td></tr>
+      <tr><td>11</td><td><code>pipefail_race_ledger.tsv</code>、范围收窄候选清单</td><td>上游停机预算修复改了 shell 没同步两份生成器台账 ⇒ 重生成；2 个新候选点按实测（19 B／41 B ≤ PIPE_BUF）裁决</td><td><span class="pill p-ok">pipefail 全族绿</span></td></tr>
+    </table>
+  </div>
+
+  <h2>③ 测试命令与结果</h2>
+  <div class="card">
+    <table>
+      <tr><th>命令 / 范围</th><th>合并后基线 <code>32be90f2a</code></th><th>最终树 <code>47a4ebfdb</code></th></tr>
+      <tr><td><code>go build ./...</code></td><td><span class="pill p-ok">EXIT 0</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
+      <tr><td><code>go test ./scripts/ursmcheck/ -count=1 -timeout 1800s</code></td><td><span class="pill p-ok">ok 339.907s</span> 四项冻结全 1</td><td><span class="pill p-ok">ok 310.604s</span> 指纹首尾相同</td></tr>
+      <tr><td>24h 变更包 <code>go vet</code> / <code>go test</code></td><td><span class="pill p-ok">vet 0</span> <span class="pill p-ok">33 ok / 0 FAIL</span></td><td><span class="pill p-ok">vet 0 · 43 ok / 0 FAIL</span></td></tr>
+      <tr><td><code>installer</code> 模块 build / vet / test</td><td><span class="pill p-ok">14 包 ok</span></td><td><span class="pill p-ok">build/vet/test 均 0、14 包 ok</span></td></tr>
+      <tr><td><code>plugin-runtime</code> 6 个模块</td><td><span class="pill p-ok">全绿</span></td><td><span class="pill p-ok">6 个模块 全绿</span></td></tr>
+      <tr><td><code>scripts/checks/fresh-install-smoke.sh</code></td><td><span class="pill p-ok">PASS</span> 四阶段；交接凭证 433 条、接管 372/372、容器零残留</td><td><span class="pill p-na">未重跑（相关文件其后无改动）</span></td></tr>
+      <tr><td><code>web</code>：vue-tsc / vitest / build</td><td>0 错 ／ <span class="pill p-fail">6 红</span> ／ EXIT 0</td><td><span class="pill p-ok">0 红</span> ／ 3839 通过 ／ EXIT 0</td></tr>
+      <tr><td><code>web-mobile</code>：vue-tsc / vitest</td><td>0 错 ／ <span class="pill p-fail">13 红</span>（基线 11）</td><td><span class="pill p-fail">11 红</span> ／ 9309 通过 ／ EXIT 1</td></tr>
+      <tr><td>maestro <code>selftest.mjs</code></td><td><span class="pill p-ok">PASS</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
+      <tr><td><code>web-tests</code>（Playwright）</td><td><span class="pill p-na">未执行：未装依赖、需在线环境</span></td><td><span class="pill p-na">同左</span></td></tr>
+    </table>
+    <p class="note">前端红的归因方法：在 24h 窗口起点 <code>18e6aab5b</code> 的树上同条件只跑这些文件 —— web 的 3 个文件 24/24 通过；web-mobile 11 红。<code>web-mobile</code> 余下的 11 红是窗口之前就有的行号漂移类，不在本轮范围。</p>
+  </div>
+
+  <h2>④ 提交面画像（窗口内 168 笔非合并提交）</h2>
+  <div class="card">
+    <div class="flex2">
+      <div class="bars" style="flex:1.4; min-width:380px">
+        <div class="bar-row"><span class="bar-label">文档 / 记录</span><span class="bar-track"><span class="bar-fill fill-blue" style="width:100%"></span></span><span class="bar-num">92 笔</span></div>
+        <div class="bar-row"><span class="bar-label">后端代码</span><span class="bar-track"><span class="bar-fill fill-red" style="width:40.2%"></span></span><span class="bar-num">37 笔</span></div>
+        <div class="bar-row"><span class="bar-label">门与钉测</span><span class="bar-track"><span class="bar-fill fill-green" style="width:23.9%"></span></span><span class="bar-num">22 笔</span></div>
+        <div class="bar-row"><span class="bar-label">安装器 / 迁移</span><span class="bar-track"><span class="bar-fill fill-amber" style="width:6.5%"></span></span><span class="bar-num">6 笔</span></div>
+        <div class="bar-row"><span class="bar-label">脚本 / 部署</span><span class="bar-track"><span class="bar-fill fill-amber" style="width:6.5%"></span></span><span class="bar-num">6 笔</span></div>
+        <div class="bar-row"><span class="bar-label">前端</span><span class="bar-track"><span class="bar-fill fill-gray" style="width:5.4%"></span></span><span class="bar-num">5 笔</span></div>
+      </div>
+      <div class="flex2" style="gap:18px">
+        <svg width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="按作者">
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#edf1f5" stroke-width="26"/>
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#6b9bd1" stroke-width="26" stroke-dasharray="217.27 439.82" stroke-dashoffset="0" transform="rotate(-90 90 90)"/>
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#63a880" stroke-width="26" stroke-dasharray="164.93 439.82" stroke-dashoffset="-217.27" transform="rotate(-90 90 90)"/>
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#e2b566" stroke-width="26" stroke-dasharray="39.28 439.82" stroke-dashoffset="-382.20" transform="rotate(-90 90 90)"/>
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#e07070" stroke-width="26" stroke-dasharray="10.47 439.82" stroke-dashoffset="-421.48" transform="rotate(-90 90 90)"/>
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#a98bd1" stroke-width="26" stroke-dasharray="5.24 439.82" stroke-dashoffset="-431.95" transform="rotate(-90 90 90)"/>
+          <circle cx="90" cy="90" r="70" fill="none" stroke="#a9b4c0" stroke-width="26" stroke-dasharray="2.62 439.82" stroke-dashoffset="-437.19" transform="rotate(-90 90 90)"/>
+          <text x="90" y="86" text-anchor="middle" font-size="22" font-weight="700" fill="#1f2933">168</text>
+          <text x="90" y="106" text-anchor="middle" font-size="12" fill="#6b7787">非合并提交</text>
+        </svg>
+        <div class="legend">
+          <div><span><span class="dot" style="background:#6b9bd1"></span>huangxt</span><b>83</b></div>
+          <div><span><span class="dot" style="background:#63a880"></span>huangzhouzixuan</span><b>63</b></div>
+          <div><span><span class="dot" style="background:#e2b566"></span>Mavis Merge Bot</span><b>15</b></div>
+          <div><span><span class="dot" style="background:#e07070"></span>mcode</span><b>4</b></div>
+          <div><span><span class="dot" style="background:#a98bd1"></span>mavis</span><b>2</b></div>
+          <div><span><span class="dot" style="background:#a9b4c0"></span>halfking</span><b>1</b></div>
+        </div>
+      </div>
+    </div>
+    <p class="note">另有合并提交 54 笔；非合并提交触及 318 个文件。四条车道（本会话系列、huangzhouzixuan 系列、Mavis/mcode、halfking）在同一条主线上并行落笔。</p>
+  </div>
+
+  <h2>⑤ 审计发现：已修 与 登记</h2>
+  <div class="card">
+    <table>
+      <tr><th>级别</th><th>发现</th><th>出处</th><th>状态</th></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td><code>lane=probe|probe_history</code> 被并入 <code>includeProbe</code> ⇒ 历史探测视图显示全量流量</td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td>含探测查询被自动截到 12 小时——上游判定截窗本身不该存在（日历型预设的 end 在未来，截出的窗口必然 0 行）</td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td>「日对账」前端六语种缺译（225 个键）＋三处登记表未更新 ⇒ 8 个门禁红</td><td><code>cdd155fff</code></td><td><span class="pill p-ok">已修（含 7 个同形值的有理由基线调高）</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>rowsguard 门看不见类型断言形态的循环（4 处缺终检；文件无生产调用方）</td><td><code>5e6b4812b</code></td><td><span class="pill p-ok">已修＋门扩展</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>AGENTS.md：L87 整块、L108 段头、L79 ⑪⑫ 丢失；L71 归档未摘净；无门</td><td><code>570087c16</code>、<code>34b4a9a6f</code></td><td><span class="pill p-ok">已恢复＋新门</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>L107 记录「不照搬退役/后继框架」与事实相反（<code>e7e03cdb8</code> 带进了整套框架）</td><td>L107</td><td><span class="pill p-ok">已就地订正</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>maestro 判定：非 0/1/2 的退出码一律当 PASS（被杀的 Maestro ⇒ PASS）</td><td><code>fc580c5fd</code></td><td><span class="pill p-hold">登记</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>默认路径向生产机 scp 脚本到可预测的 /tmp 路径并签 super_admin JWT</td><td><code>a6797a559</code></td><td><span class="pill p-hold">登记</span></td></tr>
+      <tr><td><span class="pill p-p1">P1 潜伏</span></td><td>W3 外部钩子：休眠；接线后来源判定失效、凭据头外送、无熔断无观测</td><td><code>22fcf788c</code>、<code>742367828</code></td><td><span class="pill p-ok">现状声明</span> <span class="pill p-hold">修复待 owner</span></td></tr>
+      <tr><td><span class="pill p-p2">P2</span></td><td>探测口径静默屏蔽只修一半；低版本清单补登后的锁影响；域数订正漏 4 个 README</td><td><code>19123218a</code>、<code>9d5b1db65</code>、<code>ccc28f2d3</code></td><td><span class="pill p-ok">README 已修</span> <span class="pill p-hold">其余登记</span></td></tr>
+      <tr><td><span class="pill p-p3">P3</span></td><td>悬空文档软链（自 08-31）；<code>.audit-validation</code> 无保留策略（197 目录）；本地容器崩溃循环（1003 次重启）；<code>.build-local</code> 11GB；3 个已退出的验收容器</td><td>环境</td><td><span class="pill p-ok">软链已修</span> <span class="pill p-hold">其余登记</span></td></tr>
+    </table>
+  </div>
+
+  <h2>⑥ 分支与 worktree 处置</h2>
+  <div class="card">
+    <table>
+      <tr><th>对象</th><th>判定</th><th>动作</th></tr>
+      <tr><td><code>codex/reconciliation-upgrade</code></td><td>2 笔已被主线吸收；检查点是未获生产授权的 V2 功能（内存合并 19 个冲突路径、带入 2 个新迁移）</td><td><span class="pill p-hold">保留，待 owner</span></td></tr>
+      <tr><td>worktree <code>/private/tmp/maincheck</code></td><td>干净、无独有提交</td><td><span class="pill p-ok">已删除</span></td></tr>
+      <tr><td>worktree <code>reconciliation-release-preview</code></td><td>335 个暂存文件，57 个不在任何分支上</td><td><span class="pill p-ok">已提交为保全分支 <code>codex/reconciliation-release-preview</code> 后删除</span></td></tr>
+      <tr><td>worktree <code>reconciliation-upgrade</code></td><td>干净、等于分支尖端</td><td><span class="pill p-ok">已删除，分支保留</span></td></tr>
+      <tr><td>6 个 stash</td><td>全部过时或已被吸收</td><td><span class="pill p-hold">未丢弃（不可逆、未授权）</span></td></tr>
+    </table>
+  </div>
+
+  <h2>⑦ 遗留风险与待 owner 决策</h2>
+  <div class="card">
+    <ul>
+      <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两个分支目前都只在本地。</li>
+      <li><span class="tag">W3 外部钩子</span> —— 是否上线；上线前须先修来源判定、凭据头脱敏、熔断与观测、流式空正文、改写体校验。</li>
+      <li><span class="tag">登录 captcha 计数</span> —— 是否给服务端失败计数加 TTL 或重置端点（目前只绕开了 UI 登录）。</li>
+      <li><span class="tag">maestro runner</span> —— 判定口径把未知退出码当绿；预置会话默认开启且在生产机落文件。</li>
+      <li><span class="tag">web-mobile</span> —— 窗口前既有的 11 个红（行号漂移类）；动态键 <code>rr.evidence.values.</code> 是扫描器看不见的第四种拼接形态。</li>
+      <li><span class="tag">环境</span> —— <code>llm-gateway-local-8782</code> 崩溃循环（本地 PG 54318 不可达）；<code>.build-local</code> 11GB；<code>.audit-validation</code> 无保留策略；3 个已退出的 <code>llmgw-211-*</code> 容器。</li>
+      <li><span class="tag">记录</span> —— 归档档内 L21、L74 各有两份；L79 在历史上被两轮用过；3 条旧归档指针标题对不上段头。</li>
+      <li><span class="tag">推送保护</span> —— pre-push 钩子在本克隆未接线（接上会拦住一切推送）。等价执行结果：敏感信息扫描 BLOCK 32／WARN 2073，<b>本轮新增的行上 0 条</b>；其中 2 条是根目录 <code>DEPLOYMENT-VERIFICATION-GUIDE.md</code> 的本地开发库口令，请 owner 确认是否移除。</li>
+      <li><span class="tag">上游带入</span> —— pre-push 钩子的 <code>tests/*.sh</code> 有 6 套真红（纯上游树同条件同红）：门脚本登记册缺上游新增的两个脚本、deploy_211 契约 1 条、ssh-retry 7 条、扫描白名单缺 1 条、cgo 名单不一致。</li>
+      <li><span class="tag">沿用</span> —— 上一轮登记的 owner 待决项（N1/N5/N6 口径、通道重放 983、闸门扩面剩余半边、census 口径、方案 A、P2）本轮无变化。</li>
+    </ul>
+    <p class="note">本轮零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。所有修复在私有工作树上完成，逐文件暂存后提交。</p>
+  </div>
+
+  <div class="footer">读数对象 47a4ebfdb（最终提交上的 go build 与全量 ursmcheck；扩展包、模块与前端读数取自 ab0c0b5b1；内容指纹首尾相同；已并入 origin/main b36089b1d）；本轮提交 fa1338d75 / 823ccc6c3 / 8e2b86bfc / 4607925b5 / b03f94f7e / 5da9a7208 / ee41e80bc / c3922dd97 / 47a4ebfdb 与三次合并，撤回 ddc6aed19；零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。</div>
+</div>
+</body>
+</html>

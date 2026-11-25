@@ -178,6 +178,14 @@ func (s *AliasSyncService) cleanOrphanedAliases(ctx context.Context, result *Ali
 			result.CleanedAliases++
 		}
 	}
+	// ★ 迭代终检（2026-11-25 第 28 轮）：游标中途死亡必须如实报错——否则「要禁用的
+	// 孤儿别名」只拿到半截清单却被当成完整结果去执行。rows 是结构性接口值（见
+	// NewAliasSyncService 的形参类型）⇒ 用逗号 ok 断言取 Err；替身没实现时不算错。
+	if rows, ok := rows.(interface{ Err() error }); ok {
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate model_aliases for orphan cleanup: %w", err)
+		}
+	}
 
 	for _, id := range toDisable {
 		//nolint:errcheck // best-effort exec, non-critical
@@ -226,6 +234,12 @@ func (s *AliasSyncService) syncCanonicalNames(ctx context.Context, result *Alias
 			// 'disabled' is the legal soft-off (see cleanOrphanedAliases).
 			s.db.Exec(ctx, `UPDATE model_aliases SET status = 'disabled' WHERE canonical_id = $1`, r.CanonicalID)
 			result.CleanedAliases++
+		}
+	}
+	// ★ 迭代终检（2026-11-25 第 28 轮）：同 cleanOrphanedAliases——半截同步不得报成功。
+	if rows, ok := rows.(interface{ Err() error }); ok {
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate model_aliases for canonical-name sync: %w", err)
 		}
 	}
 
@@ -314,6 +328,12 @@ func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (stri
 		}
 		fmt.Fprintf(&sb, "- %s (%s): %d models\n", name, code, count)
 	}
+	// ★ 迭代终检（2026-11-25 第 28 轮）：截断的报告不得当成完整报告返回。
+	if rows, ok := rows.(interface{ Err() error }); ok {
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("iterate providers: %w", err)
+		}
+	}
 
 	sb.WriteString("\n## By Family\n\n")
 	rows2, err := s.db.Query(ctx, `
@@ -336,6 +356,11 @@ func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (stri
 			continue
 		}
 		fmt.Fprintf(&sb, "- %s: %d models\n", family, count)
+	}
+	if rows2, ok := rows2.(interface{ Err() error }); ok {
+		if err := rows2.Err(); err != nil {
+			return "", fmt.Errorf("iterate families: %w", err)
+		}
 	}
 
 	return sb.String(), nil

@@ -29,6 +29,9 @@ import { JOURNEY_LIFECYCLE_STATES } from '@/api/requestJourney'
 import { PROBE_TASK_STATUSES, PROBE_TASK_OUTCOMES } from '@/api/probeTriStateTasks'
 import { SELF_CHECK_RUN_STATUSES } from '@/api/selfCheck'
 import { REQUEST_DETAIL_BODY_STATUSES, REQUEST_DETAIL_BODY_STATUS_UNKNOWN } from '@/api/requestDetail'
+// —— 2026-11-25 补登记：日对账证据面板两处拼接前缀的取值来源（见 DYNAMIC_KEYS 末尾 rr.evidence 两条）
+import { dailySections } from '@/api/dailyReconciliation'
+import { dailyEvidenceLayouts, invoiceEvidenceLayout } from '@/components/common/dailyReconciliationFields'
 import { sourceBlob, concatPrefixes, prefixHits, isRealPrefix, flattenDict, PREFIX_FORM_NAMES } from './keyScan'
 
 /**
@@ -143,6 +146,14 @@ const DYNAMIC_KEYS: Array<[prefix: string, suffixes: readonly string[]]> = [
   //   的字面量集**，不是后端枚举 —— 改视图里的 WindowKey/tab 联合就得同步。
   ['live.window.', ['5m', '1h', 'day']], // LiveView.vue WINDOW_KEYS
   ['live.tab.', ['providers', 'models', 'clients']], // LiveView.vue tab as const
+  // ★ 日对账证据面板（2026-11-24 由 cdd155fff 引入；引入时漏登 ⇒ 2026-11-25 由 ⑥-1 报出后补登记）。
+  //   后缀**取自代码实际用的常量**，不手抄：
+  //   · sections —— 证据类型下拉框逐项拼接，取值 = dailySections（7 个分区，含 invoices）；
+  //   · fields   —— 逐字段拼接，取值 = 各布局的 summary + rows 字段名并集
+  //     （6 个日分区 + 发票行布局，去重），即调用方传入的 layout.summary / layout.rows。
+  //   两者都是**前端常量** ⇒ 闭合集 ⇒ 不进 OPEN_PREFIXES。
+  ['rr.evidence.sections.', dailySections], // DailyReconciliationEvidence.vue 的 select v-for
+  ['rr.evidence.fields.', [...new Set([...Object.values(dailyEvidenceLayouts), invoiceEvidenceLayout].flatMap((l) => [...l.summary, ...l.rows]))]], // DailyReconciliationValues.vue 的 dl v-for
   // ── ② 区结束 ──────────────────────────────────────────────────────────
 ]
 
@@ -162,7 +173,7 @@ const OPEN_PREFIXES: readonly string[] = [
  * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
-const GENERATED_KEY_TOTAL = 191 // 本批实测（live 页 +6：window 3 + tab 3）：48 个前缀 × 各自后缀数
+const GENERATED_KEY_TOTAL = 295 // 2026-11-25 重测：191 + 104（日对账证据：sections 7 + fields 97）：50 个前缀 × 各自后缀数（原 191 = 48 个前缀，live 页 +6 那一版）
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {

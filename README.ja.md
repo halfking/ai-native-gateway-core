@@ -104,7 +104,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | パス | 役割 |
 |------|------|
 | `cmd/gateway/` | コンポジションルート —— シングルバイナリの本番エントリ（データ + コントロールプレーン） |
-| `domains/` | 69 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
+| `domains/` | 83 の DDD ドメイン —— `streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security など |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | モバイルフロントエンド（Vue 3 + TypeScript）——第 2 の本番 UI。デプロイは `dist/` ビルドなしでは実行されない |
 | `bg/` | バックグラウンドワーカー —— プロービング、ライフサイクルクリーンアップ、統計集計、パーティションメンテナンス |

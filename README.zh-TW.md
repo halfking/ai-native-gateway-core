@@ -104,7 +104,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | 路徑 | 職責 |
 |------|------|
 | `cmd/gateway/` | 組合根——單一二進位生產入口（資料面 + 控制面） |
-| `domains/` | 69 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
+| `domains/` | 83 個 DDD 領域——`streaming`、`dispatch`、`credential`、`session`(+v2)、`ursm`、hooks、security… |
 | `admin/` + `web/` | 管理 REST API + Vue 3 + TypeScript SPA（Element Plus、ECharts） |
 | `web-mobile/` | 行動端前端（Vue 3 + TypeScript）——第二生產前端；部署要求先建置 `dist/` |
 | `bg/` | 背景工作者——探測、生命週期清理、統計聚合、分區維護 |

@@ -104,7 +104,7 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | المسار | الدور |
 |--------|------|
 | `cmd/gateway/` | جذر التركيب — مدخل الإنتاج بثنائي واحد (مستوى البيانات + مستوى التحكم) |
-| `domains/` | 69 نطاقًا بأسلوب DDD — `streaming`، `dispatch`، `credential`، `session`(+v2)، `ursm`، hooks، security… |
+| `domains/` | 83 نطاقًا بأسلوب DDD — `streaming`، `dispatch`، `credential`، `session`(+v2)، `ursm`، hooks، security… |
 | `admin/` + `web/` | واجهة REST للإدارة + Vue 3 + TypeScript SPA (Element Plus، ECharts) |
 | `web-mobile/` | واجهة الجوال (Vue 3 + TypeScript) — واجهة الإنتاج الثانية؛ يرفض النشر العمل دون بناء `dist/` |
 | `bg/` | عمال الخلفية — السبر، تنظيف دورة الحياة، تجميع الإحصاءات، صيانة الأقسام |

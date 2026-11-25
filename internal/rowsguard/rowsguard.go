@@ -423,11 +423,30 @@ func loopReceiver(loop *ast.ForStmt) string {
 	if !ok || sel.Sel.Name != "Next" {
 		return ""
 	}
-	id, ok := sel.X.(*ast.Ident)
+	id, ok := rowsReceiverIdent(sel.X)
 	if !ok {
 		return ""
 	}
 	return id.Name
+}
+
+// rowsReceiverIdent 认两种接收者写法：
+//   - `rows.Next()` —— 直接的标识符；
+//   - `rows.(interface{ Next() bool }).Next()` —— 类型断言形态（外层可能带括号）。
+//
+// ★ 第二种是 2026-11-25 第 28 轮登记的盲点：本门此前只认 *ast.Ident ⇒ 这类循环
+//
+//	从不被计数 ⇒ 终检缺失时门照样绿。
+func rowsReceiverIdent(x ast.Expr) (*ast.Ident, bool) {
+	switch v := x.(type) {
+	case *ast.Ident:
+		return v, true
+	case *ast.ParenExpr:
+		return rowsReceiverIdent(v.X)
+	case *ast.TypeAssertExpr:
+		return rowsReceiverIdent(v.X)
+	}
+	return nil, false
 }
 
 // errCallPositions 收集每个 receiver 的迭代终检调用位置。

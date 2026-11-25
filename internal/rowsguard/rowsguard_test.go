@@ -1,6 +1,8 @@
 package rowsguard
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,4 +204,43 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// TestLoopReceiverSeesTypeAssertionForm —— 量具自证（2026-11-25 第 28 轮登记的盲点）：
+// `for rows.(interface{ Next() bool }).Next()` 这种**类型断言形态**的接收者也必须被
+// 认出来。此前 loopReceiver 只认 `*ast.Ident` ⇒ 这类循环从不被计数 ⇒ 终检缺失时门
+// 照样绿（实测：discovery/alias_sync.go 有 4 处这样的循环、全部缺终检、门一直绿）。
+//
+// 同时钉住「不该认的不认」：`x.getRows().Next()`（调用结果不是标识符）与
+// `for rows.Close()`（方法名不是 Next）都不是本门的循环。
+func TestLoopReceiverSeesTypeAssertionForm(t *testing.T) {
+	src := `package p
+func f(rows, other, x any) {
+	for rows.Next() { _ = rows }
+	for rows.(interface{ Next() bool }).Next() { _ = rows }
+	for (other.(pgx.Rows)).Next() { _ = other }
+	for x.(func() any)().Next() { _ = x }
+	for x.getRows().Next() { _ = x }
+	for rows.Close() { _ = rows }
+	for ; rows != nil; { _ = rows }
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "probe.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse probe: %v", err)
+	}
+	got := map[string]bool{}
+	for _, loop := range forNextLoops(file) {
+		got[loopReceiver(loop)] = true
+	}
+	want := map[string]bool{"rows": true, "other": true}
+	if len(got) != len(want) {
+		t.Fatalf("loopReceiver 认出的接收者 = %v，期望 %v ⇒ 类型断言形态没被认出（或多认了）", got, want)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Fatalf("loopReceiver 没认出接收者 %q（得到 %v）", name, got)
+		}
+	}
 }
