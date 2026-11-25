@@ -68,3 +68,29 @@ reconciliationShadowDecision: env != "true" => disabled（reason=switch_not_enab
 --- 两道门的口径（为什么没有单方面修） ---
 tests/deploy_nocgo_build_test.sh: CGO_ENABLED=0 go list -deps ./cmd/gateway 不得含 go-sqlite3 —— 按惯例（storage/sqlite/driver_cgo.go|driver_nocgo.go）拆 //go:build cgo 即可回绿。
 tests/verify_cgo_convention_test.sh: CGO_ENABLED=1 闭包里只有登记的 6 个包可到达 go-sqlite3 —— 拆构建约束后该门仍红；要么让日志走 storage 层，要么更新登记册与 AGENTS.md 的 CGO 边界。属 owner 的设计决定。
+
+===== D. deploy_ssh_retry_test.sh：夹具缺临时密钥文件（提交 09ab986f1） =====
+--- before（e4034d251，无外部密钥）---
+ summary: 14 passed, 7 failed
+   FAIL ssh_run 1st try: rc=1 out=ssh-retry: injected SSH key missing for target 245
+   FAIL ssh_run retry: rc=1 out=ssh-retry: injected SSH key missing for target 245
+   FAIL ssh_run call count: rc=1 out=ssh-retry: injected SSH key missing for target 245
+   FAIL ssh_run exhausted: rc=1 out_tail=sh: line 252: SSH_RETRY_KEY_ARGS: unbound variable calls=0
+   FAIL exhausted call count: rc=1 out_tail=sh: line 252: SSH_RETRY_KEY_ARGS: unbound variable calls=0
+   FAIL auth fail: rc=1 elapsed=0
+   FAIL no fallback switch. log: [ssh-retry] init target=154 socket=/var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T//ssh-retry-67846/cm-154.sock
+--- 试跑：只从外部给一个空的临时密钥文件（SSH_KEY_FILE=<空文件>） ---
+ summary: 21 passed, 0 failed
+--- 根因 ---
+ 被测库 scripts/deploy-lib/ssh-retry.sh：scripts/deploy-lib 是受版本控制的软链（mode 120000）→ ../../../deploy-lib，
+ 解析到 /Users/niuer/workspace/ai-native-tools/deploy/deploy-lib，属另一个 git 仓库（ai-native-tools）。
+ 同级仓库提交 ab0897b5（2026-11-05）起 _ssh_retry_key_args 要求密钥文件在磁盘上存在；本仓测试用假 ssh 桩、未提供密钥
+ ⇒ 每次 ssh_run 在第一步就失败（7 条断言同一起点）。
+--- after（09ab986f1：夹具自造空的临时密钥文件；无外部密钥）---
+ bash 3.2: summary: 21 passed, 0 failed
+ bash 5  : summary: 21 passed, 0 failed
+ tests/gate_scripts_caller_registry_test.sh: PASS=227 FAIL=0（接进 Makefile 快门 ⇒ 豁免表删掉旧行，13 → 12 行）
+ make guards-gate-scripts: rc=0 secs=292 | 通过 38 / 失败 0
+--- 另登记（属 deploy-lib 仓库，未动） ---
+ 密钥缺失路径上，同级库第 252 行 "${#SSH_RETRY_KEY_ARGS[@]}" 在 bash 3.2 + set -u 下报 unbound variable
+ （仍以 rc=1 失败，但错误信息不再是 "injected SSH key missing"）；bash 5 下不出现。
