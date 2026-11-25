@@ -287,6 +287,7 @@ for (const pid of PRESET_IDS) {
     presetRows.push(row)
     continue
   }
+  const beforePreset = ((await js(boardURLQuery)) || []).length
   const clicked = await js(
     `(() => { const b = document.querySelector('[data-testid="kx-dr-preset-${pid}"]'); if (b) { b.click(); return true; } return false })()`,
   )
@@ -297,28 +298,27 @@ for (const pid of PRESET_IDS) {
     continue
   }
   await sleep(400)
-  const beforePreset = ((await js(boardURLQuery)) || []).length
   // 非 instant 模式需要点击应用。按新条目计数，同一个窗口也可能重新发请求。
   await js(`(() => { const b = document.querySelector('[data-testid="kx-dr-apply"]'); if (b) b.click(); return !!b })()`)
-  let url = ''
-  for (let i = 0; i < 30; i++) {
-    await sleep(500)
-    const urls = (await js(boardURLQuery)) || []
-    if (urls.length > beforePreset) {
-      url = urls.at(-1)
-      break
-    }
-  }
-  let q = {}
-  try {
-    q = Object.fromEntries(new URL(url).searchParams.entries())
-  } catch {
-    q = {}
-  }
   const rangeText = await js(
     `(() => { const e = document.querySelector('.kx-dr-trigger__range'); return e ? (e.textContent || '').trim() : '' })()`,
   )
   const shown = windowFromRangeText(rangeText)
+  let url = ''
+  for (let i = 0; i < 30 && shown; i++) {
+    await sleep(500)
+    const urls = ((await js(boardURLQuery)) || []).slice(beforePreset)
+    const matching = urls.find((candidate) => {
+      const { searchParams } = new URL(candidate)
+      const days = searchParams.get('days')
+      return searchParams.has('start')
+        ? searchParams.get('start') === shown.start && searchParams.get('end') === shown.end
+        : days !== null && Number(days) === shown.days
+    })
+    url = matching || urls.at(-1) || url
+    if (matching) break
+  }
+  const q = url ? Object.fromEntries(new URL(url).searchParams.entries()) : {}
   row.shown = rangeText
   row.req = q.start ? `[${q.start}..${q.end}]` : `days=${q.days}`
   if (!shown || !url) {
