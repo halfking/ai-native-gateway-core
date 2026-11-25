@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -134,4 +135,56 @@ func TestEmitTelemetry_PlainSuccessStaysSilent(t *testing.T) {
 	})
 	require.EqualValues(t, 0, delta,
 		"plain success must not attempt a routingopt outcome report")
+}
+
+func TestEmitTelemetry_UsageEventCarriesServingCanonicalID(t *testing.T) {
+	fallbackID := 72
+	for _, tc := range []struct {
+		name        string
+		canonicalID *int
+	}{
+		{name: "fallback offer", canonicalID: &fallbackID},
+		{name: "unmapped offer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer db.Close()
+			db.MatchExpectationsInOrder(false)
+			db.ExpectExec(`INSERT INTO _request_logs_hot`).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+			db.ExpectExec(`INSERT INTO routing_decision_log_hot`).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+			client := telemetry.NewClientWithRequestLogDB(db)
+			defer client.Stop()
+			handler := NewChatHandler(nil, nil, nil, nil, nil, nil)
+			handler.SetTelemetry(client)
+			var terminal *telemetry.RequestLogEntry
+			handler.SetRequestLogHook(func(entry *telemetry.RequestLogEntry) {
+				terminal = entry
+			})
+
+			requestID := "req-serving-canonical"
+			logCtx := handler.NewRequestLogContext(
+				httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), requestID, time.Now())
+			handler.emitTelemetry(audit.Event{
+				RequestID:     requestID,
+				ClientModel:   "requested-model",
+				CanonicalName: "requested-model",
+			}, &executors.ExecuteResult{
+				Candidate: provider.Candidate{
+					CredentialID: 3, ProviderID: 5,
+					RawModel: "provider/fallback", CanonicalID: tc.canonicalID,
+				},
+				Response: &http.Response{StatusCode: http.StatusOK, Header: http.Header{}},
+			}, "", nil, nil, "chat", nil, []byte(`{"model":"requested-model"}`),
+				[]byte(`{"usage":{"prompt_tokens":2,"completion_tokens":3}}`), logCtx)
+
+			require.NotNil(t, terminal)
+			event, ok := stats.EventFromTelemetry(terminal, time.Now())
+			require.True(t, ok)
+			require.Equal(t, stats.EventRequestSucceeded, event.EventType)
+			require.Equal(t, "provider/fallback", event.RawModelName)
+			require.Equal(t, tc.canonicalID, event.CanonicalID)
+		})
+	}
 }
