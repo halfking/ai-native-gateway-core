@@ -177,7 +177,7 @@
   <h2>⑦ 遗留风险与待 owner 决策</h2>
   <div class="card">
     <ul>
-      <li><span class="tag">cgo 边界</span> —— 两道门口径不同：依赖图绊线按惯例拆 <code>//go:build cgo</code> 即可回绿；登记册门要求 cgo=1 闭包里只有登记的 6 个包能到达 go-sqlite3（让日志走 storage 层，或更新登记册与 CGO 边界）。证据：<code>docs/audit/evidence/2026-11-25-round28-prepush-suites-and-cgo-boundary.txt</code>。</li>
+      <li><span class="tag">cgo 边界</span> —— 两道门口径不同：依赖图绊线按惯例拆 <code>//go:build cgo</code> 即可回绿；登记册门要求 cgo=1 闭包里只有登记的 6 个包能到达 go-sqlite3（让日志走 storage 层，或更新登记册与 CGO 边界）。证据：<code>docs/audit/evidence/2026-11-25-round28-prepush-suites-and-cgo-boundary.txt</code>。候选实现已备好：本地分支 <code>wip/cgo-boundary-inject-20261125</code>（<code>bc22d1444</code>，未推送、未合并）——注入式，登记册 6 → 8（两个仅测试）；两道门在候选上回绿、四个变异全咬住；证据 <code>docs/audit/evidence/2026-11-25-round28-cgo-boundary-candidate.txt</code>。</li>
       <li><span class="tag">同级检出的清理</span> —— 是否把 worktree 清理扩到同级检出：<code>llm-gateway-go</code> 与 <code>llm-gateway-go-5</code> 登记的 8 个干净临时树可删（提交都在 main）；<code>llm-gateway-go-5-l1l5</code> 须先把那份未跟踪文档保全；两个检出正被别的会话使用。清单见证据 <code>docs/audit/evidence/2026-11-25-round28-sibling-checkouts-survey.txt</code>。</li>
       <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两者是同一特性的两条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>／<code>988b</code>）：并入要先定哪条线为准，删除任一个都会丢掉别处没有的内容。两条线都「健康但未就绪」：共有的 V2 前端改动打破 4 条既有 web 契约测试，并入前须对账并重生成台账（证据：<code>docs/audit/evidence/2026-11-25-round28-local-branches-validity.txt</code>）。两个分支目前都只在本地。已向 owner 询问四个选项、未获答复；按纪律不并不删不推。若只求防本机丢失，可推到远端侧分支（已核实不触发 CI）。</li>
       <li><span class="tag">W3 外部钩子</span> —— 是否上线；上线前须先修来源判定、凭据头脱敏、熔断与观测、流式空正文、改写体校验。</li>

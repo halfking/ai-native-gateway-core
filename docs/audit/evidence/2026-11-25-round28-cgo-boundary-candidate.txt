@@ -1,0 +1,73 @@
+# cgo 边界漂移的候选修法（第 28 轮，本地分支 wip/cgo-boundary-inject-20261125 @ bc22d1444；未推送、未合并、未部署）
+# 基线：origin/main dd592b93b。本文只记录候选分支上的实测读数；main 上的代码未改。
+# 说明：原始输出来自 /tmp/l108-audit/logs（/tmp 会被系统清理，这里留副本）。
+
+===== A. 先量清楚两个选项各自的代价（在候选工作树上实测） =====
+cgo=1 闭包里能到达 go-sqlite3 的包（tests/verify_cgo_convention_test.sh 的探测口径）：
+  main 现状（对账包无条件导入 go-sqlite3）                    : 39 个
+  若对账包完全不导入它（临时实验：两种构建都用桩实现后探测）    : 6 个 = 现在登记的 6 个（bg cmd/gateway storage storage/factory storage/sqlite tests/integration）
+  ⇒ 6 → 39 的漂移 100% 来自 domains/reconciliation/attempt_outbox.go 那一行导入（cdd155fff 带入）。
+  候选修法（注入式；对账包与执行器包的测试用真 SQLite 日志）    : 8 个 = 6 个生产 + 2 个仅测试
+  main 现状的 39 个: admin admin/dashboardapi admin/session_analytics api bg bg/systemmonitor cmd/gateway cmd/gateway-v2 cmd/maas-api cmd/quality-monitor cmd/request-reconciliation-shadow cmd/sessionforensics cmd/tools/propose-baseline-prices cmd/verify-model-fetch deploy/sql/verify domains/errorplaybook domains/integration domains/promptinjection domains/reconciliation domains/security/plugins domains/sessionforensics domains/streaming domains/streaming/executors domains/streaming/integrity pkg/authplugin/native scripts/ursmcheck sql/migrations/startup storage storage/factory storage/lite storage/sqlite test tests tests/48h-audit/D09-node-state-selfcheck/business tests/48h-audit/D09-node-state-selfcheck/data tests/48h-audit/D09-node-state-selfcheck/safety tests/48h-audit/D09-node-state-selfcheck/stress tests/integration tests/session_identity_contract
+
+===== B. 候选做了什么（8 个文件，+162 / -36） =====
+ cmd/gateway/attempt_journal.go                     | 22 +++++++++
+ cmd/gateway/main.go                                |  2 +-
+ domains/reconciliation/attempt_outbox.go           | 50 +++++++++-----------
+ domains/reconciliation/attempt_outbox_test.go      | 54 ++++++++++++++++++++--
+ domains/reconciliation/report_integration_test.go  |  6 ++-
+ .../reconciliation_transport_integration_test.go   |  3 +-
+ storage/sqlite/journal.go                          | 53 +++++++++++++++++++++
+ tests/verify_cgo_convention_test.sh                |  8 ++++
+ 8 files changed, 162 insertions(+), 36 deletions(-)
+  · storage/sqlite/journal.go（新）: OpenJournal + ErrDriverUnavailable；!cgo 下返回显式错误（与 OpenSQLite 同口径）。
+  · domains/reconciliation/attempt_outbox.go: 不再导入 go-sqlite3；新增 AttemptJournalOpener 类型，OpenAttemptOutbox / openAttemptOutbox 接收注入的 opener；空 opener 报错。
+  · cmd/gateway/attempt_journal.go（新）: package main 里提供 attemptJournalOpener；main.go 只在调用点原地改一行、导入块与行数不变
+    （main.go 的行号被 admin 路由快照、前端 29 个测试文件、请求面文档按「文件:行号」锚定）。
+  · 测试: attempt_outbox_test.go 加两条契约钉（两种构建模式都跑）＋ !cgo 下按明确理由跳过两条需要真 SQLite 的测试；
+    report_integration_test.go 与 executors 的集成测试改为传入 opener。
+  · tests/verify_cgo_convention_test.sh: 登记册 6 → 8（新增 domains/reconciliation、domains/streaming/executors，均仅测试依赖）。
+
+===== C. 读数（候选提交 bc22d1444） =====
+HEAD=bc22d1444e85de3d0238d7aa4e3d06a4d5b38e58 branch=wip/cgo-boundary-inject-20261125 frozen=1 start=2026-11-25 14:34:37
+EXIT go_build=0
+EXIT ursmcheck=0
+ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	302.950s
+END=2026-11-25 14:39:59
+--- 构建与静态检查 ---
+  CGO_ENABLED=1 go build ./... rc=0 | CGO_ENABLED=0 go build ./... rc=0
+  go vet（reconciliation / storage/sqlite / streaming/executors / cmd/gateway）: cgo=1 rc=0 | cgo=0 rc=0
+  gofmt -l（本轮触及的 Go 文件）: 空
+--- 测试 ---
+  cgo=1: domains/reconciliation ok | storage/sqlite ok | domains/streaming/executors ok (29.2s) | cmd/gateway ok (16.0s)
+  cgo=0: domains/reconciliation ok（TestAttemptOutboxUsesInjectedJournalOpener PASS；两条需要真 SQLite 的测试 SKIP；其余 PASS）
+  对照: storage/sqlite 的既有测试在 cgo=0 下于未改动的 main（dd592b93b）上同样失败（凭据库/供应商库等 12+ 条）⇒ 与本候选无关。
+--- 两道此前常红的 cgo 门 ---
+  tests/verify_cgo_convention_test.sh: PASS: CGO_ENABLED=0 builds storage/sqlite (both driver forms coexist) | PASS: cgo boundary matches registry (8 packages)
+  tests/deploy_nocgo_build_test.sh: rc=0, 8 PASS / 0 FAIL
+--- 依赖图 ---
+  CGO_ENABLED=0 go list -deps ./cmd/gateway | grep -c mattn/go-sqlite3 => 0
+  domains/reconciliation 的生产代码对 go-sqlite3 的导入: cgo=1 => 0 | cgo=0 => 0
+--- admin 路由快照门（候选第一版在 main.go 导入块加过一行 ⇒ 该门红过一次） ---
+  第一版: TestAdminRoutesSnapshotMatchesGenerator FAIL（快照行号整体差 1）⇒ 改为单独文件提供 opener、main.go 行数不变
+  最终版: go test ./scripts/ursmcheck/ -run TestAdminRoutesSnapshot => ok
+
+===== D. 变异自证（施加 → 运行 → 还原；还原后 md5 逐字节一致） =====
+baseline (candidate): registry gate green (PASS: cgo boundary matches registry (8 packages)); nocgo gate rc=0
+- M1 把原来的缺陷加回去：对账包生产代码重新无条件空导入 go-sqlite3 ⇒ BITES | restored identical=True
+      登记册门: RED | FAIL: cgo 专属面与登记名单不一致。
+      依赖图绊线: RED | [0;31mFAIL[0m github.com/mattn/go-sqlite3 re-entered the CGO_ENABLED=0 dep graph of ./cmd/gateway
+- M2 登记册退回旧的 6 个（不承认两个仅测试的包） ⇒ BITES | restored identical=True
+      登记册门: RED | FAIL: cgo 专属面与登记名单不一致。
+- M3 去掉内部入口的空 opener 保护 ⇒ BITES | restored identical=True
+      对账包测试 cgo=1: RED | --- FAIL: TestAttemptOutboxRequiresJournalOpener (0.00s) ; panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]
+- M4 !cgo 下「静默成功」：OpenJournal 在驱动不可用时返回 (nil, nil) ⇒ BITES | restored identical=True
+      对账包测试 cgo=0: RED | --- FAIL: TestAttemptOutboxUsesInjectedJournalOpener (0.00s) ; panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]
+after restore: registry gate rc=0 (PASS: cgo boundary matches registry (8 packages)) | ALL_MUTATIONS_BITE=True
+
+===== E. 没有做 / 需要 owner 决定 =====
+  · 未推送、未合并、未部署；main 上的代码未改。
+  · 另一个选项（按 storage/sqlite 的惯例拆 //go:build cgo 并把登记册改成 39 个包）已实现并量过：两道门同样可以回绿，
+    但登记册要从 6 个改成 39 个去迁就一行导入 ⇒ 不推荐。
+  · 候选动到对账车道的新代码（attempt_outbox.go）；并入前请该车道过目。
+  · storage/sqlite 包的测试在 cgo=0 下本就失败（既有）；domains/streaming/executors/strategy.go 在 main 上本就不是 gofmt 干净的（既有，未动）。
