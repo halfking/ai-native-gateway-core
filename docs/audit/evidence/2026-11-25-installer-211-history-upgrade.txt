@@ -1,0 +1,167 @@
+211 同源安装器升级复验
+
+应用代码 9c618fd6c5ebe1afb4cdb8a9054bf432cf1743b0
+验证基线 1fb5d225f，Go 1.27.4，PostgreSQL 17.10，两个升级库均从同一恢复库复制。
+源采集时间 2026-11-25 02:50:46.393052+08，可重复读快照 115314180:115314180:
+应用结构归档 SHA-256 8987993d4a28fec1786e12f8f8269b194e237ed88357dd3360e53d2cb9a01db6
+私有归档含数据库结构、两本完整迁移台账及日窗相关数据。实验在无网络 PostgreSQL 上运行。
+
+修复与复核
+520 的目标 RLS 策略同义时保留原 OID，定义漂移时中止，缺失时按原 SQL 创建。
+562 与 565 使用同一项退役判据，要求 890 已登记且旧日志表族和八月分区已退役。565 仍执行计价回填。
+续跑发现 535、624 会覆盖 628 的 aggregation_id 晋升语义。覆盖前后的函数摘要已独立核对。
+688 接受保留 aggregation_id 的在用候选失败晋升函数及其 24 小时默认值。两条通道结束后八个在用晋升函数的定义与默认参数均与恢复库相同。
+验证提交不含原始迁移 SQL 变更。部署通道全程无 content replay。四份带字母后缀的既有资产仍按原规则幂等执行，重跑后两本台账的完整行一致。
+
+基线复现
+2026/11/25 19:57:06 应用 startup migration 520_durable_task_settlement_intents.sql 失败: psql 失败: exit status 3
+psql:<stdin>:56: ERROR:  policy "durable_task_settlement_access" for table "durable_task_settlement_intents" already exists
+
+恢复后的原始台账
+schema_ledger|{"rows": 169, "sha256": "52bb5b465ce382be00323f44ffeea8cb158933166766c0f66e8724b7e7e5da72"}
+deployment_ledger|{"sha256": "ae82e166723a25daa85fea1272cbcb61a5d990ed92afca4239254eaf8b8be480", "file_rows": 375, "fingerprinted_rows": 375}
+
+两条通道、交接与重跑的原始读数
+▶ 应用 startup migration 520_durable_task_settlement_intents.sql ...
+  ✅ startup migration 520_durable_task_settlement_intents.sql 完成
+  ▶ 跳过 startup migration 535_candidate_failure_logs_atomic_promote.sql（628_candidate_failure_logs_promote_atomic_v3.sql 的产物已验证）
+  ▶ 跳过 startup migration 562_fix_request_logs_bodies_partitions_heap.sql（890 已登记，旧请求日志表族已退役）
+  ▶ 应用 startup migration 565_cost_usd_pricing_backfill.sql ...
+  ✅ startup migration 565_cost_usd_pricing_backfill.sql 完成
+  ▶ 应用 startup migration 624_candidate_failure_logs_promote_atomic_v2.sql ...
+  ✅ startup migration 624_candidate_failure_logs_promote_atomic_v2.sql 完成
+  ▶ 跳过 startup migration 688_promote_default_retention_align_go_scheduler.sql（当前晋升函数已存在，保留现用函数与保留期）
+  ✅ 增量迁移完成：本次应用 39 个 startup 迁移（跳过 368 个）
+bootstrap ok
+proof_install_first/installer-first original schema=169 unchanged, deploy=375 unchanged, logical additions=35, original policy OID and 628 definition unchanged
+  ▶ 跳过 startup migration 520_durable_task_settlement_intents.sql（版本 520 已在 schema_migrations 台账）
+  ▶ 跳过 startup migration 535_candidate_failure_logs_atomic_promote.sql（628_candidate_failure_logs_promote_atomic_v3.sql 的产物已验证）
+  ▶ 跳过 startup migration 562_fix_request_logs_bodies_partitions_heap.sql（890 已登记，旧请求日志表族已退役）
+  ▶ 跳过 startup migration 565_cost_usd_pricing_backfill.sql（版本 565 已在 schema_migrations 台账）
+  ▶ 跳过 startup migration 624_candidate_failure_logs_promote_atomic_v2.sql（版本 624 已在 schema_migrations 台账）
+  ▶ 跳过 startup migration 688_promote_default_retention_align_go_scheduler.sql（当前晋升函数已存在，保留现用函数与保留期）
+  ✅ 增量迁移完成：本次应用 4 个 startup 迁移（跳过 403 个）
+bootstrap ok
+proof_install_first/installer-repeat original schema=169 unchanged, deploy=375 unchanged, logical additions=35, original policy OID and 628 definition unchanged
+already applied: sql/migrations/startup/563_session_summary_trigger_on_hot.sql
+already applied: sql/migrations/startup/985_request_reconciliation_links.sql
+already applied: sql/migrations/startup/986_provider_attempt_media_usage.sql
+already applied: sql/migrations/startup/987_provider_invoice_evidence.sql
+already applied: sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+already applied: sql/migrations/startup/925_supplier_contract_rates.sql
+database revision sequence completed successfully: session-summary-and-integrity-2026-09
+proof_install_first/deploy-handoff original schema=169 unchanged, deploy=375 unchanged, logical additions=35, original policy OID and 628 definition unchanged
+already applied: sql/migrations/startup/563_session_summary_trigger_on_hot.sql
+already applied: sql/migrations/startup/985_request_reconciliation_links.sql
+already applied: sql/migrations/startup/986_provider_attempt_media_usage.sql
+already applied: sql/migrations/startup/987_provider_invoice_evidence.sql
+already applied: sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+already applied: sql/migrations/startup/925_supplier_contract_rates.sql
+database revision sequence completed successfully: session-summary-and-integrity-2026-09
+proof_install_first/deploy-repeat original schema=169 unchanged, deploy=375 unchanged, logical additions=35, original policy OID and 628 definition unchanged
+already applied: sql/migrations/startup/563_session_summary_trigger_on_hot.sql
+already applied: sql/migrations/startup/985_request_reconciliation_links.sql
+already applied: sql/migrations/startup/986_provider_attempt_media_usage.sql
+already applied: sql/migrations/startup/987_provider_invoice_evidence.sql
+already applied: sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+already applied: sql/migrations/startup/925_supplier_contract_rates.sql
+database revision sequence completed successfully: session-summary-and-integrity-2026-09
+proof_deploy_first/deploy-first original schema=169 unchanged, deploy=375 unchanged, logical additions=0, original policy OID and 628 definition unchanged
+already applied: sql/migrations/startup/563_session_summary_trigger_on_hot.sql
+already applied: sql/migrations/startup/985_request_reconciliation_links.sql
+already applied: sql/migrations/startup/986_provider_attempt_media_usage.sql
+already applied: sql/migrations/startup/987_provider_invoice_evidence.sql
+already applied: sql/migrations/startup/988_provider_invoice_usage_buckets.sql
+already applied: sql/migrations/startup/925_supplier_contract_rates.sql
+database revision sequence completed successfully: session-summary-and-integrity-2026-09
+proof_deploy_first/deploy-repeat original schema=169 unchanged, deploy=375 unchanged, logical additions=0, original policy OID and 628 definition unchanged
+  ▶ 应用 startup migration 520_durable_task_settlement_intents.sql ...
+  ✅ startup migration 520_durable_task_settlement_intents.sql 完成
+  ▶ 跳过 startup migration 535_candidate_failure_logs_atomic_promote.sql（628_candidate_failure_logs_promote_atomic_v3.sql 的产物已验证）
+  ▶ 跳过 startup migration 562_fix_request_logs_bodies_partitions_heap.sql（890 已登记，旧请求日志表族已退役）
+  ▶ 应用 startup migration 565_cost_usd_pricing_backfill.sql ...
+  ✅ startup migration 565_cost_usd_pricing_backfill.sql 完成
+  ▶ 应用 startup migration 624_candidate_failure_logs_promote_atomic_v2.sql ...
+  ✅ startup migration 624_candidate_failure_logs_promote_atomic_v2.sql 完成
+  ▶ 跳过 startup migration 688_promote_default_retention_align_go_scheduler.sql（当前晋升函数已存在，保留现用函数与保留期）
+  ✅ 增量迁移完成：本次应用 39 个 startup 迁移（跳过 368 个）
+bootstrap ok
+proof_deploy_first/installer-handoff original schema=169 unchanged, deploy=375 unchanged, logical additions=35, original policy OID and 628 definition unchanged
+  ▶ 跳过 startup migration 520_durable_task_settlement_intents.sql（版本 520 已在 schema_migrations 台账）
+  ▶ 跳过 startup migration 535_candidate_failure_logs_atomic_promote.sql（628_candidate_failure_logs_promote_atomic_v3.sql 的产物已验证）
+  ▶ 跳过 startup migration 562_fix_request_logs_bodies_partitions_heap.sql（890 已登记，旧请求日志表族已退役）
+  ▶ 跳过 startup migration 565_cost_usd_pricing_backfill.sql（版本 565 已在 schema_migrations 台账）
+  ▶ 跳过 startup migration 624_candidate_failure_logs_promote_atomic_v2.sql（版本 624 已在 schema_migrations 台账）
+  ▶ 跳过 startup migration 688_promote_default_retention_align_go_scheduler.sql（当前晋升函数已存在，保留现用函数与保留期）
+  ✅ 增量迁移完成：本次应用 4 个 startup 迁移（跳过 403 个）
+bootstrap ok
+proof_deploy_first/installer-repeat original schema=169 unchanged, deploy=375 unchanged, logical additions=35, original policy OID and 628 definition unchanged
+PASS: both upgrade entry points, both handoffs, and same-channel repeats.
+
+两条升级路径与恢复库的 WAL 和用量事实行数一致，逐日读数为日期、WAL、用量事实。
+2026-11-23|38967|38901
+2026-11-24|29580|29568
+
+隔离 PostgreSQL 正反对照
+=== RUN   TestIsolatedHistoricalUpgradeControls
+=== RUN   TestIsolatedHistoricalUpgradeControls/520_preserves_matching_policies,_refuses_drift,_and_creates_missing_policies
+=== RUN   TestIsolatedHistoricalUpgradeControls/562_and_565_share_the_recorded_retirement_proof
+=== RUN   TestIsolatedHistoricalUpgradeControls/624_preserves_628_aggregation_and_688_accepts_its_24_hour_default
+--- PASS: TestIsolatedHistoricalUpgradeControls (4.92s)
+    --- PASS: TestIsolatedHistoricalUpgradeControls/520_preserves_matching_policies,_refuses_drift,_and_creates_missing_policies (1.73s)
+    --- PASS: TestIsolatedHistoricalUpgradeControls/562_and_565_share_the_recorded_retirement_proof (2.26s)
+    --- PASS: TestIsolatedHistoricalUpgradeControls/624_preserves_628_aggregation_and_688_accepts_its_24_hour_default (0.66s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	5.637s
+
+安装器 go test ./...
+?   	github.com/kaixuan/llm-gateway-go/installer/cmd/e2e-bootstrap	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer	9.743s
+?   	github.com/kaixuan/llm-gateway-go/installer/cmd/llm-launcher	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/activation	0.777s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	13.508s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil	53.736s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/enrollment	3.019s
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/envdetect	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/imgsrc	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/instancemeta	1.624s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/api	2.076s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/backend	7.385s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/checker	1.977s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/e2e	7.649s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/orchestrator	4.965s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/proxy	4.987s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/store	5.098s
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/prompt	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/report	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/secrets	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/upgrader	5.501s
+
+安装器 dbinit go vet 退出码 0，无输出。
+
+空库新装、重跑和部署交接
+镜像：kx-citus-pg17-vector:arm64
+一次性容器：llmgw-211-fresh-control-1nuax2（★ ★ 本门只打它，★ 绝不打任何别的容器）
+postgres ready after 2s
+  ✔ 目标库确认为空（public 表数 0）
+★ 跑空库新装（cmd/e2e-bootstrap ⇒ 与生产安装器同一段 InitSchema）…
+  ✅ startup migration 999a_data_maintenance_playbook.sql 完成
+  ✅ 安装器交接凭证已登记 433 个 startup 迁移
+bootstrap ok
+  ✔ 新装后日对账迁移和读面齐全
+  ✔ 会话分析物化视图 4 个
+  ✔ session_summaries.total_credits_charged 在
+  ✔ minimax-m3.1-flash 在位且 featured=TRUE
+  ℹ public 表数：593
+★ 跑第二次安装（★ 增量路径：★ 同一个库、★ 同一个容器）…
+  ✔ 第二次安装成功（★ 增量路径）
+  ✔ 增量后日对账迁移和读面齐全
+  ✔ 台账行数未变（415）⇒ 没有迁移被重放
+  ✔ 第二次运行没有重放任何带版本号的迁移
+  ✔ 增量路径后 4 个会话分析物化视图仍在
+  ✔ 增量路径后 total_credits_charged 仍在
+★ 跑第三阶段（安装器新装库交给部署迁移通道）…
+  已检查 首次接管，安装器凭证命中 372/372
+★ 跑第四阶段（部署迁移通道复跑）…
+  已检查 接管后复跑，安装器凭证命中 372/372
+fresh-install-smoke: PASS
