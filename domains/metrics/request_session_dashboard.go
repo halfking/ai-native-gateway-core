@@ -60,7 +60,7 @@ WITH projection AS (
 	  AND EXISTS (SELECT 1 FROM public.request_metrics_projection e WHERE e.tenant_id=d.tenant_id
 		AND e.session_id=d.gw_session_id AND e.source_fact_id IS NOT NULL AND ($6 OR e.traffic_class='business')
 		AND e.occurred_at < $2)
-), daily_sessions AS (
+), session_activity_by_day AS (
 	SELECT (occurred_at AT TIME ZONE $7)::date AS day, count(DISTINCT (tenant_id,session_id)) AS count,
 		sum(usd) AS usd, count(*) AS requests, count(usd) AS usd_requests
 	FROM session_requests GROUP BY 1
@@ -78,7 +78,7 @@ WITH projection AS (
 		coalesce(a.count,0) AS active_count, coalesce(c.count,0) AS closed_count,
 		CASE WHEN a.requests IS NULL THEN 0 ELSE a.usd END AS total_cost,
 		coalesce(a.requests,0) AS total_requests, coalesce(a.usd_requests,0) AS usd_requests
-	FROM days LEFT JOIN daily_sessions a USING (day) LEFT JOIN daily_new n USING (day) LEFT JOIN daily_closed c USING (day)
+	FROM days LEFT JOIN session_activity_by_day a USING (day) LEFT JOIN daily_new n USING (day) LEFT JOIN daily_closed c USING (day)
 ), lifecycle_summary AS (
 	SELECT count(*) FILTER (WHERE first_request_at >= $1 AND first_request_at < $2) AS new_count,
 		count(*) FILTER (WHERE closed_at >= $1 AND closed_at < $2) AS closed_count,

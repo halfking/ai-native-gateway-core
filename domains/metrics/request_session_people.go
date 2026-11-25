@@ -155,11 +155,11 @@ totals AS (
 ), positions AS (
 	SELECT max(position) FILTER (WHERE current) AS current_rank,max(position) FILTER (WHERE NOT current) AS prior_rank
 	FROM period_rank r CROSS JOIN params p WHERE r.owner=p.owner
-), daily_totals AS (
+), owner_totals_by_day AS (
 	SELECT o.owner,day,` + sessionPeopleMeasures + `
 	FROM current_rows o GROUP BY o.owner,day
 ), daily_rank AS (
-	SELECT *,row_number() OVER (PARTITION BY day ORDER BY total_tokens DESC,owner) AS position FROM daily_totals
+	SELECT *,row_number() OVER (PARTITION BY day ORDER BY total_tokens DESC,owner) AS position FROM owner_totals_by_day
 ), series AS (
 	SELECT
 		coalesce(jsonb_agg(jsonb_build_object('date',day,'count',session_count) ORDER BY day),'[]') AS sessions,
