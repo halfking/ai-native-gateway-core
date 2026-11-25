@@ -60,6 +60,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -444,5 +445,74 @@ func TestAdminRoutesGeneratorDocumentsKnownUnregisteredDeviation(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Errorf("★ 生成器注释/用法里没有 %q ⇒ 别人复跑不了", needle)
 		}
+	}
+}
+
+// TestAdminRoutesGeneratorSkipsEmptyPathConcatenations —— ★ 2026-11-25 本会话系列第 29 轮：
+// 「字面量方法前缀 ＋ 拼接路径」（`"GET "+表达式`）不得被吐成 **path 为空**的登记。
+//
+// ★ 事故：上游 29727b3ba 在 plugin-runtime/remediation/child/server.go 新写了 3 条
+//
+//	这种形态的注册 ⇒ 生成器只匹配到字面量前缀 "GET " ⇒ 吐出 3 行 path 为空的登记
+//	⇒ 刷新后的快照被 TestAdminRoutesSnapshotRowsAreWellFormed 拒掉；
+//	而「快照 == 生成器输出」又要求必须刷新 ⇒ ⇒ 两条门互相锁死。
+//
+// ★ 做法：合成一个最小仓根（go.mod ＋ 一份样本）⇒ `--root` 现跑生成器 ⇒ 逐行比对。
+//
+// ★ 同时钉住两条既有行为，防止这条订正顺手改坏它们：
+//   - 字面量前缀非空的拼接（"/debug/pprof/"+name）照旧按前缀登记（头部 ① 登记的历史边界）；
+//   - 变量在前的拼接（method+" /x"）与注释里的调用照旧抽不出来。
+func TestAdminRoutesGeneratorSkipsEmptyPathConcatenations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module sample\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatalf("★ 写 go.mod 样本失败：%v", err)
+	}
+	sample := filepath.Join(root, "sample", "s.go")
+	if err := os.MkdirAll(filepath.Dir(sample), 0o755); err != nil {
+		t.Fatalf("★ 建样本目录失败：%v", err)
+	}
+	src := "package sample\n" +
+		"\n" +
+		"import \"net/http\"\n" +
+		"\n" +
+		"func f() {\n" +
+		"\tmux := http.NewServeMux()\n" +
+		"\tmux.HandleFunc(\"GET /pure/literal\", nil)\n" +
+		"\tmux.HandleFunc(\"GET \"+manifest.Runtime.HealthPath, nil)\n" +
+		"\tmux.HandleFunc(\"POST \"+remediation.SuggestPath, nil)\n" +
+		"\tmux.HandleFunc(method+\" /plugins/{id}\", nil)\n" +
+		"\tmux.Handle(\"/debug/pprof/\"+name, nil)\n" +
+		"\tmux.HandleFunc(\"/plain\", nil)\n" +
+		"\t// mux.HandleFunc(\"/in-comment\", nil)\n" +
+		"}\n"
+	if err := os.WriteFile(sample, []byte(src), 0o644); err != nil {
+		t.Fatalf("★ 写样本失败：%v", err)
+	}
+	outFile := filepath.Join(t.TempDir(), "admin-routes.tsv")
+	cmd := exec.Command("bash", adminRoutesAbs(t, adminRoutesScriptRelPath), "--root", root, "--out", outFile)
+	cmd.Dir = root
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("★ 生成器跑失败（%v）：%s", err, stderr.String())
+	}
+	b, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("★ 读生成器产物失败：%v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	want := []string{
+		"/debug/pprof/\tANY\tsample/s.go:11",
+		"/plain\tANY\tsample/s.go:12",
+		"/pure/literal\tGET\tsample/s.go:7",
+	}
+	for _, line := range got {
+		if strings.HasPrefix(line, "\t") {
+			t.Errorf("★ 生成器吐出了 path 为空的登记 %q ⇒ ★ 「字面量方法前缀＋拼接路径」被当成了完整登记"+
+				"（★ 刷新快照会被「行格式良好」门拒掉）", line)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("★ 生成器对合成样本的输出与期望不一致：\n期望 %q\n实得 %q", want, got)
 	}
 }

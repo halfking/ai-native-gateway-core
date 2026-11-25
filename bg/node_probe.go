@@ -263,6 +263,14 @@ type NodeProbeWorker struct {
 	// themselves are pinned by the TEST_PG_URL-gated contract test.
 	requestFailureThrottleFn func(ctx context.Context, credID int, model string, minGapSeconds int) bool
 
+	// gatewayRoutableLookup (2026-11-26 gpt-image 探针风暴轮 · 第三处修正) is
+	// the test seam over the routing layer's own eligibility view
+	// (v_routable_credential_models). Production leaves it nil and
+	// gatewayRoundRoutable runs the real SQL; tests stub it to pin the
+	// "pinned gateway round is provably a no_candidate ⇒ skip it" behaviour
+	// without a live database.
+	gatewayRoutableLookup gatewayRoundRoutableFn
+
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
 	invalidateCandidateCache func(credentialID int)
@@ -2837,7 +2845,36 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		return nil
 	}
 	// Round 2: gateway — now sees the restored state from the direct round
-	gw := w.probeGateway(ctx, credID, model)
+	//
+	// ★ 2026-11-26（gpt-image 探针风暴轮）：直连轮已给出「与 (凭据, 模型, 上游)
+	// 绑定」的失败判决时（鉴权/配额/协议族），这一轮可证明是冗余的 —— 钉住同一
+	// 把 key、同一个模型、同一个上游，只会把同一个拒绝原样再要一次；而判决只看
+	// 直连轮（success := direct.ok）。判据与理由见 probeGatewayRoundRedundant
+	// （与统一队列路径共用同一道门，不是两份抄本）。
+	//
+	// ★ 2026-11-26 第三处修正：还有第二种**可证明冗余** —— 该 (凭据, 模型) 对
+	// 此刻在路由层已不可路由时，钉住的网关轮必然 0 候选、永远触达不到上游，
+	// 只会多写一条必然失败的业务形态请求记录（211 实测：凭据 99023 的
+	// credential_recovery 复检每小时产一条 no_candidate）。判据见
+	// probe_gateway_routability.go（问路由层自己的资格视图，判据单源）。
+	//
+	// ⇒ 直连轮成功时**不**问视图：网关轮此刻的职责是确认路由层看见了已恢复
+	// 的状态，而视图可能还停留在上一轮的失败态，问它会误杀这一职责。
+	routable := true
+	if !direct.ok {
+		routable = w.gatewayRoundRoutable(ctx, credID, model)
+	}
+	runGateway, skipReason := probeGatewayRoundDecision(direct, routable)
+	var gw nodeProbeRoundResult
+	if runGateway {
+		gw = w.probeGateway(ctx, credID, model)
+	} else {
+		gw = nodeProbeRoundResult{
+			errCode:   skipReason,
+			errDetail: probeGatewayRoundSkipDetail(skipReason),
+			rootCause: direct.rootCause,
+		}
+	}
 
 	// 2026-09-10 hzx-2/minimax-prod-v2 incident: the failure ladder and
 	// success bookkeeping must reflect the DIRECT round only. The gateway
