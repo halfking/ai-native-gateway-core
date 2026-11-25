@@ -85,10 +85,12 @@ func readRequestBoardDaily(ctx context.Context, db requestStatsDB, query BoardQu
 	if query.TenantID == "" {
 		dailyScope = scope + " AND all_tenants"
 	}
+	mergeTenantBuckets := query.TenantID == "" && query.BucketMinutes < 15
 	seriesScope := dailyScope
-	if query.BucketMinutes < 15 {
+	if mergeTenantBuckets {
 		seriesScope = scope + " AND NOT all_tenants"
 	}
+	mergeTrafficByDay := !mergeTenantBuckets && query.IncludeProbes && query.TrafficClass == nil
 	args = append(args, query.BucketMinutes)
 	minutes := fmt.Sprintf("$%d::int", len(args))
 	bucket := boardBucket("occurred_at", minutes)
@@ -154,7 +156,7 @@ summary AS (
 		(SELECT coalesce(sum(bit_count(mask::bit(64))),0) FROM
 			(SELECT bit_or(mask) AS mask FROM key_inputs GROUP BY word) words) AS active_api_keys,
 		(SELECT count(*) FROM providers) AS providers
-	FROM (` + requestSummaryFromDailySQL(scope, "raw AS (SELECT * FROM bounded)",
+	FROM (` + requestSummaryFromDailySQL(scope, "raw AS NOT MATERIALIZED (SELECT * FROM bounded)",
 		"(SELECT count(*) FROM pie_groups WHERE dimension='models' AND key<>'__unknown__')") + `) measured
 ),
 ` + boardRankedPies + `,
@@ -162,20 +164,13 @@ top_models AS MATERIALIZED (
 	SELECT key FROM pie_groups WHERE dimension='models' ORDER BY requests DESC, key LIMIT 6
 ),
 trend_inputs AS NOT MATERIALIZED (
-	SELECT bucket, is_total, model, requests, tokens, credits, cost_usd, success, latency_sum, latency_count
-	FROM public.request_metrics_board_series JOIN clean_days USING (day)
-	WHERE minutes=` + minutes + seriesScope + ` AND is_total
-	UNION ALL
-	SELECT bucket, is_total, model, requests, tokens, credits, cost_usd, success, latency_sum, latency_count
-	FROM top_models t JOIN public.request_metrics_board_series s ON s.model=t.key
-	JOIN clean_days USING (day)
-	WHERE minutes=` + minutes + seriesScope + ` AND NOT is_total AND model <> '__others__'
+	` + boardPublishedTrendRows(minutes, seriesScope, mergeTrafficByDay) + `
 	UNION ALL
 	SELECT bucket, grouping(model)=1, coalesce(model,''), ` + boardMeasures + `, ` + boardTrendMeasures + `
 	FROM bounded GROUP BY bucket, GROUPING SETS ((model), ())
 	HAVING grouping(model)=1 OR (model <> '__others__' AND model IN (SELECT key FROM top_models))
 ),
-` + boardDailyBucketCounts(query, minutes) + `,
+` + boardDailyBucketCounts(minutes, mergeTenantBuckets) + `,
 trends AS (
 	SELECT bucket, requests, tokens, credits, cost_usd, success,
 		coalesce(latency_sum::float8/nullif(latency_count,0),0) AS avg_latency_ms
@@ -197,19 +192,51 @@ chart_points AS (
 	return scanRequestBoard(ctx, db, querySQL, args, true)
 }
 
-func boardDailyBucketCounts(query BoardQuery, minutes string) string {
+func boardPublishedTrendRows(minutes, scope string, mergeTrafficByDay bool) string {
+	const columns = "bucket, is_total, model, requests, tokens, credits, cost_usd, success, latency_sum, latency_count"
+	dayJoin := " JOIN clean_days USING (day)"
+	dayFilter := ""
+	modelSource := "top_models t JOIN public.request_metrics_board_series s ON s.model=t.key"
+	modelFilter := ""
+	if mergeTrafficByDay {
+		dayJoin = ""
+		dayFilter = " AND s.day=d.day"
+		// Look up the selected models together within each day of the index.
+		modelSource = "public.request_metrics_board_series s"
+		modelFilter = " AND model = ANY(ARRAY(SELECT key FROM top_models))"
+	}
+	where := "WHERE s.minutes=" + minutes + scope + dayFilter
+	rows := `SELECT ` + columns + ` FROM public.request_metrics_board_series s` + dayJoin + `
+		` + where + ` AND is_total
+		UNION ALL
+		SELECT ` + columns + ` FROM ` + modelSource + dayJoin + `
+		` + where + ` AND NOT is_total AND model <> '__others__'` + modelFilter
+	if !mergeTrafficByDay {
+		return rows
+	}
+
+	// Combine traffic classes in each published day to bound the aggregation's
+	// working set, even when the requested window contains months of buckets.
+	return `SELECT merged.* FROM clean_days d CROSS JOIN LATERAL (
+		SELECT bucket, is_total, model, ` + boardMeasureSums + `,
+			sum(success) AS success, sum(latency_sum) AS latency_sum, sum(latency_count) AS latency_count
+		FROM (` + rows + `) series GROUP BY bucket, is_total, model
+	) merged`
+}
+
+func boardDailyBucketCounts(minutes string, mergeTenantBuckets bool) string {
 	const grouped = `SELECT bucket, is_total, model, ` + boardMeasureSums + `,
 		sum(success) AS success, sum(latency_sum) AS latency_sum, sum(latency_count) AS latency_count
 	FROM trend_inputs`
 	const groupBy = ` GROUP BY bucket, is_total, model`
 
-	if (query.TenantID == "" && query.BucketMinutes < 15) || (query.IncludeProbes && query.TrafficClass == nil) {
+	if mergeTenantBuckets {
 		return `bucket_counts AS MATERIALIZED (` + grouped + groupBy + `)`
 	}
 
-	// A single tenant scope and traffic class each supply one row per model and
-	// bucket. If published days start and end on bucket boundaries, their rows
-	// cannot overlap each other or the grouped rows from uncovered timestamps.
+	// A single tenant scope supplies one row per model and bucket after merging
+	// traffic classes. At bucket-aligned day boundaries, published rows cannot
+	// overlap rows from other days or from uncovered timestamps.
 	// The layout check selects one branch before reading trend_inputs. Inlining
 	// that input avoids buffering it separately from bucket_counts.
 	return `bucket_layout AS MATERIALIZED (

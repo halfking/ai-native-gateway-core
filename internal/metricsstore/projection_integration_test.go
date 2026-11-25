@@ -1451,6 +1451,9 @@ FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+
 		allTenants := withProbe
 		allTenants.TenantID = ""
 		assertParity(t, allTenants)
+		allTenantsPartial := allTenants
+		allTenantsPartial.StartTime, allTenantsPartial.EndTime = partial.StartTime, partial.EndTime
+		assertParity(t, allTenantsPartial)
 
 		exec(`
 UPDATE public.request_metrics_projection SET occurred_at='2026-11-17 05:00+08', total_tokens=42
@@ -1477,6 +1480,7 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
 		countPublished(1)
 		assertParity(t, f)
 		assertParity(t, withProbe)
+		assertParity(t, allTenants)
 		refresh(processor.RefreshDailyBoard)
 		countPublished(2)
 		assertParity(t, f)
