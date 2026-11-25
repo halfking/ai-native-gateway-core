@@ -1460,13 +1460,47 @@ FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+
 		allTenantsPartial := allTenants
 		allTenantsPartial.StartTime, allTenantsPartial.EndTime = partial.StartTime, partial.EndTime
 		assertParity(t, allTenantsPartial)
+		apply("983q_request_metrics_board_hours.sql")
+		apply("983q_request_metrics_board_hours.sql")
+		countPublishedHours := func(want int) {
+			t.Helper()
+			var n int
+			err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_board_hour_days
+				WHERE day IN ('2026-11-16','2026-11-17')`).Scan(&n)
+			if err != nil || n != want {
+				t.Fatalf("published hourly board days=%d want %d: %v", n, want, err)
+			}
+		}
+		countPublishedHours(0)
+		exec(`CREATE FUNCTION public.reject_board_hour_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected hourly board publication failure'; END $$;
+CREATE TRIGGER reject_board_hour_publish BEFORE INSERT ON public.request_metrics_board_hour_days
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_hour_publish();`)
+		if _, err := processor.RefreshDailyBoard(ctx); err == nil || !strings.Contains(err.Error(), "injected hourly board publication failure") {
+			t.Fatalf("expected failed hourly board publication: %v", err)
+		}
+		var hourRows int
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM public.request_metrics_board_hour_summary)
+			+ (SELECT count(*) FROM public.request_metrics_board_hour_masks)`).Scan(&hourRows); err != nil || hourRows != 0 {
+			t.Fatalf("failed hourly publication left %d rows: %v", hourRows, err)
+		}
+		countPublishedHours(0)
+		exec("DROP TRIGGER reject_board_hour_publish ON public.request_metrics_board_hour_days; DROP FUNCTION public.reject_board_hour_publish()")
+		refresh(processor.RefreshDailyBoard)
+		countPublishedHours(2)
+		assertParity(t, allTenantsPartial)
+		withProbePartial := withProbe
+		withProbePartial.StartTime, withProbePartial.EndTime = partial.StartTime, partial.EndTime
+		assertParity(t, withProbePartial)
 
 		exec(`
 UPDATE public.request_metrics_projection SET occurred_at='2026-11-17 05:00+08', total_tokens=42
 WHERE request_id='board-day-2';
 DELETE FROM public.request_metrics_projection WHERE request_id='board-day-12';`)
 		countPublished(0)
+		countPublishedHours(0)
 		assertParity(t, f)
+		assertParity(t, allTenantsPartial)
 		refresh(processor.RefreshDailySummary)
 		countPublished(0)
 		exec(`
@@ -1484,14 +1518,21 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
 			t.Fatalf("expected one board day to republish: built=%v error=%v", built, err)
 		}
 		countPublished(1)
+		countPublishedHours(1)
 		assertParity(t, f)
 		assertParity(t, withProbe)
 		assertParity(t, allTenants)
+		assertParity(t, allTenantsPartial)
 		refresh(processor.RefreshDailyBoard)
 		countPublished(2)
+		countPublishedHours(2)
 		assertParity(t, f)
 		assertParity(t, withProbe)
 		assertParity(t, allTenants)
+		assertParity(t, allTenantsPartial)
+		apply("983q_request_metrics_board_hours.down.sql")
+		apply("983q_request_metrics_board_hours.down.sql")
+		assertParity(t, allTenantsPartial)
 	})
 
 	t.Run("published_history_merges_exact_ranks_and_uncached_days", func(t *testing.T) {

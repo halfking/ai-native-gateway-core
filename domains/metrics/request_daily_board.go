@@ -79,6 +79,19 @@ func RebuildRequestDailyBoard(ctx context.Context, tx *sql.Tx, day string) error
 }
 
 func readRequestBoardDaily(ctx context.Context, db requestStatsDB, query BoardQuery) (RequestBoard, error) {
+	start, end := query.MetricsFilter.effectiveWindow()
+	var useHours bool
+	if requestBoardCutsDay(start, end) {
+		if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, RequestBoardHourDaysTable).Scan(&useHours); err != nil {
+			return RequestBoard{}, err
+		}
+	}
+	hourCoverage := ""
+	summaryRaw := "raw AS NOT MATERIALIZED (SELECT * FROM bounded)"
+	if useHours {
+		hourCoverage = requestBoardHourCoverageSQL
+		summaryRaw = "raw AS NOT MATERIALIZED (SELECT * FROM bounded WHERE " + requestBoardUncoveredHour + ")"
+	}
 	clauses, args := buildFilterClauses(query.MetricsFilter, "", "occurred_at", kindTimestamp)
 	scope := requestDailyScopeSQL(clauses[2:])
 	dailyScope := scope + " AND NOT all_tenants"
@@ -94,6 +107,12 @@ func readRequestBoardDaily(ctx context.Context, db requestStatsDB, query BoardQu
 	args = append(args, query.BucketMinutes)
 	minutes := fmt.Sprintf("$%d::int", len(args))
 	bucket := boardBucket("occurred_at", minutes)
+	var hourlySeries, rawSeriesFilter string
+	// These bucket widths divide the hour without crossing the raw edge.
+	if useHours && query.BucketMinutes <= 60 {
+		hourlySeries = requestBoardHourlyTrendSQL(minutes, seriesScope)
+		rawSeriesFilter = " WHERE " + requestBoardUncoveredHour
+	}
 	querySQL := `WITH projection AS (` + boardProjectionState + `),
 clean_days AS MATERIALIZED (
 	SELECT day FROM public.request_metrics_daily_state
@@ -101,7 +120,7 @@ clean_days AS MATERIALIZED (
 	WHERE NOT dirty AND ` + requestCleanDayBounds + `
 	  AND (SELECT backfill_complete FROM projection)
 ),
-` + requestUncoveredRanges + `,
+` + hourCoverage + requestUncoveredRanges + `,
 bounded AS MATERIALIZED (
 	SELECT p.* FROM coverage CROSS JOIN LATERAL unnest(missing) AS gaps(span)
 	CROSS JOIN LATERAL (
@@ -156,18 +175,18 @@ summary AS (
 		(SELECT coalesce(sum(bit_count(mask::bit(64))),0) FROM
 			(SELECT bit_or(mask) AS mask FROM key_inputs GROUP BY word) words) AS active_api_keys,
 		(SELECT count(*) FROM providers) AS providers
-	FROM (` + requestSummaryFromDailySQL(scope, "raw AS NOT MATERIALIZED (SELECT * FROM bounded)",
-		"(SELECT count(*) FROM pie_groups WHERE dimension='models' AND key<>'__unknown__')") + `) measured
+	FROM (` + requestSummaryFromDailySQL(scope, summaryRaw,
+		"(SELECT count(*) FROM pie_groups WHERE dimension='models' AND key<>'__unknown__')", useHours) + `) measured
 ),
 ` + boardRankedPies + `,
 top_models AS MATERIALIZED (
 	SELECT key FROM pie_groups WHERE dimension='models' ORDER BY requests DESC, key LIMIT 6
 ),
 trend_inputs AS NOT MATERIALIZED (
-	` + boardPublishedTrendRows(minutes, seriesScope, mergeTrafficByDay) + `
+	` + boardPublishedTrendRows(minutes, seriesScope, mergeTrafficByDay) + hourlySeries + `
 	UNION ALL
 	SELECT bucket, grouping(model)=1, coalesce(model,''), ` + boardMeasures + `, ` + boardTrendMeasures + `
-	FROM bounded GROUP BY bucket, GROUPING SETS ((model), ())
+	FROM bounded` + rawSeriesFilter + ` GROUP BY bucket, GROUPING SETS ((model), ())
 	HAVING grouping(model)=1 OR (model <> '__others__' AND model IN (SELECT key FROM top_models))
 ),
 ` + boardDailyBucketCounts(minutes, mergeTenantBuckets) + `,

@@ -124,3 +124,5 @@ canonical/983o_request_metrics_daily_history_details.sql	both	-	按日发布可�
 embeddata/983o_request_metrics_daily_history_details.sql	installer	-	983o 的安装器内嵌副本，沿用日状态锁与失效机制。
 canonical/983p_request_metrics_history_pages.sql	both	-	按日发布六项历史明细维度，由部署序列和安装器交付。
 embeddata/983p_request_metrics_history_pages.sql	installer	-	983p 的安装器内嵌副本，沿用历史日汇总的失效机制。
+canonical/983q_request_metrics_board_hours.sql	both	-	为看板的部分自然日发布小时计量及会话位图。
+embeddata/983q_request_metrics_board_hours.sql	installer	-	983q 的安装器内嵌副本。

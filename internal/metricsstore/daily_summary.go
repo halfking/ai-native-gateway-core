@@ -34,22 +34,29 @@ func (p *ProjectionProcessor) RefreshDailySummary(ctx context.Context) (bool, er
 	})
 }
 
-const claimDailyBoardSQL = `
-	SELECT s.day::text FROM public.request_metrics_daily_state s
-	WHERE NOT s.dirty
-	  AND (SELECT backfill_complete FROM public.request_metrics_repair_state WHERE singleton)
-	  AND NOT EXISTS (SELECT 1 FROM public.request_metrics_board_days b WHERE b.day=s.day)
-	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
-
 func (p *ProjectionProcessor) RefreshDailyBoard(ctx context.Context) (bool, error) {
-	return p.refreshDay(ctx, claimDailyBoardSQL, func(ctx context.Context, tx *sql.Tx, day string) error {
-		// A concurrent worker can commit the marker after the claim statement
-		// starts and before it acquires the unchanged summary day row.
-		var published bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_board_days WHERE day=$1::date)", day).Scan(&published); err != nil || published {
+	const boardDays = "public.request_metrics_board_days"
+	var hoursAvailable bool
+	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, metrics.RequestBoardHourDaysTable).Scan(&hoursAvailable); err != nil {
+		return false, err
+	}
+	missing := `NOT EXISTS (SELECT FROM ` + boardDays + ` b WHERE b.day=s.day)`
+	if hoursAvailable {
+		missing += ` OR NOT EXISTS (SELECT FROM ` + metrics.RequestBoardHourDaysTable + ` h WHERE h.day=s.day)`
+	}
+	claim := `SELECT s.day::text FROM public.request_metrics_daily_state s
+		WHERE NOT s.dirty
+		  AND (SELECT backfill_complete FROM public.request_metrics_repair_state WHERE singleton)
+		  AND (` + missing + `)
+		ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
+	return p.refreshDay(ctx, claim, func(ctx context.Context, tx *sql.Tx, day string) error {
+		if err := publishMissingDailyReport(ctx, tx, day, boardDays, metrics.RebuildRequestDailyBoard); err != nil {
 			return err
 		}
-		return metrics.RebuildRequestDailyBoard(ctx, tx, day)
+		if hoursAvailable {
+			return publishMissingDailyReport(ctx, tx, day, metrics.RequestBoardHourDaysTable, metrics.RebuildRequestBoardHours)
+		}
+		return nil
 	})
 }
 
@@ -93,7 +100,7 @@ func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, er
 		// Use one lock acquisition for the publications. Separate polling
 		// workers can otherwise lose a tick each while competing for this row.
 		for _, pub := range publications {
-			if err := publishMissingHistory(ctx, tx, day, pub.days, pub.rebuild); err != nil {
+			if err := publishMissingDailyReport(ctx, tx, day, pub.days, pub.rebuild); err != nil {
 				return err
 			}
 		}
@@ -101,7 +108,7 @@ func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, er
 	})
 }
 
-func publishMissingHistory(ctx context.Context, tx *sql.Tx, day, days string, rebuild func(context.Context, *sql.Tx, string) error) error {
+func publishMissingDailyReport(ctx context.Context, tx *sql.Tx, day, days string, rebuild func(context.Context, *sql.Tx, string) error) error {
 	// Another worker can publish the day between the claim snapshot and lock.
 	var published bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+days+" WHERE day=$1::date)", day).Scan(&published); err != nil || published {

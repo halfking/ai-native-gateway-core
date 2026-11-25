@@ -132,7 +132,7 @@ func requestDailySummarySQL(scope []string, includeDetail bool) string {
 	}
 	return requestSummaryFromDailySQL(filter, detail, `(SELECT count(*) FROM (
 		SELECT unnest(models) FROM daily UNION SELECT `+requestModelKey+` FROM raw
-	) unique_models(model) WHERE model <> '__unknown__')`)
+	) unique_models(model) WHERE model <> '__unknown__')`, false)
 }
 
 func requestDailyScopeSQL(scope []string) string {
@@ -144,19 +144,25 @@ func requestDailyScopeSQL(scope []string) string {
 
 // Count published session bits once, then add distinct raw session keys whose
 // bits are absent from those published days and the selected traffic scope.
-func requestSummaryFromDailySQL(filter, detail, uniqueModels string) string {
+func requestSummaryFromDailySQL(filter, detail, uniqueModels string, useHours bool) string {
+	var hourMeasures, hourMasks string
+	if useHours {
+		hourMeasures = " UNION ALL SELECT " + requestStatsStateColumns +
+			" FROM public.request_metrics_board_hour_summary JOIN edge_hours USING(day,bucket) WHERE true" + filter
+		hourMasks = " UNION ALL SELECT word,mask FROM public.request_metrics_board_hour_masks JOIN edge_hours USING(day,bucket) WHERE true" + filter
+	}
 	return `WITH ` + detail + `, daily AS MATERIALIZED (
 		SELECT s.* FROM public.request_metrics_daily_summary s JOIN clean_days USING(day) WHERE true` + filter + `
 	), measures AS (
-		SELECT ` + requestStatsStateColumns + ` FROM daily
+		SELECT ` + requestStatsStateColumns + ` FROM daily` + hourMeasures + `
 		UNION ALL
 		SELECT ` + requestStatsRawCounters + `, ` + requestStatsDistributionState + ` FROM raw
 	), raw_sessions AS NOT MATERIALIZED (
 		SELECT DISTINCT tenant_id, session_id FROM raw WHERE session_id IS NOT NULL
 	), day_words AS MATERIALIZED (
 		SELECT word, bit_or(mask) AS mask
-		FROM public.request_metrics_daily_session_masks JOIN clean_days USING(day)
-		WHERE true` + filter + ` GROUP BY word
+		FROM (SELECT word,mask FROM public.request_metrics_daily_session_masks JOIN clean_days USING(day)
+		WHERE true` + filter + hourMasks + `) selected GROUP BY word
 	)
 	SELECT ` + requestStatsMergedCounters + `,
 		` + uniqueModels + ` AS unique_models,

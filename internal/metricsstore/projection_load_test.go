@@ -312,15 +312,25 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 	if p95 > 5*time.Minute {
 		t.Fatalf("projection delay exceeds five minutes: %s", p95)
 	}
+	var hourlyAvailable bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.request_metrics_board_hour_days') IS NOT NULL`).Scan(&hourlyAvailable); err != nil {
+		t.Fatal(err)
+	}
+	publication := `h.day IS NOT NULL AND th.day IS NOT NULL AND pr.day IS NOT NULL AND hp.day IS NOT NULL`
+	var hourJoin string
+	if hourlyAvailable {
+		publication += ` AND bh.day IS NOT NULL`
+		hourJoin = ` LEFT JOIN public.request_metrics_board_hour_days bh ON bh.day=h.day`
+	}
 	for {
 		var ready bool
 		var observed time.Time
-		if err := pool.QueryRow(ctx, `SELECT bool_and(h.day IS NOT NULL AND th.day IS NOT NULL AND pr.day IS NOT NULL AND hp.day IS NOT NULL), clock_timestamp()
+		if err := pool.QueryRow(ctx, `SELECT bool_and(`+publication+`), clock_timestamp()
 			FROM public.request_metrics_projection p
 			LEFT JOIN public.request_metrics_history_days h ON h.day=(p.occurred_at AT TIME ZONE 'Asia/Shanghai')::date
 			LEFT JOIN public.request_metrics_tenant_history_days th ON th.day=h.day
 			LEFT JOIN public.request_metrics_history_detail_days pr ON pr.day=h.day
-			LEFT JOIN public.request_metrics_history_page_days hp ON hp.day=h.day
+			LEFT JOIN public.request_metrics_history_page_days hp ON hp.day=h.day`+hourJoin+`
 			WHERE p.tenant_id='fixture-latency' AND starts_with(p.request_id,$1)`, batchID).Scan(&ready, &observed); err != nil {
 			t.Fatal(err)
 		}
@@ -328,10 +338,10 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 		// Reuse the same arrival order for both latency upper bounds.
 		historyP95 := p95 + observed.Sub(published)
 		if historyP95 > 5*time.Minute {
-			t.Fatalf("history, person rank and daily detail publication delay exceeds five minutes: %s", historyP95)
+			t.Fatalf("derived report publication delay exceeds five minutes: %s", historyP95)
 		}
 		if ready {
-			t.Logf("history, person rank and daily detail published samples=%d upper-bound p95=%s", len(arrivals), historyP95)
+			t.Logf("derived reports published hourly_board=%t samples=%d upper-bound p95=%s", hourlyAvailable, len(arrivals), historyP95)
 			break
 		}
 		time.Sleep(time.Second)
