@@ -92,6 +92,26 @@ func (r *recentRing) push(t time.Time, level slog.Level, line []byte) {
 	r.mu.Unlock()
 }
 
+// clippedCount 返回「被截断的行数」。
+//
+// ★★ **必须持锁读**：写侧 `r.clipped++`（push）在锁内，而读侧
+// `SearchRecent` / `RecentBufferStats` 在锁外直接读 `r.clipped`
+// ⇒ **同一个 int64 既有锁内写、又有锁外读** ⇒ 按 Go 内存模型是**数据竞争**
+// （`go run -race` 可复现：`WARNING: DATA RACE … Found 1 data race(s)`）。
+// ⇒ **口径**：环形缓冲的其它可读字段（`next` / `count`）一律走 `snapshot()`
+// 在锁内取值；`clipped` 同样不得在锁外裸读 ⇒ 本方法提供唯一的读出口。
+//
+// ★ 代价：读侧多一次互斥获取；与 `snapshot()` 的锁粒度相同 ⇒ 不引入新的死锁序
+// （本缓冲只有 `r.mu` 一把锁，**无嵌套** ⇒ 不存在锁序倒置面）。
+func (r *recentRing) clippedCount() int64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.clipped
+}
+
 // snapshot 返回「旧 → 新」顺序的行视图（切片是新分配的；行字节只读共享）。
 func (r *recentRing) snapshot() []recentSlot {
 	if r == nil {
@@ -331,7 +351,7 @@ func SearchRecent(q RecentQuery) RecentResult {
 
 	res := RecentResult{Lines: []RecentLine{}}
 	res.OldestAt, res.NewestAt = recentBounds(infoSlots, warnSlots)
-	res.ClippedLines = recentWarnRing.clipped + recentInfoRing.clipped
+	res.ClippedLines = recentWarnRing.clippedCount() + recentInfoRing.clippedCount()
 
 	// 两个快照各自按时间升序 ⇒ 从尾部（最新）同时回走，产出「新 → 旧」。
 	i, w := len(infoSlots), len(warnSlots)
@@ -445,7 +465,7 @@ func RecentBufferStats() RecentStats {
 	st := RecentStats{
 		WarnLines: len(warn),
 		InfoLines: len(info),
-		Clipped:   recentWarnRing.clipped + recentInfoRing.clipped,
+		Clipped:   recentWarnRing.clippedCount() + recentInfoRing.clippedCount(),
 		Orphans:   recentTapWriter.orphans.Load(),
 	}
 	for _, s := range warn {

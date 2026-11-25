@@ -173,23 +173,61 @@ func (g *PIEvidenceGatherer) Gather(ctx context.Context, target promptinjection.
 	b.ServiceLogs, b.ServiceLogMeta = g.serviceLogs(target)
 
 	// ⑥ 错误处理手册（可选系统：表不在场 ⇒ 标成「这一路没算出来」，不冒充「没有条目」）。
+	//
+	// ★★ **2026-11-26 12h 审计轮修正**：★★ 这一路原先**不走** `step()` ⇒ ⇒
+	//   ① **没有 panic recover**（★ `step()` 里那处 `defer recover()` 是全文件唯一的
+	//   panic 收口；★ 这一路绕过了它 ⇒ panic 打到 HTTP 路径只有 net/http 的连接级
+	//   recover ⇒ 该请求 500/断连；打到后台分析 worker 则整轮分析作废，而不是
+	//   降级成「这一路没算出来」★）；
+	//   ② **`cancel()` 是手工配对的**（★ `c, cancel, ok := budget.stepCtx()` 之后
+	//   才调 `g.playbookEntries` ⇒ ⇒ 若它 panic ⇒ `cancel()` **不执行** ⇒ context
+	//   泄漏到超时 ★）；
+	//   ③ **超时口径不统一**（★ 其它五路走 `step()` ⇒ 超时被单独归因为
+	//   「超时」；★ 这一路把超时混在「失败」里 ⇒ 取证摘要里看不出是超时还是出错 ★）。
+	// ⇒ ★ 修法：**统一走 `step()`**（`run`）⇒ 一次拿到 recover ＋ `defer cancel`
+	//   ＋ 统一超时/失败归因 ⇒ ★ 三条一起闭合。
+	// ⇒ ★ **语义保持不变**（★ 逐条对齐原来的行为 ★）：
+	//   · 预算用尽 ⇒ 标「预算用尽」并**中断**（★ 用 `called` 判「fn 有没有被跑」
+	//     来识别这一路 ⇒ 不重复记说明、也不白跑下一轮 ★）；
+	//   · 出错 ⇒ 标失败并**中断**（★ 失败说明由 `step()` 统一写，本轮**不再**另写一条
+	//     ⇒ 避免同一处出现两条说明 ★）；
+	//   · 取证面自身降级（表不在场）⇒ 标降级并**中断**；
+	//   · 成功 ⇒ 追加行；到上限 ⇒ 截断并**中断**。
 	for _, et := range piEvidenceDedupe([]string{target.ErrorType, piEvidenceString(target.ErrorDetails, "error_kind")}) {
-		c, cancel, ok := budget.stepCtx()
-		if !ok {
-			b.NoteDegraded("playbook", budget.note("playbook"))
+		var (
+			called   bool
+			rows     []map[string]any
+			degraded string
+			failed   bool
+		)
+		run("playbook", func(c context.Context) error {
+			called = true
+			part, err := g.playbookEntries(c, et)
+			if err != nil {
+				failed = true
+				return err
+			}
+			if part.Degraded != "" {
+				degraded = part.Degraded
+				failed = true
+				return nil
+			}
+			rows = part.Rows
+			return nil
+		})
+		if !called {
+			// ★ 预算已用尽 ⇒ `step()` 已记「预算用尽」⇒ 中断，不重复记。
 			break
 		}
-		part, err := g.playbookEntries(c, et)
-		cancel()
-		if err != nil {
-			b.NoteDegraded("playbook", budget.failureNote("playbook", err))
+		if failed {
+			if degraded != "" {
+				// ★ 取证面自身降级（表不在场）⇒ `step()` 看不到错误（err==nil）
+				//   ⇒ 说明由本处补一条（★ 与原行为逐字一致 ★）。
+				b.NoteDegraded("playbook", "playbook: "+degraded)
+			}
 			break
 		}
-		if part.Degraded != "" {
-			b.NoteDegraded("playbook", "playbook: "+part.Degraded)
-			break
-		}
-		b.Playbook = append(b.Playbook, part.Rows...)
+		b.Playbook = append(b.Playbook, rows...)
 		if len(b.Playbook) >= piEvidenceMaxPlaybookRows {
 			b.Playbook = b.Playbook[:piEvidenceMaxPlaybookRows]
 			break

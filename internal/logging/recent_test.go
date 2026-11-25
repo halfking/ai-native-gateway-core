@@ -294,3 +294,74 @@ func TestWithRecent_NeverEmpty(t *testing.T) {
 		t.Fatalf("零目的地时写入的行没有进缓冲（旁路缺席）: %+v", got.Lines)
 	}
 }
+
+// TestRecentRing_ClippedCountIsRaceFree：`clipped` 计数的**锁内写 vs 锁外读**竞争。
+//
+// ★★ 为什么这个用例必须自己造**超长行**：★ 仓里已有的并发用例
+// （TestRecentTap_ConcurrentWriters）写的行**都短于上限** ⇒ **不触发**
+// `r.clipped++` ⇒ 读侧也就**读不到**那个字段的竞争 ⇒ ⇒
+// **既有的 `-race` 复跑是绿的、但它压根没覆盖这条路径** ⇒
+// ⇒ ★ 通用式：**「并发用例跑过了」不等于「并发路径被覆盖了」** ——
+// ★ 要按**被竞争的字段的写入条件**去造输入，不是按函数名去造。
+//
+// ★ 复现形态（实测）：写侧 `push` 在 `r.mu` 内做 `r.clipped++`（recent.go），
+// 读侧 `SearchRecent` / `RecentBufferStats` 曾**在锁外**直接读 `r.clipped`
+// ⇒ `go test -race` 报 `WARNING: DATA RACE … Found 1 data race(s)`。
+//
+// ★ 本用例的判据：写侧**持续**产生超长行（⇒ clipped 计数不断变化），
+// 读侧**同时**反复调两个读出口 ⇒ 修复前必然被 `-race` 抓住；
+// 修复后（读侧改走 `clippedCount()` 持锁读）必须干净。
+func TestRecentRing_ClippedCountIsRaceFree(t *testing.T) {
+	resetRecentForTest(t, slog.LevelInfo)
+	if _, err := Init(Config{}, slog.LevelInfo); err != nil {
+		t.Fatalf("Init(empty): %v", err)
+	}
+	defer ResetRecentBuffers()
+
+	// ★ blob 取上限的两倍 ⇒ 每行都被截断 ⇒ `clipped` 每次写都在变。
+	blob := strings.Repeat("x", recentInfoMaxLen*2)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// 写侧：持续写超长行 ⇒ 持锁递增 clipped。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			slog.Info("recent-clipped-race", "i", i, "blob", blob)
+		}
+	}()
+
+	// 读侧：两个读出口都曾锁外读 clipped ⇒ 修复前这里就是竞争现场。
+	for r := 0; r < 2; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = SearchRecent(RecentQuery{MustContain: []string{"recent-clipped-race"}, Limit: recentMaxHit})
+				_ = RecentBufferStats()
+			}
+		}()
+	}
+
+	// ★ 让写读真正重叠一段时间（写侧是无限循环 ⇒ 靠 stop 收口）。
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// ★ 判据：截断计数确实被触发过（否则本用例什么也没覆盖 ⇒ 假绿）。
+	if got := SearchRecent(RecentQuery{MustContain: []string{"recent-clipped-race"}}).ClippedLines; got == 0 {
+		t.Errorf("截断行没有被计数（ClippedLines=%d）⇒ 本用例没覆盖到被竞争的写入路径", got)
+	}
+}
