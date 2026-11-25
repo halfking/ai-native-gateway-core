@@ -164,6 +164,7 @@
       <tr><td>worktree <code>/private/tmp/maincheck</code></td><td>干净、无独有提交</td><td><span class="pill p-ok">已删除</span></td></tr>
       <tr><td>worktree <code>reconciliation-release-preview</code></td><td>335 个暂存文件：278 个与升级分支尖端相同；57 个不在其尖端，其中 52 个的内容在升级分支与 main 的历史里都找不到——同一特性的另一条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>，没有 <code>988b</code>）；尖端自身可编译、改动包单测与 installer 通过，但门禁包有 8 道、web 有 5 条红是分支带来的；对当前 main 冲突 25 处</td><td><span class="pill p-ok">已提交为保全分支 <code>codex/reconciliation-release-preview</code> 后删除</span></td></tr>
       <tr><td>worktree <code>reconciliation-upgrade</code></td><td>干净、等于分支尖端</td><td><span class="pill p-ok">已删除，分支保留</span></td></tr>
+      <tr><td>同级其他检出（只读清点）</td><td>与本仓同远端另有 3 个检出，本仓之外 11 个非主 worktree：8 个干净的临时树 5–20 小时无改动、1 个残缺检出、1 个带未进 main 的未跟踪文档、1 个 2.6 小时前还在用</td><td><span class="pill p-hold">属别的车道，未处置；是否扩面清理待 owner</span></td></tr>
       <tr><td>6 个 stash</td><td>全部过时或已被吸收</td><td><span class="pill p-hold">未丢弃（不可逆、未授权）</span></td></tr>
     </table>
   </div>
@@ -171,6 +172,7 @@
   <h2>⑦ 遗留风险与待 owner 决策</h2>
   <div class="card">
     <ul>
+      <li><span class="tag">同级检出的清理</span> —— 是否把 worktree 清理扩到同级检出：<code>llm-gateway-go</code> 与 <code>llm-gateway-go-5</code> 登记的 8 个干净临时树可删（提交都在 main）；<code>llm-gateway-go-5-l1l5</code> 须先把那份未跟踪文档保全；两个检出正被别的会话使用。清单见证据 <code>docs/audit/evidence/2026-11-25-round28-sibling-checkouts-survey.txt</code>。</li>
       <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两者是同一特性的两条分叉线（同一迁移编号 <code>973</code> 对 <code>983d</code>／<code>988b</code>）：并入要先定哪条线为准，删除任一个都会丢掉别处没有的内容。两条线都「健康但未就绪」：共有的 V2 前端改动打破 4 条既有 web 契约测试，并入前须对账并重生成台账（证据：<code>docs/audit/evidence/2026-11-25-round28-local-branches-validity.txt</code>）。两个分支目前都只在本地。已向 owner 询问四个选项、未获答复；按纪律不并不删不推。若只求防本机丢失，可推到远端侧分支（已核实不触发 CI）。</li>
       <li><span class="tag">W3 外部钩子</span> —— 是否上线；上线前须先修来源判定、凭据头脱敏、熔断与观测、流式空正文、改写体校验。</li>
       <li><span class="tag">登录 captcha 计数</span> —— 是否给服务端失败计数加 TTL 或重置端点（目前只绕开了 UI 登录）。</li>
