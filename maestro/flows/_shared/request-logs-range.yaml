@@ -1,0 +1,66 @@
+# _shared/request-logs-range.yaml —— 请求日志页「选一个时间范围预设 ⇒ 加载完成 ⇒
+#   有数据 ⇒ 无报错」的共享子流（2026-11-25 request-logs「切换时间范围后无数据 /
+#   超时」根修轮）。
+#
+# ★ 用法：被 19-request-logs-time-ranges.yaml 以 runFlow 调用，
+#   env 传 PRESET_ID（KxDateRangePicker 档位的 data-testid 后缀，如
+#   `kx-dr-preset-today`）。本文件头仍要写 `url: ${BASE_URL}`（否则被当成移动端 flow）。
+#
+# ★ 为什么每一步都是**驱动原生**判据（不用 evalScript）：web 驱动没有 evaluateScript
+#   （README §6.6）⇒ 依赖页面内 JS 的判据都是静默空转的假强门。
+#
+# ★ 判据与缺陷的对应（每一条都能说出「它在哪种坏法下会红」）：
+#   · `logs-loading-bar` 消失       ⇒ 这一轮查询**收尾了**（不是卡在加载态）；
+#   · `logs-loading` 不可见          ⇒ 加载块已撤（不是「一直转圈」）；
+#   · 「查询失败，未取得数据」不可见  ⇒ 查询没失败（后端 503 / 500 时表格体的那一行）；
+#   · 「服务暂时不可用」「查询超时」不可见 ⇒ 没有红色横幅（60s 超时 / 503 的文案族——
+#       **正是报障里的原文**：「服务暂时不可用，请稍后重试（原因：query timeout…）」）；
+#   · `logs-empty` 不可见、`共 0 条` 不可见 ⇒ **有数据**（不是「无记录」）——
+#       这一条直接对应「今天 / 近 7 天 / 近 14 天没有数据」。
+#
+# ★ 为什么「有数据」敢断言：本子流只用于**确认有数据**的档位（由调用方保证——
+#   211 上今天 / 昨天 / 近 24 小时 / 近 7 / 14 / 30 天 / 本月 / 上月都有请求）。
+#   可能合法为空的档位（如凌晨刚过零点的「今天」）由 runner 用 TODAY_PRESET_ID 换档。
+url: ${BASE_URL}
+---
+# ① 打开时间范围面板（点触发器内层 span ⇒ 事件冒泡到按钮）
+- tapOn:
+    id: "kx-dr-trigger"
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-panel"
+    timeout: 10000
+# ② 点档位（档位点击即生效：提交 + 关面板）
+- tapOn:
+    id: "${PRESET_ID}"
+- extendedWaitUntil:
+    notVisible:
+      id: "kx-dr-panel"
+    timeout: 10000
+# ③ 等这一轮查询收尾：顶部进度条消失。预算是 60s（业务）/ 120s（含探测）⇒ 上限留到 150s。
+#    ★ 超时本身就是红：那意味着「查询没收尾」，正是这次要修的症状。
+- extendedWaitUntil:
+    notVisible:
+      id: "logs-loading-bar"
+    timeout: 150000
+# ④ 加载态已撤
+- assertNotVisible:
+    id: "logs-loading"
+- assertNotVisible:
+    id: "logs-loading-bar"
+- assertNotVisible:
+    id: "logs-loading-elapsed"
+# ⑤ 没有报错（表格体的失败行 + 红色横幅两处）
+- assertNotVisible:
+    text: ".*查询失败，未取得数据.*"
+- assertNotVisible:
+    text: ".*服务暂时不可用.*"
+- assertNotVisible:
+    text: ".*查询超时.*"
+- assertNotVisible:
+    text: ".*服务器没能完成这个操作.*"
+# ⑥ 有数据：不是「无记录」、总数不是 0
+- assertNotVisible:
+    id: "logs-empty"
+- assertNotVisible:
+    text: ".*共 0 条.*"

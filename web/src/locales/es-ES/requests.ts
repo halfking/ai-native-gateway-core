@@ -8,6 +8,15 @@ export default {
     error: {
       scanningFailed: "Anomalía al cargar datos: se consultaron {count} registros pero no pueden mostrarse. Suele ser un problema de formato de datos en el servidor; pide a un administrador que revise los registros del backend.",
     },
+    loading: {
+      title: 'Cargando registros de solicitudes…',
+      slow: 'Consultando: el volumen de datos es grande, espere…',
+      still: 'Sigue consultando, espere…',
+      elapsed: 'Esperando {n} s',
+      hint: 'Está tardando mucho: reduzca el rango de tiempo o los filtros{probe} y vuelva a intentarlo',
+      probeSuffix: ', o desactive «Incluir tráfico de sondeo»',
+    },
+    queryFailedRow: 'La consulta falló: no se obtuvieron datos (ver el mensaje anterior)',
     filter: {
       keyAll: 'Todas las claves',
       providerAll: 'Todos los proveedores',

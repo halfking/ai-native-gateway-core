@@ -42,7 +42,12 @@ type requestLogRow struct {
 	CostDisplay       *float64  `json:"cost_display"`
 	CostCurrency      *string   `json:"cost_currency"`
 	LatencyMs         *int      `json:"latency_ms"`
-	Success           bool      `json:"success"`
+	// ★ 2026-11-25：Success 是**可空**的。session_turns.success 对少数历史残缺行是
+	// NULL（211 实测 53 行，同一时刻的一批：无 status_code / error_kind）——它们经
+	// requestLogStatusExpr 归为 in_progress。此前这里是非空 bool ⇒ 任何把它们选出来的
+	// 查询（如 request_status=in_progress，或它们恰落在某一页里）在行扫描时抛
+	// 「cannot scan NULL into *bool」⇒ 整页 503（详情接口同理）。现如实返回 null。
+	Success           *bool     `json:"success"`
 	RequestStatus     string    `json:"request_status"`
 	ErrorKind         *string   `json:"error_kind"`
 	SearchText        *string   `json:"search_text"`
@@ -625,6 +630,29 @@ func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []
 // admin/logs_serial_plan_test.go 钉住本常量的字节形态（含 is_local=true）。
 const listLogsSerialPlanSQL = `SELECT set_config('max_parallel_workers_per_gather', '0', true)`
 
+// listLogsUsesProbeArm 报告本次请求的 FROM 源是否带探测臂（第三臂）。
+//
+// 只有显式 include_probe=1 或 lane=all 才带。lane=probe / probe_history 是
+// 「业务表上的历史探测行」视图（U4）：两臂业务源 + probeRequestFilter——
+// 把它算进来会让 resolveLogsTrafficLanePredicate(lane, includeProbe=true)
+// 返回空谓词，历史探测视图就变成了全量流量。
+func listLogsUsesProbeArm(lane string, includeProbe bool) bool {
+	return includeProbe || lane == "all"
+}
+
+// listLogsQueryTimeout 是 listLogs **整个** handler（聚合 / 分组 / 分页三条语句
+// 共用）的预算。含探测时是三源 UNION（业务热表 ∪ 业务父表 ∪ 探测臂），宽窗下
+// 仍比纯业务慢数倍 ⇒ 给更宽的预算。
+//
+// ★ 2026-11-25：这是**兜底**，不是靠它撑住慢查询。真正的 60s 超时已在两处根修
+// （见 listLogs 头注）；修后日级窗口 0.4s 量级、30 天含探测三条语句合计 ~22s。
+func listLogsQueryTimeout(includeProbe bool) time.Duration {
+	if includeProbe {
+		return 120 * time.Second
+	}
+	return 60 * time.Second
+}
+
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -633,20 +661,32 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// The list query joins the hot metadata view with provider/model/title
 	// projections. A 5s budget caused valid historical windows to return 500
 	// while the underlying request-log count remained healthy under load.
-	// 2026-11-25: 增加超时到60秒以处理大窗口查询和多过滤器场景
-	// 2026-11-25: 生产环境实测：24小时窗口+include_probe+2过滤器查询31K条仍超时
-	//             → 需要后续优化：索引分析、查询重构、或限制include_probe时的窗口
-	// 2026-11-25: 优化实施：探测流量查询超时120s，业务流量60s；自动限制探测流量窗口≤12h
-	
-	// 预先检查 include_probe 以确定超时和窗口限制
+	//
+	// 2026-11-25 超时根修（211 生产实证，EXPLAIN ANALYZE 逐节点定位）：
+	// 「60 秒不够」只是表象。真因是月分区统计信息陈旧 ⇒ 冷分区被估成 3 行 ⇒
+	// details 连接退化成 Nested Loop + Join Filter（单条语句 1 亿次比较、26~38s）
+	// ⇒ 已在两处根修：查询形状（db.SessionFamilyTurnsSourceWindowedSQL 的
+	// details 单行点查）与统计新鲜度（PartitionManager 的月分区 analyze 设置
+	// 巡检）。日级窗口实测 26~38s → 0.4s。
+	//
+	// ★ 同日撤掉上一版的「探测流量窗口自动截断到 12h」：它以 `end` 为锚向前推
+	//   `start`，而日历型预设（今天 / 昨天 / 近 N 天 / 本月）的 `end` 是**当天结束
+	//   时刻（未来）** ⇒ 截出来的窗口整体落在未来 ⇒ 必然 0 行（211 日志逐字坐实：
+	//   original_hours=23.99 → new_start=end-12h → count=0）。它压住超时的代价是
+	//   让这些范围**永远没有数据**。查询本身修好之后不再需要它。
 	lane := strings.ToLower(strings.TrimSpace(queryString(r, "lane")))
-	includeProbe := queryBool(r, "include_probe") || lane == "all" || lane == "probe" || lane == "probe_history"
-	
-	// 动态超时：探测流量查询需要更长时间（union 三个源表）
-	queryTimeout := 60 * time.Second
-	if includeProbe {
-		queryTimeout = 120 * time.Second
-	}
+	includeProbe := queryBool(r, "include_probe")
+	// withProbeArm：FROM 源是否带探测臂（第三臂）。只有显式 include_probe 或
+	// lane=all 才带——**不含** lane=probe/probe_history（那是「业务表上的历史探测
+	// 行」视图：两臂业务源 + probeRequestFilter，U4 语义）。
+	//
+	// ★ 2026-11-25 回归修复：上一版为了「提前算超时」把 includeProbe 写成
+	//   `include_probe || lane=all || lane=probe || lane=probe_history` ⇒ 历史探测
+	//   车道被换成三臂全量源、且 resolveLogsTrafficLanePredicate(lane, true) 返回
+	//   空谓词 ⇒ 「历史探测」视图显示的是**全部流量**。本行恢复原始口径。
+	withProbeArm := listLogsUsesProbeArm(lane, includeProbe)
+	queryTimeout := listLogsQueryTimeout(withProbeArm)
+
 	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
 	defer cancel()
 
@@ -654,24 +694,6 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
 	end := parseQueryTime(r, "to", now)
 	start, end = clampQueryWindowForTenant(start, end, GetTenantID(r))
-	
-	// 探测流量查询自动限制窗口：超过12小时自动截断（除非显式override=1）
-	var windowClamped bool
-	if includeProbe && queryString(r, "override_window_limit") != "1" {
-		maxProbeWindow := 12 * time.Hour
-		actualWindow := end.Sub(start)
-		if actualWindow > maxProbeWindow {
-			// 保持end不变，向前推start（查询最近12小时）
-			start = end.Add(-maxProbeWindow)
-			windowClamped = true
-			slog.InfoContext(ctx, "admin listLogs: probe query window auto-clamped",
-				"original_hours", actualWindow.Hours(),
-				"clamped_hours", maxProbeWindow.Hours(),
-				"new_start", start,
-				"end", end,
-			)
-		}
-	}
 
 	page := queryInt(r, "page", 1)
 	if page < 1 {
@@ -888,6 +910,9 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
 	logsFrom := logsSourceFromSQLWindowed("$1", "$2")
+	// 分页页查询按臂取 top-K（见 listLogsPageInnerSQL）：与 logsFrom 的臂**同源**
+	// （同一对构造函数），只是不预先 UNION 成一个整体。
+	pageArms := dbpkg.SessionFamilyTurnsWindowedArms("$1", "$2")
 
 	// 2026-11-21 统计口径对齐轮：包含探测模式（include_probe=1 / lane=all）的
 	// 行集从「业务两臂摘掉 stage 过滤」升级为「业务两臂 ∪ 探测臂」。
@@ -901,8 +926,9 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// 口径（usage_facts 全量 == 供应商对账全量）。业务两臂在本模式下不加
 	// stage 过滤（lane=all 原语义，隔离前的历史 marker 行照样在场）。
 	// $3/$4 复用列表的 ts 窗口参数（探测臂 ts 谓词 + usage_facts occurred_at 界）。
-	if includeProbe || lane == "all" {
+	if withProbeArm {
 		logsFrom = dbpkg.SessionFamilyTurnsSourceWindowedAllSQL("$1", "$2", "$3", "$4") + " rl"
+		pageArms = dbpkg.SessionFamilyTurnsAllWindowedArms("$1", "$2", "$3", "$4")
 	}
 
 	// ★★ 2026-11-23 request-logs「有 count 无 items」根修（211 生产 53100 实证）：★★
@@ -1012,6 +1038,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			"arg_count", len(args),
 			"elapsed_ms", time.Since(aggStart).Milliseconds(),
 		)
+		// ★ 2026-11-25：请求已被取消 / 预算已耗尽时，**不要**再拿同一个 ctx 去发
+		//   回退 COUNT——它在已死的 ctx 上必然立刻失败，只会把「客户端离开 / 超时」
+		//   记成一条 500「query failed」（211 日志实证：连续两次
+		//   `aggregate scan failed: context canceled` → `count query failed: conn closed`）。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			writeListLogsContextDone(w, ctxErr, listLogsTimeoutMessage(queryTimeout, 0, withProbeArm))
+			return
+		}
 		// 聚合失败：退回单独的 COUNT（页面的 count 与列表仍然可用，
 		// 聚合字段保持零值）—— 与旧行为一致（旧：COUNT 失败即 500）。
 		countSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
@@ -1022,6 +1056,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		countStart := time.Now()
 		if err := tx.QueryRow(ctx, countSQL, args...).Scan(&count); err != nil {
+			// 同上：预算在回退 COUNT 期间耗尽 ⇒ 如实报超时（503），不报 500。
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				slog.Warn("admin listLogs count query aborted by request context",
+					"scope", scope, "err", err.Error(), "ctx_err", ctxErr.Error(),
+					"total_elapsed_ms", time.Since(queryStart).Milliseconds())
+				writeListLogsContextDone(w, ctxErr, listLogsTimeoutMessage(queryTimeout, 0, withProbeArm))
+				return
+			}
 			slog.Error("admin listLogs count query failed",
 				"scope", scope,
 				"error", err.Error(),
@@ -1121,9 +1163,19 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offset := (page - 1) * pageSize
-	listArgs := append(append([]any{}, args...), pageSize, offset)
-	limitIdx := argIdx
-	offsetIdx := argIdx + 1
+	// 分页参数（接在过滤参数之后）：非脉络模式下依次是 $K（每臂 top-K 的 K）、
+	// $limit、$offset；脉络模式（整体形态）只有 $limit、$offset。
+	var listArgs []any
+	var limitIdx, offsetIdx int
+	if chrono {
+		// 脉络模式：trace_seq 是全局名次 ⇒ 必须用整体形态（见 listLogsPageInnerSQL）。
+		pageArms = nil
+		listArgs = append(append([]any{}, args...), pageSize, offset)
+		limitIdx, offsetIdx = argIdx, argIdx+1
+	} else {
+		listArgs = append(append([]any{}, args...), offset+pageSize, pageSize, offset)
+		limitIdx, offsetIdx = argIdx+1, argIdx+2
+	}
 
 	// Use the slimmed column list (requestLogsListCols) for the list
 	// endpoint: omit outbound_body / outbound_msg_hashes / compression_meta
@@ -1134,13 +1186,15 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// 一次 provider_models 全表扫描（实测 9.9s，接口 5s 超时）。改为两段式：
 	// 先在内层子查询按 ts 排序 LIMIT 截断到一页（只取 rl.* 窄列），
 	// 外层再对少量行做辅助表 LEFT JOIN + LATERAL。
-	innerSQL := fmt.Sprintf(`
-		SELECT rl.*%s
-		FROM %s
-		WHERE %s
-		ORDER BY %s
-		LIMIT $%d OFFSET $%d
-	`, traceSeqInner, logsFrom, where, orderBy, limitIdx, offsetIdx)
+	innerSQL := listLogsPageInnerSQL(listLogsPageQuery{
+		Arms:          pageArms,
+		WholeSource:   logsFrom,
+		Where:         where,
+		OrderBy:       orderBy,
+		TraceSeqInner: traceSeqInner,
+		LimitIdx:      limitIdx,
+		OffsetIdx:     offsetIdx,
+	})
 	listQueryStart := time.Now()
 	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
@@ -1200,20 +1254,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			
 			// 2026-11-25: 超时错误提供更具体的用户指导，使用实际超时值
 			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
-				timeoutSeconds := int(queryTimeout.Seconds())
-				windowHours := end.Sub(start).Hours()
-				var guidance string
-				if includeProbe && windowHours > 12 {
-					guidance = fmt.Sprintf("查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口至12小时以内，2) 减少过滤器，3) 或添加 override_window_limit=1 参数使用完整窗口(需更长等待)", 
-						timeoutSeconds, count)
-				} else if includeProbe {
-					guidance = fmt.Sprintf("探测流量查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或移除探测流量过滤(include_probe=0)", 
-						timeoutSeconds, count)
-				} else {
-					guidance = fmt.Sprintf("查询超时(%d秒，已扫描%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或尝试添加更具体的过滤器", 
-						timeoutSeconds, count)
-				}
-				writeError(w, http.StatusServiceUnavailable, guidance)
+				writeError(w, http.StatusServiceUnavailable, listLogsTimeoutMessage(queryTimeout, count, withProbeArm))
 			} else {
 				writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
 					"request log list query interrupted before completion: received %d of %d counted rows; storage-side error, retrying may help", len(items), count))
@@ -1263,15 +1304,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// 2026-11-25: 添加响应头以支持前端显示查询状态和优化建议
+	// 2026-11-25: 诊断响应头（查询耗时 / 命中数 / 窗口跨度 / 是否含探测臂）。
 	w.Header().Set("X-Query-Duration-Ms", fmt.Sprintf("%d", totalElapsed.Milliseconds()))
 	w.Header().Set("X-Query-Count", fmt.Sprintf("%d", count))
 	w.Header().Set("X-Query-Window-Hours", fmt.Sprintf("%.2f", end.Sub(start).Hours()))
-	w.Header().Set("X-Query-Include-Probe", fmt.Sprintf("%v", includeProbe))
-	if windowClamped {
-		w.Header().Set("X-Query-Window-Clamped", "true")
-		w.Header().Set("X-Query-Clamp-Reason", "探测流量查询自动限制至12小时窗口以提高性能。添加 override_window_limit=1 参数可使用完整窗口。")
-	}
+	w.Header().Set("X-Query-Include-Probe", fmt.Sprintf("%v", withProbeArm))
 
 	// U4：lane=probe|probe_history 读的是业务表历史探测行 ⇒ 响应显式标
 	// source=history + lane=probe_history，避免与探测车道「当前」端点混淆。
@@ -1295,16 +1332,112 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	default:
 		resp["traffic_lane"] = "business"
 	}
-	
-	// 2026-11-25: 在响应体中包含窗口信息，方便前端显示
-	if windowClamped {
-		resp["window_clamped"] = true
-		resp["window_clamp_message"] = "查询窗口已自动限制至12小时以提高性能"
-	}
+
+	// 2026-11-25: 回传**实际生效**的查询窗口（= 请求的 from/to，经租户窗钳制后的
+	// 值）。调用方 / 验收可以据此确认「查的就是请求的窗口」——没有任何静默截断。
 	resp["query_window_start"] = start
 	resp["query_window_end"] = end
-	
+
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// listLogsTimeoutMessage 是 listLogs 超时（预算耗尽）时给用户的文案：事实
+// （预算多少秒、已统计多少条）＋ 处置（三个方向）。驱动原文只进日志。
+func listLogsTimeoutMessage(timeout time.Duration, matched int, withProbeArm bool) string {
+	secs := int(timeout.Seconds())
+	if withProbeArm {
+		return fmt.Sprintf("查询超时(%d秒，已统计%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或关闭「包含探测流量」后重试",
+			secs, matched)
+	}
+	return fmt.Sprintf("查询超时(%d秒，已统计%d条记录)。建议：1) 缩小时间窗口，2) 减少过滤条件，3) 或添加更具体的过滤器",
+		secs, matched)
+}
+
+// writeListLogsContextDone 在「请求上下文已结束」时收尾：
+//   - 预算耗尽（DeadlineExceeded）⇒ 503 ＋ 超时文案（可重试、有处置建议）；
+//   - 客户端已离开（Canceled）⇒ 不写响应——对端已经不在，写了也没人收；
+//     如实记一条 Info，别让它以 500「query failed」的形态出现在错误日志里。
+func writeListLogsContextDone(w http.ResponseWriter, ctxErr error, timeoutMsg string) {
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		writeError(w, http.StatusServiceUnavailable, timeoutMsg)
+		return
+	}
+	slog.Info("admin listLogs request abandoned by client", "ctx_err", ctxErr.Error())
+}
+
+// listLogsPageQuery 是 listLogsPageInnerSQL 的入参。
+type listLogsPageQuery struct {
+	// Arms：按臂取 top-K 时传各臂（自带括号、不带别名）；nil ⇒ 用 WholeSource
+	// 的整体形态。
+	Arms []string
+	// WholeSource：整体形态的 FROM 源（带 ` rl` 别名）。
+	WholeSource string
+	Where       string
+	OrderBy     string
+	// TraceSeqInner：脉络模式下追加在 SELECT 里的 trace_seq 表达式（含前导逗号），
+	// 非脉络模式为空。
+	TraceSeqInner string
+	// LimitIdx / OffsetIdx 是 limit / offset 两个参数的下标。按臂 top-K 形态下
+	// 每臂上界 K 是**单独一个参数**，占 LimitIdx 的前一位（调用方把 K 排在
+	// limit / offset 之前）。
+	LimitIdx  int
+	OffsetIdx int
+}
+
+// listLogsPageInnerSQL 渲染分页页查询的内层（JOIN 辅助表之前的那一层）。
+//
+// ★ 2026-11-25：非脉络模式下改成「**每臂先取 top-K，再归并**」。
+//
+// 原形态是「先把各臂 UNION ALL 成一个整体，WHERE 过滤后整体排序，再 LIMIT」
+// ⇒ 列表只要一页 50 行，却必须把**窗口内全部命中行**物化（118 列投影 ＋
+// details 点查）再排序。211 实测 30 天含探测：35 万行业务行 + 12 万行探测行，
+// 页查询 7.7s——而它最终只输出 50 行。
+//
+// 新形态：每个臂自己 `WHERE … ORDER BY ts DESC LIMIT K`（K = offset + 页大小），
+// 再 UNION ALL、整体排序、LIMIT/OFFSET。
+//
+// # 为什么等价（不是近似）
+//
+// 整体按 ts DESC 的前 K 行，必然也是**它所在那个臂**的前 K 行（它是整体的
+// 前 K ⇒ 在自己臂内按同样的序排，名次只会更靠前）⇒ 各臂前 K 行的并集 ⊇ 整体
+// 前 K 行；多出来的行在归并排序后被 LIMIT/OFFSET 截掉。过滤谓词逐臂**原样**
+// 施加（UNION ALL 的行 = 各臂行的拼接，谓词对每行的作用与施加在哪一层无关）。
+// `ts` 相同的行之间顺序本就不确定，两种形态都只保证「按 ts DESC 的一页」。
+//
+// # 代价为什么变小
+//
+//	臂内带上界 K 之后，规划器可以走「按 ts 索引倒序扫描＋逐行过滤、取满 K 行
+//	即停」（或退一步做有界的 top-N 堆排）⇒ 无过滤时页查询的代价与**窗口内
+//	总行数无关**，只与 K 有关。
+//
+// # 为什么脉络模式（chrono）不用它
+//
+//	trace_seq = ROW_NUMBER() OVER (ORDER BY rl.ts ASC) 是**全局**名次，必须先有
+//	完整行集才能编号；在各臂截断后的并集上编号得到的是「并集内名次」，翻到
+//	第 2 页起就错了。所以 chrono 保持整体形态。
+func listLogsPageInnerSQL(q listLogsPageQuery) string {
+	if len(q.Arms) == 0 {
+		return fmt.Sprintf(`
+		SELECT rl.*%s
+		FROM %s
+		WHERE %s
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d
+	`, q.TraceSeqInner, q.WholeSource, q.Where, q.OrderBy, q.LimitIdx, q.OffsetIdx)
+	}
+	perArm := make([]string, len(q.Arms))
+	for i, arm := range q.Arms {
+		perArm[i] = fmt.Sprintf(`(SELECT rl.* FROM %s rl WHERE %s ORDER BY %s LIMIT $%d)`,
+			arm, q.Where, q.OrderBy, q.LimitIdx-1)
+	}
+	return fmt.Sprintf(`
+		SELECT rl.*
+		FROM (
+			%s
+		) rl
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d
+	`, strings.Join(perArm, "\n\t\t\tUNION ALL\n\t\t\t"), q.OrderBy, q.LimitIdx, q.OffsetIdx)
 }
 
 func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {

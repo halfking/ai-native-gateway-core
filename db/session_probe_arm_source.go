@@ -171,11 +171,6 @@ func sessionProbeProjectionExprs() []string {
 // idx_session_turns_probe_hot_ts 前导索引）；usage_facts 费用聚合的
 // occurred_at 界用同一对参数（同为 timestamptz 语义，与业务臂的 ts 谓词同窗）。
 func SessionFamilyProbeArmSourceSQL(tsFrom, tsTo string) string {
-	proj := sessionProbeProjectionExprs()
-	parts := make([]string, len(proj))
-	for i, expr := range proj {
-		parts[i] = expr + " AS " + canonicalColumnOrderV2[i]
-	}
 	inner := `
 		SELECT t.request_id, t.ts, t.tenant_id, t.credential_id, t.raw_model_name,
 		       t.client_model, t.outbound_model, t.success, t.status_code,
@@ -196,7 +191,67 @@ func SessionFamilyProbeArmSourceSQL(tsFrom, tsTo string) string {
 			GROUP BY request_id
 		) uf ON uf.request_id = t.request_id
 		WHERE t.ts >= ` + tsFrom + ` AND t.ts <= ` + tsTo
+	return probeArmSelect(inner)
+}
+
+// probeArmSelect 把探测臂的内层查询（别名 t，须带出投影引用的全部列）包上
+// 118 列 canonical 投影。SessionFamilyProbeArmSourceSQL 与
+// SessionFamilyProbeArmLookupSQL 只在内层不同，外层投影同一份。
+func probeArmSelect(inner string) string {
+	proj := sessionProbeProjectionExprs()
+	parts := make([]string, len(proj))
+	for i, expr := range proj {
+		parts[i] = expr + " AS " + canonicalColumnOrderV2[i]
+	}
 	return "(SELECT " + strings.Join(parts, ",\n\t\t") + " FROM (" + inner + ") t)"
+}
+
+// SessionFamilyProbeArmLookupSQL 是 SessionFamilyProbeArmSourceSQL 的
+// **按行点查**形态：费用聚合从「先把窗口内 usage_facts 聚合成一张表再 JOIN」
+// 改成「对每个探测行按 request_id 做一次关联聚合」（JOIN LATERAL）。
+//
+// ★ 2026-11-25 分页 top-K 的配套：业务两臂按 ts 索引倒序「取满 K 行即停」之后，
+//
+//	探测臂成了宽窗页查询里唯一的 O(窗口) 残留（211 实测 14 天：业务两臂
+//	3.6ms + 1.7ms，探测臂 1,688ms——它必须先扫完全部探测行、聚合完
+//	usage_facts 才能排序）。改成关联聚合后，规划器可以「probe_hot 按 ts 倒序
+//	走索引 → 每行到 usage_facts 的 (request_id, occurred_at) 索引上点查 →
+//	取满 K 行即停」⇒ 代价只与 K 有关。
+//
+// ★ 行集与费用**逐行等价**（不是近似）：
+//
+//	原形态：t INNER JOIN {每个 request_id 一行：窗口内、非业务 class 的费用聚合}
+//	  —— t 行有 fact 才保留，费用 = 该 request_id 全部 fact 的聚合。
+//	本形态：对每个 t 行，关联子查询
+//	  `WHERE request_id = t.request_id AND 窗口 AND class <> 'business' GROUP BY request_id`
+//	  —— 有 fact 时恰好产出一行、聚合值相同；没有 fact 时 GROUP BY 产出**零行** ⇒
+//	  JOIN LATERAL … ON TRUE（内连接）同样丢掉该 t 行。
+//	  两边窗口 / class / 聚合表达式逐字相同。
+//
+// 只供分页路径使用；聚合 / 分组路径（本就要过全部行）仍用
+// SessionFamilyProbeArmSourceSQL 的哈希连接形态。
+func SessionFamilyProbeArmLookupSQL(tsFrom, tsTo string) string {
+	inner := `
+		SELECT t.request_id, t.ts, t.tenant_id, t.credential_id, t.raw_model_name,
+		       t.client_model, t.outbound_model, t.success, t.status_code,
+		       t.error_kind, t.latency_ms, t.prompt_tokens, t.completion_tokens,
+		       t.origin_stage, t.origin_actor, t.task_type, t.api_key_id,
+		       t.provider_id, t.client_ip, t.request_preview, t.gw_session_id,
+		       t.agent_name, t.quality_flags,
+		       uf.probe_cost, uf.probe_currency, uf.probe_credits
+		FROM public.session_turns_probe_hot t
+		JOIN LATERAL (
+			SELECT SUM(cost_amount) AS probe_cost,
+			       MAX(cost_currency) AS probe_currency,
+			       SUM(credits_charged) AS probe_credits
+			FROM public.usage_facts
+			WHERE request_id = t.request_id
+			  AND occurred_at >= ` + tsFrom + ` AND occurred_at <= ` + tsTo + `
+			  AND traffic_class <> 'business'
+			GROUP BY request_id
+		) uf ON TRUE
+		WHERE t.ts >= ` + tsFrom + ` AND t.ts <= ` + tsTo
+	return probeArmSelect(inner)
 }
 
 // SessionFamilyTurnsSourceWindowedAllSQL = 业务两臂（SessionFamilyTurnsSourceWindowedSQL）
@@ -208,4 +263,20 @@ func SessionFamilyProbeArmSourceSQL(tsFrom, tsTo string) string {
 func SessionFamilyTurnsSourceWindowedAllSQL(pdFrom, pdTo, tsFrom, tsTo string) string {
 	return "(SELECT * FROM " + SessionFamilyTurnsSourceWindowedSQL(pdFrom, pdTo) +
 		" UNION ALL SELECT * FROM " + SessionFamilyProbeArmSourceSQL(tsFrom, tsTo) + ")"
+}
+
+// SessionFamilyTurnsAllWindowedArms 返回「包含探测」模式的**三臂**（业务两臂 +
+// 探测臂），顺序固定，供分页路径「每臂先取 top-K 再归并」使用（见
+// admin/logs.go 的 listLogsPageInnerSQL）。
+//
+// ★ 业务两臂与 SessionFamilyTurnsSourceWindowedAllSQL **同源**（同一个
+//
+//	SessionFamilyTurnsWindowedArms）；探测臂用 SessionFamilyProbeArmLookupSQL 的
+//	按行点查形态（行集与费用逐行等价，见其头注）——它是探测行能「取满即停」的
+//	前提。聚合 / 分组路径仍走 SessionFamilyTurnsSourceWindowedAllSQL。
+//
+// ★ 返回的每一臂自带括号、不带外层别名。
+func SessionFamilyTurnsAllWindowedArms(pdFrom, pdTo, tsFrom, tsTo string) []string {
+	arms := SessionFamilyTurnsWindowedArms(pdFrom, pdTo)
+	return append(arms, "("+SessionFamilyProbeArmLookupSQL(tsFrom, tsTo)+")")
 }

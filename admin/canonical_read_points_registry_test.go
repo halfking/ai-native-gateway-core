@@ -1022,6 +1022,18 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptViewDefinitionFace,
 		Note:         "canonical 视图**自身的定义面**（CREATE OR REPLACE VIEW / COMMENT ON VIEW / pg_views 探测）⇒ 它是视图的**生产者**，不是读方",
 	},
+	// db/session_turns_windowed_source.go：R181 带分区键界的会话族两臂读源
+	// （2026-11-25 从 db/request_logs_view_schema.go **原样搬来**——那边是视图装配文件，
+	// 不许出现 LEFT JOIN LATERAL，而本文件的 details 腿正是按键单行点查）。
+	// 人工核定（2026-11-25）：canonical 视图名只出现在头注里（对比说明「原生两臂与
+	// 视图行集相同」）⇒ 本文件**不读** canonical 视图；读面是会话族 hot ∪ 父表。
+	"db/session_turns_windowed_source.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "R181 带分区键界的会话族两臂读源（2026-11-25 从 db/request_logs_view_schema.go 原样搬到本文件）：canonical 视图名只出现在头注里（说明「原生两臂与视图行集相同」）；本文件的读面是会话族 hot ∪ 父表（details 腿为按键单行点查），与 canonical 视图无关",
+	},
 	"domains/attachments/handler.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,

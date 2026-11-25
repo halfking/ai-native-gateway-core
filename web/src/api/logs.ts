@@ -31,7 +31,10 @@ export interface RequestLogRow {
   cost_display: number | string | null
   cost_currency: string | null
   latency_ms: number | null
-  success: boolean
+  // 2026-11-25：历史残缺行的 success 在库里是 NULL（211 实测 53 行，同一时刻的一批）。
+  // 此前这种行会让整个列表 / 详情接口 503（扫描 NULL 进非空 bool 失败）⇒ 现如实返回 null；
+  // 状态以 request_status 为准（这类行是 in_progress）。各处都是真值判断，null 与 false 同义。
+  success: boolean | null
   request_status: 'in_progress' | 'success' | 'failure' | 'rate_limited'
   error_kind: string | null
   search_text: string | null
@@ -297,6 +300,11 @@ export function getRequestLogs(params: {
    */
   lane?: 'business' | 'probe' | 'probe_history' | 'all'
   include_probe?: boolean
+} = {}, opts: {
+  // 2026-11-25：可选的中止信号。连续切换时间范围时，调用方用它中止**已被新的
+  // 选择取代**的旧请求——服务端随之取消查询（r.Context() 取消），不再白占
+  // 数据库资源；被中止的请求在调用方按序号丢弃，不进错误面。
+  signal?: AbortSignal
 } = {}) {
   const qs = new URLSearchParams()
   if (params.api_key_id != null) qs.set('api_key_id', String(params.api_key_id))
@@ -327,7 +335,7 @@ export function getRequestLogs(params: {
   if (params.lane) qs.set('lane', params.lane)
   if (params.include_probe) qs.set('include_probe', '1')
   const s = qs.toString()
-  return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
+  return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`, undefined, { signal: opts?.signal })
 }
 
 /** 请求详情。omitBody=true 时跳过后端 body 抓取，用于抽屉分阶段首包。 */

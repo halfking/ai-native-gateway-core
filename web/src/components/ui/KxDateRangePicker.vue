@@ -205,7 +205,13 @@ function applyDraft() {
           class="kx-dr-trigger__label"
           :data-testid="disabled ? 'kx-dr-trigger-disabled' : 'kx-dr-trigger'"
         >
-          <span class="kx-dr-trigger__preset" :class="{ 'kx-dr-trigger__preset--set': !!modelValue }">{{ triggerPreset }}</span>
+          <!-- 2026-11-25：预设名单独给锚点（内层 span、无 aria-label/title ⇒ 不被遮蔽）⇒
+               E2E 可以断言「连续切换之后，触发器上显示的是最后一次选中的预设」。 -->
+          <span
+            class="kx-dr-trigger__preset"
+            :class="{ 'kx-dr-trigger__preset--set': !!modelValue }"
+            data-testid="kx-dr-trigger-preset"
+          >{{ triggerPreset }}</span>
           <span v-if="triggerRange" class="kx-dr-trigger__range">{{ triggerRange }}</span>
         </span>
         <span class="kx-dr-trigger__caret" aria-hidden="true"><CaretBottom /></span>
