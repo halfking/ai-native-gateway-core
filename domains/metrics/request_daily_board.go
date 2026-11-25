@@ -19,57 +19,27 @@ const boardTrendMeasures = `count(*) FILTER (WHERE status='success') AS success,
 const boardMeasureSums = `sum(requests)::bigint AS requests,
 	sum(tokens) AS tokens, sum(credits) AS credits, sum(cost_usd) AS cost_usd`
 
-const rebuildBoardPiesSQL = `WITH inputs AS MATERIALIZED (
-			SELECT tenant_id, traffic_class, status, total_tokens, credits_charged, cost_amount, cost_currency,
-				` + boardModel + ` AS model, ` + boardPieKeys + `
-			FROM public.request_metrics_projection WHERE ` + requestDailyBounds + `
-		), groups AS (
-			SELECT coalesce(tenant_id,'') AS tenant_id, grouping(tenant_id)=1 AS all_tenants,
-				traffic_class, ` + boardPieGrouping + `, ` + boardMeasures + `
-			FROM inputs GROUP BY traffic_class, GROUPING SETS ((tenant_id), ()), GROUPING SETS (` + boardPieSets + `)
-		)
-		INSERT INTO public.request_metrics_board_pies (day, tenant_id, all_tenants, traffic_class, dimension, key, requests, tokens, credits, cost_usd)
-		SELECT $1::date, tenant_id, all_tenants, traffic_class, dimension, key, requests, tokens, credits, cost_usd
-		FROM groups WHERE key IS NOT NULL`
-
 // RebuildRequestDailyBoard publishes the day only after all widgets are ready.
 // The caller holds the summary day's lock.
 func RebuildRequestDailyBoard(ctx context.Context, tx *sql.Tx, day string) error {
-	statements := []string{
-		`WITH pies AS (DELETE FROM public.request_metrics_board_pies WHERE day=$1::date),
-		      providers AS (DELETE FROM public.request_metrics_board_providers WHERE day=$1::date),
-		      keys AS (DELETE FROM public.request_metrics_board_keys WHERE day=$1::date)
-		 DELETE FROM public.request_metrics_board_series WHERE day=$1::date`,
-		rebuildBoardPiesSQL,
-		`INSERT INTO public.request_metrics_board_providers (
-			day, tenant_id, all_tenants, traffic_class, provider_id, provider_code, provider_name, request_count,
-			success_count, prompt_tokens, completion_tokens, total_tokens, credits, total_cost_usd)
-		SELECT $1::date, coalesce(tenant_id,''), grouping(tenant_id)=1, traffic_class, provider_id, ` + boardProviderMeasures + `
-		FROM public.request_metrics_projection
-		WHERE ` + requestDailyBounds + ` AND provider_id IS NOT NULL
-		GROUP BY traffic_class, provider_id, GROUPING SETS ((tenant_id), ())`,
-		`INSERT INTO public.request_metrics_board_keys (day, tenant_id, all_tenants, traffic_class, word, mask)
-		SELECT $1::date, coalesce(tenant_id,''), grouping(tenant_id)=1,
-			traffic_class, api_key_id >> 6, bit_or(1::bigint << (api_key_id & 63)::int)
-		FROM public.request_metrics_projection
-		WHERE ` + requestDailyBounds + ` AND api_key_id IS NOT NULL
-		GROUP BY traffic_class, api_key_id >> 6, GROUPING SETS ((tenant_id), ())`,
+	statements := append(boardDistributionStatements(false),
+		`DELETE FROM public.request_metrics_board_series WHERE day=$1::date`,
 		`WITH inputs AS (
-			SELECT tenant_id, traffic_class, minutes, ` + boardBucket("occurred_at", "minutes") + ` AS bucket,
-				` + boardModel + ` AS model, total_tokens, credits_charged, cost_amount, cost_currency, status, latency_ms
+			SELECT tenant_id, traffic_class, minutes, `+boardBucket("occurred_at", "minutes")+` AS bucket,
+				`+boardModel+` AS model, total_tokens, credits_charged, cost_amount, cost_currency, status, latency_ms
 			FROM public.request_metrics_projection CROSS JOIN (VALUES (5),(15),(60),(360)) sizes(minutes)
-			WHERE ` + requestDailyBounds + `
+			WHERE `+requestDailyBounds+`
 		)
 		INSERT INTO public.request_metrics_board_series (
 			day, tenant_id, all_tenants, traffic_class, minutes, bucket, is_total, model,
 			requests, tokens, credits, cost_usd, success, latency_sum, latency_count)
 		SELECT $1::date, coalesce(tenant_id,''), grouping(tenant_id)=1,
 			traffic_class, minutes, bucket, grouping(model)=1, coalesce(model,''),
-			` + boardMeasures + `, ` + boardTrendMeasures + `
+			`+boardMeasures+`, `+boardTrendMeasures+`
 		FROM inputs GROUP BY traffic_class, minutes, bucket, GROUPING SETS ((tenant_id), ()), GROUPING SETS ((model), ())
 		HAVING grouping(tenant_id)=0 OR minutes>=15`,
 		`INSERT INTO public.request_metrics_board_days (day) VALUES ($1::date)`,
-	}
+	)
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement, day); err != nil {
 			return err
@@ -80,9 +50,10 @@ func RebuildRequestDailyBoard(ctx context.Context, tx *sql.Tx, day string) error
 
 func readRequestBoardDaily(ctx context.Context, db requestStatsDB, query BoardQuery) (RequestBoard, error) {
 	start, end := query.MetricsFilter.effectiveWindow()
-	var useHours bool
+	var useHours, distributionsAvailable bool
 	if requestBoardCutsDay(start, end) {
-		if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, RequestBoardHourDaysTable).Scan(&useHours); err != nil {
+		if err := db.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL`,
+			RequestBoardHourDaysTable, RequestBoardHourDistributionDaysTable).Scan(&useHours, &distributionsAvailable); err != nil {
 			return RequestBoard{}, err
 		}
 	}
@@ -113,6 +84,17 @@ func readRequestBoardDaily(ctx context.Context, db requestStatsDB, query BoardQu
 		hourlySeries = requestBoardHourlyTrendSQL(minutes, seriesScope)
 		rawSeriesFilter = " WHERE " + requestBoardUncoveredHour
 	}
+	missingForDetail := "missing"
+	var distributionCoverage, hourlyPies, hourlyProviders, hourlyKeys string
+	// Larger trend buckets may cross an hour and still need the complete edge day.
+	if useHours && distributionsAvailable && query.BucketMinutes <= 60 {
+		distributionCoverage = requestBoardHourDistributionCoverageSQL
+		missingForDetail = "missing - (SELECT covered FROM distribution_coverage)"
+		hourlyScope := scope + " AND NOT all_tenants"
+		hourlyPies = requestBoardHourDistributionRows("public.request_metrics_board_hour_pies", boardPieInputColumns, hourlyScope)
+		hourlyProviders = requestBoardHourDistributionRows("public.request_metrics_board_hour_providers", boardProviderInputColumns, hourlyScope)
+		hourlyKeys = requestBoardHourDistributionRows("public.request_metrics_board_hour_keys", boardKeyInputColumns, hourlyScope)
+	}
 	querySQL := `WITH projection AS (` + boardProjectionState + `),
 clean_days AS MATERIALIZED (
 	SELECT day FROM public.request_metrics_daily_state
@@ -120,9 +102,9 @@ clean_days AS MATERIALIZED (
 	WHERE NOT dirty AND ` + requestCleanDayBounds + `
 	  AND (SELECT backfill_complete FROM projection)
 ),
-` + hourCoverage + requestUncoveredRanges + `,
+` + hourCoverage + distributionCoverage + requestUncoveredRanges + `,
 bounded AS MATERIALIZED (
-	SELECT p.* FROM coverage CROSS JOIN LATERAL unnest(missing) AS gaps(span)
+	SELECT p.* FROM coverage CROSS JOIN LATERAL unnest(` + missingForDetail + `) AS gaps(span)
 	CROSS JOIN LATERAL (
 		SELECT occurred_at, tenant_id, api_key_id, session_id, provider_id, provider_code, provider_name,
 			status, prompt_tokens, completion_tokens, total_tokens, cached_tokens,
@@ -136,8 +118,8 @@ bounded AS MATERIALIZED (
 	WHERE (SELECT backfill_complete FROM projection)
 ),
 pie_inputs AS (
-	SELECT dimension, key, requests, tokens, credits, cost_usd
-	FROM public.request_metrics_board_pies JOIN clean_days USING (day) WHERE true` + dailyScope + `
+	SELECT ` + boardPieInputColumns + `
+	FROM public.request_metrics_board_pies JOIN clean_days USING (day) WHERE true` + dailyScope + hourlyPies + `
 	UNION ALL
 	SELECT ` + boardPieGrouping + `, ` + boardMeasures + `
 	FROM bounded GROUP BY GROUPING SETS (` + boardPieSets + `)
@@ -147,9 +129,8 @@ pie_groups AS MATERIALIZED (
 	FROM pie_inputs WHERE key IS NOT NULL GROUP BY dimension, key
 ),
 provider_inputs AS (
-	SELECT provider_id, provider_code, provider_name, request_count, success_count,
-		prompt_tokens, completion_tokens, total_tokens, credits, total_cost_usd
-	FROM public.request_metrics_board_providers JOIN clean_days USING (day) WHERE true` + dailyScope + `
+	SELECT ` + boardProviderInputColumns + `
+	FROM public.request_metrics_board_providers JOIN clean_days USING (day) WHERE true` + dailyScope + hourlyProviders + `
 	UNION ALL
 	SELECT provider_id, ` + boardProviderMeasures + ` FROM bounded WHERE provider_id IS NOT NULL
 	GROUP BY provider_id
@@ -164,8 +145,8 @@ providers AS (
 	FROM provider_inputs GROUP BY provider_id
 ),
 key_inputs AS (
-	SELECT word, mask
-	FROM public.request_metrics_board_keys JOIN clean_days USING (day) WHERE true` + dailyScope + `
+	SELECT ` + boardKeyInputColumns + `
+	FROM public.request_metrics_board_keys JOIN clean_days USING (day) WHERE true` + dailyScope + hourlyKeys + `
 	UNION ALL
 	SELECT api_key_id >> 6, bit_or(1::bigint << (api_key_id & 63)::int)
 	FROM bounded WHERE api_key_id IS NOT NULL GROUP BY api_key_id >> 6

@@ -2035,6 +2035,12 @@ var requestMetricsBoardHours983q []byte
 //go:embed embeddata/startup/983q_request_metrics_board_hours.down.sql
 var requestMetricsBoardHours983qDown []byte
 
+//go:embed embeddata/startup/983r_request_metrics_board_hour_distributions.sql
+var requestMetricsBoardHourDistributions983r []byte
+
+//go:embed embeddata/startup/983r_request_metrics_board_hour_distributions.down.sql
+var requestMetricsBoardHourDistributions983rDown []byte
+
 // ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 //
 //	★ 这四条**只建了 canonical + embeddata 双副本**，却没登记进任何通道
@@ -2823,14 +2829,16 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/983m_request_metrics_daily_history.sql":      requestMetricsDailyHistory983m,
 	"startup/983m_request_metrics_daily_history.down.sql": requestMetricsDailyHistory983mDown,
 
-	"startup/983n_request_metrics_daily_tenant_history.sql":       requestMetricsDailyTenantHistory983n,
-	"startup/983n_request_metrics_daily_tenant_history.down.sql":  requestMetricsDailyTenantHistory983nDown,
-	"startup/983o_request_metrics_daily_history_details.sql":      requestMetricsDailyHistoryDetails983o,
-	"startup/983o_request_metrics_daily_history_details.down.sql": requestMetricsDailyHistoryDetails983oDown,
-	"startup/983p_request_metrics_history_pages.sql":              requestMetricsHistoryPages983p,
-	"startup/983p_request_metrics_history_pages.down.sql":         requestMetricsHistoryPages983pDown,
-	"startup/983q_request_metrics_board_hours.sql":                requestMetricsBoardHours983q,
-	"startup/983q_request_metrics_board_hours.down.sql":           requestMetricsBoardHours983qDown,
+	"startup/983n_request_metrics_daily_tenant_history.sql":          requestMetricsDailyTenantHistory983n,
+	"startup/983n_request_metrics_daily_tenant_history.down.sql":     requestMetricsDailyTenantHistory983nDown,
+	"startup/983o_request_metrics_daily_history_details.sql":         requestMetricsDailyHistoryDetails983o,
+	"startup/983o_request_metrics_daily_history_details.down.sql":    requestMetricsDailyHistoryDetails983oDown,
+	"startup/983p_request_metrics_history_pages.sql":                 requestMetricsHistoryPages983p,
+	"startup/983p_request_metrics_history_pages.down.sql":            requestMetricsHistoryPages983pDown,
+	"startup/983q_request_metrics_board_hours.sql":                   requestMetricsBoardHours983q,
+	"startup/983q_request_metrics_board_hours.down.sql":              requestMetricsBoardHours983qDown,
+	"startup/983r_request_metrics_board_hour_distributions.sql":      requestMetricsBoardHourDistributions983r,
+	"startup/983r_request_metrics_board_hour_distributions.down.sql": requestMetricsBoardHourDistributions983rDown,
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。

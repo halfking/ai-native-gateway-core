@@ -2985,6 +2985,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/983o_request_metrics_daily_history_details.sql"
   "$ROOT_DIR/sql/migrations/startup/983p_request_metrics_history_pages.sql"
   "$ROOT_DIR/sql/migrations/startup/983q_request_metrics_board_hours.sql"
+  "$ROOT_DIR/sql/migrations/startup/983r_request_metrics_board_hour_distributions.sql"
 )
 
 
@@ -4046,6 +4047,8 @@ ledger_artifact_probe "983p_request_metrics_history_pages.sql" \
   "to_regclass('public.request_metrics_history_page_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_history_page_cells') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_page_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983p') = 1"
 ledger_artifact_probe "983q_request_metrics_board_hours.sql" \
   "to_regclass('public.request_metrics_board_hour_days') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_summary') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_masks') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_hour_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983q') = 1"
+ledger_artifact_probe "983r_request_metrics_board_hour_distributions.sql" \
+  "to_regclass('public.request_metrics_board_hour_distribution_days') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_pies') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_providers') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_keys') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_hour_distribution_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983r') = 1"
 # ★ 999a 的产物 = 手册条目行（纯种子迁移：不建对象，只 INSERT 六条
 #   data_maintenance: 前缀的 prompt 条目）⇒ 探针 = 六条全在。
 #   ★ 999a_data_maintenance_playbook.sql

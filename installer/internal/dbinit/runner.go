@@ -2156,6 +2156,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"983o_request_metrics_daily_history_details.sql",
 			"983p_request_metrics_history_pages.sql",
 			"983q_request_metrics_board_hours.sql",
+			"983r_request_metrics_board_hour_distributions.sql",
 		},
 	}
 }

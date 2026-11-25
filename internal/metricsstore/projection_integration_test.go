@@ -1497,12 +1497,46 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_hour_publish();`)
 		withProbePartial.StartTime, withProbePartial.EndTime = partial.StartTime, partial.EndTime
 		assertParity(t, withProbePartial)
 
+		apply("983r_request_metrics_board_hour_distributions.sql")
+		apply("983r_request_metrics_board_hour_distributions.sql")
+		countPublishedDistributions := func(want int) {
+			t.Helper()
+			var n int
+			err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_board_hour_distribution_days
+				WHERE day IN ('2026-11-16','2026-11-17')`).Scan(&n)
+			if err != nil || n != want {
+				t.Fatalf("published board distribution days=%d want %d: %v", n, want, err)
+			}
+		}
+		countPublishedDistributions(0)
+		assertParity(t, bothEdgesPartial)
+		exec(`CREATE FUNCTION public.reject_board_distribution_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected board distribution publication failure'; END $$;
+CREATE TRIGGER reject_board_distribution_publish BEFORE INSERT ON public.request_metrics_board_hour_distribution_days
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_distribution_publish();`)
+		if _, err := processor.RefreshDailyBoard(ctx); err == nil || !strings.Contains(err.Error(), "injected board distribution publication failure") {
+			t.Fatalf("expected failed board distribution publication: %v", err)
+		}
+		var distributionRows int
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM public.request_metrics_board_hour_pies)
+			+ (SELECT count(*) FROM public.request_metrics_board_hour_providers)
+			+ (SELECT count(*) FROM public.request_metrics_board_hour_keys)`).Scan(&distributionRows); err != nil || distributionRows != 0 {
+			t.Fatalf("failed board distribution publication left %d rows: %v", distributionRows, err)
+		}
+		exec("DROP TRIGGER reject_board_distribution_publish ON public.request_metrics_board_hour_distribution_days; DROP FUNCTION public.reject_board_distribution_publish()")
+		refresh(processor.RefreshDailyBoard)
+		countPublishedDistributions(2)
+		assertParity(t, allTenantsPartial)
+		assertParity(t, bothEdgesPartial)
+		assertParity(t, withProbePartial)
+
 		exec(`
 UPDATE public.request_metrics_projection SET occurred_at='2026-11-17 05:00+08', total_tokens=42
 WHERE request_id='board-day-2';
 DELETE FROM public.request_metrics_projection WHERE request_id='board-day-12';`)
 		countPublished(0)
 		countPublishedHours(0)
+		countPublishedDistributions(0)
 		assertParity(t, f)
 		assertParity(t, allTenantsPartial)
 		refresh(processor.RefreshDailySummary)
@@ -1523,17 +1557,23 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
 		}
 		countPublished(1)
 		countPublishedHours(1)
+		countPublishedDistributions(1)
 		assertParity(t, f)
 		assertParity(t, withProbe)
 		assertParity(t, allTenants)
 		assertParity(t, allTenantsPartial)
+		assertParity(t, bothEdgesPartial)
 		refresh(processor.RefreshDailyBoard)
 		countPublished(2)
 		countPublishedHours(2)
+		countPublishedDistributions(2)
 		assertParity(t, f)
 		assertParity(t, withProbe)
 		assertParity(t, allTenants)
 		assertParity(t, allTenantsPartial)
+		apply("983r_request_metrics_board_hour_distributions.down.sql")
+		apply("983r_request_metrics_board_hour_distributions.down.sql")
+		assertParity(t, bothEdgesPartial)
 		apply("983q_request_metrics_board_hours.down.sql")
 		apply("983q_request_metrics_board_hours.down.sql")
 		assertParity(t, allTenantsPartial)

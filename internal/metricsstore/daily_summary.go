@@ -36,13 +36,18 @@ func (p *ProjectionProcessor) RefreshDailySummary(ctx context.Context) (bool, er
 
 func (p *ProjectionProcessor) RefreshDailyBoard(ctx context.Context) (bool, error) {
 	const boardDays = "public.request_metrics_board_days"
-	var hoursAvailable bool
-	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, metrics.RequestBoardHourDaysTable).Scan(&hoursAvailable); err != nil {
+	var hoursAvailable, distributionsAvailable bool
+	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL`,
+		metrics.RequestBoardHourDaysTable, metrics.RequestBoardHourDistributionDaysTable).Scan(&hoursAvailable, &distributionsAvailable); err != nil {
 		return false, err
 	}
+	publishDistributions := hoursAvailable && distributionsAvailable
 	missing := `NOT EXISTS (SELECT FROM ` + boardDays + ` b WHERE b.day=s.day)`
 	if hoursAvailable {
 		missing += ` OR NOT EXISTS (SELECT FROM ` + metrics.RequestBoardHourDaysTable + ` h WHERE h.day=s.day)`
+	}
+	if publishDistributions {
+		missing += ` OR NOT EXISTS (SELECT FROM ` + metrics.RequestBoardHourDistributionDaysTable + ` h WHERE h.day=s.day)`
 	}
 	claim := `SELECT s.day::text FROM public.request_metrics_daily_state s
 		WHERE NOT s.dirty
@@ -54,7 +59,12 @@ func (p *ProjectionProcessor) RefreshDailyBoard(ctx context.Context) (bool, erro
 			return err
 		}
 		if hoursAvailable {
-			return publishMissingDailyReport(ctx, tx, day, metrics.RequestBoardHourDaysTable, metrics.RebuildRequestBoardHours)
+			if err := publishMissingDailyReport(ctx, tx, day, metrics.RequestBoardHourDaysTable, metrics.RebuildRequestBoardHours); err != nil {
+				return err
+			}
+		}
+		if publishDistributions {
+			return publishMissingDailyReport(ctx, tx, day, metrics.RequestBoardHourDistributionDaysTable, metrics.RebuildRequestBoardHourDistributions)
 		}
 		return nil
 	})
