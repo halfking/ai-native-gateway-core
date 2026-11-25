@@ -22,6 +22,13 @@
 //      ⇒ 一旦有任一层真的评估出红，就必须报红（红被吃掉＝等于没有断言
 //      —— 这正是本文件头注记录的历史事故）。
 //   ⇒ 两条都写在本文件里 + 用 selftest.mjs 钉死 ⇒ 判定口径仍只有这一处。
+//
+// ★★★ 还有第三种情况：**退出码不在 0/1/2 里**（2026-11-25 第 28 轮审计实测）。
+//   某一层的进程被杀（137 / 143）、被中断（130）、工具自己崩溃、或根本没返回有效值
+//   ⇒ 那一层**没有结论**。此前的 mergeExitCodes 只认 1 与 2、其余一律合成 0
+//   ⇒ **被杀掉的一轮会得到 VERDICT: PASS**（「没有结论」被当成了「结论是绿」）。
+//   ⇒ 现在：未知退出码 ⇒ 量具失效（没测到）；别层已确证的红仍然优先（理由同②）。
+//   ⇒ 通用式：**「没有结论」永远不是「绿」**。
 
 export const EXIT_OK = 0
 export const EXIT_FAIL = 1
@@ -61,13 +68,30 @@ export function summarize(checks, opts = {}) {
   }
 }
 
+/** 三种已知结局之一（0 绿 / 1 红 / 2 量具失效）。 */
+export function isKnownExitCode(n) {
+  return n === EXIT_OK || n === EXIT_FAIL || n === EXIT_GAUGE
+}
+
+/**
+ * 不在 0/1/2 里的退出码（进程被杀、被中断、工具崩溃、没返回有效值…）。
+ * runner 用它把「是哪一层的哪个码」写进结论行。
+ * @param {number[]} codes
+ * @returns {number[]}
+ */
+export function unexpectedExitCodes(codes) {
+  return (codes || [])
+    .map((n) => (typeof n === 'number' && Number.isInteger(n) ? n : NaN))
+    .filter((n) => !isKnownExitCode(n))
+}
+
 /**
  * 合并**多个工具/多层**的退出码 ⇒ 唯一判定（跨工具口径）。
  *
  * ★ 优先级：**红 > 量具失效 > 绿**（与 summarize 的「工具内 gauge 优先」不同，
  *   原因见文件头注②）：
  *   · 任一层评估出红 ⇒ 报红（**红绝不能被另一层的量具失效吃掉**）；
- *   · 否则任一层量具失效 ⇒ 报量具失效；
+ *   · 否则任一层量具失效、或退出码未知、或没有输入 ⇒ 报量具失效（没测到）；
  *   · 全绿 ⇒ 绿。
  * ★ 为什么必须在这里（而不是在 runner 的 bash if 链里）：
  *   runner 若自己写 if 链 ⇒ 就是**第三份判定口径** ⇒ 必然漂移
@@ -76,12 +100,14 @@ export function summarize(checks, opts = {}) {
  *   于是「探针量具失效 + 补充层红」被报成量具失效 ⇒ **红被吃掉**。
  *   ⇒ 合并只在这里写一次，runner 调它，selftest.mjs 钉它。
  *
+ * ★ 未知退出码（不在 0/1/2 里）与空输入 ⇒ 量具失效（那一层没有结论 ⇒ 没测到）。
+ *   不做任何隐式转换：只有整数 0/1/2 算已知结局，字符串、null、NaN 都算未知。
  * @param {number[]} codes 各层退出码（0 绿 / 1 红 / 2 量具失效）
  * @returns {number} 合并后的退出码
  */
 export function mergeExitCodes(codes) {
-  const arr = (codes || []).map(Number).filter((n) => Number.isFinite(n))
+  const arr = (codes || []).map((n) => (typeof n === 'number' && Number.isInteger(n) ? n : NaN))
   if (arr.includes(EXIT_FAIL)) return EXIT_FAIL
-  if (arr.includes(EXIT_GAUGE)) return EXIT_GAUGE
+  if (arr.includes(EXIT_GAUGE) || arr.length === 0 || unexpectedExitCodes(arr).length > 0) return EXIT_GAUGE
   return EXIT_OK
 }

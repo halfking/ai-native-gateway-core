@@ -339,5 +339,12 @@ if [ "${PROBE_RC}" -eq 2 ] || [ "${FILTER_RC}" -eq 2 ]; then
   echo "VERDICT: 量具失效（探针 rc=2：断言未评估，**这不是产品缺陷**）"
   exit 2
 fi
-echo "VERDICT: PASS（三层全绿）"
-exit 0
+# ★ 兜底（2026-11-25 第 28 轮审计实测）：只有三层 rc **都恰好是 0** 才算绿。
+#   上面几条只认 1 与 2 ⇒ 探针被杀（rc=137）时一条都判不中 ⇒ 以前会掉到这里报 PASS。
+#   （第一层 flow 的「非 0 一律报红」是这条链自己的老写法，方向保守，这里不动它的口径。）
+if [ "${PROBE_RC}" -eq 0 ] && [ "${FILTER_RC}" -eq 0 ]; then
+  echo "VERDICT: PASS（三层全绿）"
+  exit 0
+fi
+echo "VERDICT: 量具失效（probe rc=${PROBE_RC} / filter rc=${FILTER_RC}：含未知退出码 ⇒ 那一层是工具异常退出或被杀，断言未评估，**这不是产品缺陷**）"
+exit 2

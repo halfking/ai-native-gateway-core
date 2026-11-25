@@ -10,9 +10,15 @@
 // 用法：node maestro/tools/selftest.mjs
 // 退出码：0 = 自检全绿；1 = 自检失败。
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { summarize, mergeExitCodes, EXIT_OK, EXIT_FAIL, EXIT_GAUGE } from './result.mjs'
+// ★ 用命名空间再引一次：下面「未知退出码」那组钉测要用 unexpectedExitCodes。
+//   写成命名空间取值（而不是具名导入）是为了让**缺这个导出**表现为一条钉测红，
+//   而不是整个自检在加载阶段就崩掉、一条钉测都跑不起来。
+import * as verdict from './result.mjs'
 
 const cases = []
 const t = (name, fn) => {
@@ -103,7 +109,6 @@ t('跨工具合并：没有红但有量具失效 ⇒ 量具失效', () => {
 
 t('跨工具合并：全绿 ⇒ 绿', () => {
   eq(mergeExitCodes([EXIT_OK, EXIT_OK]), EXIT_OK, '退出码')
-  eq(mergeExitCodes([]), EXIT_OK, '空数组')
 })
 
 t('★ 跨工具合并 与 工具内 summarize 的优先级**故意不同**（不是漂移）', () => {
@@ -193,6 +198,136 @@ t('★ 防回归：深链探针的判定口径必须走 result.mjs（不许自�
     throw new Error('深链探针没用 summarize(checks, { skipped }) ⇒ 退出码口径漂移')
   }
 })
+
+// ── 未知退出码（2026-11-25 第 28 轮审计实测）────────────────────────────────
+// ★ 为什么单独钉：mergeExitCodes 以前只认 1 与 2，其余一律合成 0
+//   ⇒ 某一层的进程被杀（137 / 143）、被中断（130）、工具崩溃、或没返回有效值
+//   ⇒ 那一层「没有结论」，却被报成 VERDICT: PASS。
+//   ⇒ 「没有结论」不是「结论是绿」。
+const unexpectedExitCodes = verdict.unexpectedExitCodes
+t('★ 未知退出码绝不当绿：被杀 / 被中断 / 崩溃 / 没返回有效值 ⇒ 量具失效；别层已确证的红仍优先', () => {
+  if (typeof unexpectedExitCodes !== 'function') throw new Error('result.mjs 没有导出 unexpectedExitCodes')
+  const unknown = [137, 143, 130, 127, 3, -1, 1.5, NaN, undefined, null, '', '0']
+  for (const u of unknown) {
+    const label = `未知退出码 ${String(u)}`
+    eq(unexpectedExitCodes([u]).length, 1, `${label}：unexpectedExitCodes 必须认出它`)
+    eq(mergeExitCodes([u]), EXIT_GAUGE, `${label}：单独一层 ⇒ 量具失效`)
+    eq(mergeExitCodes([EXIT_OK, u]), EXIT_GAUGE, `${label}：绿 + 它 ⇒ 量具失效`)
+    eq(mergeExitCodes([EXIT_GAUGE, u]), EXIT_GAUGE, `${label}：量具失效 + 它 ⇒ 量具失效`)
+    eq(mergeExitCodes([u, EXIT_FAIL]), EXIT_FAIL, `${label}：它 + 红 ⇒ 红优先`)
+  }
+  eq(unexpectedExitCodes([EXIT_OK, EXIT_FAIL, EXIT_GAUGE]).length, 0, '三种已知结局都不是未知退出码')
+})
+
+t('★ 空输入 ⇒ 量具失效（什么都没测 ⇒ 不是绿）', () => {
+  eq(mergeExitCodes([]), EXIT_GAUGE, '空数组')
+  eq(mergeExitCodes(), EXIT_GAUGE, '没传参数')
+})
+
+// ── 防回归：PASS 只许挂在「恰好全 0」上 ─────────────────────────────────────
+// ★ 为什么静态钉还不够、还要下面那条行为钉：
+//   静态钉证明的是「源码里 PASS 挂在 0) 上」；证明不了「把 137 喂进去，脚本真的不会 exit 0」。
+t('★ 防回归：run-request-logs-time-ranges.sh 的判定必须调 mergeExitCodes（不自己写 if 链）', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'run-request-logs-time-ranges.sh'), 'utf8')
+  if (!src.includes('mergeExitCodes')) {
+    throw new Error('runner 没调 result.mjs 的 mergeExitCodes ⇒ 判定口径又变成第三份')
+  }
+  if (/\$\{[A-Z_]+_RC\}"\s*-eq\s*[012]/.test(src)) {
+    throw new Error('runner 里出现了自己判 rc 的 if 链 ⇒ 判定口径漂移（应一律交给 mergeExitCodes）')
+  }
+})
+
+t('★ 防回归：PASS 只许挂在「恰好全 0」上（case 的 0) 分支 / session-analytics 的三层核对），*) 兜底不得通向 PASS', () => {
+  for (const f of ['run-stats-range-picker.sh', 'run-request-logs-time-ranges.sh']) {
+    const src = readFileSync(join(import.meta.dirname, '..', f), 'utf8')
+    if (!/^\s*0\)\s*\n\s*echo "VERDICT: PASS/m.test(src)) {
+      throw new Error(`${f}：PASS 不是挂在 case 的 0) 分支上`)
+    }
+    if (/\*\)\s*\n\s*echo "VERDICT: PASS/m.test(src)) {
+      throw new Error(`${f}：case 的 *) 兜底通向 PASS ⇒ 未知退出码又会被当绿`)
+    }
+  }
+  const src = readFileSync(join(import.meta.dirname, '..', 'run-session-analytics.sh'), 'utf8')
+  if (!/\[ "\$\{PROBE_RC\}" -eq 0 \] && \[ "\$\{FILTER_RC\}" -eq 0 \]; then\s*\n\s*echo "VERDICT: PASS（三层全绿）"/.test(src)) {
+    throw new Error('run-session-analytics.sh：PASS 前没有「三层都恰好是 0」的核对 ⇒ 被杀的探针会掉到 PASS')
+  }
+})
+
+// ── 行为钉：把 runner 的判定尾段**原样**抽出来，喂真实退出码组合真跑 ─────────
+// ★ 做法：不改 runner 一个字 —— 从判定起点切到文件末尾，配上不同的 rc 写进临时脚本执行，
+//   断言「退出码」与「结论行」。于是语义钉（result.mjs）＋ 静态钉（源码形状）＋
+//   行为钉（脚本真的这么退出）三层都咬得住。
+// ★ run-session-analytics.sh 的第一层仍是自己的老写法（flow 非 0 一律报红，含被杀）：
+//   那是**保守方向**的差异，不在这条钉里改掉它的口径（统一口径要单独一轮）；
+//   这里只钉它「探针被杀不得掉到 PASS」。
+const RUNNER_TAILS = [
+  { file: 'run-stats-range-picker.sh', from: /^MERGED_OUT="\$\(node -e "$/m, vars: ['FLOW_RC', 'PROBE_RC', 'CUSTOM_RC', 'DEEPLINK_RC'] },
+  { file: 'run-request-logs-time-ranges.sh', from: /^MERGED_OUT="\$\(node -e "$/m, vars: ['FLOW_RC', 'PROBE_RC'] },
+  { file: 'run-session-analytics.sh', from: /^if \[ "\$\{FLOW_RC\}" -ne 0 \]; then$/m, vars: ['FLOW_RC', 'PROBE_RC', 'FILTER_RC'] },
+]
+// ★ 每一行按 runner 的层数 n 生成：三个 runner 分别是 4 / 2 / 3 层，
+//   写死四元的数组会让「多余的码」落在不存在的层上 ⇒ 那一行对两层 runner 就退化成全 0。
+const zeros = (n) => Array(n).fill(0)
+const withAt = (base, i, v) =>
+  Object.assign(Array.isArray(base) ? base.slice() : zeros(base), { [i]: v })
+const TAIL_MATRIX = [
+  { name: '全绿', rcs: zeros, exit: 0, verdict: 'VERDICT: PASS' },
+  { name: '第一层红', rcs: (n) => withAt(n, 0, 1), exit: 1, verdict: 'VERDICT: FAIL' },
+  { name: '第二层红', rcs: (n) => withAt(n, 1, 1), exit: 1, verdict: 'VERDICT: FAIL' },
+  { name: '第二层量具失效', rcs: (n) => withAt(n, 1, 2), exit: 2, verdict: 'VERDICT: 量具失效' },
+  { name: '红 > 量具失效', rcs: (n) => withAt(withAt(n, 1, 1), 0, 2), exit: 1, verdict: 'VERDICT: FAIL' },
+  { name: 'flow 被杀', rcs: (n) => withAt(n, 0, 137), exit: 2, verdict: 'VERDICT: 量具失效', mustMention: '137',
+    sessionAnalytics: { exit: 1, verdict: 'VERDICT: FAIL' } },                            // 它的老写法：保守报红
+  { name: '探针被杀', rcs: (n) => withAt(n, 1, 137), exit: 2, verdict: 'VERDICT: 量具失效', mustMention: '137' },
+  { name: '最末一层被杀', rcs: (n) => withAt(n, n - 1, 143), exit: 2, verdict: 'VERDICT: 量具失效', mustMention: '143' },
+  { name: '被杀的一层不吃掉别层的红', rcs: (n) => withAt(withAt(n, 1, 1), 2, 137), exit: 1, verdict: 'VERDICT: FAIL' },
+]
+
+function runTail(runner, rcs) {
+  const src = readFileSync(join(import.meta.dirname, '..', runner.file), 'utf8')
+  const start = src.search(runner.from)
+  if (start < 0) throw new Error(`${runner.file}：找不到判定尾段的起点（判定被挪走或改了写法）`)
+  const tail = src.slice(start)
+  const dir = mkdtempSync(join(tmpdir(), 'maestro-selftest-'))
+  try {
+    const script = join(dir, 'tail.sh')
+    const summary = join(dir, 'summary.txt')
+    writeFileSync(summary, '')
+    const head = [
+      '#!/usr/bin/env bash',
+      'set -uo pipefail',
+      `ROOT='${join(import.meta.dirname, '..', '..')}'`,
+      `SUMMARY='${summary}'`,
+      'FLOW_FAILED=0',
+      ...runner.vars.map((v, i) => `${v}=${rcs[i] ?? 0}`),
+    ]
+    writeFileSync(script, head.join('\n') + '\n' + tail + (tail.endsWith('\n') ? '' : '\n'))
+    const res = spawnSync('bash', [script], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH || ''}` },
+    })
+    return { status: res.status, out: `${res.stdout || ''}${res.stderr || ''}` }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+for (const runner of RUNNER_TAILS) {
+  t(`★ 行为钉：${runner.file} 的判定尾段喂入真实退出码组合（被杀 ⇒ 绝不 PASS）`, () => {
+    for (const row of TAIL_MATRIX) {
+      const want = runner.file === 'run-session-analytics.sh' && row.sessionAnalytics ? row.sessionAnalytics : row
+      const rcs = row.rcs(runner.vars.length)
+      const r = runTail(runner, rcs)
+      const label = `${runner.file}「${row.name}」rc=${rcs.join('/')}`
+      const tailOut = r.out.trim().slice(-320)
+      if (r.status !== want.exit) throw new Error(`${label}：期望退出码 ${want.exit}，实际 ${r.status}；输出尾部：${tailOut}`)
+      if (!r.out.includes(want.verdict)) throw new Error(`${label}：结论行应以「${want.verdict}」开头；输出尾部：${tailOut}`)
+      if (want.mustMention && !r.out.includes(want.mustMention)) {
+        throw new Error(`${label}：结论行应点出未知退出码 ${want.mustMention}；输出尾部：${tailOut}`)
+      }
+    }
+  })
+}
 
 let bad = 0
 for (const c of cases) {

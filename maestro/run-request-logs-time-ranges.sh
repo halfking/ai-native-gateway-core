@@ -385,28 +385,40 @@ cat "${SUMMARY}"
 echo "产物目录：${OUT}"
 
 # ── 判定：★ 三态（0=绿 / 1=红 / 2=量具失效），口径走 result.mjs ───────────
-MERGED_RC="$(node -e "
+# ★ 未知退出码（2026-11-25 第 28 轮审计实测）：某一层的进程被杀（137 / 143）、被中断（130）、
+#   工具崩溃、或没返回有效值 ⇒ 那一层**没有结论**。以前 case 的 *) 兜底通向 PASS
+#   ⇒ **被杀掉的一轮会被判绿**。现在：mergeExitCodes 把未知退出码判为量具失效，
+#   并把是哪一层的哪个码带出来写进结论行；PASS 只挂在 case 的 0) 上。
+# ★ 输出是两行（未知退出码列表 / 合并后的码）：未知列表在前，
+#   因为 $(...) 会吃掉结尾换行 —— 合并后的码放最后一行才不会被吃掉一半。
+MERGED_OUT="$(node -e "
 import('node:url').then(async (u) => {
   const m = await import(u.pathToFileURL('${ROOT}/maestro/tools/result.mjs').href)
-  process.stdout.write(String(m.mergeExitCodes([${FLOW_RC}, ${PROBE_RC}])))
+  process.stdout.write(m.unexpectedExitCodes([${FLOW_RC}, ${PROBE_RC}]).join(',') + '\n' + String(m.mergeExitCodes([${FLOW_RC}, ${PROBE_RC}])))
 })
 " 2>/dev/null)"
+UNEXPECTED_RC="${MERGED_OUT%%$'\n'*}"
+MERGED_RC="${MERGED_OUT#*$'\n'}"
 if [ -z "${MERGED_RC}" ]; then
   echo "!! 判定口径调用失败（result.mjs 的 mergeExitCodes 没返回）⇒ 量具失效"
   exit 2
 fi
-printf 'merged rc=%s\n' "${MERGED_RC}" >>"${SUMMARY}"
+printf 'merged rc=%s%s\n' "${MERGED_RC}" "${UNEXPECTED_RC:+（未知退出码=${UNEXPECTED_RC}）}" >>"${SUMMARY}"
 case "${MERGED_RC}" in
   1)
     echo "VERDICT: FAIL（flow rc=${FLOW_RC} FAILED=${FLOW_FAILED} / probe rc=${PROBE_RC}）"
     exit 1
     ;;
   2)
-    echo "VERDICT: 量具失效（flow rc=${FLOW_RC} / probe rc=${PROBE_RC}：断言未评估，**这不是产品缺陷**）"
+    echo "VERDICT: 量具失效（flow rc=${FLOW_RC} / probe rc=${PROBE_RC}：断言未评估，**这不是产品缺陷**${UNEXPECTED_RC:+；★ 含未知退出码 ${UNEXPECTED_RC} ⇒ 那一层是工具异常退出或被杀，先查工具}）"
     exit 2
     ;;
-  *)
+  0)
     echo "VERDICT: PASS（两层全绿：flow rc=${FLOW_RC} / probe rc=${PROBE_RC}）"
     exit 0
+    ;;
+  *)
+    echo "VERDICT: 量具失效（merged rc=${MERGED_RC} 不在 0/1/2 ⇒ 判定口径返回了未知值，不当作绿）"
+    exit 2
     ;;
 esac
