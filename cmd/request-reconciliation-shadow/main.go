@@ -22,6 +22,7 @@ func main() {
 	}
 	day := flag.String("day", "", "local calendar day")
 	zone := flag.String("timezone", "", "IANA name or UTC")
+	projected := flag.Bool("projected", false, "compare V2 terminal projection and original evidence in the same snapshot")
 	timeout := flag.Duration("timeout", 5*time.Minute, "total database read timeout")
 	flag.Parse()
 	if flag.NArg() != 0 || *day == "" || *zone == "" || *timeout <= 0 {
@@ -41,13 +42,13 @@ func main() {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	if err := capture(ctx, dsn, *day, *zone); err != nil {
+	if err := capture(ctx, dsn, *day, *zone, *projected); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func capture(ctx context.Context, dsn, day, zone string) error {
+func capture(ctx context.Context, dsn, day, zone string, projected bool) error {
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil || config.ConnConfig.Database == "" {
 		return fmt.Errorf("REQUEST_RECONCILIATION_SHADOW_DSN must identify a valid database")
@@ -60,7 +61,11 @@ func capture(ctx context.Context, dsn, day, zone string) error {
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("could not connect to the configured evidence database")
 	}
-	snapshot, err := reconciliation.ReadDailyShadow(ctx, pool, day, zone)
+	read := reconciliation.ReadDailyShadow
+	if projected {
+		read = reconciliation.ReadProjectedDailyShadow
+	}
+	snapshot, err := read(ctx, pool, day, zone)
 	if err != nil {
 		return err
 	}

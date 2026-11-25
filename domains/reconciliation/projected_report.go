@@ -96,6 +96,13 @@ func projectedReportSection(name string, section reportSection) reportSection {
 	case "coverage":
 		section.base = coverageEvidenceKeys + projectedUsageWindowKeys + coverageReceiptKeys + projectedUsageReceiptJoin + coverageComparison
 		section.coverage = "projected_terminal_usage_and_retained_evidence_historical_supplier_population_unknown"
+	case "postings":
+		section.totals = postingTotals + `,
+			count(*) FILTER (WHERE entry_type='consume' AND net_credits > 0) AS recorded_debit_entries,
+			sum(net_credits) FILTER (WHERE entry_type='consume' AND net_credits > 0) AS recorded_gross_debit_credits,
+			count(*) FILTER (WHERE entry_type IN ('refund','reversal')) AS recorded_return_entries,
+			sum(-net_credits) FILTER (WHERE entry_type IN ('refund','reversal')) AS recorded_returned_credits
+			FROM facts`
 	}
 	return section
 }

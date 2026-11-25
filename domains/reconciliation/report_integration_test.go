@@ -238,7 +238,11 @@ INSERT INTO credit_ledger_with_current_month VALUES ('projected-a',9002,'request
 	if postings.Projection != nil {
 		t.Fatalf("ledger postings should be independent of projection: %+v", postings)
 	}
-	assertReportFields(t, postings.Summary, map[string]string{"postings": "1", "net_credits": "2", "internal_amount": "null"})
+	assertReportFields(t, postings.Summary, map[string]string{
+		"postings": "1", "net_credits": "2", "internal_amount": "null",
+		"recorded_debit_entries": "1", "recorded_gross_debit_credits": "2",
+		"recorded_return_entries": "0", "recorded_returned_credits": "null",
+	})
 	exec(`
 INSERT INTO request_metrics (tenant_id,request_id,fact_request_id,status,prompt_tokens,completion_tokens,total_tokens,usage_source,source_revision,
  source_finalized_at,source_fact_id,api_key_id,traffic_class,occurred_at,occurred_date,billing_date)
@@ -284,6 +288,9 @@ INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
 		!shadow.Start.Equal(start) || !shadow.End.Equal(end) || len(shadow.Summaries) != 6 {
 		t.Fatalf("invalid projected shadow: %+v %v", shadow, err)
 	}
+	if shadow.SourceEvidence == nil || shadow.SourceEvidence.ProjectionCoverage.Current >= shadow.SourceEvidence.ProjectionCoverage.Expected {
+		t.Fatalf("the source check must flag the stale usage revision even when projected rows exist: %+v", shadow.SourceEvidence)
+	}
 	for _, section := range []string{"requests", "attempts", "postings", "coverage"} {
 		summary := read(ReportScope{Platform: true}, section).Summary
 		if string(shadow.Summaries[section]) != string(summary) {
@@ -293,6 +300,10 @@ INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
 	billDay, err := ReadProjectedDailyShadow(ctx, pool, "2026-11-01", zone)
 	if err != nil || len(billDay.SupplierBills) != 4 {
 		t.Fatalf("projected shadow omitted exact-day supplier bills: %+v %v", billDay, err)
+	}
+	if billDay.SourceEvidence == nil || billDay.SourceEvidence.InvoicesOverlapping <= int64(len(billDay.SupplierBills)) ||
+		billDay.SourceEvidence.InvoiceLinesOverlapping == 0 {
+		t.Fatalf("retained evidence must include the longer-period statement and its lines: %+v", billDay.SourceEvidence)
 	}
 	for _, bill := range billDay.SupplierBills {
 		var summary struct {
@@ -317,6 +328,36 @@ INSERT INTO usage_facts (tenant_id,request_id,status,occurred_at,fact_id) VALUES
 	probe := read(ReportScope{TenantID: "projected-b", Platform: true}, "requests")
 	assertReportFields(t, probe.Rows[0], map[string]string{"traffic_class": `"probe"`})
 	assertReportFields(t, probe.Summary, map[string]string{"business_requests": "0", "other_traffic_requests": "1"})
+
+	exec(`INSERT INTO credit_ledger_with_current_month VALUES
+		('projected-a',9003,'request','same-request','refund','paid','fixture-user',0,'2026-11-23 03:01Z'),
+		('projected-a',9004,'request','same-request','reversal','paid','fixture-user',1,'2026-11-23 03:02Z'),
+		('projected-a',9005,'request','same-request','adjust','paid','fixture-user',-4,'2026-11-23 03:03Z'),
+		('projected-a',9006,'request','same-request','refund','paid','fixture-user',8,'2026-11-23 16:00Z'),
+		('projected-b',9007,'request','same-request','refund','paid','fixture-user',0,'2026-11-23 03:01Z');`)
+	assertReportFields(t, read(ReportScope{TenantID: tenantID}, "postings").Summary, map[string]string{
+		"postings": "4", "net_credits": "5", "recorded_debit_entries": "1", "recorded_gross_debit_credits": "2",
+		"recorded_return_entries": "2", "recorded_returned_credits": "1",
+	})
+	assertReportFields(t, read(ReportScope{TenantID: "projected-b"}, "postings").Summary, map[string]string{
+		"recorded_debit_entries": "0", "recorded_gross_debit_credits": "null",
+		"recorded_return_entries": "1", "recorded_returned_credits": "0",
+	})
+	empty, err := ReadProjectedDailyShadow(ctx, pool, "2000-01-01", "UTC")
+	if err != nil || empty.SourceEvidence == nil ||
+		empty.SourceEvidence.ProjectionCoverage.Fraction != nil || empty.SourceEvidence.ContractRatesOverlapping != 0 {
+		t.Fatalf("an empty day must have unknown coverage and no retained rate versions: %+v %v", empty.SourceEvidence, err)
+	}
+	exec(`INSERT INTO supplier_contract_rates
+		(rate_id,provider_id,credential_id,model,reference,currency,effective_from,effective_to,terms,content_sha256,imported_by)
+		VALUES
+		('10000000-0000-0000-0000-000000000001',9000,9000,'fixture','before','USD','1999-12-01 00:00Z','2000-01-01 00:00Z','{}',repeat('a',64),'fixture'),
+		('10000000-0000-0000-0000-000000000002',9000,9000,'fixture','same-day','USD','2000-01-01 00:00Z','2000-01-02 00:00Z','{}',repeat('b',64),'fixture'),
+		('10000000-0000-0000-0000-000000000003',9000,9000,'fixture','after','USD','2000-01-02 00:00Z',NULL,'{}',repeat('c',64),'fixture');`)
+	rates, err := ReadProjectedDailyShadow(ctx, pool, "2000-01-01", "UTC")
+	if err != nil || rates.SourceEvidence == nil || rates.SourceEvidence.ContractRatesOverlapping != 1 {
+		t.Fatalf("only the rate version overlapping the half-open window is retained: %+v %v", rates.SourceEvidence, err)
+	}
 }
 
 func testReconciliationSchemaCheck(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
@@ -350,7 +391,7 @@ func testDailyShadow(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Version != DailyShadowVersion || snapshot.ReadAt.IsZero() || len(snapshot.Summaries) != 6 ||
+	if snapshot.Version != DailyShadowVersion || snapshot.ReadAt.IsZero() || snapshot.SourceEvidence != nil || len(snapshot.Summaries) != 6 ||
 		snapshot.Start.Format(time.RFC3339) != "2026-10-31T16:00:00Z" || snapshot.End.Format(time.RFC3339) != "2026-11-01T16:00:00Z" {
 		t.Fatalf("invalid daily shadow metadata: %+v", snapshot)
 	}

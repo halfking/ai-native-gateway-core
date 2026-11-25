@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/metrics"
 )
 
 const DailyShadowVersion = "request-reconciliation-shadow-v1"
@@ -24,10 +25,18 @@ type DailyShadow struct {
 	WindowState     string                     `json:"window_state"`
 	Coverage        string                     `json:"coverage"`
 	Projection      *ReportProjection          `json:"projection,omitempty"`
+	SourceEvidence  *DailyShadowSourceEvidence `json:"source_evidence,omitempty"`
 	Summaries       map[string]json.RawMessage `json:"summaries"`
 	InternalTenants []json.RawMessage          `json:"internal_tenants"`
 	SupplierBills   []DailyShadowBill          `json:"exact_day_supplier_bills"`
 	CountChecks     []DailyShadowCountCheck    `json:"count_checks"`
+}
+
+type DailyShadowSourceEvidence struct {
+	ProjectionCoverage       metrics.ProjectionCoverage `json:"projection_coverage"`
+	ContractRatesOverlapping int64                      `json:"retained_contract_rates_overlapping_day"`
+	InvoicesOverlapping      int64                      `json:"retained_invoices_overlapping_day"`
+	InvoiceLinesOverlapping  int64                      `json:"retained_invoice_lines_in_overlapping_invoices"`
 }
 
 type DailyShadowBill struct {
@@ -81,6 +90,25 @@ func readDailyShadow(ctx context.Context, pool *pgxpool.Pool, day, zone string, 
 		}
 		snapshot.Version = ProjectedDailyShadowVersion
 		snapshot.Coverage = projectedReportSection("coverage", reportSections["coverage"]).coverage
+		projectionCoverage, err := metrics.ReadProjectionCoverage(ctx, tx.QueryRow, snapshot.Start, snapshot.End)
+		if err != nil {
+			return DailyShadow{}, fmt.Errorf("read current fact versions: %w", err)
+		}
+		snapshot.SourceEvidence = &DailyShadowSourceEvidence{ProjectionCoverage: projectionCoverage}
+		// A longer-period invoice signals retained evidence. Exact-day bill comparisons
+		// still use the original start and end of the supplier's statement.
+		err = tx.QueryRow(ctx, `WITH overlapping_invoices AS (
+			SELECT invoice_id FROM public.provider_invoices WHERE window_start < $2 AND window_end > $1
+		)
+		SELECT (SELECT count(*) FROM public.supplier_contract_rates
+			WHERE effective_from < $2 AND (effective_to IS NULL OR effective_to > $1)),
+			(SELECT count(*) FROM overlapping_invoices),
+			(SELECT count(*) FROM overlapping_invoices JOIN public.provider_invoice_lines USING (invoice_id))`, start, end).
+			Scan(&snapshot.SourceEvidence.ContractRatesOverlapping, &snapshot.SourceEvidence.InvoicesOverlapping,
+				&snapshot.SourceEvidence.InvoiceLinesOverlapping)
+		if err != nil {
+			return DailyShadow{}, fmt.Errorf("read retained supplier evidence: %w", err)
+		}
 	}
 	if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&snapshot.ReadAt); err != nil {
 		return DailyShadow{}, err

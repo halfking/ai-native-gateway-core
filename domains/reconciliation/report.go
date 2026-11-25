@@ -192,10 +192,8 @@ var reportSections = map[string]reportSection{
 			NULL::text AS internal_amount, NULL::text AS internal_currency
 			FROM (` + requestPostings + `) p
 			LEFT JOIN public.request_reconciliation_links l ON l.tenant_id = p.tenant_id AND l.child_request_id = p.request_id`,
-		totals: `SELECT count(*) AS postings, count(DISTINCT (tenant_id, request_id)) AS linked_requests,
-			count(DISTINCT (tenant_id, COALESCE(parent_request_id, request_id))) AS linked_client_requests,
-			sum(net_credits) AS net_credits, NULL::text AS internal_amount, NULL::text AS internal_currency FROM facts`,
-		order: `posted_at, tenant_id, posting_id`, coverage: "request_referenced_credit_postings_currency_unavailable",
+		totals: postingTotals + " FROM facts",
+		order:  `posted_at, tenant_id, posting_id`, coverage: "request_referenced_credit_postings_currency_unavailable",
 		columns: []string{"tenant_id", "posting_id", "request_id", "parent_request_id", "posted_at", "local_day", "entry_type", "pool", "owner_user", "net_credits", "internal_amount", "internal_currency"},
 	},
 	"sessions": {
@@ -224,6 +222,10 @@ const requestPostings = `SELECT DISTINCT ON (tenant_id, id) tenant_id, id AS pos
 	  AND entry_type IN ('consume', 'refund', 'reversal', 'adjust', 'adjustment')
 	  AND created_at >= $1 AND created_at < $2 AND ($3 = '' OR tenant_id = $3)
 	ORDER BY tenant_id, id, created_at DESC`
+
+const postingTotals = `SELECT count(*) AS postings, count(DISTINCT (tenant_id, request_id)) AS linked_requests,
+	count(DISTINCT (tenant_id, COALESCE(parent_request_id, request_id))) AS linked_client_requests,
+	sum(net_credits) AS net_credits, NULL::text AS internal_amount, NULL::text AS internal_currency`
 
 // Both the details and totals read from facts inside one database statement.
 // Terminal-only evidence is joined by tenant and server request ID. A WAL
