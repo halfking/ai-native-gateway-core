@@ -106,6 +106,10 @@ type Handler struct {
 	// 注入不了 pgxmock ⇒ 此前建 key 的测试都停在 DB 面之前 ⇒ 「落库语句引用了未应用
 	// 迁移的列」这种缺陷没有任何东西会红。按 teamGuardDB 的同款范式开窄口。
 	keyCreateDB keyConflictQuerier
+	// keyCapsOverride 是 updateKeyCapabilities 的读写查询面（W4.2 能力绑 Key）：
+	// nil ⇒ h.db（keyCapsQuerier）。按 keyCreateDB 同款窄注入面范式开，
+	// 让「存在性检查 + UPDATE 语句形状」能被 pgxmock 钉住。
+	keyCapsOverride keyCapsDB
 	// blockReviewCandidateReader 是「审核单候选规则」的读面（★ 2026-10-31
 	// 拦截归因轮 ★）。★ nil ⇒ 用默认实现（sanitizerules 的逐单窗口读面）★
 	// ⇒ ★ 单测可注入（★ 这个读面的**口径**是本轮的关键：逐单窗口 vs

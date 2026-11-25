@@ -821,6 +821,24 @@ export const DRAWER_GROUPS: readonly NavGroup[] = [
       //   （runs / stats / models —— self_check_runs 有 tenant_id 列却从不引用）
       //   另按 super_admin 门控，settings 与 trigger/availability 保持 admin 档。
       { key: 'self-check', to: '/self-check', icon: 'check', titleKey: 'nav.selfCheck' },
+      // ★ 错误处理手册（2026-11-25 菜单 PC 对齐轮；PC 端 2026-11-21 落地）。
+      //   ★★★★ 权限档**第三类（过度限制）**，与 ops-overview / platform-settings 同理由：
+      //   注册处 wrap = AdminMiddleware（admin/error_playbook_handler.go:72-74，
+      //   `wrap := func(fn) { return AdminMiddleware(fn, h.pool, h.secret) }`，
+      //   **只认证不检 role**）⇒ 后端 tenant_admin 可读；但 entries / executions
+      //   两表**没有 tenant_id 列**（sql/migrations/startup/995_error_playbook.sql:66/:100
+      //   建表可见）⇒ 载荷是**平台级全局事实** ⇒ 过度限制到 super_admin
+      //   （PC 端菜单同档 super + hideForTenant，web/src/config/appNav.ts data-ops 组）。
+      //   ⇒ 档位本身就是那道门 ⇒ 视图内无需段落级门控。
+      //   ⚠️ 按规矩同步了 AppDrawer.spec.ts 的 superAdmin 白名单（排序钉死）。
+      //   ⚠️ 本席只读：execute / revert / analyze / CRUD 写端点视图一律不碰。
+      {
+        key: 'error-playbook',
+        to: '/error-playbook',
+        icon: 'alert',
+        titleKey: 'nav.errorPlaybook',
+        requiresRole: 'super_admin',
+      },
     ],
   },
 ]

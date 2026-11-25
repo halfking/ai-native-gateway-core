@@ -603,6 +603,24 @@ func BuildProbeDedupKey(command string, credentialID int64, model string) string
 // automaticProbeEligibilityExistsSQL is shared by enqueue, claim, and the
 // final ProbeService preflight so the eligibility contract cannot drift between
 // boundaries. credentialExpr is trusted SQL supplied by this package only.
+//
+// ★ 2026-11-26（gpt-image 探针风暴轮）：补上**配额死面**这道闸。
+// 此前这道闸只看 status/lifecycle/manual_disabled/provider-enabled，**不看
+// quota_state** ⇒ 一把已经「余额永久耗尽 / 需要充值」的凭据仍会被自动探针
+// 一轮轮地打上游：211 实测凭据 26（apigpt-image / apiclaude.cc）的
+// quota_state='permanently_exhausted'、availability_state='auth_failed'，
+// 3 天里被探针打出的 gpt-image 请求仍拿到上游 401（"A valid API key is
+// required"）—— 那把 key 已经死了，再探一万次也是同一个结果。
+//
+// ⇒ 判据与既有兄弟循环**逐字同源**（不是新发明）：
+//
+//	bg/model_probe.go:337 / :761  —— 常用模型强化自检
+//	bg/credential_probe_v2.go:457 —— probe-v2 的目标筛选
+//
+// ⇒ 不会把恢复路径堵死：配额/余额死凭据的复检由**专用**的
+// bg/balance_quota_probe.go（BalanceQuotaProbe）与 bg/credential_probe_v2.go
+// 的 fast-reprobe 通道负责，它们走的是各自独立的队列/通道，**不经过本闸**
+// ⇒ 充值后仍会被拉回。
 func automaticProbeEligibilityExistsSQL(credentialExpr string) string {
 	return `EXISTS (
 		SELECT 1
@@ -614,6 +632,7 @@ func automaticProbeEligibilityExistsSQL(credentialExpr string) string {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 	)`
 }
 

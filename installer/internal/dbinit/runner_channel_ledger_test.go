@@ -32,10 +32,8 @@ package dbinit
 // ⇒ ★★ 报告 §7.31.5 的结论：★ 方案 A（★ 触及生产升级路径 ⇒ owner 轴）★ 与
 // ★★ 「部署通道独有文件也要在空库上可应用」必须**同批** ★★。
 //
-// ★★ 本文件的两道门是**棘轮**：★★ 它们钉的是**今天的现状**（★ 「两本账不互通」
-// ★★ + ★ 集合差异的规模）★★ ⇒ ★★ **若有人落了方案 A（★ 部署通道改读
-// ★★ `schema_migrations`），★ 本门会红** ⇒ ★★ **这是刻意的**：★★ 请连同本门
-// ★★ 与报告 §7.31 一起更新（★ 别让口径悄悄漂掉）★★。
+// 上述实验早于安装器密封凭证和部署通道的版本号回退规则。现行通道只允许
+// 读取明确登记的逻辑台账查询。文件指纹仍来自部署台账或安装器凭证。
 
 import (
 	"bytes"
@@ -49,36 +47,29 @@ import (
 // deployChannelScriptPath = 部署通道脚本相对本测试文件的路径。
 const deployChannelScriptPath = "../../../scripts/apply-db-revision-sequence.sh"
 
-// TestDeployChannelSkipsOnlyByItsOwnLedger 把「部署通道的跳过判据只认自己那本账」
-// 钉成可执行断言。
-//
-// ★ 判据：★ 脚本里凡是提到 `schema_migrations` 的**非注释行**，★ 都必须处在
-// ★ **引号里**（★ 即：要么是产物探针的 SQL 字符串、★ 要么是文件名）★
-// ★ ⇒ ⇒ **脚本从不把安装器那张账当成「跳过/已应用」的判据** ★★。
-func TestDeployChannelSkipsOnlyByItsOwnLedger(t *testing.T) {
+// TestDeployChannelLimitsVersionLedgerReads keeps unverified version checks
+// confined to the two documented decisions. The runtime fixture checks what
+// those decisions do with a version-only 973 and conflicting fingerprints.
+func TestDeployChannelLimitsVersionLedgerReads(t *testing.T) {
 	raw, err := os.ReadFile(deployChannelScriptPath)
 	if err != nil {
 		t.Fatalf("读取部署通道脚本失败（%s）：%v", deployChannelScriptPath, err)
 	}
 	text := string(raw)
 	if !strings.Contains(text, "public.gateway_db_revision_sequences") {
-		t.Fatalf("★ 部署通道脚本里找不到它自己的权威台账 public.gateway_db_revision_sequences ⇒ ★ 判据已失效（★ 别按本门结论改代码）")
+		t.Fatal("部署通道缺少权威台账 public.gateway_db_revision_sequences")
 	}
-	// ★ 判据：★ 脚本**不得**用 psql_query / psql_stream 去查安装器那张账
-	// （★ `public.schema_migrations`）⇒ ★ ⇒ 它的「跳过/已应用」判据只认自己那本
-	// ★ `public.gateway_db_revision_sequences` ★★。
-	//
-	// ★ 为什么按「调用点」而不是按「文本里出现过 schema_migrations」来判：★
-	// ★ 脚本里出现 `schema_migrations` 的**合法**用法是**产物探针**
-	// （★ `ledger_artifact_probe "<file>" "<SQL 表达式>"` ★ ⇒ 它只是**读产物**、
-	// ★ 不参与「跳过」判定）★ ⇒ ★ 按文本判会误报 ⇒ ★ ⇒ 必须按**调用点**判 ★★。
+	allowed := map[string]bool{
+		`if [[ "$(psql_query "SELECT to_regclass('public.schema_migrations') IS NOT NULL")" == t ]]; then`:                                  false,
+		`prior_version="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='973' LIMIT 1")"`:                                false,
+		`installer_applied="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='${version}' LIMIT 1" 2>/dev/null || true)"`: false,
+	}
 	lines := strings.Split(text, "\n")
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		if !strings.Contains(line, "psql_query") && !strings.Contains(line, "psql_stream") {
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || (!strings.Contains(line, "psql_query") && !strings.Contains(line, "psql_stream")) {
 			continue
 		}
-		// ★ 实参窗口＝本行 ＋ 下一行（★ 覆盖跨两行的调用写法 ★）。
 		window := line
 		if i+1 < len(lines) {
 			window += "\n" + lines[i+1]
@@ -86,12 +77,16 @@ func TestDeployChannelSkipsOnlyByItsOwnLedger(t *testing.T) {
 		if !strings.Contains(window, "schema_migrations") {
 			continue
 		}
-		t.Errorf("★ 部署通道脚本第 %d 行用 psql_query/psql_stream 查了安装器那张账（public.schema_migrations）：%s\n"+
-			"★ ⇒ 这意味着它可能把安装器的账当成了「跳过/已应用」的判据 ⇒ ★ 而今天的实测是：\n"+
-			"★   新装库上部署通道会全量重放、★ 并在第 13 个文件中止（★ 报告 §7.31.2 臂 D）\n"+
-			"★ ⇒ ★ 若这是**刻意**落地的方案 A（★ 部署通道改读 schema_migrations）★\n"+
-			"★ ⇒ ★ 请连同本门与报告 §7.31 一起更新（★ 刻意留红、★ 别让口径悄悄漂掉）",
-			i+1, strings.TrimSpace(window))
+		if seen, ok := allowed[line]; !ok || seen {
+			t.Errorf("部署通道第 %d 行新增或重复的逻辑台账调用：%s", i+1, window)
+			continue
+		}
+		allowed[line] = true
+	}
+	for query, seen := range allowed {
+		if !seen {
+			t.Errorf("登记的逻辑台账查询缺失：%s", query)
+		}
 	}
 }
 

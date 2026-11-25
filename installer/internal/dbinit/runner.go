@@ -2629,31 +2629,35 @@ func (r *Runner) startupSkipReason(name string, applied map[int]bool, deployAppl
 // The version row alone cannot distinguish the released 973 from other builds.
 func (r *Runner) verifyReleasedProjectionFingerprint(applied map[int]bool, deployApplied map[string]string) error {
 	const file = "973_request_metrics_projection.sql"
-	deployedSHA := deployApplied[file]
-	if !slices.Contains(r.StartupFiles, file) || (!applied[973] && deployedSHA == "") {
+	deployedSHA, deployed := deployApplied[file]
+	if !slices.Contains(r.StartupFiles, file) || (!applied[973] && !deployed) {
 		return nil
 	}
 	packagedSHA, err := r.fileSHA256(filepath.Join("startup", file))
 	if err != nil {
 		return fmt.Errorf("read released 973 fingerprint: %w", err)
 	}
-	if deployedSHA != "" && deployedSHA != packagedSHA {
+	if deployed && deployedSHA != packagedSHA {
 		return fmt.Errorf("released 973 deployment fingerprint differs from %s", file)
 	}
 	hasInstallerReceipts, err := r.psqlQuery(`SELECT to_regclass('public.gateway_db_installer_migration_receipts') IS NOT NULL`)
 	if err != nil {
 		return fmt.Errorf("check installer receipts for 973: %w", err)
 	}
-	if strings.TrimSpace(hasInstallerReceipts) != "t" {
-		return nil
+	var installedSHA string
+	if strings.TrimSpace(hasInstallerReceipts) == "t" {
+		installedSHA, err = r.psqlQuery(`SELECT content_sha256 FROM public.gateway_db_installer_migration_receipts
+			WHERE file_name='973_request_metrics_projection.sql'`)
+		if err != nil {
+			return fmt.Errorf("read installer fingerprint for 973: %w", err)
+		}
+		installedSHA = strings.TrimSpace(installedSHA)
 	}
-	installedSHA, err := r.psqlQuery(`SELECT content_sha256 FROM public.gateway_db_installer_migration_receipts
-		WHERE file_name='973_request_metrics_projection.sql'`)
-	if err != nil {
-		return fmt.Errorf("read installer fingerprint for 973: %w", err)
-	}
-	if installedSHA = strings.TrimSpace(installedSHA); installedSHA != "" && installedSHA != packagedSHA {
+	if installedSHA != "" && installedSHA != packagedSHA {
 		return fmt.Errorf("released 973 installer fingerprint differs from %s", file)
+	}
+	if !deployed && installedSHA == "" {
+		return fmt.Errorf("released 973 requires a deployment or installer fingerprint for %s", file)
 	}
 	return nil
 }

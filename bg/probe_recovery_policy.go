@@ -285,6 +285,63 @@ func classifyProbeOutcomeKind(errCode string, httpStatus int, responseBody strin
 	return kind
 }
 
+// probeGatewayRoundRedundant reports whether the probe's SECOND (gateway) round
+// is provably redundant after the FIRST (direct) round has already failed.
+//
+// ★ 2026-11-26（gpt-image 探针风暴轮）新增。
+//
+// 事实（211/154/245 三台真机实测）：
+//
+//   · 网关轮**钉住同一凭据**（X-LLM-Pin-Credential）⇒ 它只能用同一把 key、
+//     同一个模型、同一个上游去再问一次；
+//   · 判决只看直连轮（success := direct.ok；errCode 取直连轮优先；梯子只按
+//     直连轮节奏）⇒ 网关轮**不参与任何判决**，它只是诊断证据；
+//   · 于是当直连轮给出「这把 key / 这个额度 / 这个模型在这个上游不可用」
+//     这类**与 (凭据, 模型, 上游) 绑定**的判决时，钉住的网关轮只会把同一个
+//     拒绝**原样再要一次**：多一次上游请求 + 多一条业务形态的失败请求记录
+//     （211 实测 gpt-image 家族 3 天 1462 条，其中约六成是这种「no_candidate」
+//     必然失败记录；154/245 实测同形状「no routable credential/model available」）。
+//
+// ⇒ 判据只认「判决是这把凭据/这个模型/这个上游的**属性**」这几族：
+//
+//	鉴权族（key 被拒）· 余额/永久配额族（账号没额度）· 协议族（该模型在此端点不提供）
+//
+// ⇒ **不**砍「限流族」（429）与「节点族」（超时/网络/5xx）：
+//   · 429 的网关轮是**业务侧限流窗口的校准路径**（2026-11-09 429 闪断族轮：
+//     探针写晚到会把业务窗口冷却覆盖拉长）⇒ 它有独立的职责，不是「同一次拒绝」；
+//   · 节点族的两轮走的是**不同的网络路径**（直连轮自己拨号、网关轮经本网关的
+//     客户端），两者可以不一致 —— 那正是网关轮存在的价值（区分「上游挂了」与
+//     「直连路径坏了」）。
+//
+// 与既有纪律一致：同步救援路径早就这么判（bg/node_probe.go 的
+// `if res.direct.ok { gwRound = w.probeGateway(...) }`）—— 本函数把同一道门
+// 补到统一队列路径与 legacy 路径上（单一判据、两处调用，不是两份抄本）。
+func probeGatewayRoundRedundant(direct nodeProbeRoundResult) bool {
+	if direct.ok {
+		return false
+	}
+	// 429（无论正文形状）保留网关轮：业务侧限流窗口的校准路径。
+	if direct.httpStatus == 429 {
+		return false
+	}
+	kind := probeOutcomeKind(direct)
+	if kind == errorsx.KindRateLimit || kind == errorsx.KindConcurrent {
+		return false
+	}
+	if isAuthProbeKind(kind) || isQuotaProbeKind(kind) {
+		return true
+	}
+	// 鉴权拒绝的**权威分类源**是 errorsx（probeOutcomeKind 只在配额状态码那张
+	// 表上问它，而 401 不在那张表里）⇒ 这里问同一份判据，不另抄一张状态码表。
+	if direct.httpStatus != 0 {
+		if k := errorsx.ClassifyErrorWithBody(direct.httpStatus, []byte(direct.responseBody)); isAuthProbeKind(k) {
+			return true
+		}
+	}
+	// 协议族：404/405/410/415 + 契约形 400/422 —— 该模型在此端点不提供。
+	return direct.rootCause == ProbeRootCauseProtocol
+}
+
 // isQuotaProbeKind reports whether a kind belongs to the quota family — the
 // family errorsx.PenaltyOf punishes at the CREDENTIAL level (PenaltyCredential
 // + Fuse) and errorsx.AutomaticProbePolicyFor scopes to AutomaticProbeCredential.

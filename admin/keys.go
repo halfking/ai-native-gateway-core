@@ -15,7 +15,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/kaixuan/llm-gateway-go/internal/capability"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -318,6 +320,18 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.updateKeyLimits(w, r, id)
+	case "capabilities":
+		// W4.2 能力绑 Key：PUT /api/keys/:id/capabilities 整单替换授权清单。
+		if r.Method != http.MethodPut && r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+		h.updateKeyCapabilities(w, r, id)
 	case "detail":
 		// idPart is "detail", actual ID is in subPath (e.g. /api/keys/detail/146)
 		if subPath != "" {
@@ -426,6 +440,10 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		//   ⇒ 团队预算门永远判「未超限」⇒ 整条团队预算链是死的。
 		//   写入这一列是让该链真正闭环的**唯一缺口**。
 		TeamID *int64 `json:"team_id"`
+		// W4.2 能力绑 Key：创建时勾选的会话能力 ID 列表（词表 internal/capability）。
+		// 省略 = 不授予任何能力（'[]'）；传空数组同义。非法 ID / 依赖闭包
+		// 缺失一律 400（fail-closed，与请求面 capabilitygate 口径一致）。
+		Capabilities []string `json:"capabilities"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -452,6 +470,16 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if req.BudgetUSD != nil && *req.BudgetUSD > maxKeyBudgetUSD {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("budget_usd must be between 0 and %.0f", maxKeyBudgetUSD))
 		return
+	}
+	// W4.2 能力绑 Key：授权清单整单校验（fail-closed）。任何非法 ID、重复、
+	// 依赖闭包缺失都在创建时拒绝，而不是等到请求面 capabilitygate 403。
+	capsArg := any(nil) // NULL: 语义上与 '[]' 等价（列 DEFAULT '[]'，COALESCE 读取）
+	if len(req.Capabilities) > 0 {
+		if err := capability.NewRegistry().ValidateSet(req.Capabilities); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		capsArg = req.Capabilities
 	}
 	// tenant_admin callers may only create keys for their own tenant.
 	if IsTenantAdmin(r) && req.TenantID != GetTenantID(r) {
@@ -560,6 +588,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		stmt = insertAPIKeySQL(true)
 		args = append(args, teamID)
 	}
+	args = append(args, capsArg)
 	err = db.QueryRow(ctx, stmt, args...).Scan(&id)
 	if err != nil {
 		slog.Error("createKey insert failed", "error", err)
@@ -590,14 +619,14 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 func insertAPIKeySQL(withTeam bool) string {
 	if withTeam {
 		return `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id)
-		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10, $11)
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id, capabilities)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10, $11, COALESCE($12::jsonb, '[]'::jsonb))
 		RETURNING id
 	`
 	}
 	return `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias)
-		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10)
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, capabilities)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10, COALESCE($11::jsonb, '[]'::jsonb))
 		RETURNING id
 	`
 }
@@ -1132,6 +1161,75 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		"rate_limit_concurrent": concurrentArg,
 		"rate_limit_tpm":        tpmArg,
 	})
+}
+
+// updateKeyCapabilities 是 W4.2 能力绑 Key 的管理面写入口：
+// PUT /api/keys/:id/capabilities，body 为 {"capabilities": ["session.audit", ...]}。
+// 整单替换（PUT 语义）：传空数组 = 撤销全部能力；省略 capabilities 字段
+// 视为空数组（防呆：半更新的 UI 不会保留旧授权）。清单整单走
+// capability.ValidateSet（fail-closed），非法 ID / 依赖闭包缺失 400。
+// 写完失效 key 缓存，使 capabilitygate 在下一次请求即看到新授权。
+func (h *Handler) updateKeyCapabilities(w http.ResponseWriter, r *http.Request, id int) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
+	var body struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := capability.NewRegistry().ValidateSet(body.Capabilities); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	db := h.keyCapsQuerier()
+	var exists bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1)`, id).Scan(&exists); err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "api_key not found")
+		return
+	}
+
+	if _, err := db.Exec(ctx, `
+		UPDATE api_keys
+		SET capabilities = COALESCE($1::jsonb, '[]'::jsonb)
+		WHERE id = $2
+	`, body.Capabilities, id); err != nil {
+		writeInternalErr(w, "update failed", err)
+		return
+	}
+
+	h.invalidateKeyCache(id)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "ok",
+		"id":           id,
+		"capabilities": body.Capabilities,
+	})
+}
+
+// keyCapsDB 是 updateKeyCapabilities 的读写查询面（窄注入面，与 teamGuardDB /
+// loginDB 同款范式）：db 字段是具体 *pgxpool.Pool，单测要注入 pgxmock 钉
+// 「存在性检查 + UPDATE 语句形状」。nil ⇒ 用 h.db（生产路径零变化）。
+type keyCapsDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func (h *Handler) keyCapsQuerier() keyCapsDB {
+	if h.keyCapsOverride != nil {
+		return h.keyCapsOverride
+	}
+	return h.db
 }
 
 func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
