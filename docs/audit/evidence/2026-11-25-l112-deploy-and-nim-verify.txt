@@ -1,0 +1,48 @@
+2026-11-25 L112 轮部署与 nvidia nim 验证读数（原始输出摘录）
+================================================================
+
+【211 部署（scripts/deploy-211.sh，隔离 worktree /tmp/gw-l112-deploy @ b36089b1d4）】
+- 部署闸门：./admin 72.132s ok ／ ./cmd/gateway 17.559s ok ／ ./scripts/deploygate 1.562s ok
+- build_seq bumped: 3270 -> 3271 (version.json 2.6.2-b36089b1-20261125-211)
+- 切流：nginx upstream ns_llm_gateway_upstream 由 127.0.0.1:8781 切到 127.0.0.1:8783
+- readyz: {"status":"ok","version":"2.6.2-b36089b1-20261125-211","git_sha":"b36089b1","build_seq":3271,"ready":true}
+- 部署脚本 WARN「登录冒烟未执行」→ 本轮补做：POST /api/auth/token admin 200 +
+  GET /api/auth/me → user: admin | role: super_admin（两条独立证据）
+
+【nvidia nim 四模型验证（211）】
+- v_routable_credential_models @ nvidia：
+    minimaxai/minimax-m3.1-flash → cred 18 可路由（8/19/23 被探测退避）
+    z-ai/glm-5.3-flash → 4 节点全被 http_429 退避
+      （node_probe_state: consecutive_failures 22/22/34/44，last_err_code=http_429，
+        next_retry_at 按阶梯 5m/30m 递增 —— 多级回退在位）
+  claude-sonnet-5-5 / gpt-5.6-luna → nvidia 无绑定（SKIP 不是 FAIL）
+- 网关全供应商口径（canonical 名路由）3 轮 × 4 模型：
+    glm-5.3-flash      3 PASS
+    minimax-m3.1-flash 3 PASS
+    claude-sonnet-5-5  3 PASS
+    gpt-5.6-luna       3× HTTP 503（诚实 503 + alternatives；
+      DB 证据：luna 全部 8 组绑定分别 provider_disabled×12 /
+      availability_suspended×7 / unreachable×4 / auth_failed /
+      probe_failed 等 ⇒ 供应商侧真实故障，非网关代码缺陷）
+- 多节点分布（request_state_transitions 近 15min，nvidia creds 8/18/19/23）：
+    cred 18 = 81 条、cred 23 = 18 条 ⇒ 路由在多节点间分布
+- 脚本：scripts/audit/nim-four-model-rounds.py（官方）＋
+  /tmp/nim-extended-verify.py、/tmp/nim-4model-final.py（本轮扩展：
+  修 key reveal —— POST /api/keys 不回显原始 key，必须 GET reveal）
+
+【245 部署（scripts/deploy-245.sh，隔离 worktree /tmp/gw-l112-deploy245）】
+- blue-green handoff complete (old=3165-fcc76f12, new=3167-b36089b1, active_port=8781)
+- ✅ 245 部署完成 (总 239s, 切换 31s) — version=3167-b36089b1 seq=3167
+- /api/system/version → build_seq=3167 git_sha=b36089b1
+- readyz → database connected 5ms / redis connected / status ready
+- POST /api/auth/token admin → access_token 200
+
+【211 生产慢 SQL 采样（acc-pg17 log_min_duration_statement=500ms）】
+- 高频慢查询（4s+）：看板英雄区读请求级日志视图的聚合
+  （SELECT COUNT/SUM(prompt_tokens...) FROM request_logs 视图 UNION 两腿）
+  与 admin listLogs（count=273,335, elapsed 8.6s, filter_count=2）
+- 表规模：request_state_transitions 1.34M 行/687MB、request_metrics_default
+  375k 行/434MB、request_stage_events 1.35M 行/422MB
+- request_metrics_default 上 10 个索引 idx_scan=0（未被用）——
+  查询走 pkey/occurred_at 两索引；属「索引冗余」而非「缺索引」
+- pg_stat_statements 未 preload（需 DB 重启授权，维持登记）
