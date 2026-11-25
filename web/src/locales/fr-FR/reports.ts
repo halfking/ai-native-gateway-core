@@ -1,5 +1,6 @@
 // reports.ts — Page de rapport de rapprochement (double vue fournisseurs/interne, ajout i18n R65).
 export default {
+  terminalExecutions: 'Exécutions terminées',
   legacySnapshotView: 'Instantanés historiques',
   daily: {
     title: 'Preuves de rapprochement quotidien',

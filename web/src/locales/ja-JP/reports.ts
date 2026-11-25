@@ -1,5 +1,6 @@
 // reports.ts — レポート照合ページ（プロバイダー/内部のデュアルビュー、R65 i18n 追加）。
 export default {
+  terminalExecutions: '終端実行数',
   legacySnapshotView: '過去のスナップショット',
   daily: {
     title: '日次照合エビデンス',

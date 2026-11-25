@@ -262,7 +262,7 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     StartupFiles 末尾）⇒ **交集 +1**（★ 343 → 344 ★★）；
 		//     两通道独有清单不变（25 / 63）。
 		//
-		wantBoth          = 344
+		wantBoth          = 345
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)

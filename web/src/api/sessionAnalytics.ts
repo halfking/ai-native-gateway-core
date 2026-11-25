@@ -305,6 +305,8 @@ export interface ProviderRankingRow {
   usd_unmeasured_requests?: number
   user_count: number
   last_used_at: string
+  internal_cost?: number
+  external_cost?: number
 }
 
 export interface ProviderRankingResponse {
@@ -331,6 +333,8 @@ export interface TaskRankingRow {
   credits_charged?: number
   usd_unmeasured_requests?: number
   last_active_at: string
+  internal_cost?: number
+  external_cost?: number
 }
 
 export interface TaskRankingResponse {

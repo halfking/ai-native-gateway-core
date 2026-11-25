@@ -19,6 +19,7 @@ import {
 import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
 import { useI18n } from 'vue-i18n'
 import { boardRangeFromKxRange, toBoardTimeQuery, type BoardTimeRange } from '../utils/boardTimeRange'
+import { formatDateTimeIso } from '../utils/datetime'
 import { rangeFromSpanDays } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import * as echarts from 'echarts'

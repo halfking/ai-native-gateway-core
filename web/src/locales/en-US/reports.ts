@@ -1,9 +1,10 @@
 // reports.ts — Reconciliation report page (provider/internal dual view, R65 i18n sync;
 // extended 2026-09-30 stats UI round). Keys mirror views/admin/ReconciliationReport.vue.
 export default {
+  terminalExecutions: 'Terminal executions',
   projectedView: 'Historical request statistics',
   projectedDays: 'Observed requests on {n} days',
-  projectedBasis: 'Days use {zone}. The credit ledger records postings, and daily reconciliation shows supplier sends and invoices.',
+  projectedBasis: 'Grouped by calendar day in {zone}. Each terminal execution counts once, including each orchestration step. See daily reconciliation for client receipts, supplier sends, and invoices, and the credit ledger for postings.',
   projectedPending: 'Some requests in this period are still being processed.',
   projectedMissingUSD: '{n} requests have no USD amount or use another currency.',
   projectedEmpty: 'No requests were observed for these dates and filters.',

@@ -1,5 +1,6 @@
 // reports.ts — صفحة تقرير التسوية (عرض مزدوج: المزوّدون/الداخلي، إضافة الترجمة R65).
 export default {
+  terminalExecutions: 'عمليات التنفيذ المنتهية',
   legacySnapshotView: 'اللقطات التاريخية',
   daily: {
     title: 'أدلة التسوية اليومية',

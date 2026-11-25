@@ -1,5 +1,6 @@
 // reports.ts — 對帳報表頁（供應商/內部雙視角，R65 i18n 補齊）。
 export default {
+  terminalExecutions: '終態執行數',
   legacySnapshotView: '歷史快照',
   daily: {
     title: '每日對帳證據',

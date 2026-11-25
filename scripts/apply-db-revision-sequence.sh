@@ -3326,59 +3326,10 @@ END
 \$repair\$;"
 }
 
-# Probe fingerprinted migrations recognized on this run, including first
-# deliveries of the reconciliation and projection migrations.
-declare -a artifact_probe_markers=()
-
-# A fresh installer seals these receipts only after all of its SQL succeeds.
-# The version ledger cannot establish file identity or prove execution.
-installer_receipts=""
-installer_tables="$(psql_query "
-SELECT CASE
-  WHEN to_regclass('public.gateway_db_installer_handoff') IS NULL
-   AND to_regclass('public.gateway_db_installer_migration_receipts') IS NULL THEN 'none'
-  WHEN to_regclass('public.gateway_db_installer_handoff') IS NOT NULL
-   AND to_regclass('public.gateway_db_installer_migration_receipts') IS NOT NULL THEN 'present'
-  ELSE 'incomplete'
-END")"
-if [[ "$installer_tables" != none && "$installer_tables" != present ]]; then
-  printf 'error: installer handoff tables are incomplete\n' >&2
-  exit 4
-fi
-if [[ "$installer_tables" == present ]]; then
-  installer_receipts="$(psql_query "
-SELECT r.file_name || '|' || r.content_sha256
-FROM public.gateway_db_installer_handoff h
-CROSS JOIN public.gateway_db_installer_migration_receipts r
-WHERE h.file_count = (SELECT count(*) FROM public.gateway_db_installer_migration_receipts)")"
-  if [[ -z "$installer_receipts" ]]; then
-    printf 'error: installer handoff is unsealed or receipts are incomplete\n' >&2
-    exit 4
-  fi
-fi
-
-installer_source_hash() {
-  awk -F '|' -v file="$1" '$1 == file { print $2; exit }' <<< "$installer_receipts"
-}
-if [[ -n "$installer_receipts" ]]; then
-  for file in "${files[@]}"; do
-    base="${file##*/}"
-    installer_sha="$(installer_source_hash "$base")"
-    if [[ -n "$installer_sha" && "$installer_sha" != "$(sha256_file "$file")" ]]; then
-      printf 'error: installer receipt fingerprint differs for %s\n' "$base" >&2
-      exit 4
-    fi
-  done
-fi
-
-psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
-# 2026-09-21 252 部署验证轮（纪律⑨，F4 机制债收口）：台账从"按文件名记账"
-# 升级为"文件名+内容指纹记账"。content_sha256 为 NULL 的行是历史遗留记账
-# （指纹通道上线前应用，无法证明当时应用的是哪个内容版本）；此后本脚本的
-# 每次应用都记录当前文件内容 sha256，同名文件内容变更即可被识别并重放
-# （通道契约：每个迁移幂等，重跑安全——见文件头注释）。
-psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text"
-psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS execution_sha256 text, ADD COLUMN IF NOT EXISTS runtime_adaptation text"
+# 本轮按指纹命中跳过 / 按内容重放的文件（⇒ 终态探针只对这些文件做：
+# fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
+# 产物必须真实在场」，不是「库里所有记账行」）。
+declare -a sha_matched_markers=()
 
 # A fresh installer seals these receipts only after all of its SQL succeeds.
 # The version ledger cannot establish file identity or prove execution.
@@ -3452,14 +3403,14 @@ for file in "${files[@]}"; do
   stored_sha="$(psql_query "SELECT content_sha256 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")"
   if [[ -n "$stored_sha" ]]; then
     if [[ "$stored_sha" == "$file_sha" ]]; then
-      artifact_probe_markers+=("${base}")
+      sha_matched_markers+=("${base}")
       printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
       continue
     fi
     # 台账已记指纹且与当前文件不同：文件在应用后被内容加固过。通道契约
     # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
     printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
-    artifact_probe_markers+=("${base}")
+    sha_matched_markers+=("${base}")
     psql_file "$file"
     psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     continue
@@ -3469,7 +3420,7 @@ for file in "${files[@]}"; do
       # 遗留记账（指纹通道上线前应用）且登记在重放清单：按当前内容重放
       # 一次，之后进入常规指纹管理。
       printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
-      artifact_probe_markers+=("${base}")
+      sha_matched_markers+=("${base}")
       psql_file "$file"
       psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}', execution_sha256='${execution_sha}', runtime_adaptation='${runtime_adaptation}' WHERE sequence_name='${marker}'"
     else
@@ -3480,13 +3431,9 @@ for file in "${files[@]}"; do
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
   psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${execution_sha}', '${runtime_adaptation}') ON CONFLICT (sequence_name) DO NOTHING"
-  case "$base" in
-    925_supplier_contract_rates.sql|973_request_metrics_projection.sql|\
-    985_request_reconciliation_links.sql|986_provider_attempt_media_usage.sql|\
-    987_provider_invoice_evidence.sql|988_provider_invoice_usage_buckets.sql)
-      artifact_probe_markers+=("$base")
-      ;;
-  esac
+  if [[ "$base" == 973_request_metrics_projection.sql ]]; then
+    sha_matched_markers+=("$base")
+  fi
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"
@@ -3498,7 +3445,7 @@ psql_query "SELECT public.assert_session_bodies_kind_contract()"
 #   指纹通道只能证明「文件执行过」，证明不了「对象还在」⇒ 对**本轮按指纹命中
 #   跳过 / 内容重放**的关键迁移逐一探测其头产物；产物不在 ⇒ 响亮失败（此时旧槽
 #   仍在服务，损失为零），处置 = 删除对应 ledger 行让重放通道再应用（迁移幂等）。
-# ★ 探针范围 = artifact_probe_markers（本轮按指纹跳过、重放，以及接受首投门的对账迁移）——
+# ★ 探针范围 = sha_matched_markers（本轮 files 里真的走过 skip/replay 分支的）——
 #   不是「库里所有记账行」：fixture 树（runtime_test 的合成 shim 台账）与
 #   legacy 无指纹记账行不在此列（后者的产物缺失仍靠 census drift verifier 与
 #   worker 42P01 兜底 —— 如实记，不是装作覆盖了）。
@@ -3510,13 +3457,13 @@ psql_query "SELECT public.assert_session_bodies_kind_contract()"
 ledger_artifact_probe() {
   local marker_suffix="$1" probe_sql="$2" artifact
   local known=0
-  for seen in "${artifact_probe_markers[@]:-}"; do
+  for seen in "${sha_matched_markers[@]:-}"; do
     [[ "$seen" == "$marker_suffix" ]] && { known=1; break; }
   done
   [[ "$known" == "0" ]] && return 0
   artifact="$(psql_query "SELECT ${probe_sql}")"
   if [[ "$artifact" != "t" ]]; then
-    printf 'error: 台账 ↔ 产物对账失败：%s 本轮已记账但其产物缺失（%s ⇒ %s）\n' \
+    printf 'error: 台账 ↔ 产物对账失败：%s 本轮按指纹认账但其产物缺失（%s ⇒ %s）\n' \
       "$marker_suffix" "$probe_sql" "$artifact" >&2
     printf 'error: 处置：删除 gateway_db_revision_sequences 里 sequence_name=%s:%s 的行，再重放本序列（迁移幂等）\n' \
       "$sequence_name" "$marker_suffix" >&2
@@ -3913,14 +3860,14 @@ ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
 #   ★ 现在断言的是**本件真正写下的那行** ⇒ 探针恢复鉴别力（跑没跑过一眼可辨）。
 ledger_artifact_probe "925_supplier_contract_rates.sql" \
   "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '925' AND description LIKE 'effective supplier contract rate evidence%') = 1"
-ledger_artifact_probe "973_request_metrics_projection.sql" \
-  "to_regclass('public.request_metrics_projection_state') IS NOT NULL AND to_regclass('public.idx_request_metrics_projected_time') IS NOT NULL AND to_regclass('public.idx_request_metrics_fact_request') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (request_id, occurred_at)') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND conname='request_metrics_fact_identity' AND convalidated) AND to_regclass('public.request_metrics_pending') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics_pending' AND column_name='tenant_id') AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact') AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name IN ('raw_model_name','credential_id','provider_code','provider_name','client_id','client_model','agent_name','client_ip','identity_hash','task_type','owner_user','api_key_prefix','application_code','person_key','cache_write_tokens','cost_amount','cost_currency','source_revision','source_fact_id','work_type','session_intent','compression_applied','cache_input_tokens','credential_label','api_key_owner_user','client_cancelled','usage_source','source_finalized_at')) = 28 AND (SELECT count(*) FROM public.schema_migrations WHERE version='973') = 1"
 # ★ 983b 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
 #   ★ 这条 probe 是本轮新增迁移的**唯一**到位证据：
 #     该列原先没有任何通道投递 ⇒ 生产上不存在 ⇒ writer.go 写它必然 42703。
 #   ★ 注：生产上该列已由别的路径在场（211 只读实测：45 列、末列即 raw_model_name），
 #     但本迁移未 applied、未记账 ⇒ probe 的台账行判据（version='983b'）仍未满足
 #     ⇒ 这正是本迁移要补的缺口（幂等重跑无害）。
+ledger_artifact_probe "973_request_metrics_projection.sql" \
+  "to_regclass('public.request_metrics_projection_state') IS NOT NULL AND to_regclass('public.idx_request_metrics_projected_time') IS NOT NULL AND to_regclass('public.idx_request_metrics_fact_request') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (request_id, occurred_at)') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND conname='request_metrics_fact_identity' AND convalidated) AND to_regclass('public.request_metrics_pending') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics_pending' AND column_name='tenant_id') AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact') AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name IN ('raw_model_name','credential_id','provider_code','provider_name','client_id','client_model','agent_name','client_ip','identity_hash','task_type','owner_user','api_key_prefix','application_code','person_key','cache_write_tokens','cost_amount','cost_currency','source_revision','source_fact_id','work_type','session_intent','compression_applied','cache_input_tokens','credential_label','api_key_owner_user','client_cancelled','usage_source','source_finalized_at')) = 28 AND (SELECT count(*) FROM public.schema_migrations WHERE version='973') = 1"
 ledger_artifact_probe "983b_add_raw_model_name.sql" \
   "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983b') = 1"
 # ★ 983c 的产物 = 复合游标索引 + 台账行。

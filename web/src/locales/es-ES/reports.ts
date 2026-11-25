@@ -1,5 +1,6 @@
 // reports.ts — Página de conciliación de informes (doble vista proveedores/interna, i18n añadido en R65).
 export default {
+  terminalExecutions: 'Ejecuciones finalizadas',
   legacySnapshotView: 'Instantáneas históricas',
   daily: {
     title: 'Evidencia de conciliación diaria',

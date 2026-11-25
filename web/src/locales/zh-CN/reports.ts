@@ -1,9 +1,10 @@
 // reports.ts — 对账报表视图词条（2026-09-25 落地轮；2026-09-30 统计 UI 优化轮扩）。
 // 组件内 t(key, '中文') 内联兜底与本词条并存：词条供正式翻译，内联串防裸 key。
 export default {
+  terminalExecutions: '终态执行数',
   projectedView: '历史请求统计',
   projectedDays: '有请求记录的日期共 {n} 天',
-  projectedBasis: '按 {zone} 自然日统计。实际过账见积分账本，供应商逐次发送和账单见日对账。',
+  projectedBasis: '按 {zone} 自然日统计，每条执行终态计一次，编排子调用分别计入。客户端收件、供应商发送和账单见日对账，实际过账见积分账本。',
   projectedPending: '所选日期仍有请求待同步。',
   projectedMissingUSD: '{n} 条请求缺少 USD 金额或使用其他币种。',
   projectedEmpty: '所选日期和筛选条件下没有可用的请求记录。',

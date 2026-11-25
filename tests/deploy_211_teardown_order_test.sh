@@ -64,7 +64,7 @@ extract_fn() {
 
 FNS="dd_web_dist_newer_source dd_check_web_dist dd_preflight_web_dist
      dd_slot_port dd_container_name dd_active_slot dd_write_active_slot
-     dd_upstream_port dd_switch_upstream dd_ready_state dd_restore_old_upstream dd_abort_deploy dd_fail
+     dd_stop_container dd_upstream_port dd_switch_upstream dd_ready_state dd_restore_old_upstream dd_abort_deploy dd_fail
      dd_public_version dd_switch_and_verify"
 # 引擎按**自身所在目录**解析 upstream 端口判定脚本（scripts/ops/…）；
 # 本门把函数抽到 $TMP/lib.sh 里 source ⇒ 解析到 $TMP/ops/ ⇒ 把**真脚本**放那。
@@ -106,7 +106,7 @@ docker_stub() {
       mv "$DD_STUB_DIR/$1" "$DD_STUB_DIR/$2"
       ;;
     stop)
-      if [[ "${1:-}" == "-t" ]]; then shift 2; fi
+      if [[ "${1:-}" == "--time" ]]; then shift 2; fi
       [[ -f "$DD_STUB_DIR/$1" ]] || return 1
       printf 'stopped\n' > "$DD_STUB_DIR/$1"
       ;;
@@ -198,6 +198,7 @@ run_stub() {
     DD_ACTIVE_CONTAINER="llm-gateway-211-a"
     DD_SWITCHED=0
     DD_OLD_STOPPED=0
+    DD_STOP_TIMEOUT=45
     log()  { printf '[log] %s\n' "$*" >&2; }
     warn() { printf '[warn] %s\n' "$*" >&2; }
     die()  { printf '[die] %s\n' "$*" >&2; exit 9; }
@@ -330,7 +331,7 @@ check "abort 后 upstream 切回旧槽" "8781" "$(upstream_port_now)"
 if grep -q 'upstream 已切回旧槽' <<<"$out"; then ok "切回动作有明确日志"
 else bad "看不到切回日志：$out"; fi
 check "先拉起旧槽并复验入口，再停止、清理候选" \
-  $'start llm-gateway-211-a\nnginx -t\nnginx -s reload\npublic candidate\npublic old\nstop -t 35 llm-gateway-211-b\nrm -f llm-gateway-211-b' \
+  $'start llm-gateway-211-a\nnginx -t\nnginx -s reload\npublic candidate\npublic old\nstop --time 45 llm-gateway-211-b\nrm -f llm-gateway-211-b' \
   "$(cat "$TMP/docker/.calls")"
 
 echo "== ③b 入口仍由候选应答：保留候选和活跃槽记录 =="

@@ -1,5 +1,6 @@
 // reports.ts — Seite „Abstimmungsbericht“ (Doppelansicht Anbieter/intern, i18n-Ergänzung R65).
 export default {
+  terminalExecutions: 'Abgeschlossene Ausführungen',
   legacySnapshotView: 'Historische Snapshots',
   daily: {
     title: 'Tägliche Abgleichsbelege',
