@@ -3,7 +3,9 @@ package startup
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -49,18 +51,26 @@ func TestMigration745ReportSnapshotsContract(t *testing.T) {
 	upCompact := normalizeSQL(up)
 
 	// ── C1: revision-sequence channel registration (745 + 800, ordered) ─
-	seq, err := os.ReadFile("../../../scripts/apply-db-revision-sequence.sh")
-	if err != nil {
-		t.Fatalf("read apply-db-revision-sequence.sh: %v", err)
+	surfacePath := filepath.Join(t.TempDir(), "deployment-migrations")
+	extract := exec.Command("bash", "-c",
+		`source scripts/lib/deploy-surface.sh && deploy_surface_extract scripts/apply-db-revision-sequence.sh "$1"`,
+		"deploy-surface", surfacePath)
+	extract.Dir = filepath.Join("..", "..", "..")
+	if output, err := extract.CombinedOutput(); err != nil {
+		t.Fatalf("extract deployment migrations: %v\n%s", err, output)
 	}
-	seqBody := string(seq)
+	seq, err := os.ReadFile(surfacePath)
+	if err != nil {
+		t.Fatalf("read extracted deployment migrations: %v", err)
+	}
+	seqEntries := strings.Split(string(seq), "\n")
 	channelEntries := []string{
 		"745_report_snapshots.sql",
 		"800_provider_endpoint_protocols.sql",
 	}
 	lastPos := -1
 	for _, required := range channelEntries {
-		pos := strings.Index(seqBody, required)
+		pos := slices.Index(seqEntries, required)
 		if pos < 0 {
 			t.Fatalf("apply-db-revision-sequence.sh does not carry migration %s — upgrade-database deployments would never apply it", required)
 		}

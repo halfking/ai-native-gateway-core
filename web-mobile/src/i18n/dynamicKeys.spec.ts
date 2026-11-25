@@ -203,7 +203,7 @@ const OPEN_PREFIXES: readonly string[] = [
  * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
-const GENERATED_KEY_TOTAL = 372 // 56 个前缀，保留日对账字段与主干新增的菜单及统计帮助键。
+const GENERATED_KEY_TOTAL = 376 // 372 个既有键，加上日对账的投影结局、终态覆盖、业务与平台运维收件。
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {

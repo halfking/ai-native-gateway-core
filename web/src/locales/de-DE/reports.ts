@@ -284,7 +284,7 @@ export default {
   byTenant: 'Nach Mandant',
   byPerson: 'Nach Person',
   byModel: 'Nach Modell',
-  dimension: 'Dimension',
+  dimension: 'Gruppierung',
   dailyDetails: 'Tagesdetails',
   exportDailyDetails: 'Zeitraumdetails exportieren',
   byDay: 'Nach Tag',

@@ -214,6 +214,11 @@ func checkParserHasTeeth() error {
 	if !gotCTE["real_table"] {
 		return fmt.Errorf("③ 反向夹具失败：CTE 排除过头了，真关系 real_table 没抓到")
 	}
+	fragmentCTEs := globalCTEFromLiterals([]rawLit{{text: "edge_hours AS MATERIALIZED (SELECT 1)"}})
+	positions := extractRelationPositions("SELECT * FROM edge_hours JOIN public.edge_hours ON true", testDDL(), fragmentCTEs)
+	if len(positions) != 1 || positions[0].Name != "public.edge_hours" {
+		return fmt.Errorf("fragment should exclude the CTE and retain the qualified relation: %v", positions)
+	}
 
 	// ★ ⑦ 函数名不是关系
 	fnSQL2 := "SELECT * FROM generate_series(1, 10) g JOIN keepme k ON true"

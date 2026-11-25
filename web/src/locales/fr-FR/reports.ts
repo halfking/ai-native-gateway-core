@@ -284,7 +284,7 @@ export default {
   byTenant: 'Par locataire',
   byPerson: 'Par personne',
   byModel: 'Par modèle',
-  dimension: 'Dimension',
+  dimension: 'Regroupement',
   dailyDetails: 'Détail journalier',
   exportDailyDetails: 'Exporter le détail de la période',
   byDay: 'Par jour',

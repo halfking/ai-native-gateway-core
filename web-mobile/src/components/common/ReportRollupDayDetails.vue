@@ -107,5 +107,5 @@ watch([day, group, number, () => props.report, () => props.trafficScope], async 
 .day-controls select, .day-controls button { min-height: 48px; }
 .day-scroll { overflow-x: auto; }
 table { border-collapse: collapse; }
-th, td { padding: 8px; border-bottom: 1px solid var(--border-color, currentColor); text-align: start; }
+th, td { padding: 8px; border-bottom: 1px solid var(--app-border-subtle); text-align: start; }
 </style>

@@ -113,9 +113,9 @@ async function exportRange() {
           </table>
         </div>
         <div v-if="pages > 1" class="detail-controls">
-          <button type="button" class="btn btn-secondary" :disabled="page.number <= 1" @click="number = page.number - 1">{{ t('common.prevPage') }}</button>
+          <button type="button" class="btn btn-secondary" :disabled="page.number <= 1" @click="number = page.number - 1">{{ t('common.pagination.previous') }}</button>
           <span>{{ page.number }} / {{ pages }}</span>
-          <button type="button" class="btn btn-secondary" data-testid="report-detail-next" :disabled="page.number >= pages" @click="number = page.number + 1">{{ t('common.nextPage') }}</button>
+          <button type="button" class="btn btn-secondary" data-testid="report-detail-next" :disabled="page.number >= pages" @click="number = page.number + 1">{{ t('common.pagination.next') }}</button>
         </div>
       </template>
     </template>
