@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1052,4 +1053,111 @@ func piResultRowsForShape() *sqlmock.Rows {
 		"analyzed", 0,
 		"2026-11-19T00:00:00Z", nil, nil,
 	)
+}
+
+// ── 取证的总预算（2026-11-26 订正）────────────────────────────────────────────
+//
+// 此前「8s 总预算」只写在注释里：每一步各自从 Background 起 3s 超时、不看调用方的
+// 截止时间 ⇒ 最坏六步 × 3s，分析会被拖住 18s。245 实测到请求账本一路超时后顺着查出来的。
+
+func piEvidenceGathererForBudgetTest(t *testing.T) (*PIEvidenceGatherer, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	g := NewPIEvidenceGatherer(db)
+	now := time.Now()
+	g.searchLogs = func(logging.RecentQuery) logging.RecentResult {
+		return logging.RecentResult{OldestAt: &now, NewestAt: &now}
+	}
+	return g, mock
+}
+
+func piDegradedReasons(b *promptinjection.EvidenceBundle) map[string]string {
+	out := map[string]string{}
+	for _, d := range b.Degraded {
+		out[d.Part] = d.Reason
+	}
+	return out
+}
+
+func TestEvidenceGatherer_TotalBudgetIsReal(t *testing.T) {
+	old := piEvidenceTotalTimeout
+	piEvidenceTotalTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { piEvidenceTotalTimeout = old })
+
+	g, mock := piEvidenceGathererForBudgetTest(t)
+	// ① 请求账本：很快（没有这一行）。
+	mock.ExpectQuery("rl.request_id = .1 AND rl.tenant_id = .2").WillReturnRows(
+		sqlmock.NewRows([]string{"ts"}))
+	// ② 上游尝试：库当时很慢（远超 40ms 的总预算）⇒ 这一路在预算处被掐断。
+	mock.ExpectQuery("FROM candidate_failure_logs_hot").WillDelayFor(400 * time.Millisecond).
+		WillReturnRows(sqlmock.NewRows([]string{"ts"}))
+	// 其余各路：预算已用尽 ⇒ **不该再发任何查询**（这里不登记期望）。
+
+	start := time.Now()
+	b, err := g.Gather(context.Background(), promptinjection.EvidenceTarget{
+		QueueID: 1, ErrorType: promptinjection.ErrorTypeRequestFailed, TenantID: "default",
+		SessionID: "sess-1", RequestID: "req-1", ErrorDetails: map[string]any{"error_kind": "upstream_down"},
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Gather 不该因为预算用尽而返回错误: %v", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("总预算 40ms，实际用了 %s（预算没有真正生效）", elapsed)
+	}
+	reasons := piDegradedReasons(b)
+	for _, part := range []string{"upstream attempts", "session context", "same-kind error distribution", "playbook"} {
+		r, ok := reasons[part]
+		if !ok {
+			t.Errorf("%s 一路应留说明，实际没有：%v", part, b.Degraded)
+			continue
+		}
+		if !strings.Contains(r, "evidence budget exhausted (limit 40ms)") {
+			t.Errorf("%s 应说明是预算用尽且写出实际预算，得 %q", part, r)
+		}
+	}
+	if len(b.Notes) != len(b.Degraded)+1 { // +1：请求账本「没有这一行」的说明
+		t.Errorf("说明条数不对: notes=%v degraded=%v", b.Notes, b.Degraded)
+	}
+	// 服务日志不查库，不受预算影响，仍然算得出来。
+	if b.ServiceLogMeta == nil || b.ServiceLogMeta["available"] != true {
+		t.Errorf("服务日志一路不查库，应照常算出: %v", b.ServiceLogMeta)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestEvidenceGatherer_CallersEarlierDeadlineWins(t *testing.T) {
+	g, mock := piEvidenceGathererForBudgetTest(t)
+	mock.ExpectQuery("rl.request_id = .1 AND rl.tenant_id = .2").WillReturnRows(
+		sqlmock.NewRows([]string{"ts"}))
+	mock.ExpectQuery("FROM candidate_failure_logs_hot").WillDelayFor(400 * time.Millisecond).
+		WillReturnRows(sqlmock.NewRows([]string{"ts"}))
+
+	// 调用方（分析器）给了 30ms 的截止时间 ⇒ 比默认的 8s 更早 ⇒ 以它为准，说明里写它。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	b, err := g.Gather(ctx, promptinjection.EvidenceTarget{
+		QueueID: 1, ErrorType: promptinjection.ErrorTypeRequestFailed, TenantID: "default",
+		SessionID: "sess-1", RequestID: "req-1",
+	})
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("调用方截止 30ms，实际用了 %s", elapsed)
+	}
+	reasons := piDegradedReasons(b)
+	if r := reasons["upstream attempts"]; !strings.Contains(r, "evidence budget exhausted") || !regexp.MustCompile(`limit \d+ms`).MatchString(r) {
+		t.Errorf("应以调用方的截止时间为准并在说明里写出毫秒级预算，得 %q", r)
+	}
+	if r := reasons["upstream attempts"]; strings.Contains(r, "limit 8s") || strings.Contains(r, "limit 3s") {
+		t.Errorf("不该把默认的 8s / 单路的 3s 当成实际预算写出来: %q", r)
+	}
 }
