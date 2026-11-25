@@ -3,6 +3,7 @@ package metricsstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -154,22 +155,45 @@ func TestRequestMetricsProjectionLoad(t *testing.T) {
 			return err
 		})
 		measure("history-totals", func() error {
-			return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewInternal, reportrollup.ProjectedSummaryTotals)
+			return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewInternal, reportrollup.ProjectedSummaryTotals, false)
 		})
 		measure("history-provider-distribution", func() error {
-			return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution)
+			return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution, false)
 		})
+		if days == 90 {
+			measure("history-provider-distribution-one-day-invalidated", func() error {
+				return measureHistorySummary(ctx, pool, filter.StartTime, end, reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution, true)
+			})
+		}
 	}
 }
 
-func measureHistorySummary(ctx context.Context, pool *pgxpool.Pool, start, end time.Time, view reportrollup.View, scope reportrollup.ProjectedSummaryScope) error {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+func measureHistorySummary(ctx context.Context, pool *pgxpool.Pool, start, end time.Time, view reportrollup.View, scope reportrollup.ProjectedSummaryScope, invalidateDay bool) error {
+	opts := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+	if invalidateDay {
+		opts.AccessMode = pgx.ReadWrite
+	}
+	tx, err := pool.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, "SET LOCAL jit=off"); err != nil {
 		return err
+	}
+	if invalidateDay {
+		// Exercise the actual invalidation trigger. Rollback keeps the next
+		// measurement independent and leaves the isolated restore published.
+		tag, err := tx.Exec(ctx, `UPDATE public.request_metrics_daily_state SET dirty=true WHERE day=(
+			SELECT day FROM public.request_metrics_history_days
+			WHERE day>=$1::date AND day<$2::date ORDER BY day DESC LIMIT 1)`,
+			start.Format("2006-01-02"), end.Format("2006-01-02"))
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return errors.New("expected one published history day in the load window")
+		}
 	}
 	coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, end.AddDate(0, 0, -1), end)
 	if err != nil {

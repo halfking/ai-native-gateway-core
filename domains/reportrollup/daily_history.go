@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 )
 
 const dailyHistoryZone = "Asia/Shanghai"
@@ -21,22 +24,23 @@ const historyKeys = `report_date, business_only, dimension, group_key`
 const historyMeasures = `requests, successes, input_tokens, output_tokens, cache_read, cache_write,
 	usd_cents, credits, tokens, cache_covered_read, cache_input, cache_coverage, usd_coverage, latency_samples`
 
-func historyCellsSQL(distribution string) string {
-	return `, cells AS MATERIALIZED (
-		SELECT f.*, d.dimension, d.group_key FROM facts f
-		CROSS JOIN LATERAL (
-			SELECT 'total'::text, ''::text
-			UNION ALL SELECT 'provider', coalesce(provider_id,-1)::text WHERE ` + distribution + `
-			UNION ALL SELECT 'model', model WHERE ` + distribution + `
-		) AS d(dimension, group_key)
-	), measures AS (
-		SELECT ` + historyKeys + `, ` + projectedAdditiveMeasures + `,
+func historyCellsSQL(distribution bool) string {
+	keys := `report_date, business_only, 'total'::text AS dimension, ''::text AS group_key`
+	groupBy := `report_date, business_only`
+	if distribution {
+		keys = `report_date, business_only,
+			CASE WHEN GROUPING(model)=0 THEN 'model' WHEN GROUPING(provider_id)=0 THEN 'provider' ELSE 'total' END AS dimension,
+			CASE WHEN GROUPING(model)=0 THEN model WHEN GROUPING(provider_id)=0 THEN coalesce(provider_id,-1)::text ELSE '' END AS group_key`
+		groupBy += `, GROUPING SETS ((), (model), (provider_id))`
+	}
+	return `, measures AS (
+		SELECT ` + keys + `, ` + projectedAdditiveMeasures + `,
 			coalesce(string_agg(int8send(latency_ms), ''::bytea ORDER BY latency_ms)
 				FILTER (WHERE ` + projectedLatencySample + `), ''::bytea) AS latency_samples
-		FROM cells GROUP BY ` + historyKeys + `
+		FROM facts GROUP BY ` + groupBy + `
 	), error_counts AS (
-		SELECT ` + historyKeys + `, kind, count(*) AS requests
-		FROM cells WHERE status<>'success' GROUP BY ` + historyKeys + `, kind
+		SELECT ` + keys + `, kind, count(*) AS requests
+		FROM facts WHERE status<>'success' GROUP BY ` + groupBy + `, kind
 	), errors AS (
 		SELECT ` + historyKeys + `, jsonb_object_agg(kind, requests) AS counts
 		FROM error_counts GROUP BY ` + historyKeys + `
@@ -52,13 +56,13 @@ func RebuildDailyHistory(ctx context.Context, tx *sql.Tx, day string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM public.request_metrics_daily_history WHERE report_date=$1::date`, day); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `WITH facts AS (
+	_, err := tx.ExecContext(ctx, `WITH facts AS NOT MATERIALIZED (
 		SELECT $1::date AS report_date, scope.business_only, `+historyFacts+`
 		FROM public.request_metrics_projection CROSS JOIN (VALUES (false), (true)) scope(business_only)
 		WHERE source_fact_id IS NOT NULL AND (NOT scope.business_only OR traffic_class='business')
 		  AND occurred_at >= ($1::date::timestamp AT TIME ZONE '`+dailyHistoryZone+`')
 		  AND occurred_at < (($1::date+1)::timestamp AT TIME ZONE '`+dailyHistoryZone+`')
-	)`+historyCellsSQL("true")+`
+	)`+historyCellsSQL(true)+`
 	INSERT INTO public.request_metrics_daily_history (`+historyKeys+`, `+historyMeasures+`, errors)
 	SELECT * FROM raw_cells`, day)
 	if err != nil {
@@ -88,14 +92,37 @@ const historyFirstDay = `($1::timestamptz AT TIME ZONE '` + dailyHistoryZone + `
 const historyLastDay = `($2::timestamptz AT TIME ZONE '` + dailyHistoryZone + `')::date`
 const historyDayBounds = `day >= ` + historyFirstDay + ` AND day < ` + historyLastDay
 
-func dailyHistorySQL(fullyPublished bool) string {
-	input := `WITH history AS (
-		SELECT ` + historyKeys + `, ` + historyMeasures + `, errors
-		FROM public.request_metrics_daily_history
-		WHERE report_date >= ` + historyFirstDay + ` AND report_date < ` + historyLastDay + `
-		  AND business_only=$3 AND ($4::boolean OR dimension='total')
+const historyPublishedSelect = `SELECT ` + historyKeys + `, ` + historyMeasures + `, errors
+	FROM public.request_metrics_daily_history
+	WHERE report_date >= ` + historyFirstDay + ` AND report_date < ` + historyLastDay + `
+	  AND business_only=$3`
+
+const historyFactsSelect = `SELECT (p.occurred_at AT TIME ZONE '` + dailyHistoryZone + `')::date AS report_date,
+	$3::boolean AS business_only, ` + historyFacts
+
+const historyFactsFilter = `p.source_fact_id IS NOT NULL AND (NOT $3::boolean OR p.traffic_class='business')`
+
+func dailyHistorySQL(fullyPublished, contiguousGap, distribution bool) string {
+	selection := ""
+	if !distribution {
+		selection = " AND dimension='total'"
+	}
+	var input string
+	switch {
+	case fullyPublished:
+		input = `WITH history AS (` + historyPublishedSelect + selection + `)`
+	case contiguousGap:
+		// Concrete bounds let the planner estimate the raw branch from the
+		// occurrence index. A range-valued join estimates many more raw rows.
+		input = `WITH facts AS NOT MATERIALIZED (` + historyFactsSelect + `
+		FROM public.request_metrics_projection p WHERE ` + historyFactsFilter + `
+		  AND p.occurred_at >= ($4::date::timestamp AT TIME ZONE '` + dailyHistoryZone + `')
+		  AND p.occurred_at < ($5::date::timestamp AT TIME ZONE '` + dailyHistoryZone + `')
+	)` + historyCellsSQL(distribution) + `, history AS (` + historyPublishedSelect + selection + `
+		AND (report_date < $4::date OR report_date >= $5::date)
+		UNION ALL SELECT * FROM raw_cells
 	)`
-	if !fullyPublished {
+	default:
 		input = `WITH clean_days AS MATERIALIZED (
 		SELECT day FROM public.request_metrics_history_days WHERE ` + historyDayBounds + `
 	), gaps AS (
@@ -103,45 +130,36 @@ func dailyHistorySQL(fullyPublished bool) string {
 			tstzrange(day::timestamp AT TIME ZONE '` + dailyHistoryZone + `',
 			          (day+1)::timestamp AT TIME ZONE '` + dailyHistoryZone + `', '[)')), '{}') AS missing
 		FROM clean_days
-	), facts AS (
-		SELECT (p.occurred_at AT TIME ZONE '` + dailyHistoryZone + `')::date AS report_date,
-			$3::boolean AS business_only, ` + historyFacts + `
+	), facts AS NOT MATERIALIZED (` + historyFactsSelect + `
 		FROM gaps CROSS JOIN LATERAL unnest(missing) AS r(span)
 		JOIN public.request_metrics_projection p ON p.occurred_at >= lower(span) AND p.occurred_at < upper(span)
-		WHERE p.source_fact_id IS NOT NULL AND (NOT $3::boolean OR p.traffic_class='business')
-	)` + historyCellsSQL("$4::boolean") + `, history AS (
+		WHERE ` + historyFactsFilter + `
+	)` + historyCellsSQL(distribution) + `, history AS (
 		SELECT ` + historyKeys + `, ` + historyMeasures + `, errors
 		FROM public.request_metrics_daily_history JOIN clean_days ON day=report_date
-		WHERE business_only=$3 AND ($4::boolean OR dimension='total')
+		WHERE business_only=$3` + selection + `
 		UNION ALL SELECT * FROM raw_cells
 	)`
 	}
-	return input + `, distribution_errors AS (
-		SELECT dimension, group_key, kind, sum(count::bigint)::bigint AS requests
-		FROM history CROSS JOIN LATERAL jsonb_each_text(errors) AS e(kind, count)
-		WHERE dimension<>'total' GROUP BY dimension, group_key, kind
-	), error_breakdowns AS (
-		SELECT dimension, group_key, jsonb_object_agg(kind, requests) AS counts
-		FROM distribution_errors GROUP BY dimension, group_key
-	), distributions AS (
-		SELECT dimension, group_key, sum(requests)::bigint AS requests, sum(successes)::bigint AS successes,
-			sum(input_tokens)::bigint AS input_tokens, sum(output_tokens)::bigint AS output_tokens,
-			sum(cache_read)::bigint AS cache_read, sum(cache_write)::bigint AS cache_write,
-			sum(usd_cents) AS usd_cents, sum(credits)::bigint AS credits, sum(tokens)::bigint AS tokens,
-			sum(cache_covered_read)::bigint AS cache_covered_read, sum(cache_input)::bigint AS cache_input,
-			sum(cache_coverage)::bigint AS cache_coverage, sum(usd_coverage)::bigint AS usd_coverage,
-			coalesce(array_agg(latency_samples) FILTER (WHERE octet_length(latency_samples)>0), '{}') AS latency_runs
-		FROM history WHERE dimension<>'total' GROUP BY dimension, group_key
-	)
-	SELECT report_date, dimension, group_key, requests, successes, input_tokens, output_tokens, cache_read, cache_write,
-		usd_cents, credits, tokens, cache_covered_read, cache_input, cache_coverage, usd_coverage,
-		ARRAY[latency_samples], errors, sum(usd_cents) OVER () AS interval_usd_cents
-	FROM history WHERE dimension='total'
-	UNION ALL
-	SELECT NULL::date, dimension, group_key, requests, successes, input_tokens, output_tokens, cache_read, cache_write,
-		usd_cents, credits, tokens, cache_covered_read, cache_input, cache_coverage, usd_coverage,
-		latency_runs, coalesce(counts,'{}'), 0::numeric
-	FROM distributions LEFT JOIN error_breakdowns USING (dimension,group_key)`
+	return input + ` SELECT report_date, dimension, group_key, ` + historyMeasures + `, errors FROM history`
+}
+
+type dailyHistoryGroup struct {
+	kind    groupKind
+	row     grainScanRow
+	cost    decimal.Decimal
+	runs    []latencyRun
+	samples int
+}
+
+// latencyRun holds the sorted int8send values returned by PostgreSQL. Keep
+// one copy of the bytes and decode only values inspected during rank selection.
+type latencyRun []byte
+
+func (r latencyRun) size() int { return len(r) / 8 }
+
+func (r latencyRun) at(index int) int64 {
+	return int64(binary.BigEndian.Uint64(r[index*8:]))
 }
 
 // runDailyHistory returns false before emitting rows if the optional schema or
@@ -153,86 +171,99 @@ func runDailyHistory(ctx context.Context, q Querier, view View, filter GrainFilt
 		return false, err
 	}
 	var published int
-	var fullyPublished bool
-	if err := q.QueryRow(ctx, `SELECT count(*), count(*)=(`+historyLastDay+`-`+historyFirstDay+`)
-		FROM public.request_metrics_history_days WHERE `+historyDayBounds,
-		coverage.From, coverage.Through).Scan(&published, &fullyPublished); err != nil || published == 0 {
+	var missing int
+	var firstMissing, lastMissing sql.NullTime
+	if err := q.QueryRow(ctx, `SELECT count(h.day), count(*)-count(h.day),
+		min(d.day::date) FILTER (WHERE h.day IS NULL), max(d.day::date) FILTER (WHERE h.day IS NULL)
+		FROM generate_series(`+historyFirstDay+`::timestamp, (`+historyLastDay+`-1)::timestamp, interval '1 day') AS d(day)
+		LEFT JOIN public.request_metrics_history_days h ON h.day=d.day::date`,
+		coverage.From, coverage.Through).Scan(&published, &missing, &firstMissing, &lastMissing); err != nil || published == 0 {
 		return false, err
 	}
-	rows, err := q.Query(ctx, dailyHistorySQL(fullyPublished), coverage.From, coverage.Through, projectedBusinessOnly(view, filter), scope == ProjectedSummaryDistribution)
+	contiguousGap := missing > 0 && firstMissing.Time.AddDate(0, 0, missing-1).Equal(lastMissing.Time)
+	args := []any{coverage.From, coverage.Through, projectedBusinessOnly(view, filter)}
+	if contiguousGap {
+		args = append(args, firstMissing.Time, lastMissing.Time.AddDate(0, 0, 1))
+	}
+	rows, err := q.Query(ctx, dailyHistorySQL(missing == 0, contiguousGap, scope == ProjectedSummaryDistribution), args...)
 	if err != nil {
 		return true, fmt.Errorf("read daily request history: %w", err)
 	}
 	defer rows.Close()
-	var totalRuns [][]int64
-	var totalSamples int
-	totalRow := grainScanRow{gDate: true}
-	seenTotal := false
+	groups := make(map[[2]string]*dailyHistoryGroup)
 	for rows.Next() {
-		var r grainScanRow
-		r.projection = &projectedMeasures{}
-		r.currency = "USD"
-		var date sql.NullTime
+		var row grainScanRow
+		row.projection = &projectedMeasures{}
+		row.currency = "USD"
 		var dimension, key string
-		var encodedRuns [][]byte
+		var encoded []byte
 		var errors map[string]int64
-		var intervalUSD float64
-		p := r.projection
-		if err := rows.Scan(&date, &dimension, &key, &r.requestCount, &r.successCount, &r.inputTokens, &r.outputTokens,
-			&r.cacheRead, &r.cacheWrite, &r.costCents, &r.credits, &p.tokens, &p.cacheRead, &p.cacheInput, &p.cacheMeasured,
-			&p.usdMeasured, &encodedRuns, &errors, &intervalUSD); err != nil {
+		var amount pgtype.Numeric
+		p := row.projection
+		if err := rows.Scan(&row.date, &dimension, &key, &row.requestCount, &row.successCount, &row.inputTokens, &row.outputTokens,
+			&row.cacheRead, &row.cacheWrite, &amount, &row.credits, &p.tokens, &p.cacheRead, &p.cacheInput, &p.cacheMeasured,
+			&p.usdMeasured, &encoded, &errors); err != nil {
 			return true, fmt.Errorf("scan daily request history: %w", err)
 		}
-		var size int
-		runs := make([][]int64, 0, len(encodedRuns))
-		for _, encoded := range encodedRuns {
-			if len(encoded) == 0 {
-				continue
-			}
-			samples := make([]int64, len(encoded)/8)
-			if _, err := binary.Decode(encoded, binary.BigEndian, samples); err != nil {
-				return true, fmt.Errorf("decode daily latency samples: %w", err)
-			}
-			runs = append(runs, samples)
-			size += len(samples)
+		if !amount.Valid || amount.Int == nil {
+			return true, fmt.Errorf("invalid daily history amount for %s %q", dimension, key)
 		}
-		p.latencyMeasured = int64(size)
-		switch dimension {
-		case "total":
-			seenTotal = true
-			totalRow.costCents = intervalUSD
-			totalRuns = append(totalRuns, runs...)
-			totalSamples += size
-			r.date = date.Time
-			day := r
-			setHistoryRanks(&day, runs, size)
-			emitHistoryRow(sink, gkDay, day, errors)
-			r.gDate, r.costCents = true, 0
-			emitHistoryRow(sink, gkTotal, r, errors)
-		case "provider":
-			providerID, err := strconv.ParseInt(key, 10, 64)
+		if len(encoded)%8 != 0 {
+			return true, fmt.Errorf("invalid daily latency samples for %s %q: %d bytes", dimension, key, len(encoded))
+		}
+		samples := latencyRun(encoded)
+		p.latencyMeasured = int64(samples.size())
+		groupKey := [2]string{dimension, key}
+		group := groups[groupKey]
+		if group == nil {
+			group = &dailyHistoryGroup{row: grainScanRow{gDate: true}}
+			switch dimension {
+			case "total":
+				group.kind = gkTotal
+			case "provider":
+				providerID, err := strconv.ParseInt(key, 10, 64)
+				if err != nil {
+					return true, fmt.Errorf("read daily history provider: %w", err)
+				}
+				group.kind, group.row.providerID = gkProvider, &providerID
+			case "model":
+				group.kind, group.row.model = gkModel, key
+			default:
+				return true, fmt.Errorf("unknown daily history dimension %q", dimension)
+			}
+			groups[groupKey] = group
+		}
+		if amount.Int.Sign() != 0 {
+			group.cost = group.cost.Add(decimal.NewFromBigInt(amount.Int, amount.Exp))
+		}
+		if len(samples) > 0 {
+			group.runs = append(group.runs, samples)
+			group.samples += samples.size()
+		}
+		if group.kind == gkTotal {
+			value, err := amount.Float64Value()
 			if err != nil {
-				return true, fmt.Errorf("read daily history provider: %w", err)
+				return true, fmt.Errorf("read daily history amount: %w", err)
 			}
-			r.gDate, r.providerID = true, &providerID
-			setHistoryRanks(&r, runs, size)
-			emitHistoryRow(sink, gkProvider, r, errors)
-		case "model":
-			r.gDate, r.model = true, key
-			setHistoryRanks(&r, runs, size)
-			emitHistoryRow(sink, gkModel, r, errors)
-		default:
-			return true, fmt.Errorf("unknown daily history dimension %q", dimension)
+			day := row
+			day.costCents = value.Float64
+			setHistoryRanks(&day, []latencyRun{samples}, samples.size())
+			emitHistoryRow(sink, gkDay, day, errors)
 		}
+		row.gDate, row.providerID, row.model = true, group.row.providerID, group.row.model
+		emitHistoryRow(sink, group.kind, row, errors)
 	}
 	if err := rows.Err(); err != nil {
 		return true, err
 	}
-	if !seenTotal {
-		totalRow.projection = &projectedMeasures{}
+	if _, ok := groups[[2]string{"total", ""}]; !ok {
+		sink(gkTotal, grainScanRow{gDate: true, projection: &projectedMeasures{}})
 	}
-	setHistoryRanks(&totalRow, totalRuns, totalSamples)
-	sink(gkTotal, totalRow)
+	for _, group := range groups {
+		group.row.costCents = group.cost.InexactFloat64()
+		setHistoryRanks(&group.row, group.runs, group.samples)
+		sink(group.kind, group.row)
+	}
 	return true, nil
 }
 
@@ -245,25 +276,28 @@ func emitHistoryRow(sink func(groupKind, grainScanRow), group groupKind, row gra
 
 // setHistoryRanks matches PostgreSQL percentile_cont across the union of the
 // sorted samples. Binary counting selects exact ranks without resorting all rows.
-func setHistoryRanks(row *grainScanRow, runs [][]int64, size int) {
+func setHistoryRanks(row *grainScanRow, runs []latencyRun, size int) {
 	if size == 0 {
 		return
 	}
 	minimum, maximum := int64(math.MaxInt64), int64(0)
 	for _, run := range runs {
-		minimum = min(minimum, run[0])
-		maximum = max(maximum, run[len(run)-1])
+		minimum = min(minimum, run.at(0))
+		maximum = max(maximum, run.at(run.size()-1))
 	}
-	at := func(rank int) float64 {
+	upperBound := func(run latencyRun, value int64) int {
+		return sort.Search(run.size(), func(i int) bool { return run.at(i) > value })
+	}
+	at := func(rank int) int64 {
 		if len(runs) == 1 {
-			return float64(runs[0][rank])
+			return runs[0].at(rank)
 		}
 		first, last := minimum, maximum
 		for first < last {
 			middle := first + (last-first)/2
 			var count int
 			for _, run := range runs {
-				count += sort.Search(len(run), func(i int) bool { return run[i] > middle })
+				count += upperBound(run, middle)
 			}
 			if count > rank {
 				last = middle
@@ -271,16 +305,33 @@ func setHistoryRanks(row *grainScanRow, runs [][]int64, size int) {
 				first = middle + 1
 			}
 		}
-		return float64(first)
+		return first
 	}
 	percentile := func(p float64) float64 {
 		rank := p * float64(size-1)
 		left, right := int(math.Floor(rank)), int(math.Ceil(rank))
-		value := at(left)
+		lower := at(left)
+		value := float64(lower)
 		if left == right {
 			return value
 		}
-		return value + (rank-float64(left))*(at(right)-value)
+		if len(runs) == 1 {
+			return value + (rank-float64(left))*(float64(runs[0].at(right))-value)
+		}
+		// The upper rank is adjacent. It either repeats the lower sample or
+		// equals the smallest sample strictly larger than it across the runs.
+		count, next := 0, maximum
+		for _, run := range runs {
+			i := upperBound(run, lower)
+			count += i
+			if i < run.size() {
+				next = min(next, run.at(i))
+			}
+		}
+		if count > right {
+			return value
+		}
+		return value + (rank-float64(left))*(float64(next)-value)
 	}
 	row.p50w, row.p95w, row.w = percentile(0.5), percentile(0.95), 1
 }

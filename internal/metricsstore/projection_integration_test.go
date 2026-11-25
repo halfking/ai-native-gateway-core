@@ -32,8 +32,11 @@ type historyQueryProbe struct {
 func (p *historyQueryProbe) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
 	if strings.Contains(query, "FROM public.request_metrics_daily_history") {
 		p.mode = "published"
-		if strings.Contains(query, "FROM gaps") {
-			p.mode = "mixed"
+		switch {
+		case strings.Contains(query, "FROM gaps"):
+			p.mode = "fragmented"
+		case strings.Contains(query, "UNION ALL SELECT * FROM raw_cells"):
+			p.mode = "contiguous"
 		}
 	}
 	return p.Querier.Query(ctx, query, args...)
@@ -1421,7 +1424,8 @@ SELECT 'cached-history-'||id, CASE WHEN id=2 THEN 'history-b' ELSE 'history-a' E
  stamp::timestamptz,(stamp::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,
  (stamp::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,status,traffic,provider,
  'history-model-'||(id%2),id*20,id*2,CASE WHEN id%2=0 THEN id*25 END, id*21,latency,
- id*0.0000123, CASE WHEN id=4 THEN 'CNY' ELSE 'USD' END,kind,'async_processor',25000+id
+ CASE WHEN id=6 THEN -id*0.0000123 ELSE id*0.0000123 END,
+ CASE WHEN id=4 THEN 'CNY' ELSE 'USD' END,kind,'async_processor',25000+id
 FROM (VALUES
  (1,'2026-11-12 00:00+08','success','business',9,80,NULL),
  (2,'2026-11-12 23:59+08','success','business',10,190,NULL),
@@ -1501,7 +1505,7 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 			WHERE day BETWEEN '2026-11-12' AND '2026-11-14'`).Scan(&published); err != nil || published != 1 {
 			t.Fatalf("both revised dates must become uncovered, published=%d: %v", published, err)
 		}
-		assertParity("mixed", reportrollup.GrainFilter{})
+		assertParity("contiguous", reportrollup.GrainFilter{})
 		drain(processor.RefreshDailySummary)
 		exec(`CREATE FUNCTION public.reject_history_publish() RETURNS trigger LANGUAGE plpgsql AS $$
 			BEGIN RAISE EXCEPTION 'injected history publication failure'; END $$;
@@ -1510,7 +1514,7 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 		if _, err := processor.RefreshDailyHistory(ctx); err == nil || !strings.Contains(err.Error(), "injected history publication failure") {
 			t.Fatalf("expected history publication to roll back: %v", err)
 		}
-		assertParity("mixed", reportrollup.GrainFilter{})
+		assertParity("contiguous", reportrollup.GrainFilter{})
 		exec("DROP TRIGGER reject_history_publish ON public.request_metrics_history_days; DROP FUNCTION public.reject_history_publish()")
 		results := make(chan error, 2)
 		for _, worker := range []*ProjectionProcessor{processor, NewProjectionProcessor(db)} {
@@ -1524,6 +1528,11 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 				t.Fatal(err)
 			}
 		}
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", reportrollup.GrainFilter{})
+		exec(`UPDATE public.request_metrics_daily_state SET dirty=true WHERE day IN ('2026-11-11','2026-11-14');`)
+		assertParity("fragmented", reportrollup.GrainFilter{})
+		drain(processor.RefreshDailySummary)
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", reportrollup.GrainFilter{})
 	})
