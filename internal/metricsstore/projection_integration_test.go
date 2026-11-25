@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1792,6 +1793,15 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 		}
 		day := time.Date(2026, 11, 5, 0, 0, 0, 0, loc)
 		start, now := day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)
+		provider, credential, key, unassigned := int64(37), int64(81), int64(912), reportrollup.UnassignedID
+		exec(`UPDATE public.request_metrics_projection SET provider_id=37, credential_id=81, api_key_id=912,
+			outbound_model='alias-model' WHERE request_id='person-page-101';
+			INSERT INTO public.request_metrics_projection (
+				request_id, tenant_id, occurred_at, occurred_date, billing_date, raw_model_name,
+				status, traffic_class, source, source_fact_id
+			) VALUES
+			('scope-work', 'scope-tenant', '2026-08-02 01:00+08', '2026-08-02', '2026-08-02', 'scope-model', 'success', 'business', 'async_processor', 29001),
+			('scope-probe', 'scope-other', '2026-08-02 01:00+08', '2026-08-02', '2026-08-02', 'scope-model', 'success', 'probe', 'async_processor', 29002);`)
 		check := func(wantPublished bool) {
 			t.Helper()
 			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -1808,14 +1818,30 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 				t.Fatal(err)
 			}
 			for _, tc := range []struct {
-				view   reportrollup.View
-				filter reportrollup.GrainFilter
+				view            reportrollup.View
+				filter          reportrollup.GrainFilter
+				filtered        bool
+				publishedGroups []reportrollup.GrainGroup
 			}{
 				{view: reportrollup.ViewInternal},
 				{view: reportrollup.ViewProvider},
 				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{BusinessOnly: true}},
-				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{TenantID: "page-a"}},
-				{view: reportrollup.ViewInternal, filter: reportrollup.GrainFilter{Person: "probe-only"}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{TenantID: "page-a"}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupTenant, reportrollup.GrainGroupPerson}},
+				{view: reportrollup.ViewInternal, filter: reportrollup.GrainFilter{Person: "probe-only"}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupPerson}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{TenantID: "page-a", Person: "person-01"}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupPerson}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{ProviderID: &provider}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupProvider}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{CredentialID: &credential}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupCredential}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{APIKeyID: &key}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupAPIKey}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{ProviderID: &unassigned}, filtered: true},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{Model: "alias-model"}, filtered: true},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{ModelNames: []string{"page-model"}}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupModel}},
 			} {
 				full, err := reportrollup.BuildProjectedReport(ctx, tx, start, day, tc.view, tc.filter, reportrollup.Names{}, true, fullCoverage)
 				if err != nil {
@@ -1826,9 +1852,8 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 				if err != nil {
 					t.Fatal(err)
 				}
-				filtered := tc.filter.TenantID != "" || tc.filter.Person != ""
-				if workbookSource.publishedPage != (wantPublished && !filtered) {
-					t.Fatalf("workbook read published=%v for %+v, want %v", workbookSource.publishedPage, tc, wantPublished && !filtered)
+				if workbookSource.publishedPage != (wantPublished && !tc.filtered) {
+					t.Fatalf("workbook read published=%v for %+v, want %v", workbookSource.publishedPage, tc, wantPublished && !tc.filtered)
 				}
 				for _, field := range []struct {
 					name string
@@ -1874,8 +1899,9 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 						}
 						combined = append(combined, page.Rows...)
 					}
-					if probe.publishedPage != (wantPublished && !filtered) {
-						t.Fatalf("%s published page = %v for %+v, want %v", group, probe.publishedPage, tc, wantPublished && !filtered)
+					usePublished := wantPublished && (!tc.filtered || slices.Contains(tc.publishedGroups, group))
+					if probe.publishedPage != usePublished {
+						t.Fatalf("%s published page = %v for %+v, want %v", group, probe.publishedPage, tc, usePublished)
 					}
 					if !reflect.DeepEqual(want, combined) {
 						t.Fatalf("%s day detail differs from the full export results for %+v", group, tc)
@@ -1912,6 +1938,25 @@ VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-1
 		}
 		publish()
 		check(true)
+		t.Run("sole_tenant_uses_cells_only_for_matching_traffic_scope", func(t *testing.T) {
+			soleDay := time.Date(2026, 8, 2, 0, 0, 0, 0, loc)
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, soleDay, soleDay, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, view := range []reportrollup.View{reportrollup.ViewInternal, reportrollup.ViewProvider} {
+				probe := &historyQueryProbe{Querier: tx}
+				page, err := reportrollup.BuildProjectedDailyPage(ctx, probe, view, reportrollup.GrainFilter{TenantID: "scope-tenant"}, coverage, reportrollup.GrainGroupModel, 1)
+				if err != nil || page.Total != 1 || len(page.Rows) != 1 || page.Rows[0].Totals.RequestCount != 1 || probe.publishedPage != (view == reportrollup.ViewInternal) {
+					t.Fatalf("%s published=%v: %+v (%v)", view, probe.publishedPage, page, err)
+				}
+			}
+		})
 		t.Run("unpublished_empty_day_cannot_leak_old_workbook_rows", func(t *testing.T) {
 			tx, err := pool.Begin(ctx)
 			if err != nil {
