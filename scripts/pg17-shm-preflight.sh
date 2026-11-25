@@ -26,23 +26,31 @@
 #   bash scripts/pg17-shm-preflight.sh --container acc-pg17
 #   bash scripts/pg17-shm-preflight.sh --compose /opt/kaixuan/stacks/platform/docker-compose.platform.yml
 #
+#   # ★★ 漂移判定（第 27 轮新增：★ 把「N11 生效与否」变成【有判据的命令】★★）
+#   bash scripts/pg17-shm-preflight.sh --expect-shm 1073741824
+#
 # # 退出码
 #
 #   0 = 核查完成（★ **不代表**「可以安全 recreate」⇒ 那仍需 owner 拍板）
 #   2 = 远端不可达 / 容器不在场（★ ⇒ 无法核查）
+#   3 = ★★ 漂移（★ 仅当传了 --expect-shm：★ 运行中容器的实际 ShmSize、
+#        或 compose 里的 shm_size 键/值、与期望不符 ★★）
 # =====================================================================
 set -uo pipefail
 
 SSH_HOST="${SSH_HOST:-211}"
 CONTAINER="${CONTAINER:-acc-pg17}"
 COMPOSE_PATH="${COMPOSE_PATH:-/opt/kaixuan/stacks/platform/docker-compose.platform.yml}"
+# ★★ EXPECT_SHM：★ 期望的 ShmSize 字节数（★ 缺省＝空 ⇒ 只报告、不判定 ★★）
+EXPECT_SHM="${EXPECT_SHM:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)      SSH_HOST="$2"; shift 2 ;;
     --container) CONTAINER="$2"; shift 2 ;;
     --compose)   COMPOSE_PATH="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,40p' "$0"; exit 0 ;;
+    --expect-shm) EXPECT_SHM="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,46p' "$0"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
@@ -118,6 +126,11 @@ if [ -f "$CP" ]; then
     /^[[:space:]]{2}[A-Za-z0-9_.-]+:[[:space:]]*$/ { cur=$1; sub(/:$/,"",cur); next }
     cur==svc && /shm_size/ { found=1 }
     END { print (found?"yes":"no") }' "$CP")"
+  # ★★ 第 27 轮新增：★ 把 compose 里的 shm_size **值**也取出来（★ 键在不在 ≠ 值对不对 ★）
+  echo "compose_shm_size_value=$(awk -v svc="acc_pg17" '
+    /^[[:space:]]{2}[A-Za-z0-9_.-]+:[[:space:]]*$/ { cur=$1; sub(/:$/,"",cur); next }
+    cur==svc && /shm_size/ { line=$0; sub(/^[^:]*:[ \t]*/,"",line); gsub(/["'"'"']/,"",line); print line; exit }
+    ' "$CP" 2>/dev/null)"
 else
   echo "compose_exists=no"
 fi
@@ -139,9 +152,41 @@ echo "=== N11 只读现况核查（★ 严格只读）==========================
 printf '%s\n' "$REMOTE"
 echo "==============================================================="
 echo
+
+# ── 漂移判定（第 27 轮新增：★ 严格只读、★ 只用 docker inspect 与文本读取 ★）────
+# ★★ 为什么需要它：★ N11 的修复落在【仓外 compose 文件】（★ compose_in_git=no ★★）
+#   ⇒ ⇒ **仓内没有任何版本控制能保住它** ⇒ ⇒ 一旦该文件被覆盖、或容器被别处的
+#   ⇒ ⇒ recreate 路径重建（★ 且用的是同 compose ⇒ 键还在 ⇒ 仍保持 1GB ★★），
+#   ⇒ ⇒ **N11 会静默失效、而不会让任何东西变红** ⇒ ⇒ **缺的是判据、不是登记 ★★
+# ★★ 判据取【两个独立信号】★：
+#   ① 运行中容器的**实际** `HostConfig.ShmSize` ＝ 期望字节数（★ 修复生效中 ★）
+#   ② compose 里 `shm_size` 键**在位**（★ 下次 recreate 仍会保持 ★）
+# ★★ 两个信号都来自【现读】，★ 任何一个不满足 ⇒ 判漂移 ⇒ **退出码 3** ★★
+if [ -n "${EXPECT_SHM}" ]; then
+  actual=$(printf '%s\n' "${REMOTE}" | sed -n 's/^shm_size=\([0-9][0-9]*\)$/\1/p' | head -1)
+  present=$(printf '%s\n' "${REMOTE}" | sed -n 's/^compose_shm_size_present=\(.*\)$/\1/p' | head -1)
+  drift=0
+  if [ "${actual}" != "${EXPECT_SHM}" ]; then
+    bad "★ 漂移：运行中容器实际 ShmSize=${actual:-未知}，期望 ${EXPECT_SHM}"
+    drift=1
+  fi
+  if [ "${present}" != "yes" ]; then
+    bad "★ 漂移：compose 里没有 shm_size 键（compose_shm_size_present=${present:-未知}）"
+    drift=1
+  fi
+  if [ "${drift}" = "0" ]; then
+    log "★ 漂移判定：实际 ShmSize=${actual} ＝ 期望、compose shm_size 键在位 ⇒ N11 生效中"
+  else
+    echo "★ ⇒ N11 已漂移（★ 本脚本只报、★ 不修 ★★）" >&2
+    exit 3
+  fi
+fi
+
 echo "★ 结论口径（★ 本脚本不替 owner 做决定）："
 echo "  ① 若上面 shm_size=67108864 ⇒ 仍是 Docker 默认 64MB ⇒ 补丁仍未生效；"
 echo "  ② 若 compose_shm_size_present=no ⇒ compose 里确实没写该键 ⇒ 加一行即可；"
 echo "  ③ networks/ports 段列出的是 recreate 的爆炸半径 ⇒ 窗口须与这些使用者协调；"
 echo "  ④ mounts 段里 PGDATA 是 bind mount ⇒ 重建**不动数据**（只换容器壳）；"
 echo "  ⑤ ★ 本脚本**不执行** recreate ⇒ 动手前仍需 owner 一句授权。"
+echo "  ⑥ ★ 第 27 轮起：★ 传 --expect-shm <字节> ⇒ 漂移即【退出码 3】⇒ ★"
+echo "     ⇒ 「N11 生效与否」从此是【一条有判据的命令】、★ 而不再只是一段散文登记 ★"
