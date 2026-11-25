@@ -97,7 +97,7 @@
       <tr><td><code>web</code>：vue-tsc / vitest / build</td><td>0 错 ／ <span class="pill p-fail">6 红</span> ／ EXIT 0</td><td><span class="pill p-ok">0 红</span> ／ 3839 通过 ／ EXIT 0</td></tr>
       <tr><td><code>web-mobile</code>：vue-tsc / vitest</td><td>0 错 ／ <span class="pill p-fail">13 红</span>（基线 11）</td><td><span class="pill p-fail">11 红</span> ／ 9309 通过 ／ EXIT 1</td></tr>
       <tr><td>maestro <code>selftest.mjs</code></td><td><span class="pill p-ok">PASS</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
-      <tr><td><code>web-tests</code>（Playwright）</td><td><span class="pill p-na">未执行：未装依赖、需在线环境</span></td><td><span class="pill p-na">同左</span></td></tr>
+      <tr><td><code>web-tests</code>（Playwright）</td><td><span class="pill p-na">未执行：需登录运行中的网关；窗口内零改动</span></td><td><span class="pill p-na">同左</span></td></tr>
     </table>
     <p class="note">前端红的归因方法：在 24h 窗口起点 <code>18e6aab5b</code> 的树上同条件只跑这些文件 —— web 的 3 个文件 24/24 通过；web-mobile 11 红。<code>web-mobile</code> 余下的 11 红是窗口之前就有的行号漂移类，不在本轮范围。</p>
   </div>
@@ -160,7 +160,7 @@
   <div class="card">
     <table>
       <tr><th>对象</th><th>判定</th><th>动作</th></tr>
-      <tr><td><code>codex/reconciliation-upgrade</code></td><td>2 笔已被主线吸收；检查点是未获生产授权的 V2 功能（内存合并 19 个冲突路径、带入 2 个新迁移）</td><td><span class="pill p-hold">保留，待 owner</span></td></tr>
+      <tr><td><code>codex/reconciliation-upgrade</code></td><td>2 笔已被主线吸收；检查点是未获生产授权的 V2 功能（相对当前 main 差异 320 个文件、内存合并 32 处冲突、带入 2 个新迁移）</td><td><span class="pill p-hold">保留在本机（已询问 owner、未获答复）</span></td></tr>
       <tr><td>worktree <code>/private/tmp/maincheck</code></td><td>干净、无独有提交</td><td><span class="pill p-ok">已删除</span></td></tr>
       <tr><td>worktree <code>reconciliation-release-preview</code></td><td>335 个暂存文件，57 个不在任何分支上</td><td><span class="pill p-ok">已提交为保全分支 <code>codex/reconciliation-release-preview</code> 后删除</span></td></tr>
       <tr><td>worktree <code>reconciliation-upgrade</code></td><td>干净、等于分支尖端</td><td><span class="pill p-ok">已删除，分支保留</span></td></tr>
@@ -171,7 +171,7 @@
   <h2>⑦ 遗留风险与待 owner 决策</h2>
   <div class="card">
     <ul>
-      <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两个分支目前都只在本地。</li>
+      <li><span class="tag">V2 统计读面</span> —— <code>codex/reconciliation-upgrade</code> 与保全分支是否并入 main（并入＝下一次部署落 <code>983d</code>/<code>988b</code> 迁移），或废弃。两个分支目前都只在本地。已向 owner 询问四个选项、未获答复；按纪律不并不删不推。若只求防本机丢失，可推到远端侧分支（已核实不触发 CI）。</li>
       <li><span class="tag">W3 外部钩子</span> —— 是否上线；上线前须先修来源判定、凭据头脱敏、熔断与观测、流式空正文、改写体校验。</li>
       <li><span class="tag">登录 captcha 计数</span> —— 是否给服务端失败计数加 TTL 或重置端点（目前只绕开了 UI 登录）。</li>
       <li><span class="tag">maestro runner</span> —— 判定口径把未知退出码当绿；预置会话默认开启且在生产机落文件。</li>
