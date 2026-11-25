@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L114 轮总结 · 一周（11-18→11-25）修正任务的审计与完善（2026-11-25）</title>
+<style>
+  :root { --ink:#1a2332; --sub:#5a6b82; --line:#dde5ef; --bg:#f6f8fb; --card:#ffffff;
+          --blue:#2f6fed; --green:#159957; --amber:#c77d0a; --red:#c0392b; --purple:#7b5cd6; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink);
+         background:var(--bg); line-height:1.65; padding:32px 16px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:26px; margin-bottom:4px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:24px; }
+  h2 { font-size:19px; margin:34px 0 12px; padding-left:10px; border-left:4px solid var(--blue); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:860px){ .grid{ grid-template-columns:1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th,td { border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#eef3fa; font-weight:600; white-space:nowrap; }
+  code { background:#eef2f8; border-radius:4px; padding:1px 5px; font-size:12.5px;
+         font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all; }
+  .tag { display:inline-block; border-radius:20px; padding:1px 10px; font-size:12px; font-weight:600; margin-right:6px; }
+  .t-green{ background:#e2f5ea; color:var(--green);} .t-red{ background:#fbe6e3; color:var(--red);}
+  .t-amber{ background:#fbf0da; color:var(--amber);} .t-blue{ background:#e3ecfd; color:var(--blue);}
+  .t-purple{ background:#efe9fc; color:var(--purple);}
+  .num { font-size:30px; font-weight:700; }
+  .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  @media (max-width:860px){ .kpi-row{ grid-template-columns:repeat(2,1fr);} }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:center; }
+  .kpi .label { color:var(--sub); font-size:12.5px; margin-top:2px; }
+  .note { color:var(--sub); font-size:12.5px; }
+  ul { padding-left:20px; } li { margin:4px 0; }
+  .verdict { border-left:4px solid var(--green); background:#f0faf4; }
+  .warnbox { border-left:4px solid var(--amber); background:#fdf9ef; }
+  svg text { font-family:inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>L114 轮总结 · 一周（11-18→11-25）修正任务的审计与完善</h1>
+<div class="meta">2026-11-25 15:3x–16:5x CST · 仓 <code>llm-gateway-go-cursor</code> · 尖端 <code>986f54cc7d</code>（已并上游<code>1fb5d225f3</code>）· 零 Go 生产代码变更 / 零 schema 变更 / 零迁移字节变更 / <b>零部署</b></div>
+
+<div class="kpi-row">
+  <div class="kpi"><div class="num" style="color:var(--red)">3</div><div class="label">本轮订正的失实登记</div></div>
+  <div class="kpi"><div class="num" style="color:var(--blue)">43</div><div class="label">已删分支 ＋ worktree（40＋3）</div></div>
+  <div class="kpi"><div class="num" style="color:var(--green)">36</div><div class="label">子仓入库文档/备份（28＋4＋4）</div></div>
+  <div class="kpi"><div class="num" style="color:var(--purple)">0</div><div class="label">生产写 / 部署 / schema 变更</div></div>
+</div>
+
+<h2>一、结论 / 根因</h2>
+
+<div class="card verdict">
+<b>本轮的一句话结论</b>：这一周的<b>重量不在功能，而在「记录与登记」</b>——1,065 笔非 merge 提交里 <code>docs</code> 426 ＋ <code>fix</code> 339 ＝ <b>72%</b>。因此本轮的审计对象不是「有没有功能没做完」，而是<b>「记录里说的和实际做的是不是同一件事」</b>；实测<b>坐实 3 处失实登记</b>、<b>推翻 1 处上一轮自己的推论</b>、<b>堵住 1 处会红的归档陷阱</b>。
+</div>
+
+<table>
+<thead><tr><th>结论</th><th>根因</th><th>处置</th><th>状态</th></tr></thead>
+<tbody>
+<tr>
+<td><b>① 「丢失」的判定本身也会失实</b></td>
+<td>第 28 轮把 cgo 候选登记为「保留分支、未推未合」；本轮初查在 <b>4 个仓</b>都找不到<code>bc22d1444</code> ⇒ 判定「分支已丢失」⇒ <b>按证据档重新实现了一遍</b>。而<b>就在同轮内</b>，同车道把该分支推上远端并合入 main（合并 <code>0248b4c93b</code>、owner 指示「按建议执行」）⇒ <b>我方的重复实现随即丢弃</b>。</td>
+<td>「本地没找到」只是<b>本机快照的否定结论</b>，不是事实的否定结论 ⇒ 判定前必须先 <code>fetch</code> 复核远端；证据档（设计＋读数＋四变异自证）让丢失的方案<b>可被重建</b>而非重新发明。</td>
+<td><span class="tag t-green">已订正</span></td>
+</tr>
+<tr>
+<td><b>② 否定结论比肯定结论更容易失实</b></td>
+<td>上一轮据 worktree 暂存文件<b>推论</b>「<code>codex/reconciliation-release-preview</code> 对 main 无唯一内容」。本轮做<b>blob 级实测</b>（<code>git rev-list --objects origin/main</code> 全量对象集 ＋ 逐路径比 blob）⇒ <b>593 条差异路径中 304 条的内容不在 main 历史里</b>（257 改 ＋ 47 增）⇒ <b>推论作废</b>。</td>
+<td>它<b>同样自带 schema 迁移</b> <code>973_request_metrics_projection</code> ＋ <b>27 个路径冲突</code> ⇒ 与 upgrade 同属 owner 决策项 ⇒<b>「并入无增益」的说法被撤掉</b>。</td>
+<td><span class="tag t-green">已订正</span></td>
+</tr>
+<tr>
+<td><b>③ captcha TTL 的 5 处登记全失实</b></td>
+<td>待裁决清单 5 处仍写「未合 main、未部署、仍未做、请明确放行」；事实是 <code>a65214a0ae</code> 已是 <code>origin/main</code> 祖先、211 现役 <code>3272@76e7b6ec</code> 已含。</td>
+<td>「登记为待决」是一种<b>会腐烂的状态</b>——它不会自己更新 ⇒ 事实翻转后必须<b>回头订正登记</b>，否则下一个读的人会拿一个已关闭的待决项去做决定。</td>
+<td><span class="tag t-green">已订正</span></td>
+</tr>
+<tr>
+<td><b>④ 归档块里混着「交接面指针段」⇒整块搬走会触发门红</b></td>
+<td>归档 L75（241,816 B）时发现该块尾部<b>混着逐轮 R 标记索引（24 行）</b> ⇒ 整块搬走 ⇒ <code>TestAgentsMdRMarkerIndexPointsAtArchive</code> <b>当场变红</b>（主档索引行计数 0）。</td>
+<td>分档的正确切法＝<b>「主档留索引、归档留正文」</b>：索引段从归档副本摘出、<b>原文逐字留在主档</b>，归档段头如实标注该例外 ⇒ 9 道 AGENTS 门回绿。</td>
+<td><span class="tag t-green">已修复</span></td>
+</tr>
+<tr>
+<td><b>⑤ 上游已合入的 cgo 修法本轮被独立复验</b></td>
+<td>不默认「上游做过了」：对上游那份实现<b>重跑四变异</b>（M1 重新空导入 go-sqlite3／M2 登记册退回 6 个／M3 去掉内部入口空 opener 保护／M4 !cgo 静默返回 <code>(nil,nil)</code>）。</td>
+<td>四变异<b>全咬住</b>（M3 首跑「未咬住」实为<b>变异没落地</b>——精确串替换被注释行挡住，换正则后咬住）；两门回绿 ⇒ cgo 边界 <b>39 → 8</b>（6 生产 ＋ 2 仅测试）坐实。</td>
+<td><span class="tag t-green">已复验</span></td>
+</tr>
+</tbody>
+</table>
+
+<div class="grid" style="margin-top:14px">
+<div class="card"><svg viewBox="0 0 660 450" width="100%" height="450" role="img" aria-label="一周提交类型分布">
+<text x="118" y="18" font-size="12" fill="#5a6b82">非 merge 提交 1,065 笔（按 conventional 前缀）</text>
+<text x="108" y="46" text-anchor="end" font-size="13" fill="#1a2332">docs</text>
+<rect x="118" y="30" width="484.0" height="20" rx="4" fill="#2f6fed"/>
+<text x="610.0" y="45" font-size="12.5" fill="#5a6b82">426</text>
+<text x="108" y="90" text-anchor="end" font-size="13" fill="#1a2332">fix</text>
+<rect x="118" y="74" width="385.2" height="20" rx="4" fill="#159957"/>
+<text x="511.2" y="89" font-size="12.5" fill="#5a6b82">339</text>
+<text x="108" y="134" text-anchor="end" font-size="13" fill="#1a2332">feat</text>
+<rect x="118" y="118" width="178.4" height="20" rx="4" fill="#7b5cd6"/>
+<text x="304.4" y="133" font-size="12.5" fill="#5a6b82">157</text>
+<text x="108" y="178" text-anchor="end" font-size="13" fill="#1a2332">test</text>
+<rect x="118" y="162" width="75.0" height="20" rx="4" fill="#c77d0a"/>
+<text x="201.0" y="177" font-size="12.5" fill="#5a6b82">66</text>
+<text x="108" y="222" text-anchor="end" font-size="13" fill="#1a2332">chore</text>
+<rect x="118" y="206" width="13.6" height="20" rx="4" fill="#5a6b82"/>
+<text x="139.6" y="221" font-size="12.5" fill="#5a6b82">12</text>
+<text x="108" y="266" text-anchor="end" font-size="13" fill="#1a2332">style</text>
+<rect x="118" y="250" width="8.0" height="20" rx="4" fill="#5a6b82"/>
+<text x="134.0" y="265" font-size="12.5" fill="#5a6b82">7</text>
+<text x="108" y="310" text-anchor="end" font-size="13" fill="#1a2332">refactor</text>
+<rect x="118" y="294" width="8.0" height="20" rx="4" fill="#5a6b82"/>
+<text x="134.0" y="309" font-size="12.5" fill="#5a6b82">7</text>
+<text x="108" y="354" text-anchor="end" font-size="13" fill="#1a2332">perf</text>
+<rect x="118" y="338" width="5.7" height="20" rx="4" fill="#5a6b82"/>
+<text x="131.7" y="353" font-size="12.5" fill="#5a6b82">5</text>
+<text x="108" y="398" text-anchor="end" font-size="13" fill="#1a2332">其他</text>
+<rect x="118" y="382" width="12.5" height="20" rx="4" fill="#c0392b"/>
+<text x="138.5" y="397" font-size="12.5" fill="#5a6b82">11</text>
+</svg>
+<div class="note">数据源：<code>git log --since=2026-11-18 --until=2026-11-26 --no-merges</code>（含本轮 5 笔）；总提交 1,340 ＝ 非 merge 1,065 ＋ merge 275；<code>docs/</code> 一周增改 <b>367</b> 路径（新增 340）。</div>
+</div>
+<div class="card"><svg viewBox="0 0 660 250" width="100%" height="250" role="img" aria-label="AGENTS.md 体积变化">
+<line x1="70" y1="36.5" x2="630" y2="36.5" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="632" y="40.5" font-size="11" fill="#c0392b" text-anchor="end">上限 524,288 B（512KB）</text>
+<line x1="70" y1="151.6" x2="630" y2="151.6" stroke="#c77d0a" stroke-width="1.5" stroke-dasharray="3 4"/>
+<text x="632" y="155.6" font-size="11" fill="#c77d0a" text-anchor="end">下限 131,072 B（128KB）</text>
+<rect x="140" y="36.5" width="110" height="153.5" rx="4" fill="#c0392b"/>
+<text x="195.0" y="28.5" font-size="13" font-weight="700" fill="#1a2332" text-anchor="middle">524,022 B</text>
+<text x="195.0" y="210" font-size="11.5" fill="#5a6b82" text-anchor="middle">归档前</text>
+<text x="195.0" y="226" font-size="11.5" fill="#5a6b82" text-anchor="middle">（写 L114 前）</text>
+<rect x="330" y="105.8" width="110" height="84.2" rx="4" fill="#159957"/>
+<text x="385.0" y="97.8" font-size="13" font-weight="700" fill="#1a2332" text-anchor="middle">287,503 B</text>
+<text x="385.0" y="210" font-size="11.5" fill="#5a6b82" text-anchor="middle">归档 L75 后</text>
+<text x="385.0" y="226" font-size="11.5" fill="#5a6b82" text-anchor="middle">（现态）</text>
+<line x1="70" y1="190" x2="630" y2="190" stroke="#dde5ef"/>
+</svg>
+<div class="note">本轮归档 L75（241,816 B）以腾体积；主档 <b>287,503 B</b>，距上限余量 <b>236,785 B</b>；归档档 4,430,035 B（归档不进请求上下文，体积不敏感）。</div>
+</div>
+</div>
+
+<h2>二、改动文件与关键行为</h2>
+
+<table>
+<thead><tr><th>仓</th><th>文件 / 动作</th><th>关键行为</th></tr></thead>
+<tbody>
+<tr><td rowspan="4"><b>llm-gateway-go</b><br><span class="note">本仓</span></td>
+<td><code>docs/audit/2026-11-25-一周审核目标.md</code>（新建）</td><td>一周画像＋ <b>4 条审核目标</b> ＋ 已关闭项 ＋ 待 owner 项 ＋ 3 条新通用式 ＋ 版本管理表；每条给<b>可复现的取证命令</b>。</td></tr>
+<tr><td><code>docs/audit/2026-11-25-待owner裁决清单.md</code><br><code>docs/audit/evidence/2026-11-25-round28-cgo-boundary-candidate.txt</code></td><td>文首各追加<b>订正头</b>（★原文正文一字未动 ★）：5 条 captcha TTL 失实登记逐条给「原表述→现况→取证命令」；cgo 候选「未推送未合并」失实。</td></tr>
+<tr><td><code>docs/audit/evidence/2026-11-25-0300-lane-superseded/</code>（新增目录＋ 3 件）</td><td>同车道三件套的<b>中途两件</b>（HTML 03:00／handoff 03:05）<code>git mv</code> 入 evidence；终态件留原位；<b>新写 README</b> 登记「为什么只留终态」，并<b>标注该目录内 HTML 给出的 <code>DD_FORCE_FOREIGN_LOCK=1</code> 属逃生舱、不可照抄</b>（仓内纪律＝等锁→接力）。</td></tr>
+<tr><td><code>docs/audit/2026-11-25-24h审计完善第28轮-总结.html</code><br><code>...L112轮-总结报告.html</code><br><code>evidence/2026-11-25-主干门禁三处红收口.md</code></td><td>两个同名不同车道的 HTML 实测<b>零长行重叠</b>（共同 0 行、最长逐字 run=1）⇒ 都保留、各加<b>互指横幅</b>；<code>三处门禁红收口.md</code> <b>改名</b>为「主干门禁三处红收口」并加消歧头，与 L113 §乙-3「三处预存红」区分。</td></tr>
+<tr><td><b>AGENTS.md</b></td>
+<td><code>AGENTS.md</code> ＋ <code>AGENTS-archive-20261031.md</code></td><td>新增 <b>L114 轮块</b>（8 段）＋ 归档 L75 整块（241,816 B，逐字）＋ <b>R 标记索引段按分档纪律留在主档</b>；L114 内订正 release-preview 裁定。</td></tr>
+<tr><td rowspan="2"><b>llm-gateway</b><br><span class="note">父仓</span></td>
+<td>28 件入库（24 份交付文档 ＋ <b>6 份「内容不在 git 历史」的独占 .bak</b>）</td><td>成果不该随工作树蒸发：<code>docs/handoff/</code> 本仓已跟踪 10 件前置文档 ⇒ 23 件续篇同类；6 份 .bak 经逐份 blob 比对确认<b>内容不在任何 commit</b> ⇒ 先入库保命。</td></tr>
+<tr><td>5 份冗余 .bak ＋ 2 个子模块指针</td><td>5 份 .bak 内容<b>逐字在 git 历史里</b> ⇒ 判「无需提交」⇒ 移入<b>可恢复回收站</b>；指针更新（llm-gateway-go→<code>76e7b6ec</code>／ai-session-manager→<code>3649a9f</code>，两者均远端可达）。</td></tr>
+<tr><td><b>ai-native-tools</b></td><td>4 份未跟踪文档入库</td><td><code>benchmark-dsh-octop</code> 序列已跟踪 29 份、<code>distributed-agent-system</code> 已跟踪 118 份 ⇒ 本次 4 份属同类续篇。</td></tr>
+</tbody>
+</table>
+
+<div class="grid" style="margin-top:14px">
+<div class="card"><svg viewBox="0 0 660 230" width="100%" height="230" role="img" aria-label="分支与 worktree 清点">
+<text x="60" y="52" text-anchor="end" font-size="13" fill="#1a2332">本地分支</text>
+<rect x="70" y="26" width="352.4" height="24" rx="4" fill="#c0392b"/>
+<text x="430.4" y="43" font-size="12.5" fill="#5a6b82">清点前 51</text>
+<rect x="70" y="56" width="76.0" height="24" rx="4" fill="#159957"/>
+<text x="154.0" y="73" font-size="12.5" fill="#5a6b82">本轮后 11</text>
+<text x="60" y="132" text-anchor="end" font-size="13" fill="#1a2332">worktree</text>
+<rect x="70" y="106" width="27.6" height="24" rx="4" fill="#c77d0a"/>
+<text x="105.6" y="123" font-size="12.5" fill="#5a6b82">清点前 4</text>
+<rect x="70" y="136" width="3.0" height="24" rx="4" fill="#159957"/>
+<text x="81.0" y="153" font-size="12.5" fill="#5a6b82">本轮后 0</text>
+<text x="70" y="206" font-size="11.5" fill="#5a6b82">分支：删 40 个（100% 已并入各自 main）｜worktree：删 3 个，第 4 个被并行车道清理</text>
+</svg>
+<div class="note">6 仓本地分支逐个 <code>merge-base --is-ancestor</code> 判定：<b>100% 已并入各自 main</b> ⇒ 删的是已合并分支、<b>内容在 main ⇒ 不丢</b>；worktree 逐个核对 HEAD 已并入 ＋ 未提交 0 ＋ <code>lsof</code> 占用 0。</div>
+</div>
+<div class="card"><svg viewBox="0 0 660 128" width="100%" height="128" role="img" aria-label="本轮处置分布">
+<rect x="180.0" y="34" width="209.5" height="34" fill="#159957"/>
+<text x="284.8" y="57" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">40</text>
+<text x="284.8" y="86" font-size="11" fill="#5a6b82" text-anchor="middle">分支删除</text>
+<rect x="389.5" y="34" width="167.6" height="34" fill="#2f6fed"/>
+<text x="473.3" y="57" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">32</text>
+<text x="473.3" y="86" font-size="11" fill="#5a6b82" text-anchor="middle">子仓入库（父仓 28 ＋ 工作区 4）</text>
+<rect x="557.1" y="34" width="15.7" height="34" fill="#7b5cd6"/>
+<text x="565.0" y="57" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<text x="565.0" y="86" font-size="11" fill="#5a6b82" text-anchor="middle">worktree 删除</text>
+<rect x="572.9" y="34" width="15.7" height="34" fill="#c77d0a"/>
+<text x="580.7" y="57" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<text x="580.7" y="86" font-size="11" fill="#5a6b82" text-anchor="middle">订正头（失实登记）</text>
+<rect x="588.6" y="34" width="31.4" height="34" fill="#c0392b"/>
+<text x="604.3" y="57" font-size="13" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<text x="604.3" y="86" font-size="11" fill="#5a6b82" text-anchor="middle">docs 归并/改名/互指</text>
+<text x="180" y="16" font-size="12" fill="#5a6b82">本轮可计数处置 84 项（含 24 份父仓文档 ＋ 6 份独占备份 ＋ 4 份工作区文档）</text>
+</svg>
+<div class="note">父仓与工作区的远端（<code>origin</code>＝github ＋ <code>codeup</code>＝aliyun）均 <b>fetch→FF 复核→push→ls-remote 对拍</b>完成；本仓 <code>origin</code>（codeup HTTPS）与 <code>github</code> 双远端同步。</div>
+</div>
+</div>
+
+<h2>三、测试命令与结果</h2>
+
+<table>
+<thead><tr><th>命令</th><th>结果</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>go build ./...</code></td><td><span class="tag t-green">EXIT=0</span></td><td>合并后重跑；仅 vendor 警告。</td></tr>
+<tr><td><code>go test ./scripts/ursmcheck/... -count=1</code></td><td><span class="tag t-green">ok 452.251s / EXIT=0</span></td><td>全量门禁（含 9 道 AGENTS 交接面门）零红；比本轮前 258.219s 慢，原因是<b>并行车道同时在跑 chrome/compile</b>（读数环境差异、非代码差异）。</td></tr>
+<tr><td><code>go test ./scripts/ursmcheck/ -run TestAgentsMd -v</code></td><td><span class="tag t-green">9/9 PASS</span></td><td>含逐字重复门、轮块标签门、R 标记索引门、体积棘轮门、分档真实性门 ＋ 3 道<b>量具自证</b>门（防止判据恒绿）。</td></tr>
+<tr><td><code>web</code> vitest</td><td><span class="tag t-green">3,839 通过 / 0 红</span></td><td>合并后复跑；<code>web-mobile</code> 11 红 ＝ <b>与第 28 轮同一批</b>（行号锚点漂移族）⇒ 非本轮引入。</td></tr>
+<tr><td><code>bash tests/verify_cgo_convention_test.sh</code></td><td><span class="tag t-green">EXIT=0（8 packages）</span></td><td>登记册门；<code>CGO_ENABLED=0</code> 依赖图已不含 go-sqlite3。</td></tr>
+<tr><td><code>bash tests/deploy_nocgo_build_test.sh</code></td><td><span class="tag t-green">EXIT=0（8 PASS / 0 FAIL）</span></td><td>nocgo 构建门；cgo 边界 <b>39 → 8</b>。</td></tr>
+<tr><td>cgo 四变异自证</td><td><span class="tag t-green">4/4 咬住</span></td><td>对<b>上游已合入</b>的那份实现独立复跑；四次还原后 md5 逐字节一致。</td></tr>
+<tr><td><code>git merge-tree --write-tree --messages</code></td><td><span class="tag t-amber">33 / 27 冲突</span></td><td>两个待 owner 分支相对 main 的冲突数（upgrade 33、release-preview 27）；本仓合并上游实测<b>零冲突</b>。</td></tr>
+<tr><td>三台现役读数（只读复核）</td><td><span class="tag t-green">211=3272 / 245=3167 / 154=3168</span></td><td>均至 <code>76e7b6ec</code>；<b>245/154 监听 8782</b>（我方首查 8781 读到空是端口口径错，非部署缺失）。</td></tr>
+</tbody>
+</table>
+
+<h2>四、遗留风险</h2>
+
+<table>
+<thead><tr><th>风险</th><th>严重度</th><th>事实</th><th>处置 / 归属</th></tr></thead>
+<tbody>
+<tr><td><b>V2 统计读面是否并入</b>（两个远端分支）</td><td><span class="tag t-red">高</span></td>
+<td><code>codex/reconciliation-upgrade</code>：694 差异路径／289 条内容不在 main 历史／<b>33 冲突</b>／带 <b>2 个 schema 迁移</b>（<code>983d_request_metrics_projection</code>、<code>988b_reconciliation_version_ledger</code>）｜<code>codex/reconciliation-release-preview</code>：593／<b>304</b>／<b>27 冲突</b>／带 <code>973_request_metrics_projection</code>。两者唯一内容集合<b>共同 276 条</b> ⇒ <b>同一特性的两条分叉线</b>。</td>
+<td><b>并入＝下一次部署即落 schema 迁移 ⇒ 属生产语义变更 ⇒ 属 owner 决策，本轮不代认领</b>；远端分支保留不动。</td></tr>
+<tr><td><b>llm-gateway-go 的 4 件在途</b>（<code>internal/capability/</code>、<code>internal/capabilitygate/</code>、迁移 <code>20261125000001_api_keys_capabilities.sql</code>、<code>scripts/package-forensics.sh</code>）</td><td><span class="tag t-amber">中</span></td>
+<td><b>16:30 仍在被写入</b>（<code>package-forensics.sh</code> 正被 bash 执行，另有 chrome/compile 在跑）⇒ <b>不满足「近 2 小时无活跃」</b> ⇒ 属<b>另一车道的活跃在途</b>。</td><td><b>只登记、不提交、不删除</b>（不删别人在途状态、不把别人半成品塞进 main）。</td></tr>
+<tr><td><b>ai-session-manager 的 manifest v3</b>（<code>plugin-manifest.json</code> schema_version 2→3 ＋ <code>api/requires/provides/defaults</code>）</td><td><span class="tag t-amber">中</span></td><td>04:55 修改、<b>与上面的 capability 特性同源</b>（新增 <code>provides</code> 能力位）⇒ 属同一在途特性。</td><td>同上，只登记；父仓指针已更新到 <code>3649a9f</code>（远端可达），<b>工作树改动一字未碰</b>。</td></tr>
+<tr><td><b>父仓 4 类「疑似放错仓」结构件</b>（<code>sql/migrations/995_plugin_registry_schema.sql</code>、<code>migrations/maas_v02_quota.sql</code>、<code>package.json</code>＋<code>pnpm-lock.yaml</code>）</td><td><span class="tag t-amber">中</span></td><td>迁移编号 <b>995</b> 与网关迁移编号空间同名、SQL 依赖 <code>maas_v01_schema.sql</code> ⇒ 疑属<b>网关侧</b>而非父仓；<code>package.json</code> 只声明 echarts/vue-echarts 而父仓无前端源码。</td><td><b>未提交进父仓</b>（提交＝制造第二个迁移源）⇒ 登记并建议移入 llm-gateway-go 或删除。</td></tr>
+<tr><td><b>web-mobile 11 红</b> ＋<b>三处预存红</b> ＋ <b>扫描器 32 BLOCK 项</b></td><td><span class="tag t-blue">沿用</span></td><td>11 红与第 28 轮<b>同一批</b>（行号锚点漂移族）⇒ 非本轮引入；其余沿用登记。</td><td><b>豁免属 owner 决策，本轮不代认领</b>。</td></tr>
+<tr><td>两个「L112／第 28 轮」同名 HTML</td><td><span class="tag t-blue">低</span></td><td>属<b>不同车道</b>（零长行重叠）⇒ 不是重复。</td><td>已加互指横幅消歧，<b>不合并</b>。</td></tr>
+<tr><td>本地环境遗留</td><td><span class="tag t-blue">低</span></td><td><code>.build-local</code> 11GB｜本地容器崩溃循环｜<code>.audit-validation</code> 197 目录无保留策略。</td><td>只登记，本轮未动。</td></tr>
+</tbody>
+</table>
+
+<div class="card warnbox" style="margin-top:16px">
+<b>本轮未做（明确登记）</b>：① <b>零部署</b>（三台只做只读实测复核，owner 未要求本轮上线）；② <b>零 Go 生产代码变更</b>（曾重新实现 cgo 修法，发现上游已合入即丢弃，patch 留 <code>/tmp/my-cgo-reimpl.patch</code>）；③ <b>未合并两个待 owner 的 V2 分支</b>；④ <b>未提交</b>另一车道的 4 件在途改动与父仓 4 类结构件；⑤ <b>未删除</b> 6 份独占 .bak 之外的任何他人产物。
+</div>
+
+<div class="note" style="margin-top:18px">
+生成于 2026-11-25 · 仓 <code>llm-gateway-go</code> · 本轮号 <b>L114</b>（本会话系列第 29 轮）· 证据落<code>docs/audit/evidence/</code> · 交接面 <code>AGENTS.md</code> L114 轮块
+</div>
+
+</div>
+</body>
+</html>
