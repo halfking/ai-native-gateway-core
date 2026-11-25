@@ -88,6 +88,7 @@
         />
       </StatsRow>
 
+      <p class="sa-note">{{ t('sessionAnalytics.costNote') }}</p>
       <p v-if="detail.pending_since" class="sa-note" role="status">{{ t('reports.projectedPending') }}</p>
       <p v-if="detail.summary.usd_unmeasured_requests" class="sa-note" data-testid="sa-usd-coverage">
         {{ t('reports.projectedMissingUSD', { n: detail.summary.usd_unmeasured_requests }) }}

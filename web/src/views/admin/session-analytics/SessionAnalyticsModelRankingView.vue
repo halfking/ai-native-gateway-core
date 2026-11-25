@@ -62,6 +62,7 @@
       </button>
     </div>
 
+    <p class="sa-note">{{ t('sessionAnalytics.costNote') }}</p>
     <p v-if="projectionPending" class="sa-note" role="status">{{ t('reports.projectedPending') }}</p>
     <p v-if="usdUnmeasured" class="sa-note">{{ t('reports.projectedMissingUSD', { n: usdUnmeasured }) }}</p>
 

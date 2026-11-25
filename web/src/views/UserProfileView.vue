@@ -110,6 +110,7 @@ async function load() {
     const profile = await getUserProfile(username, days.value, scope)
     if (generation !== profileGeneration) return
     data.value = profile
+    if (!profile) return
     const resolvedTenant = profile.tenant_id ?? scope.tenant_id
     const window = profile.usage_meta
     const resolvedScope = window?.window_start && window.window_end

@@ -1,8 +1,17 @@
 // reports.ts — صفحة تقرير التسوية (عرض مزدوج: المزوّدون/الداخلي، إضافة الترجمة R65).
 export default {
+  projectedView: "إحصاءات الطلبات السابقة",
+  projectedDays: "رُصدت طلبات خلال {n} أيام",
+  projectedBasis: "يُحتسب كل تنفيذ نهائي مرة واحدة بحسب أيام {zone}، بما في ذلك خطوات التنسيق. راجع التسوية اليومية للإيصالات والإرسالات والفواتير، ودفتر الأرصدة للقيود.",
+  projectedPending: "بعض الطلبات في هذه الفترة قيد المعالجة.",
+  projectedMissingUSD: "لا توجد مبالغ بالدولار الأمريكي لعدد {n} من الطلبات أو أنها بعملة أخرى.",
+  projectedEmpty: "لا توجد طلبات مسجلة لهذه التواريخ وعوامل التصفية.",
+  projectedToday: " (اليوم الحالي لم ينته بعد)",
   terminalExecutions: 'عمليات التنفيذ المنتهية',
   legacySnapshotView: 'اللقطات التاريخية',
   daily: {
+    terminalProjection: "الاستخدام النهائي من إسقاط الطلبات",
+    terminalProjectionPending: "بعض الاستخدام النهائي لم تتم معالجته بعد",
     title: 'أدلة التسوية اليومية',
     section: 'نوع الدليل',
     day: 'تاريخ التسوية',
@@ -39,6 +48,9 @@ export default {
       noInvoices: 'لم تُستورد أي فواتير من المزوّدين لهذا اليوم التقويمي.',
       account: 'المزوّد {provider} · الحساب {account}',
       fields: {
+      total_tokens: "الرموز النهائية المحتفظ بها",
+      measured_total_requests: "الطلبات التي قيس إجمالي رموزها",
+      usage_source: "مصدر الاستخدام",
         invoice_total: 'إجمالي الفاتورة',
         matched_lines: 'أسطر الطلبات المرتبطة',
         bucket_matched_lines: 'مجموعات الاستخدام المفحوصة',
