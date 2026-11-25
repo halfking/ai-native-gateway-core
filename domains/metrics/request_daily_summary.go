@@ -151,7 +151,7 @@ func requestSummaryFromDailySQL(filter, detail, uniqueModels string) string {
 		SELECT ` + requestStatsStateColumns + ` FROM daily
 		UNION ALL
 		SELECT ` + requestStatsRawCounters + `, ` + requestStatsDistributionState + ` FROM raw
-	), raw_sessions AS (
+	), raw_sessions AS NOT MATERIALIZED (
 		SELECT DISTINCT tenant_id, session_id FROM raw WHERE session_id IS NOT NULL
 	), day_words AS MATERIALIZED (
 		SELECT word, bit_or(mask) AS mask
@@ -161,10 +161,12 @@ func requestSummaryFromDailySQL(filter, detail, uniqueModels string) string {
 	SELECT ` + requestStatsMergedCounters + `,
 		` + uniqueModels + ` AS unique_models,
 		(SELECT coalesce(sum(bit_count(mask::bit(64))),0) FROM day_words)
-		+ (SELECT count(*) FROM raw_sessions r
-		   LEFT JOIN public.request_metrics_daily_session_codes c USING (tenant_id,session_id)
-		   LEFT JOIN day_words w ON w.word=c.code/64
-		   WHERE coalesce(w.mask & (1::bigint << (c.code%64)::int),0)=0) AS active_sessions,
+		+ CASE WHEN EXISTS (SELECT FROM day_words) THEN (
+			SELECT count(*) FROM raw_sessions r
+			LEFT JOIN public.request_metrics_daily_session_codes c USING (tenant_id,session_id)
+			LEFT JOIN day_words w ON w.word=c.code/64
+			WHERE coalesce(w.mask & (1::bigint << (c.code%64)::int),0)=0
+		) ELSE (SELECT count(*) FROM raw_sessions) END AS active_sessions,
 		coalesce(sum(latency_sum)/nullif(sum(latency_count),0),0) AS avg_latency_ms,
 		coalesce(sum(ttft_sum)/nullif(sum(ttft_count),0),0) AS avg_ttft_ms,
 		coalesce(sum(success_count)::float8/nullif(sum(total_requests),0),0) AS success_rate,

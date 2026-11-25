@@ -1258,10 +1258,16 @@ FOR EACH ROW WHEN (OLD.dirty AND NOT NEW.dirty) EXECUTE FUNCTION public.reject_d
 		split := f
 		split.StartTime = from.Add(time.Hour)
 		split.EndTime = through.Add(-time.Hour)
+		uncoveredSession := f
+		uncoveredSession.StartTime = through.AddDate(0, 0, -1)
+		uncoveredSession.EndTime = through.Add(time.Hour)
 		if got := stats(t, f, false); !strings.Contains(got, `"active_sessions": 2`) || !strings.Contains(got, `"total_requests": 5`) {
 			t.Fatalf("unexpected cross-day and tenant union: %s", got)
 		}
-		assertParity(t, f, tenant, probe, probeOnly, split)
+		if got := stats(t, uncoveredSession, false); !strings.Contains(got, `"active_sessions": 1`) || !strings.Contains(got, `"total_requests": 2`) {
+			t.Fatalf("uncovered session with no published session words: %s", got)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split, uncoveredSession)
 
 		// Move a request between two closed days. Replace a shared session
 		// association, delete the only copy for one tenant, and add a new session.
