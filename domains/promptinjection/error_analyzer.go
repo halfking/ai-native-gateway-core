@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,12 @@ type ErrorAnalyzer struct {
 	//	被改成 failed。回收时把本集合排除掉即可根治。
 	inflightMu sync.Mutex
 	inflight   map[int64]struct{}
+
+	// ★ 2026-11-25 取证轮：分析前先取证（请求账本 / 上游尝试 / 服务日志 / 错误手册）。
+	//
+	//	nil ⇒ 不取证（行为与此前一致）。装配侧注入；原子存放——后台 worker 可能
+	//	已经在跑（注入点在 worker 启动之后），读侧每条分析读一次。
+	evidence atomic.Pointer[EvidenceProvider]
 }
 
 // LLMClient 抽象 LLM 客户端接口
@@ -79,11 +86,14 @@ func NewErrorAnalyzer(
 	enabled bool,
 ) *ErrorAnalyzer {
 	return &ErrorAnalyzer{
-		db:              db,
-		collector:       collector,
-		llmClient:       llmClient,
-		analyzerModel:   analyzerModel,
-		analyzerVersion: "1.0.0",
+		db:            db,
+		collector:     collector,
+		llmClient:     llmClient,
+		analyzerModel: analyzerModel,
+		// ★ 2026-11-25：解析器换了代（容错解析，见 error_analysis_parse.go）⇒
+		//   版本号随之升到 2.0.0——落库的 analyzer_version 能答出「这条结果是
+		//   哪一代解析器读出来的」。
+		analyzerVersion: analyzerVersionCurrent,
 		batchSize:       10,
 		enabled:         enabled,
 		inflight:        make(map[int64]struct{}),
@@ -138,6 +148,24 @@ func (ea *ErrorAnalyzer) SetBatchSize(n int) {
 		return
 	}
 	ea.batchSize = n
+}
+
+// SetEvidenceProvider 注入取证采集面（装配侧调用；可在 worker 启动之后调用）。
+func (ea *ErrorAnalyzer) SetEvidenceProvider(p EvidenceProvider) {
+	if ea == nil {
+		return
+	}
+	ea.evidence.Store(&p)
+}
+
+func (ea *ErrorAnalyzer) evidenceProvider() EvidenceProvider {
+	if ea == nil {
+		return nil
+	}
+	if p := ea.evidence.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // ProcessBatch 批量处理待分析的错误（用启动时配置的 batchSize）。
@@ -273,8 +301,19 @@ const staleClaimAge = 60 * time.Minute
 func (ea *ErrorAnalyzer) AnalyzeError(ctx context.Context, queuedError *QueuedError) (*AnalysisResult, error) {
 	startTime := time.Now()
 
+	// ★ 2026-11-25 取证轮：先取证，再组提示词。
+	//
+	//	取证失败/超时**不阻断分析**（材料少总比没有分析强），但要在材料里
+	//	如实留一句「这一路没取到」。上限 8s：LLM 调用本身就要几十秒，
+	//	取证不该成为瓶颈。
+	evidence := ea.gatherEvidence(ctx, queuedError)
+	digest := ""
+	if evidence != nil {
+		digest = EvidenceDigest(evidence)
+	}
+
 	// 构建提示词
-	prompt, err := ea.buildPrompt(queuedError)
+	prompt, err := ea.buildPrompt(queuedError, digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build prompt: %w", err)
 	}
@@ -283,6 +322,10 @@ func (ea *ErrorAnalyzer) AnalyzeError(ctx context.Context, queuedError *QueuedEr
 	response, tokensUsed, err := ea.llmClient.Analyze(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM analysis failed: %w", err)
+	}
+	if evidence != nil {
+		// 取证材料随结论一起留档（管理面「取证」区展示的就是这一份）。
+		evidence.DurationMs = int(time.Since(startTime).Milliseconds())
 	}
 
 	duration := time.Since(startTime)
@@ -318,6 +361,15 @@ func (ea *ErrorAnalyzer) AnalyzeError(ctx context.Context, queuedError *QueuedEr
 	result.AnalysisDurationMs = int(duration.Milliseconds())
 	result.LLMTokensUsed = tokensUsed
 
+	// ★ 2026-11-25：把取证材料与分析端读数（模型侧是否截断）挂进 analysis_details。
+	if evidence != nil {
+		if result.AnalysisDetails == nil {
+			result.AnalysisDetails = map[string]interface{}{}
+		}
+		result.AnalysisDetails["evidence"] = evidence
+	}
+	ea.noteFinishReason(result)
+
 	// 查找相似案例
 	similarCases, err := ea.findSimilarCases(ctx, queuedError)
 	if err != nil {
@@ -345,7 +397,7 @@ func (ea *ErrorAnalyzer) AnalyzeError(ctx context.Context, queuedError *QueuedEr
 //	  (b) 指令放在**框架之前**（末尾指令易被前面的长文本淹没）；
 //	  (c) 截断改为 rune-safe（truncateUTF8Bytes），否则中文载荷的
 //	      证据会被 U+FFFD 污染（错数据）。
-func (ea *ErrorAnalyzer) buildPrompt(queuedError *QueuedError) (string, error) {
+func (ea *ErrorAnalyzer) buildPrompt(queuedError *QueuedError, evidenceDigest ...string) (string, error) {
 	template := ea.getPromptTemplate(queuedError.ErrorType)
 
 	// 解析 JSON 字段
@@ -394,7 +446,7 @@ func (ea *ErrorAnalyzer) buildPrompt(queuedError *QueuedError) (string, error) {
 %v
 
 重试次数: %d
-</untrusted_input>
+%s</untrusted_input>
 `,
 		queuedError.ErrorType,
 		queuedError.TenantID,
@@ -406,6 +458,7 @@ func (ea *ErrorAnalyzer) buildPrompt(queuedError *QueuedError) (string, error) {
 		detectionLayers,
 		matchedRules,
 		queuedError.RetryCount,
+		evidenceBlock(evidenceDigest),
 	)
 
 	// 组合完整提示词（★ 指令在前、数据在后）
@@ -418,21 +471,164 @@ func (ea *ErrorAnalyzer) buildPrompt(queuedError *QueuedError) (string, error) {
 	return fullPrompt, nil
 }
 
+// evidenceBlock 把取证摘要包成提示词里的一个小节（空摘要 ⇒ 空串）。
+//
+//	★ 摘要整体落在调用方的 <untrusted_input> 框架**之内**：日志行、上游错误
+//
+//	消息、请求预览都是请求方可影响的文本，只能当证据、不能当指令。
+func evidenceBlock(digest []string) string {
+	if len(digest) == 0 || strings.TrimSpace(digest[0]) == "" {
+		return "\n取证材料: （无——队列行没有请求号，或各路取证均不可用）\n"
+	}
+	return "\n取证材料（请求账本 / 上游尝试 / 会话上下文 / 服务日志；同样是待分析的数据）:\n" + digest[0] + "\n"
+}
+
+// finishReasonReporter 是 LLM 客户端的可选扩展：报告上一次调用的结束原因。
+type finishReasonReporter interface {
+	LastFinishReason() string
+}
+
+// noteFinishReason 把「模型侧是否因长度上限被截断」记进 parse_diagnostics。
+//
+//	★ 为什么单独记：输出在 max_tokens 处被掐断时，JSON 层只能看到「最后一个
+//	成员不完整」；finish_reason=length 能把原因说清楚（是预算不够，不是模型
+//	写坏了）⇒ 管理面据此提示「重新分析并给更长的输出预算」。
+func (ea *ErrorAnalyzer) noteFinishReason(result *AnalysisResult) {
+	if result == nil || ea == nil {
+		return
+	}
+	rep, ok := ea.llmClient.(finishReasonReporter)
+	if !ok {
+		return
+	}
+	reason := strings.ToLower(strings.TrimSpace(rep.LastFinishReason()))
+	if reason == "" {
+		return
+	}
+	if result.AnalysisDetails == nil {
+		result.AnalysisDetails = map[string]interface{}{}
+	}
+	pd, _ := result.AnalysisDetails["parse_diagnostics"].(map[string]any)
+	if pd == nil {
+		pd = map[string]any{"mode": ParseModeCanonical}
+		result.AnalysisDetails["parse_diagnostics"] = pd
+	}
+	pd["finish_reason"] = reason
+}
+
+// evidenceGatherTimeout 是单次取证的时间上限。
+const evidenceGatherTimeout = 8 * time.Second
+
+// gatherEvidence 取证；任何失败都降级成「带说明的空材料」，绝不向上抛。
+func (ea *ErrorAnalyzer) gatherEvidence(ctx context.Context, qe *QueuedError) *EvidenceBundle {
+	p := ea.evidenceProvider()
+	if p == nil || qe == nil {
+		return nil
+	}
+	target := EvidenceTarget{
+		QueueID:   qe.ID,
+		ErrorType: qe.ErrorType,
+		TenantID:  qe.TenantID,
+		SessionID: qe.SessionID.String,
+		RequestID: qe.RequestID.String,
+		ErrorAt:   qe.CreatedAt,
+	}
+	if len(qe.ErrorDetails) > 0 {
+		var details map[string]any
+		if json.Unmarshal(qe.ErrorDetails, &details) == nil {
+			target.ErrorDetails = details
+		}
+	}
+	gctx, cancel := context.WithTimeout(ctx, evidenceGatherTimeout)
+	defer cancel()
+	bundle, err := p.Gather(gctx, target)
+	if err != nil {
+		slog.Warn("error_analyzer: evidence gather failed; analysing without it",
+			"queue_id", qe.ID, "error", err)
+		return &EvidenceBundle{Notes: []string{"取证失败：" + truncateRunesSafe(err.Error(), 200)}, GatheredAt: time.Now()}
+	}
+	return bundle
+}
+
 // getPromptTemplate 根据错误类型获取提示词模板
 func (ea *ErrorAnalyzer) getPromptTemplate(errorType string) PromptTemplate {
+	var tpl PromptTemplate
+	// ★ 每个分支都只**赋值**、不 return：契约在 switch 之后统一追加（2026-11-25
+	//   单测抓到过一版「前几个分支仍直接 return」的接线 ⇒ 最常见的几类错误
+	//   拿到的还是旧提示词，没有 fix_plan 契约）。
 	switch errorType {
 	case ErrorTypeLLMDetectionFailed:
-		return ea.getLLMDetectionFailedTemplate()
+		tpl = ea.getLLMDetectionFailedTemplate()
 	case ErrorTypeRuleFalsePositive:
-		return ea.getRuleFalsePositiveTemplate()
+		tpl = ea.getRuleFalsePositiveTemplate()
 	case ErrorTypeCanaryDetectionFailed:
-		return ea.getCanaryDetectionFailedTemplate()
+		tpl = ea.getCanaryDetectionFailedTemplate()
 	case ErrorTypeVectorMatchFailed:
-		return ea.getVectorMatchFailedTemplate()
+		tpl = ea.getVectorMatchFailedTemplate()
 	case ErrorTypeOutputGuardBlocked:
-		return ea.getOutputGuardBlockedTemplate()
+		tpl = ea.getOutputGuardBlockedTemplate()
+	case ErrorTypeRequestFailed:
+		tpl = ea.getRequestFailedTemplate()
 	default:
-		return ea.getGenericTemplate()
+		tpl = ea.getGenericTemplate()
+	}
+	// ★ 2026-11-25：所有模板统一追加「输出规范」（fix_plan 契约 + 字段类型 +
+	//   篇幅上限）。各模板自己的字段说明保留，契约只写一份。
+	tpl.SystemPrompt += "\n\n" + analysisOutputContract
+	return tpl
+}
+
+// analysisOutputContract 是全部模板共用的输出规范。
+//
+//	★ 每一条都对着三台生产的真实失败形态写：
+//
+//	· 「suggested_fix 必须是字符串」——211 实测模型写成了对象，旧解析器整条丢弃；
+//	· 「confidence_score 写小数」——245 实测写了「高」，没法判能不能自动应用；
+//	· 「全文 ≤1500 字、不要表格」——推理模型把 token 花在思考上，正文撞上限被截断；
+//	· 「fix_plan 必填」——没有它，管理面只能给一段散文，给不出可执行的步骤。
+const analysisOutputContract = `【输出规范（必须遵守）】
+只输出一个 JSON 对象：不要 Markdown 围栏、不要表格、不要对象之外的解释文字；全文控制在 1500 字以内。
+字段与类型（类型不符会被判为无效）：
+- root_cause: 字符串，一句话根因，具体到机制；必须引用取证材料里的事实（模型/供应商/状态码/日志行），不要臆测
+- error_category: 字符串
+- is_false_positive: 布尔值 true 或 false
+- confidence_score: 0 到 1 的小数（不要写百分比，不要写「高/中/低」）
+- suggested_fix: **必须是字符串**（需要分受众时，在同一段字符串里用「客户端侧：…」「运维侧：…」分行写）
+- severity_level: low / medium / high / critical 之一
+- impact_scope: session / tenant / global 之一
+- affected_users_estimate: 整数
+- rule_adjustment: 仅当确实要改 PI 检测规则时给出 {"action":"disable_rule|adjust_severity|update_pattern","rule_name":"<已存在的规则名>"}，否则必须为 null
+- code_changes: 代码变更建议数组 [{"file":"…","description":"…","patch":"…"}]，没有则为 null（只供人落地，系统不会自动改代码）
+- analysis_details: 对象，尽量包含 attribution_basis（归因依据，字符串数组）、alternatives_considered（已排除的其他假设）、evidence_used（用到了哪些取证材料）
+- fix_plan: 对象，必填：
+  {"summary":"一句话处置摘要",
+   "auto_actions":[与 rule_adjustment 同形的可执行动作；没有就给 []],
+   "manual_steps":[{"title":"…","detail":"…","kind":"config|code|ops|upstream|client","risk":"low|medium|high"}]（按执行先后排序，最多 8 条）,
+   "config_changes":[{"target":"…","current":"…","proposed":"…"}],
+   "code_changes":[{"file":"…","description":"…","patch":"…"}],
+   "deploy":{"required":false,"targets":["245","154","211"],"steps":["…"],"rollback":"…"},
+   "verification":{"method":"rules_replay|layer_recheck|recurrence|request_replay|manual","expect":"…","steps":["…"]}}
+取证材料为空时，如实写明「缺少请求上下文」，并把 verification.method 设为 manual。`
+
+// getRequestFailedTemplate 请求失败模板（2026-11-25：请求级错误进 PI 分析）。
+func (ea *ErrorAnalyzer) getRequestFailedTemplate() PromptTemplate {
+	return PromptTemplate{
+		SystemPrompt: `你是 LLM 网关的请求链路分析专家。一次请求在上游尝试阶段失败并进入了分析队列——错误来自网关自己持久化的「候选失败记录」（某个供应商/模型上的失败尝试），不是 PI 检测器。
+
+你的任务：基于取证材料定位这一类失败的根因，并给出修正方案。
+
+归因时按优先级考虑（以取证材料为准）：
+1. 上游故障：供应商 5xx / 超时 / 空响应 / 连接重置（看上游状态码与错误消息）。
+2. 凭据与配额：429 / 配额耗尽 / 额度不足 / 鉴权失败（看供应商、凭据与时间窗内的分布）。
+3. 网关配置：路由策略、并发与限流阈值、协议转换、参数兼容（看请求协议、模型、失败阶段）。
+4. 客户端请求问题：请求体非法 / 超出上下文预算 / 客户端主动取消（context canceled 不是故障）。
+5. 网关自身缺陷：只有取证明确指向网关时才归到这一类，并点名代码位置。
+
+「修正方案」必须写进 fix_plan：
+- 能立即自动执行的只有 PI 规则类动作（auto_actions）；其它一律写成 manual_steps。
+- 涉及网关代码修改的放进 code_changes 并把 deploy.required 设为 true（供人修正与部署）。
+- verification.method：请求类错误用 recurrence（修复后观察同型错误是否还在新增）。`,
+		UserPrompt: `请分析上述请求失败事件：给出归因、置信度与修正方案。请返回完整的 JSON 分析结果。`,
 	}
 }
 
@@ -592,135 +788,22 @@ func (ea *ErrorAnalyzer) getGenericTemplate() PromptTemplate {
 	}
 }
 
-// parseResponse 解析 LLM 响应
+// parseResponse 解析 LLM 响应。
 //
-// ★ 2026-11-17 审计轮 P1：**不再因为解析失败就把整条结果丢掉**。
+// ★ 2026-11-25 容错改造：整条解析迁到 parseAnalysisResponse（见
 //
-//	原实现：解析失败 ⇒ 返回 error ⇒ ProcessBatch 走 IncrementRetry ⇒
-//	LLM 往往给出同样格式的输出 ⇒ 3 次重试全烧完 ⇒ failed，
-//	而 **原始响应被整个丢弃**（LLMResponseRaw 只在成功路径写入）⇒
-//	事后无法复盘「LLM 到底返回了什么」。
-//	⇒ 改成：解析失败时返回一个**兜底结果**（root_cause='llm_parse_failed'
-//	   + analysis_details 带原始响应 + severity='low'），
-//	   让这条记录**仍可被人工复盘**。
+//	error_analysis_parse.go / _harvest.go / _compose.go）。旧实现是一次严格的
+//	结构体反序列化——三台生产实测 15 条真实分析里 14 条被它丢弃（模型按自己的
+//	报告体例返回、输出被截断、suggested_fix 是对象……都算失败）。
+//
+// 本方法只保留一件事：把「一条可用内容都没救回来」表达成 error
+// （AnalyzeError 据此落兜底结果、不丢原始响应）。
 func (ea *ErrorAnalyzer) parseResponse(response string) (*AnalysisResult, error) {
-	// 尝试提取 JSON（LLM 可能在 JSON 前后添加解释文本）
-	jsonStr := ea.extractJSON(response)
-	if jsonStr == "" {
-		return nil, fmt.Errorf("no valid JSON found in response")
+	result, diag := parseAnalysisResponse(response)
+	if result == nil {
+		return nil, fmt.Errorf("no analysis content found in response (json candidates=%d)", diag.Candidates)
 	}
-
-	var parsed struct {
-		RootCause             string                 `json:"root_cause"`
-		ErrorCategory         string                 `json:"error_category"`
-		IsFalsePositive       bool                   `json:"is_false_positive"`
-		ConfidenceScore       float64                `json:"confidence_score"`
-		SuggestedFix          string                 `json:"suggested_fix"`
-		RuleAdjustment        map[string]interface{} `json:"rule_adjustment"`
-		CodeChanges           map[string]interface{} `json:"code_changes"`
-		SeverityLevel         string                 `json:"severity_level"`
-		ImpactScope           string                 `json:"impact_scope"`
-		AffectedUsersEstimate int                    `json:"affected_users_estimate"`
-		AnalysisDetails       map[string]interface{} `json:"analysis_details"`
-	}
-
-	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	// 验证必填字段
-	if parsed.RootCause == "" {
-		return nil, fmt.Errorf("root_cause is required")
-	}
-	// ★ 2026-11-17 审计轮 P1：枚举归一。
-	//   severity_level / impact_scope 在 DB 上有 CHECK 约束
-	//   （sql/migrations/startup/971_pi_error_analysis_system.sql）：
-	//     severity_level IN ('low','medium','high','critical')
-	//     impact_scope  IN ('session','tenant','global')
-	//   而这里是**LLM 回填的自由文本** ⇒ 原实现只处理「空」，
-	//   LLM 答 "Critical" / "high-risk" / "全局" 时直接撞 23514
-	//   ⇒ SaveAnalysisResult 失败 ⇒ **整条分析结果丢失**，
-	//   队列行被标 failed ⇒ 「分析错误根因」这条职责链在最需要它的
-	//   场景下产不出任何东西。
-	//   ⇒ 归一（大小写 + 同义词），拿不准的降级到允许集内的默认值。
-	if parsed.ErrorCategory == "" {
-		parsed.ErrorCategory = "unknown"
-	}
-	parsed.SeverityLevel = normalizeSeverityLevel(parsed.SeverityLevel)
-	parsed.ImpactScope = normalizeImpactScope(parsed.ImpactScope)
-	parsed.ConfidenceScore = normalizeConfidenceScore(parsed.ConfidenceScore)
-
-	return &AnalysisResult{
-		RootCause:             parsed.RootCause,
-		ErrorCategory:         parsed.ErrorCategory,
-		IsFalsePositive:       parsed.IsFalsePositive,
-		ConfidenceScore:       parsed.ConfidenceScore,
-		SuggestedFix:          parsed.SuggestedFix,
-		RuleAdjustment:        parsed.RuleAdjustment,
-		CodeChanges:           parsed.CodeChanges,
-		SeverityLevel:         parsed.SeverityLevel,
-		ImpactScope:           parsed.ImpactScope,
-		AffectedUsersEstimate: parsed.AffectedUsersEstimate,
-		AnalysisDetails:       parsed.AnalysisDetails,
-	}, nil
-}
-
-// extractJSON 从响应中提取 JSON
-//
-// ★ 2026-11-17 审计轮 P1：**候选块逐个尝试**，而不是「第一个 { 到最后一个 }」。
-//
-//	原实现的两个分支都会产出非法 JSON（已逐条复现）：
-//	  · 「```json」分支：直接返回块内容，**不校验**它是不是 JSON
-//	    ⇒ 块里是散文/数组时 ⇒ 下游 Unmarshal 失败。
-//	  · 裸 JSON 分支：取**第一个 {** 到**最后一个 }**
-//	    ⇒ LLM 连写两个 JSON 对象（{A} {B}）⇒ 得到 "{A} {B}" ⇒ 非法；
-//	    ⇒ JSON 后跟带花括号的散文（… {docs}）⇒ 非法。
-//	⇒ 改为：枚举候选块（```json 块、每个顶格 `{…}` 平衡块），
-//	  逐个 json.Unmarshal，**取第一个能解析成 object 的**；
-//	  找不到才返回 ""。
-func (ea *ErrorAnalyzer) extractJSON(response string) string {
-	// 候选 1：```json 代码块（取第一个能解析成 object 的块）
-	if start := strings.Index(response, "```json"); start != -1 {
-		start += 7
-		if end := strings.Index(response[start:], "```"); end != -1 {
-			block := strings.TrimSpace(response[start : start+end])
-			if isJSONObject(block) {
-				return block
-			}
-		}
-	}
-
-	// 候选 2：按出现顺序枚举**平衡的** {…} 块
-	for _, block := range jsonObjectCandidates(response) {
-		if isJSONObject(block) {
-			return block
-		}
-	}
-
-	// 候选 3：单花括号兜底（原行为，仅在它是合法 object 时才用）
-	start := strings.Index(response, "{")
-	if start == -1 {
-		return ""
-	}
-	end := strings.LastIndex(response, "}")
-	if end == -1 || end <= start {
-		return ""
-	}
-	fallback := strings.TrimSpace(response[start : end+1])
-	if isJSONObject(fallback) {
-		return fallback
-	}
-
-	return ""
-}
-
-// isJSONObject 判断 s 是否能解析成一个 JSON object。
-func isJSONObject(s string) bool {
-	if s == "" {
-		return false
-	}
-	var probe map[string]interface{}
-	return json.Unmarshal([]byte(s), &probe) == nil
+	return result, nil
 }
 
 // jsonObjectCandidates 按出现顺序枚举响应里所有**括号平衡**的 {…} 片段。
