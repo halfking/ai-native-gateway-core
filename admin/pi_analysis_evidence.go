@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -217,6 +218,12 @@ func (g *PIEvidenceGatherer) now() time.Time {
 // piEvidenceRequestCols 是请求账本行的投影。两处口径与 admin/logs.go 一致：
 // 读面取 logsSourceFromSQL()（设置项可切到会话族原生读面）、request_status
 // 用 requestLogStatusExpr（历史行 success 为 NULL 时不出假状态）。
+//
+// ★ 这份清单与 requestRow 的 Scan 目标**逐项、按序**对应（TestEvidenceRequestSelectListMatchesScan
+// 从本常量文本数出列数，与测试夹具逐列核对）——2026-11-26 在 211 上实测过一次脱节：
+// 清单里有 rl.is_auto_request 而 Scan 少一个目标 ⇒ database/sql 报
+// 「expected 23 destination arguments in Scan, not 22」⇒ 请求账本整路降级。
+// sqlmock 看不出来：模拟行是手写的，列数跟着 Scan 走、而不是跟着 SQL 走。
 const piEvidenceRequestCols = `
 	rl.ts, ` + requestLogStatusExpr + ` AS request_status, rl.success, rl.error_kind,
 	rl.failure_stage, rl.failure_detail_code, rl.upstream_status_code,
@@ -242,6 +249,7 @@ func (g *PIEvidenceGatherer) requestRow(ctx context.Context, target promptinject
 		// routing_attempts 在读面里是 **jsonb**（211 实测；2026-11-25 对着真实列类型核过）——
 		// 按整数扫会让这一路稳定报错。可空 JSONB 一律用 NullableJSON（能吃 NULL）。
 		routingAttempts NullableJSON
+		isAuto          sql.NullBool
 		preview         sql.NullString
 	)
 	err := g.db.QueryRowContext(ctx, `SELECT `+piEvidenceRequestCols+`
@@ -252,27 +260,30 @@ func (g *PIEvidenceGatherer) requestRow(ctx context.Context, target promptinject
 			&clientModel, &outboundModel, &canonicalModel, &providerID, &credID,
 			&protocol, &endpoint, &agent, &latency,
 			&promptTok, &completionTok, &totalTok,
-			&streamInterrupted, &routingAttempts, &preview)
+			&streamInterrupted, &routingAttempts, &isAuto, &preview)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	row := map[string]any{
-		"ts":                  ts.Format(time.RFC3339),
-		"request_status":      status.String,
-		"success":             success.Bool,
-		"error_kind":          errKind.String,
-		"failure_stage":       failStage.String,
-		"failure_detail_code": failDetail.String,
-		"client_model":        clientModel.String,
-		"outbound_model":      outboundModel.String,
-		"canonical_model":     canonicalModel.String,
-		"client_protocol":     protocol.String,
-		"client_endpoint":     endpoint.String,
-		"agent_name":          agent.String,
-		"request_preview":     piEvidenceTruncate(preview.String, piEvidenceMsgRunes),
+	row := map[string]any{"ts": ts.Format(time.RFC3339)}
+	// 空值不出现这个键（不是 "" 占位、也不是 null 占位）——与下面的数值列同一条口径；
+	// 「这一列是空的」与「这一列有值但为空串」在读面上必须分得开。
+	piEvidencePutStr(row, "request_status", status)
+	piEvidencePutStr(row, "error_kind", errKind)
+	piEvidencePutStr(row, "failure_stage", failStage)
+	piEvidencePutStr(row, "failure_detail_code", failDetail)
+	piEvidencePutStr(row, "client_model", clientModel)
+	piEvidencePutStr(row, "outbound_model", outboundModel)
+	piEvidencePutStr(row, "canonical_model", canonicalModel)
+	piEvidencePutStr(row, "client_protocol", protocol)
+	piEvidencePutStr(row, "client_endpoint", endpoint)
+	piEvidencePutStr(row, "agent_name", agent)
+	piEvidencePutStr(row, "request_preview", sql.NullString{
+		Valid: preview.Valid, String: piEvidenceTruncate(preview.String, piEvidenceMsgRunes)})
+	if success.Valid {
+		row["success"] = success.Bool
 	}
 	piEvidencePutInt(row, "upstream_status_code", upstreamStatus)
 	piEvidencePutInt(row, "provider_id", providerID)
@@ -290,6 +301,9 @@ func (g *PIEvidenceGatherer) requestRow(ctx context.Context, target promptinject
 	}
 	if streamInterrupted.Valid {
 		row["stream_interrupted"] = streamInterrupted.Bool
+	}
+	if isAuto.Valid {
+		row["is_auto_request"] = isAuto.Bool
 	}
 	return row, nil
 }
@@ -327,7 +341,9 @@ func (g *PIEvidenceGatherer) attemptRows(ctx context.Context, target promptinjec
 	out := []map[string]any{}
 	for rows.Next() {
 		var (
-			ts        time.Time
+			// ts 在真实表里是可空列（information_schema 实测 is_nullable = YES）⇒ 用 NullString 同款的
+			// NullTime 接；按 time.Time 接会在遇到 NULL 行时让整路报错。
+			ts        sql.NullTime
 			provider  string
 			cred      string
 			model     string
@@ -341,8 +357,11 @@ func (g *PIEvidenceGatherer) attemptRows(ctx context.Context, target promptinjec
 		if err := rows.Scan(&ts, &provider, &cred, &model, &attempt, &kind, &message, &code, &retryable, &latency); err != nil {
 			return piEvidencePart{}, err
 		}
+		if !ts.Valid {
+			continue // 没有时间的失败记录不进材料（也不编造时间）
+		}
 		out = append(out, map[string]any{
-			"ts": ts.Format(time.RFC3339), "provider_id": provider, "credential_id": cred,
+			"ts": ts.Time.Format(time.RFC3339), "provider_id": provider, "credential_id": cred,
 			"model": model, "attempt_index": attempt, "error_kind": kind,
 			"error_message": piEvidenceTruncate(message, piEvidenceMsgRunes), "upstream_status_code": code,
 			"retryable": retryable, "latency_ms": latency,
@@ -561,7 +580,9 @@ func (g *PIEvidenceGatherer) playbookEntries(ctx context.Context, errorType stri
 			kind           string
 			enabled, auto  bool
 			hits, ok, fail int64
-			last           string
+			// last_status 是可空列（995：`last_status TEXT`，从未执行过的条目为 NULL）
+			// ⇒ 必须用 NullString 接；按 string 接会在真实数据上整路报错。
+			last sql.NullString
 		)
 		if err := rows.Scan(&id, &title, &root, &kind, &enabled, &auto, &hits, &ok, &fail, &last); err != nil {
 			return piEvidencePart{}, err
@@ -569,7 +590,7 @@ func (g *PIEvidenceGatherer) playbookEntries(ctx context.Context, errorType stri
 		out = append(out, map[string]any{
 			"id": id, "title": title, "root_cause": piEvidenceTruncate(root, piEvidenceMsgRunes), "plan_kind": kind,
 			"enabled": enabled, "auto_execute": auto, "hit_count": hits, "success_count": ok,
-			"failure_count": fail, "last_status": last,
+			"failure_count": fail, "last_status": last.String,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -579,6 +600,13 @@ func (g *PIEvidenceGatherer) playbookEntries(ctx context.Context, errorType stri
 }
 
 // ── 小工具 ─────────────────────────────────────────────────────────────────
+
+// piEvidencePutStr 在文本列非空（非 NULL、非空串）时才写入。
+func piEvidencePutStr(m map[string]any, key string, v sql.NullString) {
+	if v.Valid && v.String != "" {
+		m[key] = v.String
+	}
+}
 
 func piEvidencePutInt(m map[string]any, key string, v sql.NullInt64) {
 	if v.Valid {
@@ -617,13 +645,27 @@ func piEvidenceTruncate(s string, n int) string {
 }
 
 // isPIRelationMissing 报告 err 是否是「表不在场」（可选系统的表缺席不是故障）。
+//
+//	★ 判据必须窄：只认「关系不存在」（SQLSTATE 42P01 的消息形态
+//	  `relation "…" does not exist`）。2026-11-26 真库契约测试实测：此前写成
+//	  「消息里含 does not exist 就算」⇒ `column "…" of relation "…" does not exist`
+//	  （42P03，列缺失——那是**真实的结构不匹配**）也被当成「表没部署」而静默降级，
+//	  把缺陷藏成「本部署没有这个可选系统」。
 func isPIRelationMissing(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "does not exist") || strings.Contains(msg, "42P01")
+	// 列缺失（42703）的消息是 `column "c" of relation "t" does not exist` / `column "c" does not exist`
+	// ⇒ 里面同样带着 `relation "…" does not exist` ⇒ 必须先排除，再认表缺失。
+	if strings.Contains(msg, `column "`) {
+		return false
+	}
+	return strings.Contains(msg, "42P01") || piRelationMissingRE.MatchString(msg)
 }
+
+// piRelationMissingRE 匹配 PG 的 undefined_table 消息（`relation "x" does not exist`）。
+var piRelationMissingRE = regexp.MustCompile(`relation "[^"]+" does not exist`)
 
 // piEvidenceRoutingSummary 把 routing_attempts（jsonb）提炼成 (尝试次数, 逐次摘要)。
 //
