@@ -78,7 +78,7 @@
 /api/admin/bodies/{body_ref...}	ANY	admin/handler.go:1166
 /api/admin/cache-metrics/summary	ANY	admin/cache_metrics_handler.go:24
 /api/admin/cache-metrics/timeline	ANY	admin/cache_metrics_handler.go:25
-/api/admin/capabilities	GET	admin/capabilities.go:102
+/api/admin/capabilities	GET	admin/capabilities.go:123
 /api/admin/compression/preview	ANY	admin/compression_preview_handler.go:55
 /api/admin/compression/sessions	ANY	admin/handler.go:1168
 /api/admin/compression/stats	ANY	admin/handler.go:1167
