@@ -125,3 +125,15 @@ export async function waitFor(cdp, sessionId, expression, timeoutMs = 30000, int
     await new Promise((r) => setTimeout(r, intervalMs))
   }
 }
+
+
+/** Navigate to a new same-origin document and wait until its DOM can be queried. */
+export async function navigateToDocument(cdp, sessionId, url, timeoutMs = 30000) {
+  const previousDocument = await evaluate(cdp, sessionId, 'performance.timeOrigin')
+  const { errorText } = await cdp.send('Page.navigate', { url }, sessionId)
+  if (errorText) throw new Error(`CDP navigation failed: ${errorText}`)
+  const origin = JSON.stringify(new URL(url).origin)
+  return waitFor(cdp, sessionId,
+    `location.origin === ${origin} && performance.timeOrigin !== ${previousDocument} && document.readyState !== 'loading'`,
+    timeoutMs)
+}
