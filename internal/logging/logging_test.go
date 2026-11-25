@@ -170,6 +170,13 @@ func TestRotationProducesBackup(t *testing.T) {
 		t.Fatalf("rotated file is not gzip; magic = %x", magic)
 	}
 
+	// 2026-11-26：魔数只证明**文件头**写出来了，正文可能还在流式写入。读一个
+	// 写到一半的 .gz 会得到 unexpected EOF；压缩中途失败时 lumberjack 还会把
+	// 刚建的 .gz 删掉（随后 Open 就是 ENOENT——磁盘满那次观测到的正是这个
+	// 形态；另一次在机器重负载下偶发，失败消息未被保留、成因未证实）⇒ 等
+	// 压缩**真正结束**再读，把这个窗口整个关掉。
+	waitForCompressionDone(t, dir, 5*time.Second)
+
 	// The gzipped payload must contain at least one of our records.
 	f, err := os.Open(matches[0])
 	if err != nil {
@@ -239,6 +246,29 @@ func waitForGzipMagic(t *testing.T, path string, timeout time.Duration) []byte {
 			return magic
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitForCompressionDone polls until no uncompressed rotated file is left.
+//
+// compressLogFile removes the source file only after the .gz was fully
+// written and closed (on failure it removes the .gz instead), so "no
+// gateway-*.log left" is the completion signal. The gzip magic alone only
+// proves that the header was written.
+func waitForCompressionDone(t *testing.T, dir string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		left, err := filepath.Glob(filepath.Join(dir, "gateway-*.log"))
+		if err == nil && len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rotated file was not compressed within %s (left: %v); dir contents: %v",
+				timeout, left, readDir(t, dir))
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
