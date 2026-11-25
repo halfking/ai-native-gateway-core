@@ -47,7 +47,7 @@
 <body>
 <div class="wrap">
   <h1>24 小时审计与完善 · 第 28 轮总结</h1>
-  <div class="sub">2026-11-25 06:11 起 ｜ 审计窗口内 222 笔提交（非合并 168） ｜ 主档 <code>docs/operations/2026-11-23-211配置优化执行报告.md</code> §9.30 ㉓-44 ｜ 提交 <code>@@COMMIT@@</code></div>
+  <div class="sub">2026-11-25 06:11 起 ｜ 审计窗口内 222 笔提交（非合并 168） ｜ 主档 <code>docs/operations/2026-11-23-211配置优化执行报告.md</code> §9.30 ㉓-44 ｜ 提交 <code>`5da9a7208`（Go 侧读数对象）</code></div>
 
   <h2>① 结论 / 根因</h2>
   <div class="kpi">
@@ -72,29 +72,30 @@
     <table>
       <tr><th>#</th><th>文件</th><th>关键行为</th><th>验证</th></tr>
       <tr><td>—</td><td>（已撤回）<code>admin/logs.go</code>、<code>RequestLogsView.vue</code>、8 个 <code>requests.ts</code> 等 13 个文件</td><td><code>36c278858</code> ⇒ <code>ddc6aed19</code> 撤回；以上游 <code>71af786f6</code>／<code>c0dad181d</code> 为准</td><td><span class="pill p-ok">与上游 diff 为空</span></td></tr>
-      <tr><td>3</td><td><code>web/src/locales/{6 语种}/reports.ts</code></td><td>补齐「日对账」块与 <code>legacySnapshotView</code> 的译文</td><td>@@HTML_I18N@@</td></tr>
+      <tr><td>3</td><td><code>web/src/locales/{6 语种}/reports.ts</code></td><td>补齐「日对账」块与 <code>legacySnapshotView</code> 的译文</td><td><span class="pill p-ok">i18n 17 文件／118 条绿</span></td></tr>
       <tr><td>4</td><td><code>mobileListUx.spec.ts</code><br><code>web-mobile/…/orphanLedger.spec.ts</code><br><code>web-mobile/…/dynamicKeys.spec.ts</code></td><td>三处登记表按事实更新（行号漂移、新 API 模块、两个动态前缀）</td><td><span class="pill p-ok">3 spec 绿</span></td></tr>
       <tr><td>5</td><td><code>AGENTS.md</code><br><code>AGENTS-archive-20261031.md</code></td><td>从 git 历史逐字恢复 L87、L79、L108；L71 去重；L23 段头接回正文；L107 就地订正</td><td><span class="pill p-ok">9 门绿</span></td></tr>
       <tr><td>6</td><td><code>scripts/ursmcheck/agents_md_round_label_gate_test.go</code>（新）</td><td>R5 主档内轮标记唯一；R6 轮块只许搬、不许丢</td><td>变异自证 2/2</td></tr>
       <tr><td>7</td><td><code>internal/rowsguard/rowsguard.go</code>（＋测试）<br><code>discovery/alias_sync.go</code></td><td>门的接收者识别扩到类型断言形态；4 个循环补终检</td><td><span class="pill p-ok">918 循环 0 违规</span></td></tr>
       <tr><td>8</td><td>文档软链、4 个 README、W3 集成指南</td><td>悬空软链重定向；域数 69⇒83；集成指南加现状声明</td><td><span class="pill p-ok">已核</span></td></tr>
       <tr><td>9</td><td><code>verify-211-captcha-ttl.sh</code>、<code>pipefail_race_ledger.tsv</code>、<code>cjk_var_sites.tsv</code>、<code>structured-registry-census.json</code>、<code>dashboard_session_summaries_window_test.go</code>、示例清单 <code>manifest-v3-example.json</code></td><td>代上游收口主干 6 条红（纯上游树 <code>6c18bf92c</code> 同条件对照同红）：修一个真站点、裁决 6 个 pipefail 候选、登记 1 个夹具、示例键改对、时间窗门扩展</td><td><span class="pill p-ok">5 组门绿</span> 变异 2/2</td></tr>
+      <tr><td>10</td><td><code>bg/node_probe_quota_verdict_test.go</code></td><td>修一条既有偶发假红：两次各取时钟的时长被要求严格相等（30 次 2 败、各差 1 纳秒）⇒ 容许 1ms 抖动</td><td><span class="pill p-ok">200 次 0 败</span> 变异仍红</td></tr>
     </table>
   </div>
 
   <h2>③ 测试命令与结果</h2>
   <div class="card">
     <table>
-      <tr><th>命令 / 范围</th><th>合并后基线 <code>32be90f2a</code></th><th>最终树 <code>@@FINAL_SHA@@</code></th></tr>
-      <tr><td><code>go build ./...</code></td><td><span class="pill p-ok">EXIT 0</span></td><td>@@F_BUILD@@</td></tr>
-      <tr><td><code>go test ./scripts/ursmcheck/ -count=1 -timeout 1800s</code></td><td><span class="pill p-ok">ok 339.907s</span> 四项冻结全 1</td><td>@@F_URSM@@</td></tr>
-      <tr><td>24h 变更包 <code>go vet</code> / <code>go test</code></td><td><span class="pill p-ok">vet 0</span> <span class="pill p-ok">33 ok / 0 FAIL</span></td><td>@@F_PKGS@@</td></tr>
-      <tr><td><code>installer</code> 模块 build / vet / test</td><td><span class="pill p-ok">14 包 ok</span></td><td>@@F_INSTALLER@@</td></tr>
-      <tr><td><code>plugin-runtime</code> 6 个模块</td><td><span class="pill p-ok">全绿</span></td><td>@@F_PLUGIN@@</td></tr>
+      <tr><th>命令 / 范围</th><th>合并后基线 <code>32be90f2a</code></th><th>最终树 <code>5da9a7208</code></th></tr>
+      <tr><td><code>go build ./...</code></td><td><span class="pill p-ok">EXIT 0</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
+      <tr><td><code>go test ./scripts/ursmcheck/ -count=1 -timeout 1800s</code></td><td><span class="pill p-ok">ok 339.907s</span> 四项冻结全 1</td><td><span class="pill p-ok">ok 310.019s</span> 指纹首尾相同</td></tr>
+      <tr><td>24h 变更包 <code>go vet</code> / <code>go test</code></td><td><span class="pill p-ok">vet 0</span> <span class="pill p-ok">33 ok / 0 FAIL</span></td><td><span class="pill p-fail">vet 0 · 42 ok / 0 FAIL</span></td></tr>
+      <tr><td><code>installer</code> 模块 build / vet / test</td><td><span class="pill p-ok">14 包 ok</span></td><td><span class="pill p-fail">build/vet/test 均 0、14 包 ok</span></td></tr>
+      <tr><td><code>plugin-runtime</code> 6 个模块</td><td><span class="pill p-ok">全绿</span></td><td><span class="pill p-ok">6 个模块 全绿</span></td></tr>
       <tr><td><code>scripts/checks/fresh-install-smoke.sh</code></td><td><span class="pill p-ok">PASS</span> 四阶段；交接凭证 433 条、接管 372/372、容器零残留</td><td><span class="pill p-na">未重跑（相关文件其后无改动）</span></td></tr>
-      <tr><td><code>web</code>：vue-tsc / vitest / build</td><td>0 错 ／ <span class="pill p-fail">6 红</span> ／ EXIT 0</td><td>@@F_WEB@@</td></tr>
-      <tr><td><code>web-mobile</code>：vue-tsc / vitest</td><td>0 错 ／ <span class="pill p-fail">13 红</span>（基线 11）</td><td>@@F_MOBILE@@</td></tr>
-      <tr><td>maestro <code>selftest.mjs</code></td><td><span class="pill p-ok">PASS</span></td><td>@@F_MAESTRO@@</td></tr>
+      <tr><td><code>web</code>：vue-tsc / vitest / build</td><td>0 错 ／ <span class="pill p-fail">6 红</span> ／ EXIT 0</td><td><span class="pill p-ok">0 红</span> ／ 3825 通过 ／ EXIT 0</td></tr>
+      <tr><td><code>web-mobile</code>：vue-tsc / vitest</td><td>0 错 ／ <span class="pill p-fail">13 红</span>（基线 11）</td><td><span class="pill p-fail">11 红</span> ／ 9309 通过 ／ EXIT 1</td></tr>
+      <tr><td>maestro <code>selftest.mjs</code></td><td><span class="pill p-ok">PASS</span></td><td><span class="pill p-ok">EXIT 0</span></td></tr>
       <tr><td><code>web-tests</code>（Playwright）</td><td><span class="pill p-na">未执行：未装依赖、需在线环境</span></td><td><span class="pill p-na">同左</span></td></tr>
     </table>
     <p class="note">前端红的归因方法：在 24h 窗口起点 <code>18e6aab5b</code> 的树上同条件只跑这些文件 —— web 的 3 个文件 24/24 通过；web-mobile 11 红。<code>web-mobile</code> 余下的 11 红是窗口之前就有的行号漂移类，不在本轮范围。</p>
@@ -141,8 +142,8 @@
     <table>
       <tr><th>级别</th><th>发现</th><th>出处</th><th>状态</th></tr>
       <tr><td><span class="pill p-p1">P1</span></td><td><code>lane=probe|probe_history</code> 被并入 <code>includeProbe</code> ⇒ 历史探测视图显示全量流量</td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
-      <tr><td><span class="pill p-p1">P1</span></td><td>含探测查询被静默截到 12 小时，前端不读 <code>window_clamped</code></td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
-      <tr><td><span class="pill p-p1">P1</span></td><td>「日对账」前端六语种缺译（225 个键）＋三处登记表未更新 ⇒ 8 个门禁红</td><td><code>cdd155fff</code></td><td>@@HTML_I18N_ROW@@</td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td>含探测查询被自动截到 12 小时——上游判定截窗本身不该存在（日历型预设的 end 在未来，截出的窗口必然 0 行）</td><td><code>af2bb4970</code></td><td><span class="pill p-ok">上游已修（更根本）</span></td></tr>
+      <tr><td><span class="pill p-p1">P1</span></td><td>「日对账」前端六语种缺译（225 个键）＋三处登记表未更新 ⇒ 8 个门禁红</td><td><code>cdd155fff</code></td><td><span class="pill p-ok">已修（含 7 个同形值的有理由基线调高）</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>rowsguard 门看不见类型断言形态的循环（4 处缺终检；文件无生产调用方）</td><td><code>5e6b4812b</code></td><td><span class="pill p-ok">已修＋门扩展</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>AGENTS.md：L87 整块、L108 段头、L79 ⑪⑫ 丢失；L71 归档未摘净；无门</td><td><code>570087c16</code>、<code>34b4a9a6f</code></td><td><span class="pill p-ok">已恢复＋新门</span></td></tr>
       <tr><td><span class="pill p-p2">P2</span></td><td>L107 记录「不照搬退役/后继框架」与事实相反（<code>e7e03cdb8</code> 带进了整套框架）</td><td>L107</td><td><span class="pill p-ok">已就地订正</span></td></tr>
@@ -181,7 +182,7 @@
     <p class="note">本轮零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。所有修复在私有工作树上完成，逐文件暂存后提交。</p>
   </div>
 
-  <div class="footer">@@COMMIT_LINE@@</div>
+  <div class="footer">读数对象 5da9a7208（Go 侧）与 b03f94f7e（web、模块），私有工作树、内容指纹首尾相同；本轮提交 fa1338d75 / 823ccc6c3 / 8e2b86bfc / 4607925b5 / b03f94f7e / 5da9a7208，撤回 ddc6aed19；零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署。</div>
 </div>
 </body>
 </html>
