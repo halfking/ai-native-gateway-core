@@ -106,7 +106,7 @@ bounded AS MATERIALIZED (
 	SELECT p.* FROM coverage CROSS JOIN LATERAL unnest(missing) AS gaps(span)
 	CROSS JOIN LATERAL (
 		SELECT occurred_at, tenant_id, api_key_id, session_id, provider_id, provider_code, provider_name,
-			outbound_model, client_model, status, prompt_tokens, completion_tokens, total_tokens, cached_tokens,
+			status, prompt_tokens, completion_tokens, total_tokens, cached_tokens,
 			cache_write_tokens, credits_charged, image_tokens, audio_tokens, video_tokens, cost_amount, cost_currency,
 			usage_source, cache_input_tokens, latency_ms, ttft_ms, ` + boardModel + ` AS model,
 			` + bucket + ` AS bucket, ` + boardPieKeys + `

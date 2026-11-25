@@ -130,7 +130,9 @@ func requestDailySummarySQL(scope []string, includeDetail bool) string {
 		) r
 	)`
 	}
-	return requestSummaryFromDailySQL(filter, detail, `(SELECT count(*) FROM (SELECT model FROM models WHERE model <> '__unknown__' GROUP BY model) unique_models)`)
+	return requestSummaryFromDailySQL(filter, detail, `(SELECT count(*) FROM (
+		SELECT unnest(models) FROM daily UNION SELECT `+requestModelKey+` FROM raw
+	) unique_models(model) WHERE model <> '__unknown__')`)
 }
 
 func requestDailyScopeSQL(scope []string) string {
@@ -140,6 +142,8 @@ func requestDailyScopeSQL(scope []string) string {
 	return " AND " + strings.Join(scope, " AND ")
 }
 
+// Count published session bits once, then add distinct raw session keys whose
+// bits are absent from those published days and the selected traffic scope.
 func requestSummaryFromDailySQL(filter, detail, uniqueModels string) string {
 	return `WITH ` + detail + `, daily AS MATERIALIZED (
 		SELECT s.* FROM public.request_metrics_daily_summary s JOIN clean_days USING(day) WHERE true` + filter + `
@@ -147,25 +151,20 @@ func requestSummaryFromDailySQL(filter, detail, uniqueModels string) string {
 		SELECT ` + requestStatsStateColumns + ` FROM daily
 		UNION ALL
 		SELECT ` + requestStatsRawCounters + `, ` + requestStatsDistributionState + ` FROM raw
-	), models AS (
-		SELECT unnest(models) AS model FROM daily
-		UNION ALL SELECT ` + requestModelKey + ` FROM raw
-	), raw_sessions AS MATERIALIZED (
+	), raw_sessions AS (
 		SELECT DISTINCT tenant_id, session_id FROM raw WHERE session_id IS NOT NULL
-	), raw_codes AS MATERIALIZED (
-		SELECT c.code FROM raw_sessions r
-		LEFT JOIN public.request_metrics_daily_session_codes c USING (tenant_id,session_id)
-	), words AS (
-		SELECT word, mask FROM public.request_metrics_daily_session_masks JOIN clean_days USING(day) WHERE true` + filter + `
-		UNION ALL
-		SELECT code/64, bit_or(1::bigint << (code%64)::int)
-		FROM raw_codes WHERE code IS NOT NULL GROUP BY code/64
+	), day_words AS MATERIALIZED (
+		SELECT word, bit_or(mask) AS mask
+		FROM public.request_metrics_daily_session_masks JOIN clean_days USING(day)
+		WHERE true` + filter + ` GROUP BY word
 	)
 	SELECT ` + requestStatsMergedCounters + `,
 		` + uniqueModels + ` AS unique_models,
-		(SELECT coalesce(sum(bit_count(mask::bit(64))),0) FROM
-		   (SELECT bit_or(mask) AS mask FROM words GROUP BY word) unique_words)
-		   + (SELECT count(*) FROM raw_codes WHERE code IS NULL) AS active_sessions,
+		(SELECT coalesce(sum(bit_count(mask::bit(64))),0) FROM day_words)
+		+ (SELECT count(*) FROM raw_sessions r
+		   LEFT JOIN public.request_metrics_daily_session_codes c USING (tenant_id,session_id)
+		   LEFT JOIN day_words w ON w.word=c.code/64
+		   WHERE coalesce(w.mask & (1::bigint << (c.code%64)::int),0)=0) AS active_sessions,
 		coalesce(sum(latency_sum)/nullif(sum(latency_count),0),0) AS avg_latency_ms,
 		coalesce(sum(ttft_sum)/nullif(sum(ttft_count),0),0) AS avg_ttft_ms,
 		coalesce(sum(success_count)::float8/nullif(sum(total_requests),0),0) AS success_rate,
