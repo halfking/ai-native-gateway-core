@@ -25,24 +25,29 @@ import { join, resolve } from 'node:path'
 export const LITERAL_RE = /['"]([A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*)['"]/g
 
 /**
- * 拼接前缀的**三种形态**，少一种就会有一族键成批变成假孤儿：
+ * 拼接前缀的**四种形态**，少一种就会有一族键成批变成假孤儿：
  *
  *  ① `t('maas.dim_' + d)` —— 紧邻 `t(` 的加号拼接
  *  ② `` t(`dh.state.${state}`) `` —— 模板字面量
  *  ③ `'cache.state.' + v` —— **藏在 helper 里**，不紧邻 `t(`
  *     （`api/probeTimelineCache.ts` 的 `cacheStateKeyOf` 就是这一族；
  *       只扫 ①② 会把它整族误判成孤儿）
+ *  ④ `` const key = `rr.evidence.values.${value}` ``（先赋值再 `t(key)`）
+ *     与 `` :context-key="`statisticsHelp.pages.${c}`" ``（属性绑定模板）——
+ *     反引号模板里是键前缀，但**不紧跟 `t(`**。只扫 ①②③ 会把这两族整批
+ *     判成假孤儿（2026-11-25 菜单 PC 对齐轮实测：59 键假孤儿即此根因）。
  *
  * 另有一条 `funnel.window` **不以 `.`/`_` 结尾**（`t('funnel.window' + '24h')`），
- * 所以形态 ① 的尾部分隔符是**可选**的。
+ * 所以形态 ① 的尾部分隔符是**可选的**。
  */
 export const PREFIX_RES: readonly RegExp[] = [
   /\bt\(\s*'([A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*[._]?)'\s*\+/g,
   /\bt\(\s*`([A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*[._])\$\{/g,
   /'([A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*[._])'\s*\+/g,
+  /`([A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*[._])\$\{/g,
 ]
 
-export const PREFIX_FORM_NAMES: readonly string[] = ['①t(引号+)', '②t(`${)', '③helper里的+']
+export const PREFIX_FORM_NAMES: readonly string[] = ['①t(引号+)', '②t(`${)', '③helper里的+', '④模板赋值/属性绑定']
 
 /** 扫源码用到的文件：整个 `src/`，排除测试文件与判据自身。 */
 export function sourceFiles(): string[] {

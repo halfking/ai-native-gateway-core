@@ -2837,7 +2837,20 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		return nil
 	}
 	// Round 2: gateway — now sees the restored state from the direct round
-	gw := w.probeGateway(ctx, credID, model)
+	//
+	// ★ 2026-11-26（gpt-image 探针风暴轮）：直连轮已给出「与 (凭据, 模型, 上游)
+	// 绑定」的失败判决时（鉴权/配额/协议族），这一轮可证明是冗余的 —— 钉住同一
+	// 把 key、同一个模型、同一个上游，只会把同一个拒绝原样再要一次；而判决只看
+	// 直连轮（success := direct.ok）。判据与理由见 probeGatewayRoundRedundant
+	// （与统一队列路径共用同一道门，不是两份抄本）。
+	gw := nodeProbeRoundResult{
+		errCode:   "gateway_round_skipped_redundant",
+		errDetail: "direct round already convicted this (credential, model) pair; the pinned gateway round would repeat the same upstream refusal",
+		rootCause: direct.rootCause,
+	}
+	if !probeGatewayRoundRedundant(direct) {
+		gw = w.probeGateway(ctx, credID, model)
+	}
 
 	// 2026-09-10 hzx-2/minimax-prod-v2 incident: the failure ladder and
 	// success bookkeeping must reflect the DIRECT round only. The gateway

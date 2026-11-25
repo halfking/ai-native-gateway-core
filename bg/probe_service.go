@@ -492,7 +492,20 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 
 	// Round 2 must be pinned to the same credential. A legacy unpinned gateway
 	// response is retained as an explicit failure result and cannot restore state.
-	gateway := s.gatewayRound(hbCtx, credID, model)
+	//
+	// ★ 2026-11-26（gpt-image 探针风暴轮）：直连轮已经给出「与 (凭据, 模型,
+	// 上游) 绑定」的失败判决时（鉴权/配额/协议族），这一轮**可证明是冗余的**
+	// —— 它钉住同一把 key、同一个模型、同一个上游，只会把同一个拒绝原样再要
+	// 一次（多一次上游请求 + 多一条必然失败的请求记录），而判决本来就只看
+	// 直连轮。判据与理由见 probeGatewayRoundRedundant（单一判据）。
+	gateway := gatewayProbeResult{round: nodeProbeRoundResult{
+		errCode:   "gateway_round_skipped_redundant",
+		errDetail: "direct round already convicted this (credential, model) pair; the pinned gateway round would repeat the same upstream refusal",
+		rootCause: direct.rootCause,
+	}}
+	if !probeGatewayRoundRedundant(direct) {
+		gateway = s.gatewayRound(hbCtx, credID, model)
+	}
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
 			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
