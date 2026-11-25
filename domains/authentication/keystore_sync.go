@@ -251,8 +251,8 @@ func (kv *KeyVerifier) keyStoreSyncDelta(ctx context.Context, interval time.Dura
 }
 
 // keyStoreSelectSQL is the shared column list. It matches callVerifyDB's
-// projection plus ak.expires_at (read-time validity) and ak.key_hash (the
-// store key).
+// projection plus ak.expires_at (read-time validity), ak.key_hash (the
+// store key) and ak.capabilities (W4.2 会话能力绑 Key).
 const keyStoreSelectSQL = `
 	SELECT
 		ak.key_hash,
@@ -272,7 +272,8 @@ const keyStoreSelectSQL = `
 		ak.key_alias,
 		app.customer_id,
 		ak.expires_at,
-		COALESCE(ak.is_system, FALSE)
+		COALESCE(ak.is_system, FALSE),
+		COALESCE(ak.capabilities, '[]'::jsonb)
 	FROM api_keys ak
 	JOIN applications app ON app.id = ak.application_id
 `
@@ -313,6 +314,7 @@ func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, er
 		&info.CustomerID,
 		&info.ExpiresAt,
 		&info.IsSystem,
+		&info.Capabilities,
 	); err != nil {
 		return keyStoreRow{}, err
 	}

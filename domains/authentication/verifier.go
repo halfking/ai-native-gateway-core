@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,6 +111,12 @@ type KeyInfo struct {
 	// authorizing without a DB round-trip. Serialized for the local
 	// snapshot round-trip (HMAC hash + metadata only, no key material).
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Capabilities 是该 Key 被授予的会话能力 ID 列表（W4.2 能力绑 Key）。
+	// 词表见 internal/capability（session.audit 等 6 项）；空/nil 表示未授权
+	// 任何会话能力。裁决用 internal/capabilitygate.Gate（fail-closed）。
+	// Serialized with the snapshot round-trip like the rest of KeyInfo.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 func (ki *KeyInfo) StatusValid() bool {
@@ -196,6 +203,16 @@ func (ki *KeyInfo) ConfiguredConcurrent() int {
 		return *ki.RateLimitConcurrent
 	}
 	return 0
+}
+
+// HasCapability 报告该 Key 是否被授予指定 capability（W4.2 能力绑 Key）。
+// nil/空 capabilities（存量 Key / 旧迁移前数据）按「无能力」处理，由调用方
+// 决定 fail-open 还是 fail-closed（能力面统一走 capabilitygate 的 fail-closed）。
+func (ki *KeyInfo) HasCapability(capability string) bool {
+	if len(ki.Capabilities) == 0 {
+		return false
+	}
+	return slices.Contains(ki.Capabilities, capability)
 }
 
 // DBQuerier 是 KeyVerifier 用于查询 api_keys 表的最小化接口。
@@ -523,7 +540,8 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			ak.key_alias,
 			app.customer_id,
 			ak.expires_at,
-			COALESCE(ak.is_system, FALSE)
+			COALESCE(ak.is_system, FALSE),
+			COALESCE(ak.capabilities, '[]'::jsonb)
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -548,6 +566,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.CustomerID,
 		&info.ExpiresAt,
 		&info.IsSystem,
+		&info.Capabilities,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
