@@ -123,7 +123,7 @@
 <b>② 211 看板聚合 4s+ / listLogs 8.6s</b>：真源统一轮的有意取舍（同宇宙优先于快）；当前数据量（273k 行）下可接受，但增长后需预聚合或物化视图。request_metrics_default 上 10 个 idx_scan=0 的冗余索引占约 90MB，可在低峰评估清理（写放大）。
 </div>
 <div class="warn">
-<b>③ 245 上 Maestro 全链未跑</b>：并行车道已在 211 完成 Maestro（VERDICT PASS 4 层 35 断言），245 待下一轮执行。
+<b>③ 245 轻量验证完成但未跑完整 Maestro</b>：211 并行车道已完成 Maestro（VERDICT PASS 4 层 35 断言）；245 资源受限（3GB 内存、load 5.32、73% 磁盘）不适合高并发压测，已通过轻量验证（部署成功、readyz DB 5ms+Redis ok、admin 登录 200、三模型 chat 200）。完整 Maestro 建议在资源充足环境执行。
 </div>
 <div class="warn">
 <b>④ pg_stat_statements 未 preload</b>：慢 SQL 分析只能靠 log_min_duration_statement=500ms 日志采样；精确聚合需一次 DB 重启授权（已登记待决）。
