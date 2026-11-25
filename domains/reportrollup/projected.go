@@ -92,8 +92,9 @@ func BuildProjectedSummary(ctx context.Context, q Querier, start, end time.Time,
 }
 
 const projectedModelKey = `coalesce(nullif(raw_model_name,''),nullif(outbound_model,''),nullif(client_model,''),'__unknown__')`
+const projectedPersonKey = `coalesce(nullif(person_key,''),'unknown')`
 const projectedDimensions = projectedModelKey + ` AS raw_model_name,
-	provider_id, credential_id, api_key_id, tenant_id, coalesce(nullif(person_key,''),'unknown') AS person`
+	provider_id, credential_id, api_key_id, tenant_id, ` + projectedPersonKey + ` AS person`
 
 const projectedDateWhere = `occurred_at >= $1 AND occurred_at < $2 AND source_fact_id IS NOT NULL`
 const projectedErrorKind = `coalesce(nullif(error_kind,''),nullif(status,''),'unknown')`
@@ -158,6 +159,7 @@ func projectedProviderDistribution(view View) bool {
 }
 
 const (
+	projectedModelGroup  = "(raw_model_name)"
 	projectedTenantGroup = "(tenant_id)"
 	projectedPersonGroup = "(tenant_id, person)"
 )
@@ -180,7 +182,7 @@ func projectedGrainGroups(daily bool, view View, scope ProjectedSummaryScope) []
 	}
 	groups := []string{"()", "(report_date)"}
 	if scope.includesDistribution() {
-		groups = append(groups, "(raw_model_name)")
+		groups = append(groups, projectedModelGroup)
 		if projectedProviderDistribution(view) {
 			groups = append(groups, "(provider_id)")
 		} else {
@@ -216,20 +218,21 @@ func projectedGrainKeys(sets string, owners bool) (flags, measureKeys, errorKeys
 	return flags, measureKeys, errorKeys
 }
 
-func projectedFactsSQL(where string, fullReport bool) string {
+const projectedMeasureInputs = `prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
+	total_tokens, credits_charged, latency_ms, cost_amount, cost_currency`
+
+func projectedFactsSQL(where, columns string, materialized bool) string {
 	materialization := "MATERIALIZED"
-	if !fullReport {
+	if !materialized {
 		// The smaller grouping sets leave fewer columns live. Inline each scan
 		// so PostgreSQL can prune columns and push down the error filter.
 		materialization = "NOT MATERIALIZED"
 	}
 	return `WITH bounded AS (
 		SELECT (occurred_at AT TIME ZONE $3)::date AS report_date, ` + projectedDimensions + `,
-			outbound_model, status, ` + projectedErrorKind + ` AS kind,
-			prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
-			total_tokens, credits_charged, latency_ms, cost_amount, cost_currency
+			outbound_model, status, ` + projectedErrorKind + ` AS kind, ` + projectedMeasureInputs + `
 		FROM public.request_metrics_projection WHERE ` + projectedDateWhere + ` AND (NOT $4::boolean OR traffic_class='business')
-	), facts AS ` + materialization + ` (SELECT * FROM bounded WHERE true` + where + `)`
+	), facts AS ` + materialization + ` (SELECT ` + columns + ` FROM bounded WHERE true` + where + `)`
 }
 
 func projectedGrainSQL(where string, groups []string, fullReport bool) string {
@@ -238,6 +241,12 @@ func projectedGrainSQL(where string, groups []string, fullReport bool) string {
 	sets := strings.Join(groups, ", ")
 	flags, measureKeys, errorKeys := projectedGrainKeys(sets, fullReport)
 	errorSets := strings.Join(grainErrorGroups(groups), ", ")
+	facts := projectedFactsSQL(where, "*", fullReport)
+	if len(groups) == 1 && groups[0] == projectedModelGroup {
+		// Reuse the narrow tenant scan for model measures and errors. An
+		// inlined CTE reads the same bitmap heap blocks for each aggregate.
+		facts = projectedFactsSQL(where, "raw_model_name, status, kind, "+projectedMeasureInputs, true)
+	}
 	measures := `, measures AS (
 		SELECT ` + flags + measureKeys + projectedAdditiveMeasures + `,
 			percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)
@@ -259,7 +268,7 @@ func projectedGrainSQL(where string, groups []string, fullReport bool) string {
 			FROM additive LEFT JOIN ranks USING (tenant_id)
 		)`
 	}
-	return projectedFactsSQL(where, fullReport) + measures + ` SELECT ` + projectedGrainColumns + `, NULL::text,
+	return facts + measures + ` SELECT ` + projectedGrainColumns + `, NULL::text,
 		requests, successes, input_tokens, output_tokens, cache_read, cache_write, usd_cents, 'USD',
 		credits, 0::float8, coalesce(latency_ranks[1],0), coalesce(latency_ranks[2],0),
 		(latency_coverage>0)::int::float8, 0::bigint,
@@ -282,7 +291,7 @@ func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFi
 			if scope == ProjectedSummaryTotals || projectedProviderDistribution(view) {
 				return nil
 			}
-			tenants, err := readDailyHistory(ctx, q, coverage, historyTenant, true, sink)
+			tenants, err := readDailyHistory(ctx, q, coverage, historyTenant, true, "", sink)
 			if err != nil {
 				return err
 			}
@@ -293,6 +302,39 @@ func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFi
 				groups = []string{projectedPersonGroup}
 			} else {
 				groups = projectedInternalGroups(scope)
+			}
+		}
+	}
+	if filter.TenantID != "" && !projectedProviderDistribution(view) {
+		otherFilters := filter
+		otherFilters.TenantID = ""
+		if eligibleDailyHistory(otherFilters, coverage, scope) {
+			used, err := readDailyHistory(ctx, q, coverage, historyTenant, true, filter.TenantID, func(kind groupKind, row grainScanRow) {
+				if scope != ProjectedSummaryTotals || kind != gkTenant {
+					sink(kind, row)
+				}
+			})
+			if err != nil {
+				return err
+			}
+			if used {
+				if scope == ProjectedSummaryTotals {
+					return nil
+				}
+				models, err := readDailyHistory(ctx, q, coverage, historyTenantModel, true, filter.TenantID, sink)
+				if err != nil {
+					return err
+				}
+				if models && scope == projectedSummaryPersonPage {
+					return nil
+				}
+				groups = nil
+				if !models {
+					groups = append(groups, projectedModelGroup)
+				}
+				if scope == ProjectedSummaryDistribution {
+					groups = append(groups, projectedPersonGroup)
+				}
 			}
 		}
 	}

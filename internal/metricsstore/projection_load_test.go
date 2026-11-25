@@ -36,7 +36,7 @@ func requestMetricsFixtureConfig(t *testing.T, dsn string) *pgxpool.Config {
 }
 
 // The opt-in load check runs against a local disposable restore after its
-// migration channel has applied through 983h. It writes only derived statistics.
+// migration channel has applied through 983i. It writes only derived statistics.
 func TestRequestMetricsProjectionLoad(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_LOAD_DSN")
 	if dsn == "" {
@@ -315,10 +315,11 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 	for {
 		var ready bool
 		var observed time.Time
-		if err := pool.QueryRow(ctx, `SELECT bool_and(h.day IS NOT NULL AND th.day IS NOT NULL), clock_timestamp()
+		if err := pool.QueryRow(ctx, `SELECT bool_and(h.day IS NOT NULL AND th.day IS NOT NULL AND pr.day IS NOT NULL), clock_timestamp()
 			FROM public.request_metrics_projection p
 			LEFT JOIN public.request_metrics_history_days h ON h.day=(p.occurred_at AT TIME ZONE 'Asia/Shanghai')::date
 			LEFT JOIN public.request_metrics_tenant_history_days th ON th.day=h.day
+			LEFT JOIN public.request_metrics_history_detail_days pr ON pr.day=h.day
 			WHERE p.tenant_id='fixture-latency' AND starts_with(p.request_id,$1)`, batchID).Scan(&ready, &observed); err != nil {
 			t.Fatal(err)
 		}
@@ -326,10 +327,10 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 		// Reuse the same arrival order for both latency upper bounds.
 		historyP95 := p95 + observed.Sub(published)
 		if historyP95 > 5*time.Minute {
-			t.Fatalf("daily and tenant history publication delay exceeds five minutes: %s", historyP95)
+			t.Fatalf("history and person rank publication delay exceeds five minutes: %s", historyP95)
 		}
 		if ready {
-			t.Logf("daily and tenant history published samples=%d upper-bound p95=%s", len(arrivals), historyP95)
+			t.Logf("history and person rank published samples=%d upper-bound p95=%s", len(arrivals), historyP95)
 			break
 		}
 		time.Sleep(time.Second)

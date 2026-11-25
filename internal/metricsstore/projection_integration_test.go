@@ -27,8 +27,10 @@ import (
 
 type historyQueryProbe struct {
 	reportrollup.Querier
-	mode       string
-	tenantMode string
+	mode            string
+	tenantMode      string
+	tenantModelMode string
+	packedRank      bool
 }
 
 func (p *historyQueryProbe) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
@@ -44,6 +46,10 @@ func (p *historyQueryProbe) Query(ctx context.Context, query string, args ...any
 		p.mode = mode
 	case strings.Contains(query, "FROM public.request_metrics_daily_tenant_history"):
 		p.tenantMode = mode
+	case strings.Contains(query, "FROM public.request_metrics_daily_tenant_model_history"):
+		p.tenantModelMode = mode
+	case strings.Contains(query, "FROM public.request_metrics_person_rank_packs"):
+		p.packedRank = true
 	}
 	return p.Querier.Query(ctx, query, args...)
 }
@@ -1486,7 +1492,7 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 				probe := &historyQueryProbe{Querier: tx}
 				got, err := reportrollup.BuildProjectedSummary(ctx, probe, start, end, tc.view, filter, reportrollup.Names{}, coverage, tc.scope)
 				wantTenantMode := ""
-				if tc.view == reportrollup.ViewInternal && tc.scope == reportrollup.ProjectedSummaryDistribution {
+				if tc.view == reportrollup.ViewInternal && (tc.scope == reportrollup.ProjectedSummaryDistribution || filter.TenantID != "") {
 					wantTenantMode = wantTenants
 				}
 				if err != nil || probe.mode != wantMode || probe.tenantMode != wantTenantMode || !reflect.DeepEqual(got, want) {
@@ -1512,12 +1518,15 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 		drain(processor.RefreshDailySummary)
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", "", reportrollup.GrainFilter{})
+		assertParity("", "", reportrollup.GrainFilter{TenantID: "history-a"})
 		apply("983h_request_metrics_daily_tenant_history.sql")
 		apply("983h_request_metrics_daily_tenant_history.sql")
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", "published", reportrollup.GrainFilter{})
 		assertParity("published", "published", reportrollup.GrainFilter{BusinessOnly: true})
-		assertParity("", "", reportrollup.GrainFilter{TenantID: "history-a"})
+		assertParity("", "published", reportrollup.GrainFilter{TenantID: "history-a"})
+		assertParity("", "published", reportrollup.GrainFilter{TenantID: "unknown-tenant"})
+		assertParity("", "", reportrollup.GrainFilter{TenantID: "history-a", Model: "history-model-1"})
 		exec(`UPDATE public.request_metrics_projection SET occurred_at='2026-11-13 10:00+08',
 			occurred_date='2026-11-13', billing_date='2026-11-13', latency_ms=491, cost_amount=0.12345678
 			WHERE request_id='cached-history-2';
@@ -1528,6 +1537,7 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 			t.Fatalf("both revised dates must become uncovered, published=%d: %v", published, err)
 		}
 		assertParity("contiguous", "contiguous", reportrollup.GrainFilter{})
+		assertParity("", "contiguous", reportrollup.GrainFilter{TenantID: "history-b"})
 		drain(processor.RefreshDailySummary)
 		exec(`CREATE FUNCTION public.reject_history_publish() RETURNS trigger LANGUAGE plpgsql AS $$
 			BEGIN RAISE EXCEPTION 'injected history publication failure'; END $$;
@@ -1563,6 +1573,7 @@ INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CO
 		assertParity("published", "published", reportrollup.GrainFilter{})
 		exec(`UPDATE public.request_metrics_daily_state SET dirty=true WHERE day IN ('2026-11-11','2026-11-14');`)
 		assertParity("fragmented", "fragmented", reportrollup.GrainFilter{})
+		assertParity("", "fragmented", reportrollup.GrainFilter{TenantID: "history-a"})
 		drain(processor.RefreshDailySummary)
 		drain(processor.RefreshDailyHistory)
 		assertParity("published", "published", reportrollup.GrainFilter{})
@@ -1581,71 +1592,139 @@ SELECT 'person-page-'||n,
  CASE WHEN n=62 OR n%7=0 THEN 'timeout' ELSE 'success' END,
  CASE WHEN n=61 THEN 'probe' ELSE 'business' END,
  n*3,n,n*0.0003123,'USD',n*40,'async_processor',27000+n
-FROM (SELECT n FROM generate_series(1,62) n UNION ALL SELECT 101) fixture;`)
-		for _, refresh := range []func(context.Context) (bool, error){processor.RefreshDailySummary, processor.RefreshDailyHistory} {
+FROM (SELECT n FROM generate_series(1,62) n UNION ALL SELECT 101) fixture;
+
+INSERT INTO public.request_metrics_projection (
+ request_id,tenant_id,person_key,occurred_at,occurred_date,billing_date,raw_model_name,
+ status,traffic_class,total_tokens,credits_charged,cost_amount,cost_currency,latency_ms,source,source_fact_id)
+VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-11-04','2026-11-04',
+ 'page-model','success','business',11,7,0.000173,'USD',505,'async_processor',28001);`)
+		drain := func(refresh func(context.Context) (bool, error)) {
+			t.Helper()
 			for {
 				built, err := refresh(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if !built {
-					break
+					return
 				}
 			}
 		}
+		drain(processor.RefreshDailySummary)
+		drain(processor.RefreshDailyHistory)
 		loc, err := time.LoadLocation("Asia/Shanghai")
 		if err != nil {
 			t.Fatal(err)
 		}
-		start := time.Date(2026, 11, 5, 0, 0, 0, 0, loc)
-		tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, start, start.AddDate(0, 0, 1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, tc := range []struct {
-			filter    reportrollup.GrainFilter
-			requested int32
-			page      int32
-			people    int64
-		}{
-			{requested: 1, page: 1, people: 60},
-			{requested: 2, page: 2, people: 60},
-			{requested: 99, page: 2, people: 60},
-			{filter: reportrollup.GrainFilter{TenantID: "page-a"}, requested: 1, page: 1, people: 30},
-			{filter: reportrollup.GrainFilter{Person: "unknown"}, requested: 1, page: 1, people: 1},
-			{filter: reportrollup.GrainFilter{Person: "probe-only"}, requested: 2, page: 1, people: 0},
-		} {
-			want, err := reportrollup.BuildProjectedSummary(ctx, tx, start, start, reportrollup.ViewInternal, tc.filter,
-				reportrollup.Names{}, coverage, reportrollup.ProjectedSummaryDistribution)
-			if err != nil || int64(len(want.Persons)) != tc.people {
-				t.Fatalf("full internal distribution for %+v: %v", tc, err)
+		start := time.Date(2026, 11, 4, 0, 0, 0, 0, loc)
+		end := start.AddDate(0, 0, 1)
+		assertPages := func(wantPacked bool, tenantModelMode string) []*reportrollup.GrainReport {
+			t.Helper()
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
 			}
-			sort.Slice(want.Persons, func(i, j int) bool {
-				a, b := want.Persons[i], want.Persons[j]
-				if a.Totals.RequestCount != b.Totals.RequestCount {
-					return a.Totals.RequestCount > b.Totals.RequestCount
+			defer tx.Rollback(ctx)
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, end, end.AddDate(0, 0, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reports []*reportrollup.GrainReport
+			for _, tc := range []struct {
+				filter    reportrollup.GrainFilter
+				requested int32
+				page      int32
+				people    int64
+			}{
+				{requested: 1, page: 1, people: 60},
+				{requested: 2, page: 2, people: 60},
+				{requested: 99, page: 2, people: 60},
+				{filter: reportrollup.GrainFilter{TenantID: "page-a"}, requested: 1, page: 1, people: 30},
+				{filter: reportrollup.GrainFilter{Person: "unknown"}, requested: 1, page: 1, people: 1},
+				{filter: reportrollup.GrainFilter{Person: "probe-only"}, requested: 2, page: 1, people: 0},
+			} {
+				want, err := reportrollup.BuildProjectedSummary(ctx, tx, start, end, reportrollup.ViewInternal, tc.filter,
+					reportrollup.Names{}, coverage, reportrollup.ProjectedSummaryDistribution)
+				if err != nil || int64(len(want.Persons)) != tc.people {
+					t.Fatalf("full internal distribution for %+v: %v", tc, err)
 				}
-				if a.TenantID != b.TenantID {
-					return a.TenantID < b.TenantID
+				sort.Slice(want.Persons, func(i, j int) bool {
+					a, b := want.Persons[i], want.Persons[j]
+					if a.Totals.RequestCount != b.Totals.RequestCount {
+						return a.Totals.RequestCount > b.Totals.RequestCount
+					}
+					if a.TenantID != b.TenantID {
+						return a.TenantID < b.TenantID
+					}
+					return a.Person < b.Person
+				})
+				want.PersonPage = &reportrollup.PersonPage{Number: tc.page, Size: 50, Total: tc.people}
+				offset := int(tc.page-1) * want.PersonPage.Size
+				want.Persons = want.Persons[offset:min(offset+want.PersonPage.Size, len(want.Persons))]
+				probe := &historyQueryProbe{Querier: tx}
+				got, err := reportrollup.BuildProjectedPersonPage(ctx, probe, start, end, tc.filter, coverage, tc.requested)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("person page for %+v does not equal exact full slice: %v", tc, err)
 				}
-				return a.Person < b.Person
-			})
-			want.PersonPage = &reportrollup.PersonPage{Number: tc.page, Size: 50, Total: tc.people}
-			offset := int(tc.page-1) * want.PersonPage.Size
-			want.Persons = want.Persons[offset:min(offset+want.PersonPage.Size, len(want.Persons))]
-			probe := &historyQueryProbe{Querier: tx}
-			got, err := reportrollup.BuildProjectedPersonPage(ctx, probe, start, start, tc.filter, coverage, tc.requested)
-			if err != nil || !reflect.DeepEqual(got, want) {
-				t.Fatalf("person page for %+v does not equal exact full slice: %v", tc, err)
+				wantPackedForScope := wantPacked && tc.filter.TenantID == "" && tc.filter.Person == ""
+				if probe.packedRank != wantPackedForScope {
+					t.Fatalf("packed rank for %+v = %t, want %t", tc, probe.packedRank, wantPackedForScope)
+				}
+				if tc.filter.TenantID == "" && tc.filter.Person == "" && (probe.mode != "published" || probe.tenantMode != "published") {
+					t.Fatalf("unfiltered person page should use published days, got %q/%q", probe.mode, probe.tenantMode)
+				}
+				if tc.filter.TenantID != "" && (probe.mode != "" || probe.tenantMode != "published") {
+					t.Fatalf("one tenant page should use only the published tenant days, got %q/%q", probe.mode, probe.tenantMode)
+				}
+				wantTenantModel := ""
+				if tc.filter.TenantID != "" {
+					wantTenantModel = tenantModelMode
+				}
+				if probe.tenantModelMode != wantTenantModel {
+					t.Fatalf("tenant model history for %+v = %q, want %q", tc, probe.tenantModelMode, wantTenantModel)
+				}
+				reports = append(reports, got)
 			}
-			if tc.filter.TenantID == "" && tc.filter.Person == "" && (probe.mode != "published" || probe.tenantMode != "published") {
-				t.Fatalf("unfiltered person page should use published days, got %q/%q", probe.mode, probe.tenantMode)
-			}
+			return reports
+		}
+		before := assertPages(false, "")
+		apply("983i_request_metrics_daily_history_details.sql")
+		apply("983i_request_metrics_daily_history_details.sql")
+		drain(processor.RefreshDailyHistory)
+		if got := assertPages(true, "published"); !reflect.DeepEqual(got, before) {
+			t.Fatal("publishing details changed the report")
+		}
+
+		exec("UPDATE public.request_metrics_projection SET person_key='new-late-person', raw_model_name='page-model-late' WHERE request_id='person-page-58'")
+		var published bool
+		if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_history_detail_days WHERE day='2026-11-05')").Scan(&published); err != nil || published {
+			t.Fatalf("revision must revoke the person rank publication marker: %t %v", published, err)
+		}
+		drain(processor.RefreshDailySummary)
+		exec(`CREATE FUNCTION public.reject_person_rank_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'injected person rank publication failure'; END $$;
+			CREATE TRIGGER reject_person_rank_publish BEFORE INSERT ON public.request_metrics_history_detail_days
+			FOR EACH STATEMENT EXECUTE FUNCTION public.reject_person_rank_publish();`)
+		if _, err := processor.RefreshDailyHistory(ctx); err == nil || !strings.Contains(err.Error(), "injected person rank publication failure") {
+			t.Fatalf("expected rank publication to roll back: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_history_days WHERE day='2026-11-05')").Scan(&published); err != nil || published {
+			t.Fatalf("rank publish failure must also roll back general history: %t %v", published, err)
+		}
+		exec("DROP TRIGGER reject_person_rank_publish ON public.request_metrics_history_detail_days; DROP FUNCTION public.reject_person_rank_publish()")
+		drain(processor.RefreshDailyHistory)
+		revised := assertPages(true, "published")
+
+		// A closed day without a ranking publication uses the live indexed
+		// projection even when both other historical publications are current.
+		exec("DELETE FROM public.request_metrics_history_detail_days WHERE day='2026-11-05'")
+		if got := assertPages(false, "contiguous"); !reflect.DeepEqual(got, revised) {
+			t.Fatal("mixing published and rebuilt details changed the revised report")
+		}
+		drain(processor.RefreshDailyHistory)
+		if got := assertPages(true, "published"); !reflect.DeepEqual(got, revised) {
+			t.Fatal("republishing details changed the revised report")
 		}
 	})
 
@@ -1774,6 +1853,8 @@ FROM (VALUES
 			state.PendingCount == 0 || state.OldestWaitSeconds < 300 {
 			t.Fatalf("stale backlog should block readiness: %+v", state)
 		}
+		apply("983i_request_metrics_daily_history_details.down.sql")
+		apply("983i_request_metrics_daily_history_details.down.sql")
 		apply("983h_request_metrics_daily_tenant_history.down.sql")
 		apply("983h_request_metrics_daily_tenant_history.down.sql")
 		if _, err := processor.RefreshDailyHistory(ctx); err != nil {

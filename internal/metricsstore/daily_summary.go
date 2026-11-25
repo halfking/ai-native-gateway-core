@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/metrics"
@@ -57,28 +58,40 @@ func (p *ProjectionProcessor) RefreshDailyHistory(ctx context.Context) (bool, er
 	defer cancel()
 	const historyDays = "public.request_metrics_history_days"
 	const tenantDays = "public.request_metrics_tenant_history_days"
-	var tenantsAvailable bool
-	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, tenantDays).Scan(&tenantsAvailable); err != nil {
+	const detailDays = "public.request_metrics_history_detail_days"
+	var tenantsAvailable, detailsAvailable bool
+	if err := p.db.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL, to_regclass($2) IS NOT NULL`, tenantDays, detailDays).
+		Scan(&tenantsAvailable, &detailsAvailable); err != nil {
 		return false, err
 	}
-	missing := `NOT EXISTS (SELECT 1 FROM ` + historyDays + ` h WHERE h.day=s.day)`
+	type publication struct {
+		days    string
+		rebuild func(context.Context, *sql.Tx, string) error
+	}
+	publications := []publication{{historyDays, reportrollup.RebuildDailyHistory}}
 	if tenantsAvailable {
-		missing += ` OR NOT EXISTS (SELECT 1 FROM ` + tenantDays + ` t WHERE t.day=s.day)`
+		publications = append(publications, publication{tenantDays, reportrollup.RebuildDailyTenantHistory})
+	}
+	if detailsAvailable {
+		publications = append(publications, publication{detailDays, reportrollup.RebuildDailyHistoryDetails})
+	}
+	missing := make([]string, 0, len(publications))
+	for _, pub := range publications {
+		missing = append(missing, `NOT EXISTS (SELECT 1 FROM `+pub.days+` h WHERE h.day=s.day)`)
 	}
 	claim := `
 	SELECT s.day::text FROM public.request_metrics_daily_state s
 	WHERE NOT s.dirty
 	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
-	  AND (` + missing + `)
+	  AND (` + strings.Join(missing, " OR ") + `)
 	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
 	return p.refreshDay(ctx, claim, func(ctx context.Context, tx *sql.Tx, day string) error {
-		// Use one lock acquisition for both publications. Separate polling
+		// Use one lock acquisition for the publications. Separate polling
 		// workers can otherwise lose a tick each while competing for this row.
-		if err := publishMissingHistory(ctx, tx, day, historyDays, reportrollup.RebuildDailyHistory); err != nil {
-			return err
-		}
-		if tenantsAvailable {
-			return publishMissingHistory(ctx, tx, day, tenantDays, reportrollup.RebuildDailyTenantHistory)
+		for _, pub := range publications {
+			if err := publishMissingHistory(ctx, tx, day, pub.days, pub.rebuild); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

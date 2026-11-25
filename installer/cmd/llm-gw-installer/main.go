@@ -2011,6 +2011,12 @@ var requestMetricsDailyTenantHistory983h []byte
 //go:embed embeddata/startup/983h_request_metrics_daily_tenant_history.down.sql
 var requestMetricsDailyTenantHistory983hDown []byte
 
+//go:embed embeddata/startup/983i_request_metrics_daily_history_details.sql
+var requestMetricsDailyHistoryDetails983i []byte
+
+//go:embed embeddata/startup/983i_request_metrics_daily_history_details.down.sql
+var requestMetricsDailyHistoryDetails983iDown []byte
+
 // ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 //
 //	★ 这四条**只建了 canonical + embeddata 双副本**，却没登记进任何通道
@@ -2797,8 +2803,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/983g_request_metrics_daily_history.sql":      requestMetricsDailyHistory983g,
 	"startup/983g_request_metrics_daily_history.down.sql": requestMetricsDailyHistory983gDown,
 
-	"startup/983h_request_metrics_daily_tenant_history.sql":      requestMetricsDailyTenantHistory983h,
-	"startup/983h_request_metrics_daily_tenant_history.down.sql": requestMetricsDailyTenantHistory983hDown,
+	"startup/983h_request_metrics_daily_tenant_history.sql":       requestMetricsDailyTenantHistory983h,
+	"startup/983h_request_metrics_daily_tenant_history.down.sql":  requestMetricsDailyTenantHistory983hDown,
+	"startup/983i_request_metrics_daily_history_details.sql":      requestMetricsDailyHistoryDetails983i,
+	"startup/983i_request_metrics_daily_history_details.down.sql": requestMetricsDailyHistoryDetails983iDown,
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。
