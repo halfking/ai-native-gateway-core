@@ -491,7 +491,7 @@ echo "== ⑨ 结构不变量（顺序 / 切流 / 失败点走 abort）=="# ⚠ �
 pre_line="$(grep -n 'dd_preflight_web_dist "\$DD_REPO_ROOT" || exit 1' "$SCRIPT" | cut -d: -f1 | head -1)"
 cand_line="$(grep -n 'docker run -d --name "\$DD_CANDIDATE_CONTAINER"' "$SCRIPT" | cut -d: -f1 | head -1)"
 switch_line="$(grep -n 'dd_switch_and_verify || dd_fail' "$SCRIPT" | cut -d: -f1 | head -1)"
-stop_line="$(grep -n 'docker stop "\$DD_ACTIVE_CONTAINER"' "$SCRIPT" | cut -d: -f1 | head -1)"
+stop_line="$(grep -n 'dd_stop_container "\$DD_ACTIVE_CONTAINER"' "$SCRIPT" | cut -d: -f1 | head -1)"
 if [[ -n "$pre_line" && -n "$cand_line" && "$pre_line" -lt "$cand_line" ]]; then
   ok "守卫在起候选槽之前（${pre_line} < ${cand_line}）"
 else
@@ -565,11 +565,28 @@ else
   bad "abort 不丢弃候选槽 —— 端口被占，下一轮候选槽起不来"
 fi
 # 停旧槽是「停而不删」
-if grep -qF 'docker stop "$DD_ACTIVE_CONTAINER"' "$SCRIPT" \
+# ★ 2026-11-17：锚点从 `docker stop "$DD_ACTIVE_CONTAINER"` 迁到
+#   `dd_stop_container "$DD_ACTIVE_CONTAINER"` —— 停旧槽现在必须经
+#   dd_stop_container（它带 `--time $DD_STOP_TIMEOUT` 等待预算）。
+#   为什么必须迁：**裸 `docker stop` = docker 默认 10 秒就 SIGKILL**，
+#   而网关的排空预算是 36s ⇒ 进程在排空完成前被强杀 ⇒ 在途 SSE / 流式
+#   请求被硬切 ⇒ nginx 502（llm.itestu.cn「打不开」的根因）。
+#   ★ 锚点仍落在**可执行语句**上（不是注释、不是文案）—— 本门 ⑨ 段开头的
+#     教训（锚在文案上会被变异绕过）在这里同样适用。
+if grep -qF 'dd_stop_container "$DD_ACTIVE_CONTAINER"' "$SCRIPT" \
    && ! grep -qF 'docker rm -f "$DD_ACTIVE_CONTAINER"' "$SCRIPT"; then
   ok "旧槽是「停而不删」（保留容器与镜像，可 docker start 回滚）"
 else
   bad "旧槽不是停而不删 —— 回滚材料被删了"
+fi
+# ★ 2026-11-17：停旧槽**必须带等待预算**（不能是裸 docker stop）。
+#   这条与 tests/deploy_stop_budget_test.sh 互补：那边对拍「预算够不够」，
+#   这边钉住「停旧槽这条路径确实走的是带预算的函数」。
+if grep -qF 'docker stop --time "$DD_STOP_TIMEOUT" "$_c"' "$SCRIPT" \
+   && ! grep -qE '^[[:space:]]*docker stop[[:space:]]+"\$' "$SCRIPT"; then
+  ok "停容器走 dd_stop_container（带 --time 等待预算），无裸 docker stop"
+else
+  bad "存在不带等待预算的裸 docker stop —— 会在排空完成前 SIGKILL ⇒ 502"
 fi
 # 容器存在性判断必须带 --type container（不被同名镜像骗过）
 if grep -qF 'docker inspect --type container' "$SCRIPT"; then

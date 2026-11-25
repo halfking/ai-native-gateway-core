@@ -126,6 +126,32 @@ DD_MOBILE_DIST_SRC="${DD_MOBILE_DIST_SRC:-$DD_REPO_ROOT/web-mobile/dist}"
 # 纯 API 形态逃生舱：前端缺失/陈旧时是否继续部署（默认拒绝）。
 DD_ALLOW_STALE_WEB="${DD_ALLOW_STALE_WEB:-0}"
 
+# ★★ 2026-11-17：停旧槽的**等待预算**（docker stop -t）。
+#
+#   根因（本脚本曾用 `docker stop <容器>`、**不带 -t** ⇒ docker 默认只等
+#   **10 秒**就 SIGKILL）：而网关自己的排空预算是 **36s**（注销 3s +
+#   mock probe drain 5s + srv.Shutdown 23s + worker stop 5s，见
+#   cmd/gateway/shutdown_budget.go 的 shutdownWorstCaseBudget）
+#   ⇒ **进程在排空完成前被强杀** ⇒ 在途的 SSE 长连接 / 流式请求被硬切
+#   ⇒ nginx 记 `upstream prematurely closed connection` ⇒ 客户端收到 **502**
+#   ⇒ llm.itestu.cn 的用户可见形态＝「打不开 / 一直转圈 / 登录失败」。
+#
+#   实测锚点（211，2026-11-17 13:52 那一轮蓝绿切流）：
+#     旧槽日志 "gateway shutting down" @ 05:52:30.040Z
+#     容器退出 exit=137（SIGKILL）        @ 05:52:40.090Z   ← 差 10.05s
+#     nginx   upstream prematurely closed connection @ 13:52:40（同一秒）
+#
+#   为什么给 60s 不会拖慢部署：`docker stop -t N` 的 N 是**上限**不是固定
+#   时长 —— 容器进程自己退出，docker 立刻返回 ⇒ 正常情况（无在途请求）
+#   仍然秒退；只有在**确有在途长请求**时才会真的等，而那正是我们需要的。
+#   ★ 蓝绿切流场景下这个等待**零可用性代价**：nginx 早已切到新槽，
+#     旧槽不会再接新连接，等它把在途请求排空是纯赚。
+#
+#   ★ 纪律：改这个数之前先看 cmd/gateway/shutdown_budget.go —— 若应用侧
+#     排空预算变大了，这里必须同步变大，否则同一个坑会原地复发。
+#     tests/deploy_stop_budget_test.sh 会把两侧对拍（改小任一侧 ⇒ 门红）。
+DD_STOP_TIMEOUT="${DD_STOP_TIMEOUT:-60}"
+
 log()  { printf '[%s] %s\n' "$DD_TARGET" "$*" >&2; }
 warn() { printf '[%s] WARN: %s\n' "$DD_TARGET" "$*" >&2; }
 die()  { printf '[%s] FATAL: %s\n' "$DD_TARGET" "$*" >&2; exit 1; }
@@ -1584,6 +1610,29 @@ dd_slot_port() {
 
 dd_container_name() { printf '%s-%s' "$DD_CONTAINER_PREFIX" "$1"; }
 
+# dd_stop_container <容器名> —— 停一个网关容器，**显式**给等待预算。
+#
+# ★★ 2026-11-17（切流窗口 502 的根修）：这个函数存在的唯一理由是
+#   **不许再出现裸 `docker stop`**。
+#   裸 `docker stop` = docker 默认 10 秒后 SIGKILL，而网关的排空预算是 36s
+#   （cmd/gateway/shutdown_budget.go 的 shutdownWorstCaseBudget）
+#   ⇒ 进程在排空完成前被强杀 ⇒ 在途 SSE / 流式请求被硬切 ⇒ nginx 502。
+#   实测：211 / 2026-11-17 13:52 —— "gateway shutting down" @05:52:30.040Z
+#   ⇒ exit=137 @05:52:40.090Z（差 10.05s = docker 默认超时）
+#   ⇒ nginx 同一秒记 5 条 `upstream prematurely closed connection`。
+#
+#   语义：`--time` 是**上限**不是固定时长 ⇒ 容器进程自己退出，docker 立即返回。
+#   停不掉（进程 hang）时 docker 到点 SIGKILL ⇒ 退出码 137 ⇒ 调用方仍能
+#   从退出码看出「没优雅退出」，**不会把强杀读成优雅停机**。
+#
+#   ★ 所有停网关容器的路径都必须走本函数（MODE=stop / 停旧槽 / 退役历史
+#     单机容器），否则就会出现「一条路径带预算、另一条路径不带」的漏网。
+dd_stop_container() {
+  local _c="$1"
+  [[ -n "$_c" ]] || return 0
+  docker stop --time "$DD_STOP_TIMEOUT" "$_c"
+}
+
 # 活跃槽的判定：**以 nginx upstream 实际指向的端口为准**（流量在哪，活跃槽就在
 # 哪），upstream 读不到时才回落到状态文件 <data root>/run/active-slot，
 # 再兜底为 a（首次部署）。
@@ -1925,13 +1974,13 @@ if [[ "$MODE" == "stop" ]]; then
   for _slot in a b; do
     _c="$(dd_container_name "$_slot")"
     if docker inspect --type container "$_c" >/dev/null 2>&1; then
-      docker stop "$_c" >/dev/null 2>&1 || warn "停止 ${_c} 失败"
+      dd_stop_container "$_c" >/dev/null 2>&1 || warn "停止 ${_c} 失败"
     fi
   done
   # 蓝绿之前的单机形态容器（<prefix>，无 -<slot> 后缀）：一并停掉，
   # 否则它还占着槽 a 的端口，下一次蓝绿部署的候选槽起不来。
   if docker inspect --type container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1; then
-    docker stop "$DD_CONTAINER_PREFIX" >/dev/null 2>&1 || warn "停止 ${DD_CONTAINER_PREFIX} 失败"
+    dd_stop_container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1 || warn "停止 ${DD_CONTAINER_PREFIX} 失败"
   fi
   exit 0
 fi
@@ -3628,9 +3677,15 @@ fi
 # 旧槽容器**停而不删**：容器对象与镜像都留着 ⇒ 人工回滚只要 docker start。
 # 停掉它是为了释放它的端口给下一轮的候选槽（槽位与端口是绑定的）。
 if docker inspect --type container "$DD_ACTIVE_CONTAINER" >/dev/null 2>&1; then
-  if docker stop "$DD_ACTIVE_CONTAINER" >/dev/null 2>&1; then
+  # ★★ 2026-11-17：必须经 dd_stop_container（带 --time 等待预算）。
+  #   裸 `docker stop` 的默认 10 秒会**在网关排空完成前 SIGKILL**它 ⇒
+  #   在途的 SSE / 流式请求被硬切 ⇒ nginx 502（llm.itestu.cn「打不开」）。
+  #   实测：211 / 2026-11-17 13:52 —— 旧槽 05:52:30Z 开始关停，
+  #   05:52:40Z exit=137（SIGKILL），nginx 同一秒记 5 条 prematurely closed。
+  #   ★ 切流后 nginx 已指向新槽 ⇒ 旧槽排空期间**零可用性代价** ⇒ 放心等。
+  if dd_stop_container "$DD_ACTIVE_CONTAINER" >/dev/null 2>&1; then
     DD_OLD_STOPPED=1
-    log "旧槽已停：${DD_ACTIVE_CONTAINER}（保留容器与镜像，可 docker start 回滚）"
+    log "旧槽已停：${DD_ACTIVE_CONTAINER}（保留容器与镜像，可 docker start 回滚；排空等待预算 ${DD_STOP_TIMEOUT}s）"
   else
     warn "旧槽停止失败（${DD_ACTIVE_CONTAINER}）——它仍占着端口，下一轮候选槽可能起不来"
   fi
@@ -3646,7 +3701,7 @@ if docker inspect --type container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1; then
     docker rm -f "$_dd_legacy" >/dev/null 2>&1 || true
   fi
   if docker rename "$DD_CONTAINER_PREFIX" "$_dd_legacy" >/dev/null 2>&1; then
-    if docker stop "$_dd_legacy" >/dev/null 2>&1; then
+    if dd_stop_container "$_dd_legacy" >/dev/null 2>&1; then
       log "历史单机容器已退役：${DD_CONTAINER_PREFIX} → ${_dd_legacy}（已停，保留可回滚）"
     else
       # ⚠ 改名成功但停失败 ⇒ 容器**已经**不叫原名了 ⇒ 再去 rm 原名是空操作，

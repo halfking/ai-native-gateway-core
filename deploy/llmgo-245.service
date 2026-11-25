@@ -24,10 +24,22 @@ RestartSec=5
 StandardOutput=append:/var/log/llm-gateway-go/gateway.stdout.log
 StandardError=append:/var/log/llm-gateway-go/gateway.stderr.log
 
-# 2026-07-16: 更短的 stop 超时 — Go srv.Shutdown 内部 30s drain,
-# 25s 给 systemd 等信号, 然后 SIGKILL. 默认 90s 太长, restart 期间
-# :8781 一直 unbound, nginx 拿 connection refused.
-TimeoutStopSec=25s
+# 2026-07-16: 更短的 stop 超时 — ★★ 2026-11-17（订正 + 根修）：本单元此前写
+# 25s，而它自己的注释写着「Go srv.Shutdown 内部 30s drain」——**25 < 30 ⇒
+# 单元按自己的注释就是自相矛盾** ⇒ systemd 在应用排空完成前 SIGKILL ⇒
+# 在途的 SSE / 流式请求被硬切 ⇒ nginx 回 502（llm.itestu.cn 的 502 根因之一；
+# 211 蓝绿侧同型根因见 scripts/deploy-seamless-docker.sh 的 DD_STOP_TIMEOUT，
+# 两侧由 tests/deploy_stop_budget_test.sh 对拍）。
+#   ⇒ 现在按应用侧**可对拍**的预算定：36s（注销 3 + mock probe drain 5 +
+#     srv.Shutdown 23 + worker stop 5，见 cmd/gateway/shutdown_budget.go 的
+#     shutdownWorstCaseBudget）+ 9s 余量 = 45s。
+#   「默认 90s 太长」的顾虑仍成立，但那条针对的是**无界**停机；这里 45s 是
+#   **有界**预算（应用侧每段都带 ctx 上限）。
+#   ★ 残余代价（如实登记，不藏）：本单元是**单实例**形态 ⇒ SIGTERM 到达后
+#     srv.Shutdown **立刻关 listener** ⇒ 停机窗口内的新请求 connection
+#     refused（单实例形态的固有代价，非本次引入）。蓝绿形态（211/245/252）
+#     没有这个窗口：nginx 早已切到新槽，旧槽排空零代价。
+TimeoutStopSec=45s
 KillSignal=SIGTERM
 
 # drain 标记: 部署脚本读这个文件判断旧实例是否已退出.

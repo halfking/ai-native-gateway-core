@@ -61,7 +61,15 @@ RestartSec=5s
 # Leave margin above the 75s DB boot retry budget so systemd does not kill
 # the candidate before the application can become ready.
 TimeoutStartSec=700s
-TimeoutStopSec=25s
+# ★★ 2026-11-17（订正 + 根修）：此前写 25s —— 短于应用的排空预算 36s
+#   （注销 3 + mock probe drain 5 + srv.Shutdown 23 + worker stop 5，见
+#   cmd/gateway/shutdown_budget.go 的 shutdownWorstCaseBudget）
+#   ⇒ systemd 在排空完成前 SIGKILL ⇒ 在途请求被硬切 ⇒ nginx 502。
+#   ⇒ 改为 45s（36s + 9s 余量），与 deploy/llm-gateway-go.service 对齐。
+#   ★ 副作用（如实登记）：canary 被 stop 的那几秒内它不再接新连接 ⇒
+#     它自己的端口会短暂拒连。canary 不是在役槽，不承载公网流量 ⇒
+#     该窗口不影响可用性。
+TimeoutStopSec=45s
 KillSignal=SIGTERM
 StandardOutput=journal
 StandardError=journal
