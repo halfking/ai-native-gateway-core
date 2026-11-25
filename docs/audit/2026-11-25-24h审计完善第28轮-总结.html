@@ -185,7 +185,7 @@
       <li><span class="tag">maestro runner</span> —— 预置会话默认开启且在生产机落文件（判定口径「未知退出码当绿」已补修 <code>050e06131</code>）。</li>
       <li><span class="tag">web-mobile</span> —— 窗口前既有的 11 个红（行号漂移类）；动态键 <code>rr.evidence.values.</code> 是扫描器看不见的第四种拼接形态。</li>
       <li><span class="tag">环境</span> —— <code>llm-gateway-local-8782</code> 崩溃循环（本地 PG 54318 不可达）；<code>.build-local</code> 11GB；<code>.audit-validation</code> 无保留策略；3 个已退出的 <code>llmgw-211-*</code> 容器。</li>
-      <li><span class="tag">记录</span> —— 归档档内 L21、L74 各有两份；L79 在历史上被两轮用过；3 条旧归档指针标题对不上段头。</li>
+      <li><span class="tag">记录</span> —— 归档档内 L21、L74 各有两份；L79 在历史上被两轮用过（是否清理待 owner）。「3 条旧归档指针对不上」已复核关闭：63 处引用里 61 处逐字相同、2 处是可唯一定位的省略号缩写，没有失效指针。</li>
       <li><span class="tag">推送保护</span> —— pre-push 钩子在本克隆未接线（接上会拦住一切推送）。等价执行结果：敏感信息扫描 BLOCK 32／WARN 2073，<b>本轮新增的行上 0 条</b>；其中 2 条是根目录 <code>DEPLOYMENT-VERIFICATION-GUIDE.md</code> 的本地开发库口令，请 owner 确认是否移除。</li>
       <li><span class="tag">上游带入</span> —— pre-push 钩子的 <code>tests/*.sh</code>：收尾后复核 74 套 69 过 5 败，其中 4 套已代上游收口：<code>2075b652b</code>（两条新门接进快门、扫描器已知清单补登）与 <code>09ab986f1</code>（ssh 重试测试的夹具补上临时密钥文件，21／0，并接进快门）。第四套 <code>0062e13cc</code>（deploy_211 契约测试的锚点假红：迁移锚点误取了引擎顶部的路径定义，135／0）。仍红 3 套：cgo 两套（同一根因，见下）、审计镜像缺失（环境），以及 cgo 边界漂移——<code>domains/reconciliation/attempt_outbox.go</code> 无条件导入 go-sqlite3（<code>cdd155fff</code>），cgo=1 闭包由 6 个包涨到 39 个；生产因影子台账开关默认关闭而不受影响，修法待 owner。</li>
       <li><span class="tag">沿用</span> —— 上一轮登记的 owner 待决项（N1/N5/N6 口径、通道重放 983、闸门扩面剩余半边、census 口径、方案 A、P2）本轮无变化。</li>
