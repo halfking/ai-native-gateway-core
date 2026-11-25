@@ -11,6 +11,7 @@ package promptinjection
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -87,6 +88,51 @@ func TestGatewayLLMClient_RecordsFinishReasonPerPrompt(t *testing.T) {
 	if c.FinishReasonForCall("analyse the long-one") != "length" || c.FinishReasonForCall("analyse another") != "stop" {
 		t.Errorf("两次调用的结束原因串台了：%q / %q",
 			c.FinishReasonForCall("analyse the long-one"), c.FinishReasonForCall("analyse another"))
+	}
+}
+
+// TestFinishReasonStore_IsBounded：结束原因存储**必须有界**。
+//
+// ★★ **为什么（2026-11-26 12h 审计轮 D-C-3）**：★★ 原实现是一个 `sync.Map`，
+// **只写不删**（全文件 1 处 Store、**0** 处 Delete）⇒ 键是**逐次不同**的提示词
+// 哈希（提示词含本次取证的摘要 ⇒ 每次分析都不同）⇒ ⇒ **每条分析新增一条
+// 永不留存的记录** ⇒ ⇒ 长生命周期进程内**无上界增长**（只有进程重启才释放）。
+//
+// ⇒ ★ 三个判据：
+//   ① **同键重复写入就地更新、不占新槽位**（★ 「最近一次」这个语义靠它保住 ★）；
+//   ② 写入超过容量 ⇒ **最老的被淘汰**、**最新的还在**；
+//   ③ **条目总数不超容量**（★ 这条才是「有界」本身 ★）。
+func TestFinishReasonStore_IsBounded(t *testing.T) {
+	var s finishReasonStore
+
+	// ① 同键更新：就地改值、且不占用新槽位。
+	s.store("k1", "stop")
+	s.store("k1", "length")
+	if v, ok := s.load("k1"); !ok || v != "length" {
+		t.Fatalf("同键更新后读到 %q（存在=%v），期望 length", v, ok)
+	}
+	if len(s.order) != 1 {
+		t.Fatalf("同键更新不应占用新槽位：槽位数 = %d，期望 1", len(s.order))
+	}
+
+	// ② 写满容量 + 1 ⇒ 最老的被淘汰、最新的还在。
+	for i := 0; i < finishReasonStoreCap+1; i++ {
+		s.store(fmt.Sprintf("k%d", i), "stop")
+	}
+	if _, ok := s.load("k1"); ok {
+		t.Errorf("最老的条目没有被淘汰 ⇒ 仍然无界")
+	}
+	last := fmt.Sprintf("k%d", finishReasonStoreCap)
+	if v, ok := s.load(last); !ok || v != "stop" {
+		t.Errorf("最新的条目被误淘汰：读到 %q（存在=%v）", v, ok)
+	}
+
+	// ③ 条目总数不超容量（★ 有界本身 ★）。
+	if len(s.vals) > finishReasonStoreCap {
+		t.Fatalf("存储条目数 %d 超过容量 %d ⇒ 无上界", len(s.vals), finishReasonStoreCap)
+	}
+	if len(s.order) > finishReasonStoreCap {
+		t.Fatalf("槽位序长度 %d 超过容量 %d ⇒ 顺序链也会无界增长", len(s.order), finishReasonStoreCap)
 	}
 }
 

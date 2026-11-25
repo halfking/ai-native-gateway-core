@@ -66,7 +66,12 @@ type GatewayLLMClient struct {
 	// finishReasons 按**提示词**记最近一次回答的结束原因（finish_reason）。
 	// ★ 为什么按提示词而不是「最近一次」：定向分析与后台 worker 可能并发共用同一个
 	//   客户端 ⇒ 只存「最近一次」会把别的调用的结束原因记到这条分析头上。
-	finishReasons sync.Map // prompt 哈希 → finish_reason
+	// ★★★ **必须有界（2026-11-26 12h 审计轮 D-C-3）**：★★★ 原来这里是个
+	//   `sync.Map`，**只写不删**（全文件 1 处 Store、**0** 处 Delete）⇒ 键是
+	//   **逐次不同**的提示词哈希（提示词含本次取证的摘要 ⇒ 每次分析都不同）
+	//   ⇒ ⇒ **每条分析新增一条永不留存的记录** ⇒ ⇒ 长生命周期进程内
+	//   **无上界增长**（只有进程重启才释放）⇒ ⇒ 改用**有界 FIFO**。
+	finishReasons finishReasonStore // prompt 哈希 → finish_reason（有界）
 }
 
 // analyzerMaxTokens 是分析回答的输出额度。
@@ -211,7 +216,7 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 		return "", 0, fmt.Errorf("analysis endpoint returned empty content")
 	}
 
-	c.finishReasons.Store(promptFinishKey(prompt), strings.ToLower(strings.TrimSpace(apiResp.Choices[0].FinishReason)))
+	c.finishReasons.store(promptFinishKey(prompt), strings.ToLower(strings.TrimSpace(apiResp.Choices[0].FinishReason)))
 
 	return content, apiResp.Usage.TotalTokens, nil
 }
@@ -222,9 +227,8 @@ func (c *GatewayLLMClient) FinishReasonForCall(prompt string) string {
 	if c == nil {
 		return ""
 	}
-	if v, ok := c.finishReasons.Load(promptFinishKey(prompt)); ok {
-		reason, _ := v.(string)
-		return reason
+	if v, ok := c.finishReasons.load(promptFinishKey(prompt)); ok {
+		return v
 	}
 	return ""
 }
@@ -233,4 +237,61 @@ func (c *GatewayLLMClient) FinishReasonForCall(prompt string) string {
 func promptFinishKey(prompt string) string {
 	sum := sha256.Sum256([]byte(prompt))
 	return hex.EncodeToString(sum[:])
+}
+
+// finishReasonStoreCap 是「提示词哈希 → finish_reason」的有界容量。
+//
+// ★ 取 256 的理由：★ 它要覆盖的是「**同时在飞**的定向分析 + 后台 worker 分析」
+// 的去重要求（★ 按提示词存就是为了不让并发调用互相串台 ★）⇒ 容量必须**明显大于**
+// 并发分析数；★ 但又必须**有上界** ⇒ ⇒ 256 条在正常并发下远远够用
+// （每条 ≈ 64B 键 ＋ 值 ⇒ 上界 ≈ 几十 KB ⇒ 可忽略）。
+const finishReasonStoreCap = 256
+
+// finishReasonStore 是「提示词哈希 → finish_reason」的**有界 FIFO**。
+//
+// ★★ **语义保持不变**（★ 逐条对齐原 `sync.Map` 的用法 ★）：
+//   · 同一个键重复写入 ⇒ **就地更新**、**不换位** ⇒ 「最近一次」这个语义不变 ★；
+//   · 键不存在 ⇒ 追加；超过容量 ⇒ **淘汰最老的一条** ★。
+// ★ **淘汰的代价可接受**：读出口 `FinishReasonForCall` 是分析端的
+//   **可选扩展**（★ `finishReasonForCaller` ★）⇒ 读不到时返回空串 ⇒
+//   下游只是少一个可选字段，**不是错误路径** ⇒ ⇒ 有界化不引入新的失败面 ★。
+// ★ 并发：★ 全部读��都在**同一把锁**内 ⇒ 不存在 map 并发读写问题
+//   （★ 原 `sync.Map` 靠自身保证；这里换成本仓惯常的「一把锁」模型 ★）。
+type finishReasonStore struct {
+	mu    sync.Mutex
+	order []string         // 插入序（最老在前）
+	vals  map[string]string // 键 → finish_reason
+}
+
+func (s *finishReasonStore) store(key, reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vals == nil {
+		s.vals = make(map[string]string)
+	}
+	if _, ok := s.vals[key]; ok {
+		// ★ 同键更新 ⇒ 就地改值、不动顺序（★ 「最近一次」语义靠这个保住的 ★）。
+		s.vals[key] = reason
+		return
+	}
+	s.vals[key] = reason
+	s.order = append(s.order, key)
+	for len(s.order) > finishReasonStoreCap {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.vals, oldest)
+	}
+}
+
+func (s *finishReasonStore) load(key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.vals[key]
+	return v, ok
 }

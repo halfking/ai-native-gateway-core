@@ -1238,14 +1238,46 @@ func Check(root string) (*Result, error) {
 	sort.Strings(tracked)
 
 	// ① 两条通道点名的迁移。
+	//
+	// ★★ **整行注释不是投递点**（★ 2026-11-26 12h 审计轮订正 ★）：
+	// 本门原先用一条 regex 扫**整份脚本文本** ⇒ ⇒ **注释掉的条目也被算成
+	// 「已投递」** ⇒ ⇒ **假绿**（真源 scripts/lib/deploy-surface.sh 早就明写
+	// 「注释行（★ `#` 开头 ★★）⇒ ★ **不是投递面** ★★」⇒ ★ 同一口径写了两份
+	// ⇒ ★ 抄本漂移 ⇒ ★ 本门就是那份漂移的抄本）。
+	// ⇒ ★ 实测命中面（2026-11-26 现跑）：全脚本 371 处该形态的引用里，
+	// 唯一**只因注释**而被误算为已投递的是
+	// `sql/migrations/startup/890_drop_request_logs_v1_family.sql`
+	// （脚本 2031 行，退役用的 DROP TABLE ⇒ 不建对象 ⇒ 今天**对象账不受影响**，
+	// 但「文件被当成投递点」这件事本身是假的 ⇒ 将来若有人按「它已投递」推断，
+	// 就会错）。
+	// ⇒ ★ 修法：**逐行**扫，且**整行以 `#` 开头（去空白后）的行不参与匹配**
+	// ⇒ ★ 与 `deploy-surface.sh` 的注释规则逐字对齐（★ 它也是「整行以 # 开头
+	// ⇒ 不是投递面」，★ **不是**「行内 # 之后截断」★）。
+	// ⇒ ★ **刻意不做**的两件事（如实登记边界，避免下一轮又来改）：
+	// ① **不**把范围收窄到 `files=(` … `)` 块内 ⇒ ★ 块外**确有**真实的投递点
+	// （脚本 226 行 `prepare_runtime_sql "$ROOT_DIR/sql/migrations/startup/860_…"`
+	// 是**运行时准备**通道 ⇒ 它会投递 ⇒ 收窄会把真投递点误判成未投递 ⇒ 反向假红）★；
+	// ② **不**把「存量升级通道扫目录」也算进来 ⇒ ★ 那条通道
+	// （scripts/deploy-lib/db-changelog.sh 扫 startup/[0-9]*.sql）只对**已升级**的环境
+	// 成立，**新装**环境走的是 files=() ⇒ ⇒ 把它算进来会让新装环境缺列被误判为
+	// 「已投递」⇒ 反而**掩盖**真正的缺口 ⇒ ★ 本门要的是「最严的那个环境」的口径 ★。
+	// ⇒ ★ 这两条都是**口径选择**（★ 属 owner 裁决面：★ 上游 L124 块已把
+	// 「全仓门在部署路径上的覆盖缺口」登记为待 owner ★）⇒ 本轮只把**无歧义的
+	// 那一半**（注释行不是投递点）修掉，口径本身如实登记、不代认领。
 	named := map[string]bool{}
 	script, err := readRel(root, DeployChannelScript)
 	if err != nil {
 		return nil, fmt.Errorf("读部署通道清单失败：%w", err)
 	}
-	for _, m := range reChannelEnt.FindAllStringSubmatch(string(script), -1) {
-		if isSQLSource(m[1]) {
-			named[m[1]] = true
+	for _, line := range strings.Split(string(script), "\n") {
+		// ★ 整行注释 ⇒ 不是投递点（与 deploy-surface.sh 同口径）。
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		for _, m := range reChannelEnt.FindAllStringSubmatch(line, -1) {
+			if isSQLSource(m[1]) {
+				named[m[1]] = true
+			}
 		}
 	}
 	manifest, err := readRel(root, InstallerManifest)
