@@ -1,9 +1,12 @@
 package metricsstore
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -1363,6 +1366,117 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
 		assertParity(t, f)
 		assertParity(t, withProbe)
 		assertParity(t, allTenants)
+	})
+
+	t.Run("history_percentiles_follow_the_displayed_group", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+	request_id, tenant_id, occurred_at, occurred_date, billing_date,
+	status, traffic_class, raw_model_name, provider_id, credential_id, api_key_id,
+	total_tokens, latency_ms, error_kind, source, source_fact_id)
+SELECT 'history-rank-'||n, tenant, timestamptz '2026-11-15 10:00+08',
+	'2026-11-15', '2026-11-15', status, 'business', 'history-rank', provider, credential, key_id,
+	1, latency, CASE WHEN status='timeout' THEN 'upstream_timeout' END, 'async_processor', 24000+n
+FROM (VALUES
+	(1,'rank-a',9,NULL,NULL,100,'success'),
+	(2,'rank-a',9,NULL,NULL,200,'success'),
+	(3,'rank-a',9,NULL,NULL,300,'success'),
+	(4,'rank-b',10,NULL,NULL,900,'success'),
+	(5,'rank-b',10,NULL,NULL,800,'timeout'),
+	(6,'rank-a',9,77,88,80,'success'),
+	(7,'rank-b',10,77,88,9800,'success')
+) AS inputs(n,tenant,provider,credential,key_id,latency,status);`)
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(2026, 11, 15, 0, 0, 0, 0, loc)
+		coverage, err := reportrollup.ReadProjectionCoverage(ctx, pool, day, day, day.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := func(filter reportrollup.GrainFilter) *reportrollup.GrainReport {
+			t.Helper()
+			report, err := reportrollup.BuildProjectedReport(ctx, pool, day, day, reportrollup.ViewInternal, filter, reportrollup.Names{}, true, coverage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return report
+		}
+		check := func(label string, totals reportrollup.Totals, requests, measured int64, p50, p95 float64) {
+			t.Helper()
+			if totals.RequestCount != requests || totals.LatencyMeasuredRequests == nil || *totals.LatencyMeasuredRequests != measured ||
+				math.Abs(totals.LatencyP50Ms-p50) > 1e-9 || math.Abs(totals.LatencyP95Ms-p95) > 1e-9 {
+				t.Fatalf("%s has incorrect requests or ranks: %+v", label, totals)
+			}
+		}
+		filter := reportrollup.GrainFilter{Model: "history-rank"}
+		report := read(filter)
+		if len(report.Credentials) != 2 || len(report.APIKeys) != 2 || len(report.DailyCredentials) != 2 || len(report.DailyAPIKeys) != 2 {
+			t.Fatalf("expected two rows per dimension: %+v", report)
+		}
+		for _, row := range report.Credentials {
+			if row.ProviderID != nil {
+				t.Fatalf("ambiguous provider attribution on credential %d: %v", row.CredentialID, row.ProviderID)
+			}
+			if row.CredentialID == reportrollup.UnassignedID {
+				check("unassigned credential", row.Totals, 5, 4, 250, 810)
+				if row.ErrorBreakdown["upstream_timeout"] != 1 {
+					t.Fatalf("incorrect errors: %v", row.ErrorBreakdown)
+				}
+			} else {
+				check("shared credential", row.Totals, 2, 2, 4940, 9314)
+				if row.QualityScore != 53.7 {
+					t.Fatalf("incorrect credential quality score: %v", row.QualityScore)
+				}
+			}
+		}
+		for _, row := range report.APIKeys {
+			if row.TenantID != "" {
+				t.Fatalf("ambiguous tenant attribution on key %d: %s", row.APIKeyID, row.TenantID)
+			}
+			if row.APIKeyID == reportrollup.UnassignedID {
+				check("unassigned key", row.Totals, 5, 4, 250, 810)
+			} else {
+				check("shared key", row.Totals, 2, 2, 4940, 9314)
+			}
+		}
+		for _, rows := range [][]reportrollup.DailyGroupRow{report.DailyAPIKeys, report.DailyCredentials} {
+			for _, row := range rows {
+				if row.Key == "-1" {
+					check("unassigned day", row.Totals, 5, 4, 250, 810)
+				} else {
+					check("shared day", row.Totals, 2, 2, 4940, 9314)
+				}
+			}
+		}
+		workbook, err := reportrollup.BuildGrainWorkbookBytes(report, reportrollup.GrainGroupCredential, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive, err := zip.NewReader(bytes.NewReader(workbook), int64(len(workbook)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sheet, err := archive.Open("xl/worksheets/sheet1.xml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sheet.Close()
+		xml, err := io.ReadAll(sheet)
+		if err != nil || bytes.Count(xml, []byte("<v>53.7</v>")) < 2 {
+			t.Fatalf("export should contain both corrected quality scores: %v", err)
+		}
+		provider := int64(9)
+		filter.ProviderID = &provider
+		filtered := read(filter)
+		if len(filtered.Credentials) != 2 || filtered.Credentials[1].CredentialID != 77 ||
+			filtered.Credentials[1].ProviderID == nil || *filtered.Credentials[1].ProviderID != provider {
+			t.Fatalf("filtered provider missing: %+v", filtered.Credentials)
+		}
+		if len(filtered.APIKeys) != 2 || filtered.APIKeys[1].APIKeyID != 88 || filtered.APIKeys[1].TenantID != "rank-a" {
+			t.Fatalf("filtered tenant missing: %+v", filtered.APIKeys)
+		}
 	})
 
 	t.Run("coverage_and_schema_rollback_keep_legacy_watermark", func(t *testing.T) {

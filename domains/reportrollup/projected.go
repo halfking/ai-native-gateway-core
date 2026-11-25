@@ -111,35 +111,65 @@ func projectedGrainWhere(filter GrainFilter, args []any) (string, []any) {
 	return where.String(), args
 }
 
-const projectedGrainKeys = `GROUPING(report_date), GROUPING(provider_id), GROUPING(credential_id),
-	GROUPING(raw_model_name), GROUPING(tenant_id), GROUPING(person), GROUPING(api_key_id),
+const projectedGrainFlags = `GROUPING(report_date) AS date_group,
+	GROUPING(provider_id) AS provider_group,
+	GROUPING(credential_id) AS credential_group, GROUPING(raw_model_name) AS model_group,
+	GROUPING(tenant_id) AS tenant_group,
+	GROUPING(person) AS person_group, GROUPING(api_key_id) AS key_group`
+
+const projectedGrainColumns = `date_group, provider_group, credential_group, model_group, tenant_group, person_group, key_group,
 	report_date, provider_id, credential_id, raw_model_name, tenant_id, person, api_key_id`
 
+var projectedOwnerKeys = strings.NewReplacer("provider_id, credential_id", "credential_id", "tenant_id, api_key_id", "api_key_id")
+
 func projectedGrainSQL(where string, daily bool) string {
+	// The displayed credential and key rows each have one ID, independent of
+	// source attribution. Aggregate their samples together before computing ranks.
+	sets := projectedOwnerKeys.Replace(strings.Join(grainGroupSets(daily), ", "))
+	errorSets := projectedOwnerKeys.Replace(strings.Join(grainErrGroupSets(daily), ", "))
 	return `WITH bounded AS (
 		SELECT (occurred_at AT TIME ZONE $3)::date AS report_date, ` + projectedDimensions + `,
 			outbound_model, status, coalesce(nullif(error_kind,''),nullif(status,''),'unknown') AS kind,
 			prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
 			total_tokens, credits_charged, latency_ms, cost_amount, cost_currency
 		FROM public.request_metrics_projection WHERE ` + projectedDateWhere + ` AND (NOT $4::boolean OR traffic_class='business')
-	), facts AS MATERIALIZED (SELECT * FROM bounded WHERE true` + where + `)
-	SELECT ` + projectedGrainKeys + `, NULL::text,
-		count(*), count(*) FILTER (WHERE status='success'),
-		coalesce(sum(prompt_tokens),0)::bigint, coalesce(sum(completion_tokens),0)::bigint,
-		coalesce(sum(cached_tokens),0)::bigint, coalesce(sum(cache_write_tokens),0)::bigint,
-		coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0)*100, 'USD',
-		coalesce(sum(credits_charged),0)::bigint, 0::float8,
-		coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE status='success' AND latency_ms>0),0),
-		coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE status='success' AND latency_ms>0),0),
-		CASE WHEN count(*) FILTER (WHERE status='success' AND latency_ms>0)>0 THEN 1::float8 ELSE 0::float8 END, 0::bigint,
-		coalesce(sum(total_tokens),0)::bigint, coalesce(sum(cached_tokens) FILTER (WHERE cache_input_tokens IS NOT NULL),0)::bigint,
-		coalesce(sum(cache_input_tokens),0)::bigint, count(cache_input_tokens), count(cost_amount) FILTER (WHERE cost_currency='USD'),
-		count(*) FILTER (WHERE status='success' AND latency_ms>0)
-	FROM facts GROUP BY GROUPING SETS (` + strings.Join(grainGroupSets(daily), ", ") + `)
+	), facts AS MATERIALIZED (SELECT * FROM bounded WHERE true` + where + `),
+	measures AS (
+		SELECT ` + projectedGrainFlags + `,
+			report_date,
+			CASE WHEN GROUPING(credential_id)=1 THEN provider_id
+			     WHEN count(provider_id)=count(*) AND min(provider_id)=max(provider_id) THEN min(provider_id) END AS provider_id,
+			credential_id, raw_model_name,
+			CASE WHEN GROUPING(api_key_id)=1 THEN tenant_id
+			     WHEN count(tenant_id)=count(*) AND min(tenant_id)=max(tenant_id) THEN min(tenant_id) END AS tenant_id,
+			person, api_key_id,
+			count(*) AS requests, count(*) FILTER (WHERE status='success') AS successes,
+			coalesce(sum(prompt_tokens),0)::bigint AS input_tokens,
+			coalesce(sum(completion_tokens),0)::bigint AS output_tokens,
+			coalesce(sum(cached_tokens),0)::bigint AS cache_read,
+			coalesce(sum(cache_write_tokens),0)::bigint AS cache_write,
+			coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0)*100 AS usd_cents,
+			coalesce(sum(credits_charged),0)::bigint AS credits,
+			percentile_cont(ARRAY[0.5,0.95]) WITHIN GROUP (ORDER BY latency_ms)
+				FILTER (WHERE status='success' AND latency_ms>0) AS latency_ranks,
+			count(*) FILTER (WHERE status='success' AND latency_ms>0) AS latency_coverage,
+			coalesce(sum(total_tokens),0)::bigint AS tokens,
+			coalesce(sum(cached_tokens) FILTER (WHERE cache_input_tokens IS NOT NULL),0)::bigint AS cache_covered_read,
+			coalesce(sum(cache_input_tokens),0)::bigint AS cache_input,
+			count(cache_input_tokens) AS cache_coverage,
+			count(cost_amount) FILTER (WHERE cost_currency='USD') AS usd_coverage
+		FROM facts GROUP BY GROUPING SETS (` + sets + `)
+	)
+	SELECT ` + projectedGrainColumns + `, NULL::text,
+		requests, successes, input_tokens, output_tokens, cache_read, cache_write, usd_cents, 'USD',
+		credits, 0::float8, coalesce(latency_ranks[1],0), coalesce(latency_ranks[2],0),
+		(latency_coverage>0)::int::float8, 0::bigint,
+		tokens, cache_covered_read, cache_input, cache_coverage, usd_coverage, latency_coverage
+	FROM measures
 	UNION ALL
-	SELECT ` + projectedGrainKeys + `, kind,
+	SELECT ` + projectedGrainFlags + `, report_date, provider_id, credential_id, raw_model_name, tenant_id, person, api_key_id, kind,
 		0,0,0,0,0,0,0,'USD',0,0,0,0,0,count(*),0,0,0,0,0,0
-	FROM facts WHERE status<>'success' GROUP BY GROUPING SETS (` + strings.Join(grainErrGroupSets(daily), ", ") + `)`
+	FROM facts WHERE status<>'success' GROUP BY GROUPING SETS (` + errorSets + `)`
 }
 
 func runProjectedGrain(ctx context.Context, q Querier, view View, filter GrainFilter, daily bool, coverage ProjectionCoverage, sink func(groupKind, grainScanRow)) error {

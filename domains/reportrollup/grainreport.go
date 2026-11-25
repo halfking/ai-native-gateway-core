@@ -494,6 +494,7 @@ const (
 // 分组集一改（2026-11-17 审计轮给凭据/人员/apikey 补上归属维度），
 // 这里必须同步——否则行会被派发到兜底分支（gkTotal），
 // 「总计」就会把分组行的度量重复算一遍。
+// 凭据和密钥分组允许归属作为可选分组键，兼容历史快照和请求投影。
 func classify(r grainScanRow) groupKind {
 	d, p, c := !r.gDate, !r.gProvider, !r.gCredential
 	m, t, u, k := !r.gModel, !r.gTenant, !r.gPerson, !r.gKey
@@ -508,7 +509,7 @@ func classify(r grainScanRow) groupKind {
 		return gkProvider
 	case !d && p && !c && m && !t && !u && !k:
 		return gkProviderModel
-	case !d && p && c && !m && !t && !u && !k:
+	case !d && c && !m && !t && !u && !k:
 		return gkCredential
 	case !d && !p && !c && m && !t && !u && !k:
 		return gkModel
@@ -516,17 +517,17 @@ func classify(r grainScanRow) groupKind {
 		return gkTenant
 	case !d && !p && !c && !m && t && u && !k:
 		return gkPerson
-	case !d && !p && !c && !m && t && !u && k:
+	case !d && !p && !c && !m && !u && k:
 		return gkAPIKey
 	case d && p && !c && !m && !t && !u && !k:
 		return gkDayProvider
-	case d && p && c && !m && !t && !u && !k:
+	case d && c && !m && !t && !u && !k:
 		return gkDayCredential
 	case d && !p && !c && !m && t && !u && !k:
 		return gkDayTenant
 	case d && !p && !c && !m && t && u && !k:
 		return gkDayPerson
-	case d && !p && !c && !m && t && !u && k:
+	case d && !p && !c && !m && !u && k:
 		return gkDayAPIKey
 	}
 	return gkTotal // 不可达：分组集枚举封闭；兜底避免空结构体静默丢行
@@ -569,12 +570,15 @@ func (a *grainAccumulator) add(r grainScanRow) {
 		a.projection.add(r.projection)
 	}
 	if r.kind != "" && r.errKindCount > 0 {
-		a.br = mergeBreakdown(a.br, map[string]int64{r.kind: r.errKindCount})
+		if a.br == nil {
+			a.br = make(map[string]int64)
+		}
+		a.br[r.kind] += r.errKindCount
 	}
 }
 
-// finalize 补齐派生列。分位用成功请求数加权还原（分位数不可跨行折叠，
-// 与旧读面 acc.finalize 同款近似）。
+// finalize 补齐派生列。快照的分位数沿用按成功请求数加权的近似，投影在 SQL
+// 中为每个展示行精确计算分位数，且聚合只产生一个包含度量的行。
 func (a *grainAccumulator) finalize() Totals {
 	t := Totals{
 		RequestCount:       a.requestCount,
@@ -877,7 +881,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			case gkCredential:
 				ck := dimKey(r.credentialID)
 				getAccInt(credentials, ck).add(r)
-				if _, ok := metaCredential[ck]; !ok {
+				if _, ok := metaCredential[ck]; !ok && (projection == nil || r.requestCount > 0) {
 					metaCredential[ck] = r
 				}
 			case gkModel:
@@ -889,7 +893,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			case gkAPIKey:
 				ak := dimKey(r.apiKeyID)
 				getAccInt(apiKeys, ak).add(r)
-				if _, ok := metaAPIKey[ak]; !ok {
+				if _, ok := metaAPIKey[ak]; !ok && (projection == nil || r.requestCount > 0) {
 					metaAPIKey[ak] = r
 				}
 			case gkDayProvider:
