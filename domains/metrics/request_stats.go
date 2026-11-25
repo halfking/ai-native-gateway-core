@@ -393,24 +393,28 @@ func ReadRequestStats(ctx context.Context, db requestStatsDB, query RequestStats
 	if err != nil {
 		return result, err
 	}
-	if usesDailySummary && end.Sub(start) > 24*time.Hour {
+	err = readRequestStatsRow(ctx, db, sql, args, usesDailySummary && end.Sub(start) > 24*time.Hour,
+		&result.Ready, &result.UpdatedAt, &result.PendingSince, &result.Items)
+	return result, err
+}
+
+func readRequestStatsRow(ctx context.Context, db requestStatsDB, query string, args []any, withoutJIT bool, dest ...any) error {
+	if withoutJIT {
 		if beginner, ok := db.(interface {
 			Begin(context.Context) (pgx.Tx, error)
 		}); ok {
 			tx, err := beginner.Begin(ctx)
 			if err != nil {
-				return result, err
+				return err
 			}
-			// The hybrid plan can spend more time compiling branches than reading
-			// the uncovered dates. Rollback restores JIT on the connection or
-			// the caller's enclosing transaction.
+			// These mixed plans can spend more time compiling branches than
+			// reading uncovered dates. Rollback restores the caller's setting.
 			defer tx.Rollback(ctx)
 			if _, err := tx.Exec(ctx, "SET LOCAL jit = off"); err != nil {
-				return result, err
+				return err
 			}
 			db = tx
 		}
 	}
-	err = db.QueryRow(ctx, sql, args...).Scan(&result.Ready, &result.UpdatedAt, &result.PendingSince, &result.Items)
-	return result, err
+	return db.QueryRow(ctx, query, args...).Scan(dest...)
 }

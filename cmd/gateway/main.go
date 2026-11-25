@@ -4476,6 +4476,7 @@ func main() {
 		projectionProcessor := metricsstore.NewProjectionProcessor(requestMetricsDB)
 		go projectionProcessor.Run(metricsProcessorCtx, metricsCfg)
 		go projectionProcessor.RunDailySummary(metricsProcessorCtx, metricsCfg)
+		go projectionProcessor.RunDailyBoard(metricsProcessorCtx, metricsCfg)
 		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),

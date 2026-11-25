@@ -69,6 +69,60 @@ const boardMeasures = `
 const boardError = "coalesce(nullif(error_kind,''), status)"
 const boardModel = requestModelKey
 
+const boardPieKeys = `tenant_id AS tenant_key, nullif(agent_name,'') AS agent_key, host(client_ip) AS ip_key,
+		nullif(identity_hash,'') AS hash_key,
+		CASE WHEN status <> 'success' THEN ` + boardError + ` END AS error_key
+`
+
+const boardPieGrouping = `CASE
+		WHEN GROUPING(agent_key)=0 THEN 'clients'
+		WHEN GROUPING(ip_key)=0 THEN 'client_ips'
+		WHEN GROUPING(hash_key)=0 THEN 'identity_hashes'
+		WHEN GROUPING(model)=0 THEN 'models'
+		WHEN GROUPING(error_key)=0 THEN 'errors'
+		WHEN GROUPING(status)=0 THEN 'statuses'
+		ELSE 'tenants'
+	END AS dimension,
+	CASE
+		WHEN GROUPING(agent_key)=0 THEN agent_key
+		WHEN GROUPING(ip_key)=0 THEN ip_key
+		WHEN GROUPING(hash_key)=0 THEN hash_key
+		WHEN GROUPING(model)=0 THEN model
+		WHEN GROUPING(error_key)=0 THEN error_key
+		WHEN GROUPING(status)=0 THEN status
+		ELSE tenant_key
+	END AS key`
+
+const boardPieSets = "(agent_key), (ip_key), (hash_key), (model), (error_key), (status), (tenant_key)"
+
+func boardBucket(size string) string {
+	return "date_bin(make_interval(mins => " + size + "), occurred_at, '2000-01-01 00:00:00+00')"
+}
+
+const boardRankedPies = `ranked_pies AS (
+	SELECT *, row_number() OVER (PARTITION BY dimension ORDER BY requests DESC, key) AS rank
+	FROM (
+		SELECT * FROM pie_groups WHERE key IS NOT NULL
+		UNION ALL
+		SELECT 'providers', provider_code, request_count, total_tokens, credits, total_cost_usd FROM providers
+	) groups
+),
+pies AS (
+	SELECT dimension, jsonb_agg(jsonb_build_object(
+		'key', key, 'requests', requests, 'tokens', tokens, 'credits', credits, 'cost_usd', cost_usd
+	) ORDER BY rank) AS items
+	FROM ranked_pies WHERE rank <= 25 GROUP BY dimension
+)`
+
+const boardResultSQL = `SELECT projection.backfill_complete, projection.updated_at, projection.pending_since, to_jsonb(summary),
+	coalesce((SELECT jsonb_object_agg(dimension, items) FROM pies), '{}'::jsonb),
+	coalesce((SELECT json_agg(t ORDER BY t.bucket) FROM trends t), '[]'::json),
+	coalesce((SELECT json_agg(t ORDER BY t.bucket, t.model) FROM
+		(SELECT bucket, series AS model, requests, tokens, credits, cost_usd FROM chart_points) t), '[]'::json),
+	coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.total_cost_usd DESC, p.provider_id)
+		FROM (SELECT * FROM providers ORDER BY total_cost_usd DESC, provider_id LIMIT 50) p), '[]'::jsonb)
+FROM projection CROSS JOIN summary`
+
 func boardWhere(query BoardQuery) ([]string, []any) {
 	clauses, args := buildFilterClauses(query.MetricsFilter, "", "occurred_at", kindTimestamp)
 	clauses = append(clauses, "source_fact_id IS NOT NULL")
@@ -83,8 +137,7 @@ func boardWhere(query BoardQuery) ([]string, []any) {
 	return clauses, args
 }
 
-// ReadRequestBoard calculates every request widget in one SQL statement. Only
-// the bounded projection rows are reused across the summary and distributions.
+// ReadRequestBoard calculates all request widgets in one database snapshot.
 func ReadRequestBoard(ctx context.Context, db requestStatsDB, query BoardQuery) (RequestBoard, error) {
 	var board RequestBoard
 	switch query.BucketMinutes {
@@ -92,9 +145,18 @@ func ReadRequestBoard(ctx context.Context, db requestStatsDB, query BoardQuery) 
 	default:
 		return board, fmt.Errorf("unsupported board bucket size")
 	}
+	start, end := query.MetricsFilter.effectiveWindow()
+	if end.Sub(start) >= 24*time.Hour && !start.IsZero() && canUseRequestDailyScope(query.MetricsFilter) &&
+		query.Owner == "" && query.Model == "" && query.Agent == "" && query.ProviderCode == "" {
+		return readRequestBoardDaily(ctx, db, query)
+	}
+	return readRequestBoardDetail(ctx, db, query)
+}
+
+func readRequestBoardDetail(ctx context.Context, db requestStatsDB, query BoardQuery) (RequestBoard, error) {
 	clauses, args := boardWhere(query)
 	args = append(args, query.BucketMinutes)
-	bucket := fmt.Sprintf("date_bin(make_interval(mins => $%d::int), occurred_at, '2000-01-01 00:00:00+00')", len(args))
+	bucket := boardBucket(fmt.Sprintf("$%d::int", len(args)))
 	sql := `
 WITH projection AS (` + boardProjectionState + `),
 bounded AS MATERIALIZED (
@@ -104,9 +166,7 @@ bounded AS MATERIALIZED (
 		image_tokens, audio_tokens, video_tokens, cost_amount, cost_currency, usage_source,
 		cache_input_tokens, latency_ms, ttft_ms,
 		` + bucket + ` AS bucket, ` + boardModel + ` AS model,
-		nullif(agent_name,'') AS agent_key, host(client_ip) AS ip_key,
-		nullif(identity_hash,'') AS hash_key,
-		CASE WHEN status <> 'success' THEN ` + boardError + ` END AS error_key
+		` + boardPieKeys + `
 	FROM public.request_metrics_projection
 	WHERE ` + strings.Join(clauses, " AND ") + `
 	  AND (SELECT backfill_complete FROM projection)
@@ -121,19 +181,10 @@ summary AS (
 	) measured
 ),
 pie_groups AS (
-	SELECT CASE
-		WHEN GROUPING(agent_key)=0 THEN 'clients'
-		WHEN GROUPING(ip_key)=0 THEN 'client_ips'
-		WHEN GROUPING(hash_key)=0 THEN 'identity_hashes'
-		WHEN GROUPING(model)=0 THEN 'models'
-		WHEN GROUPING(error_key)=0 THEN 'errors'
-		WHEN GROUPING(status)=0 THEN 'statuses'
-		ELSE 'tenants'
-	END AS dimension,
-	coalesce(agent_key, ip_key, hash_key, model, error_key, status, tenant_id) AS key,
+	SELECT ` + boardPieGrouping + `,
 	` + boardMeasures + `
 	FROM bounded
-	GROUP BY GROUPING SETS ((agent_key), (ip_key), (hash_key), (model), (error_key), (status), (tenant_id))
+	GROUP BY GROUPING SETS (` + boardPieSets + `)
 ),
 providers AS (
 	SELECT provider_id,
@@ -148,20 +199,7 @@ providers AS (
 	WHERE provider_id IS NOT NULL
 	GROUP BY provider_id
 ),
-ranked_pies AS (
-	SELECT *, row_number() OVER (PARTITION BY dimension ORDER BY requests DESC, key) AS rank
-	FROM (
-		SELECT * FROM pie_groups WHERE key IS NOT NULL
-		UNION ALL
-		SELECT 'providers', provider_code, request_count, total_tokens, credits, total_cost_usd FROM providers
-	) groups
-),
-pies AS (
-	SELECT dimension, jsonb_agg(jsonb_build_object(
-		'key', key, 'requests', requests, 'tokens', tokens, 'credits', credits, 'cost_usd', cost_usd
-	) ORDER BY rank) AS items
-	FROM ranked_pies WHERE rank <= 25 GROUP BY dimension
-),
+` + boardRankedPies + `,
 top_models AS (
 	SELECT key FROM pie_groups WHERE dimension='models'
 	ORDER BY requests DESC, key LIMIT 6
@@ -179,15 +217,13 @@ trends AS (
 		sum(success) AS success, coalesce(sum(latency_sum)::float8/nullif(sum(latency_count),0),0) AS avg_latency_ms
 	FROM chart_points GROUP BY bucket
 )
-SELECT projection.backfill_complete, projection.updated_at, projection.pending_since, to_jsonb(summary),
-	coalesce((SELECT jsonb_object_agg(dimension, items) FROM pies), '{}'::jsonb),
-	coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.bucket) FROM trends t), '[]'::jsonb),
-	coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.bucket, t.model) FROM
-		(SELECT bucket, series AS model, requests, tokens, credits, cost_usd FROM chart_points) t), '[]'::jsonb),
-	coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.total_cost_usd DESC, p.provider_id)
-		FROM (SELECT * FROM providers ORDER BY total_cost_usd DESC, provider_id LIMIT 50) p), '[]'::jsonb)
-FROM projection CROSS JOIN summary`
-	err := db.QueryRow(ctx, sql, args...).Scan(&board.Ready, &board.UpdatedAt, &board.PendingSince,
+` + boardResultSQL
+	return scanRequestBoard(ctx, db, sql, args, false)
+}
+
+func scanRequestBoard(ctx context.Context, db requestStatsDB, sql string, args []any, withoutJIT bool) (RequestBoard, error) {
+	var board RequestBoard
+	err := readRequestStatsRow(ctx, db, sql, args, withoutJIT, &board.Ready, &board.UpdatedAt, &board.PendingSince,
 		&board.Summary, &board.Pies, &board.Trends, &board.ModelPoints, &board.ProviderRows)
 	return board, err
 }

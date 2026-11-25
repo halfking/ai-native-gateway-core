@@ -95,6 +95,8 @@ VALUES
 	apply("983d_request_metrics_projection.sql")
 	apply("983e_request_metrics_daily_summary.sql")
 	apply("983e_request_metrics_daily_summary.sql")
+	apply("983f_request_metrics_daily_board.sql")
+	apply("983f_request_metrics_daily_board.sql")
 
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
@@ -1257,6 +1259,112 @@ VALUES ('summary-late','summary-late','2026-11-20 18:00+08','summary-a','success
 		assertParity(t, f, tenant, split)
 	})
 
+	t.Run("board_days_match_detail_during_and_after_invalidation", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+  request_id, tenant_id, occurred_at, occurred_date, billing_date, status, traffic_class, outbound_model,
+  provider_id, provider_code, provider_name, api_key_id, owner_user, agent_name, client_ip, identity_hash,
+  session_id, total_tokens, cost_amount, cost_currency, credits_charged, latency_ms, ttft_ms, error_kind, source, source_fact_id)
+SELECT 'board-day-'||n,CASE WHEN n<15 THEN 'board-days' ELSE 'board-days-other' END,ts,ts::date,ts::date,
+  CASE WHEN n=7 OR n=10 THEN 'timeout' ELSE 'success' END,
+  CASE WHEN n=8 THEN 'probe' ELSE 'business' END,
+  CASE WHEN n IN (9,12) THEN '__others__' ELSE 'board-model-'||(n%8) END,
+  9+n%2, CASE WHEN n%2=0 THEN 'p' ELSE NULL END, CASE WHEN n%3=0 THEN 'actual' ELSE NULL END,
+  CASE WHEN n%4=0 THEN -129 WHEN n%5=0 THEN 65 ELSE 7+n%3 END, 'board-reader', CASE WHEN n%3=0 THEN 'client' ELSE NULL END,
+  CASE WHEN n%2=0 THEN '192.0.2.15'::inet ELSE NULL END, CASE WHEN n%2=0 THEN 'named' ELSE '' END,
+  'session-'||(n%4),n,n*0.001,CASE WHEN n%2=0 THEN 'USD' ELSE 'CNY' END,n,n*17,n*3,
+  CASE WHEN n=7 THEN 'upstream_timeout' ELSE NULL END,'async_processor',23000+n
+FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+(n%3)*interval '1 minute' AS ts
+	  FROM generate_series(1,16) n) rows;`)
+		zone := time.FixedZone("UTC+8", 8*3600)
+		start := time.Date(2026, 11, 16, 0, 0, 0, 0, zone)
+		f := metrics.MetricsFilter{TenantID: "board-days", StartTime: start, EndTime: start.AddDate(0, 0, 2)}
+		assertParity := func(t *testing.T, filter metrics.MetricsFilter) {
+			t.Helper()
+			for _, bucket := range []int{5, 15, 60, 360} {
+				q := metrics.BoardQuery{MetricsFilter: filter, BucketMinutes: bucket}
+				actual, err := metrics.ReadRequestBoard(ctx, pool, q)
+				if err != nil || !actual.Ready {
+					t.Fatalf("board merged read %+v: %v", actual, err)
+				}
+				q.Owner = "board-reader"
+				detail, err := metrics.ReadRequestBoard(ctx, pool, q)
+				if err != nil || !detail.Ready {
+					t.Fatalf("board detail read %+v: %v", detail, err)
+				}
+				got, err := json.Marshal(actual)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := json.Marshal(detail)
+				if err != nil || string(got) != string(want) {
+					t.Fatalf("board bucket %d differs from detail, err %v\ngot %s\nwant %s", bucket, err, got, want)
+				}
+			}
+		}
+		partial := f
+		partial.StartTime = start.Add(time.Minute)
+		partial.EndTime = f.EndTime.Add(time.Minute)
+		withProbe := f
+		withProbe.IncludeProbes = true
+		refresh := func(fn func(context.Context) (bool, error)) {
+			t.Helper()
+			for range 30 {
+				built, err := fn(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !built {
+					return
+				}
+			}
+			t.Fatal("daily rebuild did not drain")
+		}
+		refresh(processor.RefreshDailySummary)
+		refresh(processor.RefreshDailyBoard)
+		countPublished := func(want int) {
+			t.Helper()
+			var n int
+			err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_board_days
+				WHERE day IN ('2026-11-16','2026-11-17')`).Scan(&n)
+			if err != nil || n != want {
+				t.Fatalf("published board days=%d want %d: %v", n, want, err)
+			}
+		}
+		countPublished(2)
+		assertParity(t, f)
+		assertParity(t, partial)
+		assertParity(t, withProbe)
+		allTenants := withProbe
+		allTenants.TenantID = ""
+		assertParity(t, allTenants)
+
+		exec(`
+UPDATE public.request_metrics_projection SET occurred_at='2026-11-17 05:00+08', total_tokens=42
+WHERE request_id='board-day-2';
+DELETE FROM public.request_metrics_projection WHERE request_id='board-day-12';`)
+		countPublished(0)
+		assertParity(t, f)
+		refresh(processor.RefreshDailySummary)
+		countPublished(0)
+		exec(`
+CREATE FUNCTION public.reject_board_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected board publication failure'; END $$;
+CREATE TRIGGER reject_board_publish BEFORE INSERT ON public.request_metrics_board_days
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
+		if _, err := processor.RefreshDailyBoard(ctx); err == nil || !strings.Contains(err.Error(), "injected board publication failure") {
+			t.Fatalf("expected failed board publication: %v", err)
+		}
+		countPublished(0)
+		assertParity(t, withProbe)
+		exec("DROP TRIGGER reject_board_publish ON public.request_metrics_board_days; DROP FUNCTION public.reject_board_publish()")
+		refresh(processor.RefreshDailyBoard)
+		countPublished(2)
+		assertParity(t, f)
+		assertParity(t, withProbe)
+		assertParity(t, allTenants)
+	})
+
 	t.Run("coverage_and_schema_rollback_keep_legacy_watermark", func(t *testing.T) {
 		start := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
 		coverage, err := readProjectionCoverage(ctx, db, start, start.AddDate(0, 0, 1))
@@ -1271,6 +1379,8 @@ VALUES ('summary-late','summary-late','2026-11-20 18:00+08','summary-a','success
 			state.PendingCount == 0 || state.OldestWaitSeconds < 300 {
 			t.Fatalf("stale backlog should block readiness: %+v", state)
 		}
+		apply("983f_request_metrics_daily_board.down.sql")
+		apply("983f_request_metrics_daily_board.down.sql")
 		apply("983e_request_metrics_daily_summary.down.sql")
 		apply("983e_request_metrics_daily_summary.down.sql")
 		apply("983d_request_metrics_projection.down.sql")

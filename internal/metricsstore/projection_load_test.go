@@ -19,7 +19,7 @@ import (
 )
 
 // The opt-in load check runs against a local disposable restore after its
-// migration channel has applied 983d and 983e. It writes only derived statistics.
+// migration channel has applied through 983f. It writes only derived statistics.
 func TestRequestMetricsProjectionLoad(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_LOAD_DSN")
 	if dsn == "" {
@@ -83,6 +83,19 @@ func TestRequestMetricsProjectionLoad(t *testing.T) {
 		rebuilt++
 	}
 	t.Logf("daily summary days=%d elapsed=%s", rebuilt, time.Since(started))
+	started = time.Now()
+	rebuilt = 0
+	for {
+		built, err := processor.RefreshDailyBoard(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !built {
+			break
+		}
+		rebuilt++
+	}
+	t.Logf("daily board days=%d elapsed=%s", rebuilt, time.Since(started))
 
 	for _, days := range []int{1, 7, 30, 90} {
 		filter := metrics.MetricsFilter{StartTime: end.AddDate(0, 0, -days), EndTime: end}
@@ -160,7 +173,7 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 		FROM public.request_metrics_projection_state WHERE singleton`).Scan(&previous); err != nil {
 		t.Fatal(err)
 	}
-	projectionDone, dailyDone := make(chan struct{}), make(chan struct{})
+	projectionDone, dailyDone, boardDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(projectionDone)
 		worker.Run(pollCtx, DefaultConfig())
@@ -169,7 +182,11 @@ func TestRequestMetricsProjectionPollingDelay(t *testing.T) {
 		defer close(dailyDone)
 		worker.RunDailySummary(pollCtx, DefaultConfig())
 	}()
-	defer func() { stop(); <-projectionDone; <-dailyDone }()
+	go func() {
+		defer close(boardDone)
+		worker.RunDailyBoard(pollCtx, DefaultConfig())
+	}()
+	defer func() { stop(); <-projectionDone; <-dailyDone; <-boardDone }()
 	if err := waitForProjectionPoll(ctx, pool, previous); err != nil {
 		t.Fatal(err)
 	}

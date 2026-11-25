@@ -63,22 +63,33 @@ func RebuildRequestDailySummary(ctx context.Context, tx *sql.Tx, day string) err
 func canUseRequestDailySummary(q RequestStatsQuery) bool {
 	f := q.MetricsFilter
 	start, end := f.effectiveWindow()
-	return !start.IsZero() && end.After(start) &&
-		f.ProviderID == nil && f.SessionID == nil && f.PayerID == nil && f.TeamID == nil &&
-		f.GatewayNodeID == nil && f.Status == nil &&
+	return canUseRequestDailyScope(f) && !start.IsZero() && end.After(start) &&
 		q.Credential == nil && q.Canonical == nil && q.APIKey == nil && q.Application == nil &&
 		q.Model == "" && len(q.Models) == 0 && q.ClientModel == "" && q.EndUser == "" &&
 		q.Owner == "" && q.KeyPrefix == "" && q.AppCode == "" && q.TaskType == ""
 }
 
+func canUseRequestDailyScope(f MetricsFilter) bool {
+	return f.ProviderID == nil && f.SessionID == nil && f.PayerID == nil && f.TeamID == nil &&
+		f.GatewayNodeID == nil && f.Status == nil
+}
+
 var requestStatsMergedCounters = requestStatsCounterSQL(true)
+
+const requestCleanDayBounds = `day >= ($1::timestamptz AT TIME ZONE ` + requestDailyZone + `)::date
+	AND day < ($2::timestamptz AT TIME ZONE ` + requestDailyZone + `)::date
+	AND (day::timestamp AT TIME ZONE ` + requestDailyZone + `) >= $1`
+
+const requestUncoveredRanges = `coverage AS (
+	SELECT tstzmultirange(tstzrange($1,$2,'[)')) - coalesce(range_agg(
+		tstzrange(day::timestamp AT TIME ZONE ` + requestDailyZone + `,
+		          (day+1)::timestamp AT TIME ZONE ` + requestDailyZone + `, '[)')), '{}') AS missing
+	FROM clean_days
+)`
 
 func requestCleanDaysSQL() string {
 	return `WITH clean_days AS MATERIALIZED (
-		SELECT day FROM public.request_metrics_daily_state
-		WHERE NOT dirty AND day >= ($1::timestamptz AT TIME ZONE ` + requestDailyZone + `)::date
-		  AND day < ($2::timestamptz AT TIME ZONE ` + requestDailyZone + `)::date
-		  AND (day::timestamp AT TIME ZONE ` + requestDailyZone + `) >= $1
+		SELECT day FROM public.request_metrics_daily_state WHERE NOT dirty AND ` + requestCleanDayBounds + `
 	)`
 }
 
@@ -102,27 +113,34 @@ func requestCoveredSummaryItemsSQL(scope []string) string {
 }
 
 func requestDailySummarySQL(scope []string, includeDetail bool) string {
-	filter := ""
-	if len(scope) != 0 {
-		filter = " AND " + strings.Join(scope, " AND ")
-	}
+	filter := requestDailyScopeSQL(scope)
 	detail := "raw AS (SELECT * FROM public.request_metrics_projection WHERE false)"
 	if includeDetail {
-		detail = `coverage AS (
-		SELECT tstzmultirange(tstzrange($1,$2,'[)')) - coalesce(range_agg(
-			tstzrange(day::timestamp AT TIME ZONE ` + requestDailyZone + `,
-			          (day+1)::timestamp AT TIME ZONE ` + requestDailyZone + `, '[)')), '{}') AS missing
-		FROM clean_days
-	), raw AS MATERIALIZED (
+		detail = requestUncoveredRanges + `, raw AS MATERIALIZED (
 		SELECT r.* FROM coverage CROSS JOIN LATERAL unnest(missing) AS gaps(span)
 		CROSS JOIN LATERAL (
-			SELECT * FROM public.request_metrics_projection
+			SELECT occurred_at, tenant_id, session_id, outbound_model, client_model,
+				status, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_write_tokens,
+				image_tokens, audio_tokens, video_tokens, credits_charged, cost_amount, cost_currency,
+				usage_source, cache_input_tokens, latency_ms, ttft_ms
+			FROM public.request_metrics_projection
 			WHERE occurred_at >= $1 AND occurred_at < $2
 			  AND occurred_at >= lower(span) AND occurred_at < upper(span)
 			  AND source_fact_id IS NOT NULL` + filter + ` OFFSET 0
 		) r
 	)`
 	}
+	return requestSummaryFromDailySQL(filter, detail, `(SELECT count(*) FROM (SELECT model FROM models WHERE model <> '__unknown__' GROUP BY model) unique_models)`)
+}
+
+func requestDailyScopeSQL(scope []string) string {
+	if len(scope) == 0 {
+		return ""
+	}
+	return " AND " + strings.Join(scope, " AND ")
+}
+
+func requestSummaryFromDailySQL(filter, detail, uniqueModels string) string {
 	return `WITH ` + detail + `, daily AS MATERIALIZED (
 		SELECT s.* FROM public.request_metrics_daily_summary s JOIN clean_days USING(day) WHERE true` + filter + `
 	), measures AS (
@@ -135,10 +153,8 @@ func requestDailySummarySQL(scope []string, includeDetail bool) string {
 	), raw_sessions AS MATERIALIZED (
 		SELECT DISTINCT tenant_id, session_id FROM raw WHERE session_id IS NOT NULL
 	), raw_codes AS MATERIALIZED (
-		SELECT c.code FROM raw_sessions r LEFT JOIN LATERAL (
-			SELECT code FROM public.request_metrics_daily_session_codes
-			WHERE (tenant_id,session_id)=(r.tenant_id,r.session_id) OFFSET 0
-		) c ON true
+		SELECT c.code FROM raw_sessions r
+		LEFT JOIN public.request_metrics_daily_session_codes c USING (tenant_id,session_id)
 	), words AS (
 		SELECT word, mask FROM public.request_metrics_daily_session_masks JOIN clean_days USING(day) WHERE true` + filter + `
 		UNION ALL
@@ -146,7 +162,7 @@ func requestDailySummarySQL(scope []string, includeDetail bool) string {
 		FROM raw_codes WHERE code IS NOT NULL GROUP BY code/64
 	)
 	SELECT ` + requestStatsMergedCounters + `,
-		(SELECT count(*) FROM (SELECT model FROM models WHERE model <> '__unknown__' GROUP BY model) unique_models) AS unique_models,
+		` + uniqueModels + ` AS unique_models,
 		(SELECT coalesce(sum(bit_count(mask::bit(64))),0) FROM
 		   (SELECT bit_or(mask) AS mask FROM words GROUP BY word) unique_words)
 		   + (SELECT count(*) FROM raw_codes WHERE code IS NULL) AS active_sessions,

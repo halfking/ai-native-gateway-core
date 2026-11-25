@@ -21,6 +21,37 @@ const claimDailySummarySQL = `
 // writes invalidate the day in their own transaction and serialize with this
 // row lock. Readers therefore see either a clean summary or fresh detail.
 func (p *ProjectionProcessor) RefreshDailySummary(ctx context.Context) (bool, error) {
+	return p.refreshDay(ctx, claimDailySummarySQL, func(ctx context.Context, tx *sql.Tx, day string) error {
+		if err := metrics.RebuildRequestDailySummary(ctx, tx, day); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+		UPDATE public.request_metrics_daily_state SET dirty=false, refreshed_at=clock_timestamp()
+		WHERE day=$1::date`, day)
+		return err
+	})
+}
+
+const claimDailyBoardSQL = `
+	SELECT s.day::text FROM public.request_metrics_daily_state s
+	WHERE NOT s.dirty
+	  AND (SELECT backfill_complete FROM public.request_metrics_projection_state WHERE singleton)
+	  AND NOT EXISTS (SELECT 1 FROM public.request_metrics_board_days b WHERE b.day=s.day)
+	ORDER BY s.day DESC LIMIT 1 FOR UPDATE OF s SKIP LOCKED`
+
+func (p *ProjectionProcessor) RefreshDailyBoard(ctx context.Context) (bool, error) {
+	return p.refreshDay(ctx, claimDailyBoardSQL, func(ctx context.Context, tx *sql.Tx, day string) error {
+		// A concurrent worker can commit the marker after the claim statement
+		// starts and before it acquires the unchanged summary day row.
+		var published bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_board_days WHERE day=$1::date)", day).Scan(&published); err != nil || published {
+			return err
+		}
+		return metrics.RebuildRequestDailyBoard(ctx, tx, day)
+	})
+}
+
+func (p *ProjectionProcessor) refreshDay(ctx context.Context, claim string, rebuild func(context.Context, *sql.Tx, string) error) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -34,31 +65,34 @@ func (p *ProjectionProcessor) RefreshDailySummary(ctx context.Context) (bool, er
 		return false, err
 	}
 	var day string
-	if err := tx.QueryRowContext(ctx, claimDailySummarySQL).Scan(&day); err != nil {
+	if err := tx.QueryRowContext(ctx, claim).Scan(&day); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
 		return false, err
 	}
-	if err := metrics.RebuildRequestDailySummary(ctx, tx, day); err != nil {
+	if err := rebuild(ctx, tx, day); err != nil {
 		return false, fmt.Errorf("rebuild request metrics day %s: %w", day, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE public.request_metrics_daily_state SET dirty=false, refreshed_at=clock_timestamp()
-		WHERE day=$1::date`, day); err != nil {
-		return false, err
 	}
 	return true, tx.Commit()
 }
 
 func (p *ProjectionProcessor) RunDailySummary(ctx context.Context, cfg Config) {
+	runDaily(ctx, cfg, "summary", p.RefreshDailySummary)
+}
+
+func (p *ProjectionProcessor) RunDailyBoard(ctx context.Context, cfg Config) {
+	runDaily(ctx, cfg, "board", p.RefreshDailyBoard)
+}
+
+func runDaily(ctx context.Context, cfg Config, report string, refresh func(context.Context) (bool, error)) {
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 	for {
 		for range cfg.MaxRoundsPerTick {
-			built, err := p.RefreshDailySummary(ctx)
+			built, err := refresh(ctx)
 			if err != nil && ctx.Err() == nil {
-				slog.Error("request metrics daily summary refresh failed", "error", err)
+				slog.Error("request metrics daily refresh failed", "report", report, "error", err)
 			}
 			if err != nil || !built {
 				break
