@@ -27,6 +27,13 @@ describe('mergeNav', () => {
 //     要求它藏着 ⇒ 谁照着钉测改代码，就会把功能再关回去，而且测试全绿。
 //   ⇒ 现在改成钉「**可见**」：菜单项在真源里、mergeNav 保留它、平台运维可见。
 //     这条钉测的方向必须与 owner 的决定同向，否则它就是「反向锁」。
+//
+// 2026-11-25（owner 指令）：菜单**再次暂时隐藏** —— 但这次不是删条目、
+//   也不是复活 NavItem.hidden 闸门，而是挂在 navHidden.ts 的路径级隐藏清单上
+//   （与「赞助与捐赠」同机制）。⇒ 钉测方向随之更新：
+//     ① 真源条目仍在（隐藏 ≠ 删除，口径门按真源计数）；
+//     ② mergeNav 渲染结果里**不含** /live2（菜单已藏）；
+//     ③ 路由与页面保留（直达 /live2 仍可用 —— 由 router.ts 保证，此处只钉菜单）。
 describe('visible nav item (live2 stage tree)', () => {
   const live2 = NAV_PRIMARY_ITEMS.find((i) => i.path === '/live2')!
 
@@ -36,25 +43,31 @@ describe('visible nav item (live2 stage tree)', () => {
     expect((live2 as unknown as Record<string, unknown>).hidden).toBeUndefined()
   })
 
-  it('canShowNavItem shows /live2 for platform ops', () => {
+  it('canShowNavItem hides /live2 via the path-level hidden list (2026-11-25)', () => {
+    // 菜单暂时隐藏走 navHidden 清单（路径级、对任何角色生效），
+    // 不是角色判据 —— 所以 super_admin 也看不到。
     expect(
       canShowNavItem(live2, {
         isSuperAdmin: true,
         isPlatformOps: true,
         isTenantPortal: false,
       }),
-    ).toBe(true)
+    ).toBe(false)
   })
 
-  it('mergeNav keeps /live2 in the rendered primary group', () => {
+  it('mergeNav drops /live2 from the rendered primary group (menu hidden, route kept)', () => {
     const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
       isSuperAdmin: true,
       isPlatformOps: true,
       isTenantPortal: false,
     })
     const primary = merged.find((g) => g.id === 'primary')
-    expect(primary?.items.some((i) => i.path === '/live2')).toBe(true)
+    // /live2 已从菜单消失（2026-11-25 owner 指令）……
+    expect(primary?.items.some((i) => i.path === '/live2')).toBe(false)
+    // ……但相邻的 /live（实时拓扑）不受影响。
     expect(primary?.items.some((i) => i.path === '/live')).toBe(true)
+    // 隐藏 ≠ 删除：真源条目仍在。
+    expect(NAV_PRIMARY_ITEMS.some((i) => i.path === '/live2')).toBe(true)
   })
 })
 
