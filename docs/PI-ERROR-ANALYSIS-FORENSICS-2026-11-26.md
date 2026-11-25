@@ -76,7 +76,12 @@
 | `pi_analysis.request_error_threshold` | `5` | 时间窗内达到多少次即入队 |
 | `pi_analysis.request_error_window_minutes` | `60` | 统计窗口（分钟） |
 
-作用域均为平台级。发现器按 `(error_kind, provider_id, model)` 分组轮询 `candidate_failure_logs_hot`，每轮最多入队 5 条；取消类失败（客户端主动取消等）不计入。
+作用域均为平台级。发现器按 `(error_kind, provider_id, model)` 分组轮询 `candidate_failure_logs_hot`，每轮最多入队 5 条。两类不计入：
+
+- 取消类失败（客户端主动取消等）——那不是故障。
+- **全部来自探测流量的分组**。判据与请求账本的业务隔离同源：`origin_stage` 属于 `internal/probekind` 的探测阶段、`task_type = 'probe_triggered'`、或请求号以 `probe-` 开头。只要组里有一条是业务请求就照常入队；判不出来（账本不在场、超时、请求号多到没看全）时不跳过。
+
+  缘由（2026-11-26 部署前在预发布库实测）：`upstream_down`（供应商 18 的 nvidia 系模型）那一组看着像上游故障，到请求账本里一查是 `node_probe`——节点探测在打一个「需要出口代理而没有」的供应商。探测健康归探测子系统管，不是「请求过程中发生的错误」。
 
 ## 五、发给分析模型的材料
 

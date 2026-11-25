@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/kaixuan/llm-gateway-go/internal/probekind"
 )
 
 // error_forensics_test.go — 取证轮新增面的钉测（2026-11-25）。
@@ -424,7 +426,9 @@ func TestRequestErrorDiscoverer_HandsOneSamplePerGroupToCollector(t *testing.T) 
 		WillReturnRows(sqlmock.NewRows([]string{"request_id", "session_id", "tenant_id", "error_message", "code", "retryable", "latency", "attempt", "cred", "ts"}).
 			AddRow("req-b", nil, "", "429 too many requests", 429, true, 120, 1, "", time.Now()))
 
-	n, err := NewRequestErrorDiscoverer(db, collector, nil).RunOnce(context.Background())
+	disc := NewRequestErrorDiscoverer(db, collector, nil)
+	disc.probeOnly = func(context.Context, string, failureGroup) (bool, error) { return false, nil }
+	n, err := disc.RunOnce(context.Background())
 	if err != nil || n != 2 {
 		t.Fatalf("RunOnce = (%d, %v), want (2, nil)", n, err)
 	}
@@ -446,6 +450,156 @@ func TestRequestErrorDiscoverer_HandsOneSamplePerGroupToCollector(t *testing.T) 
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
+	}
+}
+
+// 全部来自探测流量的分组不入队（探测失败归探测子系统管，不是「请求过程中的错误」）；
+// 判不出来时照常入队——宁可多分析一组，也不静默漏掉真实故障。
+func TestRequestErrorDiscoverer_ProbeOnlyGroupsAreSkippedAndUnknownKept(t *testing.T) {
+	sampleRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"request_id", "session_id", "tenant_id", "error_message", "code", "retryable", "latency", "attempt", "cred", "ts"})
+	}
+	run := func(t *testing.T, verdicts map[string]bool, errs map[string]bool) (*ErrorCollector, int) {
+		t.Helper()
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		collector := NewErrorCollector(db, true)
+		collector.started.Store(true)
+		mock.ExpectQuery("FROM candidate_failure_logs_hot").
+			WithArgs("3600 seconds", 5, 5).
+			WillReturnRows(sqlmock.NewRows([]string{"error_kind", "provider_id", "model", "cnt", "last_ts"}).
+				AddRow("upstream_down", "18", "nvidia/llama-3.1-nemotron-safe", 10, time.Now()).
+				AddRow("concurrent", "24", "glm-5.3", 15, time.Now()))
+		if !verdicts["upstream_down"] || errs["upstream_down"] {
+			mock.ExpectQuery("ORDER BY ts DESC").
+				WithArgs("3600 seconds", "upstream_down", "18", "nvidia/llama-3.1-nemotron-safe").
+				WillReturnRows(sampleRows().AddRow("req-p", "sess-p", "default", "proxy missing", 0, false, 20, 0, "", time.Now()))
+		}
+		if !verdicts["concurrent"] || errs["concurrent"] {
+			mock.ExpectQuery("ORDER BY ts DESC").
+				WithArgs("3600 seconds", "concurrent", "24", "glm-5.3").
+				WillReturnRows(sampleRows().AddRow("req-b", "sess-b", "default", "429", 429, true, 120, 1, "62", time.Now()))
+		}
+		disc := NewRequestErrorDiscoverer(db, collector, nil)
+		disc.probeOnly = func(_ context.Context, _ string, g failureGroup) (bool, error) {
+			if errs[g.kind] {
+				return false, errors.New("statement timeout")
+			}
+			return verdicts[g.kind], nil
+		}
+		n, err := disc.RunOnce(context.Background())
+		if err != nil {
+			t.Fatalf("RunOnce err: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+		return collector, n
+	}
+
+	c, n := run(t, map[string]bool{"upstream_down": true, "concurrent": false}, nil)
+	if n != 1 || len(c.queue) != 1 {
+		t.Fatalf("探测组应被跳过、业务组照常入队: n=%d queued=%d", n, len(c.queue))
+	}
+	if got := (<-c.queue).RequestID; got != "req-b" {
+		t.Errorf("入队的应是业务组的样本，得 %q", got)
+	}
+
+	c, n = run(t, map[string]bool{"upstream_down": true}, map[string]bool{"upstream_down": true, "concurrent": true})
+	if n != 2 || len(c.queue) != 2 {
+		t.Fatalf("判不出来时两组都应入队: n=%d queued=%d", n, len(c.queue))
+	}
+}
+
+// 默认实现：到请求账本里数探测；看全了且全是探测才算；没看全 / 账本读不到都不算。
+func TestRequestErrorDiscoverer_ProbeOnlyDefault(t *testing.T) {
+	group := failureGroup{kind: "upstream_down", provider: "18", model: "nvidia/x", count: 10}
+	newDisc := func(t *testing.T) (*RequestErrorDiscoverer, sqlmock.Sqlmock) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		return NewRequestErrorDiscoverer(db, nil, nil), mock
+	}
+	ids := func(n int) *sqlmock.Rows {
+		rows := sqlmock.NewRows([]string{"request_id"})
+		for i := 0; i < n; i++ {
+			rows.AddRow(fmt.Sprintf("req-%d", i))
+		}
+		return rows
+	}
+
+	// 全是探测 ⇒ true。
+	d, mock := newDisc(t)
+	mock.ExpectQuery("SELECT DISTINCT request_id").WithArgs("3600 seconds", "upstream_down", "18", "nvidia/x", discoveryProbeLookups+1).
+		WillReturnRows(ids(3))
+	mock.ExpectQuery("FROM request_logs_with_current_month").
+		WithArgs("req-0", "req-1", "req-2").
+		WillReturnRows(sqlmock.NewRows([]string{"marked"}).AddRow(3))
+	if got, err := d.probeOnlyDefault(context.Background(), "3600 seconds", group); err != nil || got != true {
+		t.Fatalf("全是探测应为 (true, nil)，得 (%v, %v)", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+
+	// 有一条是业务请求 ⇒ false。
+	d, mock = newDisc(t)
+	mock.ExpectQuery("SELECT DISTINCT request_id").WillReturnRows(ids(3))
+	mock.ExpectQuery("FROM request_logs_with_current_month").WillReturnRows(sqlmock.NewRows([]string{"marked"}).AddRow(2))
+	if got, err := d.probeOnlyDefault(context.Background(), "3600 seconds", group); err != nil || got != false {
+		t.Fatalf("混有业务请求应为 (false, nil)，得 (%v, %v)", got, err)
+	}
+
+	// 请求号没看全 ⇒ 不下结论，且不再查账本。
+	d, mock = newDisc(t)
+	mock.ExpectQuery("SELECT DISTINCT request_id").WillReturnRows(ids(discoveryProbeLookups + 1))
+	if got, err := d.probeOnlyDefault(context.Background(), "3600 seconds", group); err != nil || got != false {
+		t.Fatalf("没看全应为 (false, nil)，得 (%v, %v)", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("没看全时不应再查账本: %v", err)
+	}
+
+	// 窗口边界上没行了 ⇒ false，且不去查账本（交给后面的取样去决定）。
+	d, mock = newDisc(t)
+	mock.ExpectQuery("SELECT DISTINCT request_id").WillReturnRows(ids(0))
+	if got, err := d.probeOnlyDefault(context.Background(), "3600 seconds", group); err != nil || got != false {
+		t.Fatalf("没有行应为 (false, nil)，得 (%v, %v)", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("没有行时不应再查账本: %v", err)
+	}
+
+	// 账本读不到 ⇒ error（调用方按不跳过处理）。
+	d, mock = newDisc(t)
+	mock.ExpectQuery("SELECT DISTINCT request_id").WillReturnRows(ids(2))
+	mock.ExpectQuery("FROM request_logs_with_current_month").
+		WillReturnError(errors.New(`pq: relation "request_logs_with_current_month" does not exist`))
+	if got, err := d.probeOnlyDefault(context.Background(), "3600 seconds", group); err == nil || got != false {
+		t.Fatalf("账本读不到应为 (false, err)，得 (%v, %v)", got, err)
+	}
+}
+
+// 探测判据与请求账本的业务隔离谓词同源（internal/probekind 阶段表 ＋ probe_triggered ＋ probe- 前缀）。
+func TestDiscoveryProbePredicateSharesLedgerSource(t *testing.T) {
+	sqlText := discoveryProbeMarkedCountSQL("$1, $2")
+	for _, stage := range probekind.ProbeStages {
+		if !strings.Contains(sqlText, "'"+stage+"'") {
+			t.Errorf("探测判据缺 probekind 阶段 %q", stage)
+		}
+	}
+	for _, want := range []string{"task_type, '') = 'probe_triggered'", "rl.request_id LIKE 'probe-%'", "COUNT(DISTINCT rl.request_id)", "request_id IN ($1, $2)"} {
+		if !strings.Contains(sqlText, want) {
+			t.Errorf("探测判据缺 %q", want)
+		}
+	}
+	if strings.Contains(sqlText, "ANY(") {
+		t.Errorf("请求号应逐个占位符，不用数组参数（pgx stdlib 的 text[] 绑定有坑）")
 	}
 }
 
