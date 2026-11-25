@@ -22,6 +22,8 @@
 #   AC-4  DD_SKIP_TEST_GATE=1 时 --help 仍然打印用法（帮助不是闸门）。
 #   AC-5  启动时清掉上一次 SIGKILL 留下的 llm-gateway-test-gate.* 残留。
 #   AC-6  清扫**不碰**不属于本闸门的 worktree（按名字前缀精确匹配）。
+#   AC-7  嵌套模块分箱：包就是嵌套模块根目录本身时记成 `./`（2026-11-26：旧实现记成
+#         重复路径 ⇒ go list 取不到包清单 ⇒ 闸门未得出结论 ⇒ 干净树部署被挡）。
 # =====================================================================
 set -uo pipefail
 
@@ -132,6 +134,62 @@ if [[ ! -d "$other_dir" ]]; then
   die "清扫误删了**不属于本闸门**的 worktree 目录"
 else
   ok
+fi
+
+# ── AC-7：嵌套模块分箱（★ 2026-11-26 L123 轮，211 部署实测缺陷）────────────
+#
+# ★ 缺陷形态：被选中的包**就是嵌套模块根目录本身**（./plugin-runtime/config）时，
+#   旧实现把它记成 `./plugin-runtime/config` ⇒ 到模块根下再列一次 ⇒ 路径重复
+#   一层 ⇒ `go list` 取不到包清单 ⇒ 闸门「未得出结论」⇒ 干净树部署被挡。
+# ★ 判据已搬进 scripts/lib/gate-nested-module-binning.sh ⇒ 这里**直接实跑**它。
+# ★ 需要 bash ≥ 4.2（关联数组 + declare -gA）；低版本如实跳过、不计入通过数。
+BINNING_LIB="$REPO_ROOT/scripts/lib/gate-nested-module-binning.sh"
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "SKIP AC-7: 嵌套模块分箱需要 bash >= 4.2（当前 ${BASH_VERSION}）"
+elif [[ ! -f "$BINNING_LIB" ]]; then
+  die "AC-7: 缺 $BINNING_LIB"
+else
+  binrepo="$TMP/binrepo"
+  mkdir -p "$binrepo/plugin-runtime/config" "$binrepo/installer/internal/dbinit" \
+           "$binrepo/admin" "$binrepo/bg" "$binrepo/cmd/gateway/foo"
+  : >"$binrepo/go.mod"
+  : >"$binrepo/plugin-runtime/config/go.mod"
+  : >"$binrepo/installer/go.mod"
+  bin_out="$( "$BASH" -c '
+    set -u
+    . "$1"
+    gate_bin_packages_by_module "$2" ./admin ./plugin-runtime/config ./installer/internal/dbinit ./bg ./cmd/gateway/foo
+    printf "MAIN=%s\n" "${GATE_MAIN_PACKAGES[*]}"
+    printf "MODULES=%s\n" "${GATE_NESTED_MODULES[*]}"
+    for m in "${GATE_NESTED_MODULES[@]}"; do printf "PKGS[%s]=[%s]\n" "$m" "${GATE_NESTED_PKGS[$m]}"; done
+  ' _ "$BINNING_LIB" "$binrepo" 2>"$TMP/bin-err" )"
+  if [[ -s "$TMP/bin-err" ]]; then
+    die "AC-7: 分箱函数有 stderr 输出：$(head -2 "$TMP/bin-err")"
+  fi
+  # ★ 模块根自身的包记成 `./`（不是重复路径）；子目录的包是模块内相对路径；模块列表按首次出现排序。
+  want_main="MAIN=./admin ./bg ./cmd/gateway/foo"
+  want_modules="MODULES=plugin-runtime/config installer"
+  want_pkgs1="PKGS[plugin-runtime/config]=[ ./]"
+  want_pkgs2="PKGS[installer]=[ ./internal/dbinit]"
+  for want in "$want_main" "$want_modules" "$want_pkgs1" "$want_pkgs2"; do
+    if grep -qxF -- "$want" <<<"$bin_out"; then
+      ok
+    else
+      die "AC-7: 分箱结果缺行：${want}；实际：$(tr '\n' '|' <<<"$bin_out")"
+    fi
+  done
+  # ★ 只传主模块的包 ⇒ 嵌套列表为空（调用方据此跳过嵌套箱）。
+  only_main="$( "$BASH" -c '
+    set -u
+    . "$1"
+    gate_bin_packages_by_module "$2" ./admin
+    printf "N=%s MAIN=%s\n" "${#GATE_NESTED_MODULES[@]}" "${GATE_MAIN_PACKAGES[*]}"
+  ' _ "$BINNING_LIB" "$binrepo" 2>&1 )"
+  if [[ "$only_main" == "N=0 MAIN=./admin" ]]; then
+    ok
+  else
+    die "AC-7: 只有主模块包时嵌套列表应为空，实际：$only_main"
+  fi
 fi
 
 echo "PASS=$PASS FAIL=$FAIL"

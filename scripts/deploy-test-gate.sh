@@ -399,26 +399,25 @@ log "要跑的包：${packages[*]}"
 # 红报。修法 = 按模块根分箱：嵌套模块的包**在其模块根**下跑（GOFLAGS 按
 # 树内有无 vendor 决定：installer 无 vendor ⇒ -mod=mod 走模块缓存），覆盖
 # 断言同源同根。响亮记录分箱结果，不许静默跳过（那会把闸门降级成摆设）。
+#
+# ★ 2026-11-26（L123 轮）：分箱判据搬进 scripts/lib/gate-nested-module-binning.sh
+#   （判据要被实跑测到 ⇒ tests/deploy_test_gate_contract_test.sh 的 AC-7），并订正
+#   「被选中的包就是嵌套模块根目录本身」被记成重复路径的缺陷（见该库头注）。
+#   分箱口径没变；变的只是这一类包在模块内的写法（`./`）。
+# shellcheck source=lib/gate-nested-module-binning.sh
+. "$REPO_ROOT/scripts/lib/gate-nested-module-binning.sh" \
+  || die "载入 scripts/lib/gate-nested-module-binning.sh 失败 ⇒ 分箱做不成 ⇒ 按失败处理"
 main_packages=()
 nested_modules=()   # 去重后的嵌套模块根列表，如 installer
-declare -A nested_seen=()
 declare -A nested_pkgs=()
-for p in "${packages[@]}"; do
-  dir="${p#./}"; dir="${dir%/}"
-  modroot="$dir"
-  while [[ -n "$modroot" && "$modroot" != "." && ! -f "$REPO_ROOT/$modroot/go.mod" ]]; do
-    modroot="$(dirname "$modroot")"
+gate_bin_packages_by_module "$REPO_ROOT" "${packages[@]}"
+main_packages=("${GATE_MAIN_PACKAGES[@]}")
+if [[ ${#GATE_NESTED_MODULES[@]} -gt 0 ]]; then
+  nested_modules=("${GATE_NESTED_MODULES[@]}")
+  for _modroot in "${GATE_NESTED_MODULES[@]}"; do
+    nested_pkgs[$_modroot]="${GATE_NESTED_PKGS[$_modroot]}"
   done
-  if [[ -z "$modroot" || "$modroot" == "." || ! -f "$REPO_ROOT/$modroot/go.mod" ]]; then
-    main_packages+=("$p")
-  else
-    if [[ -z "${nested_seen[$modroot]+x}" ]]; then
-      nested_seen[$modroot]=1
-      nested_modules+=("$modroot")
-    fi
-    nested_pkgs[$modroot]+=" ./${dir#"$modroot"/}"
-  fi
-done
+fi
 packages=("${main_packages[@]}")
 if [[ ${#nested_modules[@]} -gt 0 ]]; then
   log "★ 嵌套模块分箱：${nested_modules[*]} ⇒ 各自模块根下跑（不从主模块根）★"
