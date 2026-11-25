@@ -53,8 +53,16 @@ VERIFY="$ROOT/verify.sh"
 
 # cgo 专属包名单（登记值）。动态探测若与之不等 → 依赖图变了，更新本名单与 AGENTS.md
 # 的「CGO 边界」一节，并重新评估本机口径。
+#
+# ★ 2026-11-25 第 28 轮：domains/reconciliation 与 domains/streaming/executors 进名单——**只有测试**
+#   依赖 cgo（日志型 outbox 的测试用真 SQLite 日志，打开函数来自 storage/sqlite）；两包的生产代码
+#   都不导入任何 SQLite 驱动。同 bg 的先例。此前 reconciliation 在生产代码里无条件空导入
+#   go-sqlite3（cdd155fff）⇒ 名单漂到 39 个包；修法是把「打开日志」收进 storage/sqlite、
+#   由 cmd/gateway 注入（reconciliation.AttemptJournalOpener）⇒ 回到「6 个生产 + 2 个仅测试」。
 EXPECTED_CGO_BOUND='bg
 cmd/gateway
+domains/reconciliation
+domains/streaming/executors
 storage
 storage/factory
 storage/sqlite
