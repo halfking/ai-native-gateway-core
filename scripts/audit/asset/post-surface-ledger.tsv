@@ -1,5 +1,4 @@
 #gen_tool	post-surface-probe.sh ledger
-# 去除曾被提取器误记为固定路由的动态路径前缀。第 19 行的固定路由及原有探测记录保留。
 #gen_classify	kx-post-class.tsv
 #gen_probe	kx-r159-post-probe3.tsv
 #gen_target	127.0.0.1:8782
@@ -721,6 +720,7 @@
 /audit/export	GET	mcp/control.go:151	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /capabilities	GET	mcp/control.go:113	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:19	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/debug/pprof/	ANY	cmd/gateway/pprof_server.go:25	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/cmdline	ANY	cmd/gateway/pprof_server.go:20	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/profile	ANY	cmd/gateway/pprof_server.go:21	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /debug/pprof/symbol	ANY	cmd/gateway/pprof_server.go:22	unknown				not-probed-unresolved	★ 静态分级：解析不出

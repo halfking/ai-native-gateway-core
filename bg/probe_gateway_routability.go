@@ -187,10 +187,12 @@ func (w *NodeProbeWorker) gatewayRoundRoutable(ctx context.Context, credID int, 
 //
 //	共用本函数，不是两份抄本）。
 //
-//	routable = 「该 (凭据, 模型) 对此刻在路由层是否还可能找到候选」。
-//	调用方只在直连轮失败时去问它（直连成功 ⇒路由层可能刚看见恢复，问判据
+//	routable  = 「该 (凭据, 模型) 对此刻在路由层是否还可能找到候选」（凭据级）。
+//	planEmpty = 「路由层对这个**模型**是否一个候选都没有」（模型级，
+//	            判据见 probe_gateway_plan.go —— 问路由层自己的候选解析器）。
+//	调用方只在直连轮失败时去问它们（直连成功 ⇒路由层可能刚看见恢复，问判据
 //	会误杀网关轮本来的职责）。
-func probeGatewayRoundDecision(direct nodeProbeRoundResult, routable bool) (run bool, skipReason string) {
+func probeGatewayRoundDecision(direct nodeProbeRoundResult, routable bool, planEmpty bool) (run bool, skipReason string) {
 	if direct.ok {
 		// 直连轮成功 ⇒ 网关轮照跑：它的职责是确认**路由层看见了已恢复的状态**。
 		return true, ""
@@ -205,17 +207,24 @@ func probeGatewayRoundDecision(direct nodeProbeRoundResult, routable bool) (run 
 		// ⇒ 零信息量，只会多写一条必然失败的业务形态请求记录。
 		return false, "gateway_round_skipped_unroutable"
 	}
+	if planEmpty {
+		// 路由层对这个模型**整体**零候选（plan_count=0）⇒ 钉住哪一把凭据都一样
+		// 是 503 no_candidate ⇒ 零信息量。
+		return false, gatewayRoundSkippedNoPlan
+	}
 	return true, ""
 }
 
 // probeGatewayRoundSkipDetail is the human-readable reason recorded on the
-// skipped gateway round (single source for both skip reasons).
+// skipped gateway round (single source for all skip reasons).
 func probeGatewayRoundSkipDetail(reason string) string {
 	switch reason {
 	case "gateway_round_skipped_redundant":
 		return "direct round already convicted this (credential, model) pair; the pinned gateway round would repeat the same upstream refusal"
 	case "gateway_round_skipped_unroutable":
 		return "routing layer currently has no available candidate for this (credential, model) pair, so the pinned gateway round can only be a no_candidate; it can never reach the upstream"
+	case gatewayRoundSkippedNoPlan:
+		return "routing layer currently has no candidate at all for this model (plan is empty), so the pinned gateway round can only be a no_candidate; it can never reach the upstream"
 	default:
 		return "gateway round skipped: " + reason
 	}
