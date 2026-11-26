@@ -1,4 +1,5 @@
 import { flushPromises, mount, enableAutoUnmount } from '@vue/test-utils'
+import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import UsersView from './UsersView.vue'
@@ -17,6 +18,7 @@ const i18n = createI18n({
       common: {
         confirm: '确认',
         cancel: '取消',
+        save: '保存',
       },
     },
   },
@@ -27,6 +29,7 @@ const i18n = createI18n({
 const getUsersMock = vi.fn()
 const getTenantsAdminMock = vi.fn()
 const createUserMock = vi.fn()
+const updateUserMock = vi.fn()
 const resetUserPasswordMock = vi.fn()
 const getUserUsageSummaryMock = vi.fn()
 const getUserStatsMock = vi.fn()
@@ -37,7 +40,7 @@ let superAdminMode = true
 vi.mock('../api', () => ({
   getUsers: (...args: any[]) => getUsersMock(...args),
   createUser: (...args: any[]) => createUserMock(...args),
-  updateUser: vi.fn(),
+  updateUser: (...args: any[]) => updateUserMock(...args),
   deleteUser: vi.fn(),
   resetUserPassword: (...args: any[]) => resetUserPasswordMock(...args),
   getTenantsAdmin: (...args: any[]) => getTenantsAdminMock(...args),
@@ -267,5 +270,152 @@ describe('UsersView 统计 UI 优化轮（2026-09-30）', { timeout: 20_000 }, (
 
     expect(wrapper.findAll('tbody tr').length).toBe(1) // 空态行
     expect(wrapper.text()).toContain('无匹配用户')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// 角色治理轮（2026-11-26）：用户管理「变更角色」＋ 非 default 租户的角色闭集
+//
+// 口径与后端 admin/users.go 同源：
+//   · 角色闭集 = {super_admin, tenant_admin, user}
+//   · super_admin 只属于 default 租户 ⇒ 非 default 租户的角色下拉不给它
+//   · live 211 上租户 chenb 挂着 super_admin 账号 ⇒ 变更角色就是收它的那条路
+// ─────────────────────────────────────────────────────────────────────────
+// 列表按用户名排序（sortByName）⇒ 行号不等于插入顺序 ⇒ 一律按用户名定位行。
+function rowByUsername(wrapper: VueWrapper, username: string): DOMWrapper<Element> {
+  const row = wrapper.findAll('tbody tr').find((r) => r.text().includes(username))
+  if (!row) throw new Error(`没找到用户名 ${username} 所在的行`)
+  return row
+}
+
+describe('UsersView 变更角色（角色治理轮）', { timeout: 20_000 }, () => {
+  beforeEach(() => {
+    readOnlyMode = false
+    tenantAdminMode = false
+    superAdminMode = true
+    getUsersMock.mockReset()
+    getTenantsAdminMock.mockReset()
+    updateUserMock.mockReset()
+    getUserUsageSummaryMock.mockReset()
+    getUserStatsMock.mockReset()
+    getUsersMock.mockResolvedValue([
+      {
+        id: 49, tenant_id: 'chenb', username: 'chenb', display_name: '彪哥',
+        email: '', role: 'super_admin', enabled: true,
+        must_change_password: false, last_login_at: null, created_at: '2026-11-01T00:00:00Z',
+      },
+      {
+        id: 41, tenant_id: 'default', username: 'admin', display_name: 'Admin',
+        email: '', role: 'super_admin', enabled: true,
+        must_change_password: false, last_login_at: null, created_at: '2026-06-27T00:00:00Z',
+      },
+    ])
+    getTenantsAdminMock.mockResolvedValue([
+      { code: 'default', name: '默认租户', status: 'active' },
+      { code: 'chenb', name: '彪哥', status: 'active' },
+    ])
+    getUserUsageSummaryMock.mockResolvedValue({ days: 30, items: [] })
+    updateUserMock.mockResolvedValue({ id: 49 })
+  })
+
+  it('超级管理员能看到「变更角色」入口；租户管理员只读时看不到', async () => {
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((n) => n.text().includes('变更角色'))).toBe(true)
+
+    readOnlyMode = true
+    tenantAdminMode = true
+    const readonlyWrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+    expect(readonlyWrapper.findAll('button').some((n) => n.text().includes('变更角色'))).toBe(false)
+  })
+
+  it('非 default 租户的用户：角色下拉只有租户管理员与普通用户，没有超级管理员', async () => {
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    const row = rowByUsername(wrapper, 'chenb')
+    const btn = row.findAll('button').find((n) => n.text().includes('变更角色'))
+    await btn!.trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.modal-card')
+    const options = modal.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(options).toEqual(['tenant_admin', 'user'])
+    expect(options).not.toContain('super_admin')
+    // 说明文案要说清「为什么没有超级管理员」
+    expect(modal.text()).toContain('非 default 租户只能是租户管理员或普通用户')
+  })
+
+  it('default 租户的用户：角色下拉三档齐全', async () => {
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    const row = rowByUsername(wrapper, 'admin')
+    const btn = row.findAll('button').find((n) => n.text().includes('变更角色'))
+    await btn!.trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.modal-card')
+    const options = modal.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(options).toEqual(['super_admin', 'tenant_admin', 'user'])
+  })
+
+  it('提交变更角色 → PUT /api/users/:id { role }', async () => {
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    const row = rowByUsername(wrapper, 'chenb')
+    const btn = row.findAll('button').find((n) => n.text().includes('变更角色'))
+    await btn!.trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.modal-card')
+    const select = modal.find('select')
+    await select.setValue('tenant_admin')
+    await flushPromises()
+
+    const saveBtn = modal.findAll('button').find((n) => n.text().includes('保存'))
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    expect(updateUserMock).toHaveBeenCalledWith(49, { role: 'tenant_admin' })
+  })
+
+  it('新建用户：选中非 default 租户后，角色下拉收敛（不留超级管理员）', async () => {
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    const openButton = wrapper.findAll('button').find((n) => n.text().includes('新建用户'))
+    await openButton!.trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.modal-card')
+    const selects = modal.findAll('select')
+    const tenantSelect = selects[0]
+    await tenantSelect.setValue('chenb')
+    await flushPromises()
+
+    const roleSelect = modal.findAll('select')[1]
+    const options = roleSelect.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(options).toEqual(['tenant_admin', 'user'])
+    expect(modal.text()).toContain('非 default 租户不能拥有超级管理员')
+  })
+
+  it('角色列：普通用户显示自己的名字，不被谎称成租户管理员', async () => {
+    getUsersMock.mockResolvedValue([
+      {
+        id: 60, tenant_id: 'chenb', username: 'worker', display_name: '工人',
+        email: '', role: 'user', enabled: true,
+        must_change_password: false, last_login_at: null, created_at: '2026-11-01T00:00:00Z',
+      },
+    ])
+    const wrapper = mount(UsersView, { global: { plugins: [i18n] } })
+    await flushPromises()
+
+    const rowText = wrapper.findAll('tbody tr')[0].text()
+    expect(rowText).toContain('普通用户')
+    expect(rowText).not.toContain('租户管理员')
   })
 })
