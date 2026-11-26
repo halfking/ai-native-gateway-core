@@ -55,6 +55,7 @@ import {
   compactTickValue,
   usageTrendMetricLabelKey,
   usageTrendSeriesTotal,
+  usageTrendTotals,
 } from '../../utils/usageTrend'
 
 const PAGE_TOP_MODELS = 10
@@ -495,6 +496,30 @@ function rowMetricTotal(row: UsageTrendTotalsRow): number {
 
 const metricTotal = computed(() => series.value.reduce((sum, s) => sum + usageTrendSeriesTotal(s, metric.value), 0))
 
+// ── 合计行（2026-11-26 总额展示轮）──
+//
+// ★ 诉求：页面上要能看到总额（当前时间窗 + 过滤条件下的全量）。
+// ★ 数据来源：后端 foldUsageTrendRows 把 top-N 之外的模型折进 '__others__'
+//   （垫底序列保留全部指标），模型多选时不折叠 ⇒ series 行集合对当前过滤
+//   条件闭合 ⇒ usageTrendTotals 逐行求和 = 真总额（与占比列分母同源）。
+// ★ 展示：el-table 原生 show-summary + summary-method 合计行；
+//   非数值列（模型名）与占比列（分母即自身，恒 100%）不显示数字。
+// ★ 签名口径：本仓 element-plus 2.8 的 SummaryMethod 是
+//   `(data: { columns, data }) => (string | VNode)[]` —— 按**列序**返回数组，
+//   不是逐列回调；列身份用 property 匹配（数值列已在模板声明 prop）。
+const usageTotals = computed(() => usageTrendTotals(series.value))
+
+function sumsToTotalCell(param: { columns: Array<{ property?: string }> }): string[] {
+  const byProp: Record<string, string> = {
+    model: t('usageTrend.totalRow'),
+    total_requests: compactTickValue(usageTotals.value.requests),
+    total_tokens: compactTickValue(usageTotals.value.tokens),
+    total_credits: compactTickValue(usageTotals.value.credits),
+    total_cost_usd: `$${usageTotals.value.cost_usd.toFixed(4)}`,
+  }
+  return param.columns.map((c) => (c.property != null ? byProp[c.property] ?? '' : ''))
+}
+
 function sharePct(row: UsageTrendTotalsRow): string {
   if (metricTotal.value <= 0) return '—'
   return `${((rowMetricTotal(row) / metricTotal.value) * 100).toFixed(1)}%`
@@ -760,7 +785,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="ute__table">
-      <el-table :data="series" size="small" :row-class-name="rowClass">
+      <el-table :data="series" size="small" :row-class-name="rowClass" show-summary :summary-method="sumsToTotalCell">
         <el-table-column :label="t('usageTrend.filterModel')" min-width="220" prop="model">
           <template #default="{ row }">
             <span :class="{ 'ute__others': row.model === USAGE_TREND_OTHERS }">
@@ -768,16 +793,16 @@ onBeforeUnmount(() => {
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('dashboard.board.trendRequests')" align="right" width="110">
+        <el-table-column :label="t('dashboard.board.trendRequests')" align="right" width="110" prop="total_requests">
           <template #default="{ row }">{{ compactTickValue(row.total_requests) }}</template>
         </el-table-column>
-        <el-table-column :label="t('dashboard.board.trendTokens')" align="right" width="120">
+        <el-table-column :label="t('dashboard.board.trendTokens')" align="right" width="120" prop="total_tokens">
           <template #default="{ row }">{{ compactTickValue(row.total_tokens) }}</template>
         </el-table-column>
-        <el-table-column :label="t('dashboard.board.trendCredits')" align="right" width="110">
+        <el-table-column :label="t('dashboard.board.trendCredits')" align="right" width="110" prop="total_credits">
           <template #default="{ row }">{{ compactTickValue(row.total_credits) }}</template>
         </el-table-column>
-        <el-table-column :label="t('dashboard.board.trendCost')" align="right" width="130">
+        <el-table-column :label="t('dashboard.board.trendCost')" align="right" width="130" prop="total_cost_usd">
           <template #default="{ row }">${{ row.total_cost_usd.toFixed(4) }}</template>
         </el-table-column>
         <el-table-column :label="t('usageTrend.shareByMetric')" align="right" width="110">

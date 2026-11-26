@@ -13,6 +13,7 @@ export default {
   filterAll: '全部',
   filterProviderKeyFailed: "供应商/Key 筛选选项加载失败，下拉为空不代表没有",
   filterTenantFailed: '租户筛选选项加载失败',
+  totalRow: '合计',
   shareByMetric: '当前指标占比',
   sourceDetail: '请求明细',
   // 2026-10-02 多选/清除全部/自动刷新轮

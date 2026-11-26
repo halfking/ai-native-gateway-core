@@ -13,6 +13,7 @@ export default {
   filterAll: 'Alle',
   filterProviderKeyFailed: "Anbieter-/Key-Filteroptionen konnten nicht geladen werden – eine leere Auswahl bedeutet nicht, dass es keine gibt",
   filterTenantFailed: 'Mandanten-Filteroptionen konnten nicht geladen werden',
+  totalRow: 'Gesamt',
   shareByMetric: 'Anteil (Metrik)',
   sourceDetail: 'Anforderungsdetail',
   // 2026-10-02 Mehrfachauswahl / Alle löschen / Auto-Aktualisierung
