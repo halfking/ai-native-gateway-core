@@ -543,6 +543,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"request_mode:base", "request_preview:base", "response_preview:base", "ts:base", "work_type:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；本读点读 request_mode:base,request_preview:base,response_preview:base,ts:base,work_type:base ⇒ 全部引用列都是底表直映列 ⇒ 底表两臂窄投影可等价供给"},
 		},
 	},
+	"admin/permission_fix_examples.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNarrowMigratable,
+		Note:  "权限修复示例文件：展示如何为端点添加租户/用户隔离；包含示例 SQL（读 request_logs_with_current_month）但不是真实生产代码",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"cost_usd:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: true, ExemptReason: exemptAuditOrToolingFace, Note: "示例代码中的用量统计查询；读取的都是底表直映列 ⇒ 窄投影可等价供给"},
+		},
+	},
 	"admin/probe_history.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsExpressionReplication,
