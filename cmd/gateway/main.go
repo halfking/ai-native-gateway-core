@@ -9240,6 +9240,44 @@ func main() {
 	//   ⇒ 纯观测：不改状态码、不改响应体、不吞错误。
 	finalHandler := middleware.LedgerMiddleware(handler)
 
+	// 2026-11-26（211 充值事故轮）：**需求驱动复探**。
+	//
+	// 事故形状：凭据被判「永久配额耗尽」后，候选 SQL 把它整体排除
+	// ⇒ 该模型零候选 ⇒ 没有业务流量 ⇒ 没有新的健康证据 ⇒ 只能等
+	// 余额探针的**时间轮询**（退避上限 1 小时）⇒「充值了但网关最长
+	// 1 小时不知道」。
+	//
+	// 本接线把发现机制升级为**需求驱动**：新请求打到一个模型上 ⇒ 若
+	// 它有额度耗尽的节点 ⇒ 立刻为这些节点发起一次探活（不等 1 小时
+	// 退避）⇒ 探到已恢复 ⇒ 凭据翻绿 ⇒ 候选恢复 ⇒ 模型立刻可用。
+	// 探测间隔由调度器自动回退（30s→1m→2m→4m→**5m 封顶**）⇒ 高频
+	// 请求不会把上游打爆。
+	//
+	// 与余额探针共用同一个凭据级探针（credProbeV2）⇒ 恢复动作完全
+	// 一致（writeHealth → quota_state=ok → 候选恢复）。
+	//
+	// ★ **为什么接线放在这里（而不是 credProbeV2 块旁边）**：
+	//   `cmd/gateway/main.go` 有一批**按行号钉**的权威坐标
+	//   （对拍表 `scripts/ursmcheck/request_surface_doc_currency_test.go`
+	//   的 9159-9164 / 9204-9223 / 9206-9213 三窗口、设计页
+	//   `docs/subsystems/request-surface.md`、认证表 A1
+	//   `docs/audit/2026-10-24-magpie-v0.1.1367-改造落地审计.md`，
+	//   以及 admin 路由快照 `scripts/audit/asset/admin-routes.txt` 里
+	//   main.go 最大行 9138）⇒ 在这些坐标**之前**插一行就要重钉四面文档。
+	//   ★ 本块放在最后一个窗口（9223）之后 ⇒ **零位移** ⇒ 不触碰他人
+	//   在途修改的三份共享文档 ⇒ 也不需要第二十八次重钉。
+	//   ★ 约束：位置仍在 `srv := &http.Server{` 之前 ⇒ 接线必然早于
+	//   服务开始收流量 ⇒ 不会有"先来请求后接线"的空窗。
+	if credProbeV2 != nil && chatHandler != nil && dbConn != nil {
+		demandExhaustedProbe := bg.NewExhaustedNodeDemandProbe(dbConn.Pool(), credProbeV2.ProbeNowAsyncIfIdle)
+		chatHandler.SetExhaustedNodeProbeTrigger(func(ctx context.Context, model, tenantID string) {
+			demandExhaustedProbe.NotifyRequest(ctx, model, tenantID)
+		})
+		slog.Info("exhausted node demand probe wired",
+			"trigger", "new_request_on_exhausted_model",
+			"backoff_first", "30s", "backoff_cap", "5m")
+	}
+
 	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存

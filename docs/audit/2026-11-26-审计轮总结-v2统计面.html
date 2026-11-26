@@ -111,12 +111,12 @@
 
   <h2>④ 三台部署读数（标准脚本，未用 DD_SKIP_TEST_GATE）</h2>
   <div class="grid g3" id="deployCards">
-    <div class="card"><div class="kpi-label">211（蓝绿）</div><div class="kpi ok" id="d211">✅ 完成</div><div class="muted" id="d211s">槽 b @8783 接管 · v2.6.2-b56206bc seq3287</div></div>
-    <div class="card"><div class="kpi-label">245（蓝绿）</div><div class="kpi" id="d245">部署中…</div><div class="muted" id="d245s">bash scripts/deploy-245.sh</div></div>
-    <div class="card"><div class="kpi-label">154（生产）</div><div class="kpi" id="d154">排队</div><div class="muted" id="d154s">bash scripts/deploy-154.sh（经 252 跳板）</div></div>
+    <div class="card"><div class="kpi-label">211（蓝绿）</div><div class="kpi ok" id="d211">✅ 完成</div><div class="muted" id="d211s">槽 b @8783 · v2.6.2-b56206bc seq3287</div></div>
+    <div class="card"><div class="kpi-label">245（蓝绿）</div><div class="kpi ok" id="d245">✅ 在役</div><div class="muted" id="d245s">seq3178-6bbc51f5 active @8781（并行部署车）</div></div>
+    <div class="card"><div class="kpi-label">154（生产）</div><div class="kpi ok" id="d154">✅ 在役</div><div class="muted" id="d154s">seq3177-b56206bc active @8782（并行部署车）</div></div>
   </div>
   <div class="card" style="margin-top:16px">
-    <b>211 读数（2026-11-26 10:57）</b>
+    <b>211 读数（2026-11-26 10:57）— 本轮部署车</b>
     <ul>
       <li>测试闸门（./bg ./cmd/gateway ./scripts/ursmcheck）全过，<b>未使用 DD_SKIP_TEST_GATE</b></li>
       <li>切流：nginx upstream 127.0.0.1:8781 → 127.0.0.1:8783，goacos 注册表同步指向 8783</li>
@@ -126,6 +126,24 @@
         <code>"source":"request_metrics","ready":true</code>，24h 窗口 success 9,532 / failed 1,750 /
         success_rate 84.5% / total_tokens 19.52 亿 / unique_models 14 —— V2 投影面在现网真实供数</li>
       <li>旧槽 a 已停（容器/镜像保留，可 docker start 回滚）</li>
+    </ul>
+    <b>245 读数（11:29 切流）— 本轮部署车探活超时退出，并行部署车接管</b>
+    <ul>
+      <li>本轮 <code>deploy-245.sh</code>：候选探活 60s 超时（机器 load 17、iowait 44%、vda %util 89% ——
+        同机另一会话的 brandmind-go podman 构建烧 IO）⇒ <b>脚本按设计安全退场，旧实例保持服务</b>（未破坏任何东西）</li>
+      <li>并行部署车随后完成：release <code>3178-6bbc51f5</code> 切流到 8781 active（11:29），
+        <code>/readyz</code> 200（DB 469ms / Redis 550ms，IO 高压下仍可用）</li>
+      <li>登录端点活性：错口令 401、连发失败触发 <code>captcha_required</code> 锁定（安全机制正常）</li>
+      <li>6bbc51f5 = 上游 L126 轮块（11:19），比本轮 b56206bc 更新 ⇒ 三台尖端以 154/245 为准继续前进</li>
+    </ul>
+    <b>154 读数（11:52 验证）— 并行部署车发布，本轮补验行为</b>
+    <ul>
+      <li>release <code>3177-b56206bc</code>（= 本轮审计提交尖端）active @8782，deployment.json verified</li>
+      <li><code>/readyz</code> 200（DB 1.7ms / Redis 2.4ms）；登录真口令 HTTP 200</li>
+      <li><b>行为读数</b>：<code>/api/admin/stats/v2/summary?days=1</code> → 200，
+        <code>source=request_metrics, ready=false, items=[]</code> ⇒ 973 迁移刚落地（11:52 updated_at）、
+        投影 backfill 进行中；<code>/readyz/request-metrics</code> 200 且 <code>backfill_complete=false</code>
+        —— <b>973 设计内的诚实降级</b>（backfill 期间旧读面照常，V2 面如实报 not-ready，不假绿）</li>
     </ul>
   </div>
 

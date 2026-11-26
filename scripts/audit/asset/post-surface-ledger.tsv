@@ -39,6 +39,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 5 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 764 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 769 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 772 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 4 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 773 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -507,6 +508,10 @@
 /api/candidate-failures/stats	ANY	admin/handler.go:1381	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/catalog	ANY	admin/handler.go:1415	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/catalog/	ANY	admin/handler.go:1416	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/channels/{id}/customers	GET	admin/handler.go:1429	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/channels/{id}/customers/{customer_id}/sessions	GET	admin/handler.go:1432	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/channels/{id}/customers/{customer_id}/stats	GET	admin/handler.go:1431	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/channels/{id}/stats	GET	admin/handler.go:1430	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/client-configs/audit	ANY	admin/handler.go:1393	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/client-configs/featured	ANY	admin/handler.go:1394	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/config/default-limits	ANY	admin/handler.go:1488	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用

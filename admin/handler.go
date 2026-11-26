@@ -1423,10 +1423,18 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/users/v2/{id}/stats", admin(h.handleUserStatsV2))
 	mux.HandleFunc("/api/admin/users/", admin(h.handleUserStatsDispatcher))
 
+	// 2026-11-26 W4.3: 渠道商/客户视角API（S2渠道商门户）
+	// 权限模型：channel 用户验证归属链（user→channel→customer），super_admin 放行。
+	// 中间件用 admin()（任意认证身份），handler 内部检查 IsChannelUser/IsSuperAdmin。
+	mux.HandleFunc("GET /api/channels/{id}/customers", admin(h.listChannelCustomers))
+	mux.HandleFunc("GET /api/channels/{id}/stats", admin(h.getChannelStats))
+	mux.HandleFunc("GET /api/channels/{id}/customers/{customer_id}/stats", admin(h.getChannelCustomerStats))
+	mux.HandleFunc("GET /api/channels/{id}/customers/{customer_id}/sessions", admin(h.listChannelCustomerSessions))
+
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
-	// 2026-07-02: 存储目录迁移进度查询（GET，供前端轮询迁移进度）
+	// 2026-07-02: 存储目录迁移进度查询（GET，供前端轮询迁进度）
 	mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))
 
 	// 2026-07-02: 日志文件统一管理（轮转配置热加载/文件列表/归档/删除）

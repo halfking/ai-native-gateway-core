@@ -56,6 +56,12 @@ func IsSuperAdminOrLegacy(r *http.Request) bool {
 	return auth.Role == "super_admin" || auth.Role == "admin_key"
 }
 
+// IsChannelUser returns true if the request is authenticated as a channel user (W4.3).
+func IsChannelUser(r *http.Request) bool {
+	auth := GetAuthContext(r)
+	return auth != nil && auth.Role == "channel"
+}
+
 // EffectiveTenantID returns the tenant_id to use in SQL queries.
 func EffectiveTenantID(r *http.Request) string {
 	if IsTenantAdmin(r) {
