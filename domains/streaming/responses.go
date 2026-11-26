@@ -753,6 +753,12 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			latency := int(time.Since(startTime).Milliseconds())
 			// 2026-11-26：归因**进请求日志明细码**（只覆盖 failure_detail_code
 			// ⇒ error_kind / request_status / 既有计数零变化）。
+			// ★ 完整令牌（含次因）在这里落一行服务端日志（★ 与 chat 面同款口径 ★）。
+			if detailCode := noCandCause.detailCode(); detailCode != "" {
+				slog.Info("no_candidate cause attributed", "request_id", requestID,
+					"model", clientModel, "detail_code", detailCode,
+					"cause", noCandCause.causeToken())
+			}
 			h.chatHandler.recordFailedRequestWithDetail(requestID, clientModel, "",
 				nil, nil, attemptErrCode, attemptErrMsg, noCandCause.detailCode(), latency, bodyBytes, keyInfo, r)
 			*attemptLogged = true
