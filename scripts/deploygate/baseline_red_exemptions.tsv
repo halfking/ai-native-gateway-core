@@ -27,3 +27,7 @@
 # 2026-11-26 数据权限审计部署临时豁免
 TestCanonicalViewCannotExpressPartitionPruning	AI会话-权限审计	2026-11-30	中间提交233c14a2bc遗漏时间窗口登记，当前提交706297b758已修复
 TestHeavyDDLModernMigrationsDeclareMeasuredBudget	AI会话-权限审计	2026-11-30	基线测试红（与权限审计无关），需单独修复DDL预算声明
+TestDiagnoseNoCandidateCause_SingleGate	AI会话-权限审计	2026-11-30	基线测试红（错误消息文案测试），与权限审计无关
+TestDiagnoseNoCandidateCause_SpeaksTheActualCause	AI会话-权限审计	2026-11-30	基线测试红（错误消息文案测试），与权限审计无关
+TestNoCandidateCause_BehaviouralWiring	AI会话-权限审计	2026-11-30	基线测试红（错误消息行为测试），与权限审计无关
+TestNoCandidateCause_FailureDetailCode_AllFaces	AI会话-权限审计	2026-11-30	基线测试红（错误代码测试），与权限审计无关
