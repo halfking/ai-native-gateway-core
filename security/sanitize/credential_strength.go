@@ -76,7 +76,14 @@ func strongCredentialCandidate(value string) bool {
 		return true
 	}
 	// ③ JWT 形态（三段点分、≥16 字符）。
-	if len(v) >= 16 && strings.Count(v, ".") >= 2 {
+	//
+	//   r1060（2026-11-26）：此前的「≥16 字符 + ≥2 个点」过宽，导致
+	//   ZCode 会话砖化（request 9a4de025，types=secret，rules=secret.password）。
+	//   该判据会误伤「this.is.a.sentence」/ 「config.database.host」等散文。
+	//   真实 JWT 特征：恰好 2 个点（三段）、每段是 base64url、总长 ≥100。
+	//   收紧为：恰好 2 个点 + base64ish 字符 + ≥50 字符（允许短 JWT，但
+	//   仍高于散文阈值）。
+	if strings.Count(v, ".") == 2 && len(v) >= 50 && isBase64ishToken(v) {
 		return true
 	}
 	// ④ 长不透明令牌（≥24 且含数字）——不透明 bearer 令牌的典型长度。
@@ -84,7 +91,11 @@ func strongCredentialCandidate(value string) bool {
 	//   阈值取 24 而不是 16：16 档会误伤「password=<长英文词+数字>」一类
 	//   散文。且必须排除「十六进制簇」形态 —— 模型的思考里出现 commit
 	//   hash / UUID 是常事，那些不是凭据，误判即砖化。
-	if len(v) >= 24 && containsASCIIDigit(v) && !hexishToken(v) {
+	//
+	//   r1060（2026-11-26）：24 字符仍不够保守，「password for user123 account」
+	//   （28 字符）这类散文会被误判。提升到 32 字符 + 要求更高熵度（同时
+	//   含大小写字母），降低散文误判率。
+	if len(v) >= 32 && containsASCIIDigit(v) && !hexishToken(v) && hasMixedCase(v) {
 		return true
 	}
 	return false
@@ -157,4 +168,54 @@ func hexishToken(s string) bool {
 		}
 	}
 	return true
+}
+
+// isBase64ishToken 判断字符串是否主要由 base64url 字符集构成。
+//
+// r1060（2026-11-26）：用于 JWT 判据收紧，避免把「this.is.a.sentence」
+// 这类散文误判为 JWT。真实 JWT 的三个段都是 base64url 编码（字母+数字+
+// 下划线+连字符），不含空格、逗号等散文常见字符。
+//
+// 判据：≥80% 字符是 base64url 字符集（A-Za-z0-9_-），允许少量分隔符（点）。
+func isBase64ishToken(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	base64Count := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+			base64Count++
+		} else if c == '.' {
+			// 点是 JWT 分隔符，不计入 base64 字符但允许
+			continue
+		} else {
+			// 空格、逗号、其他标点 → 不是 token
+			return false
+		}
+	}
+	// ≥80% 是 base64url 字符
+	return base64Count*10 >= len(s)*8
+}
+
+// hasMixedCase 报告字符串是否同时包含大小写字母。
+//
+// r1060（2026-11-26）：用于不透明令牌判据收紧。纯小写散文（"password for
+// user123 account"）不应被判为强凭据。真实不透明令牌通常含大小写混合以
+// 提升熵度（base64/base62 编码的自然结果）。
+func hasMixedCase(s string) bool {
+	hasUpper := false
+	hasLower := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			hasUpper = true
+		} else if c >= 'a' && c <= 'z' {
+			hasLower = true
+		}
+		if hasUpper && hasLower {
+			return true
+		}
+	}
+	return false
 }
