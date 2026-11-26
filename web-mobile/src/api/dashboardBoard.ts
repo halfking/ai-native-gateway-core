@@ -4,7 +4,7 @@ import { req, type RequestOptions } from './client'
  * dashboardBoard.ts — 看板的两条**裸 JSON** 端点（2026-10-08，第五十九批）。
  *
  * GET /api/admin/dashboard/operational          （★ 2026-11-04 12h 审计轮 D-1：已由 admin 档降为 **superAdmin** 档）
- * GET /api/admin/dashboard/board/error-drill     （handler.go:1069，admin 档）
+ * GET /api/admin/dashboard/v2/board/error-drill     （handler.go:1069，admin 档）
  *
  * ⚠️ 这两条**不在** `admin/dashboardapi` 包里，走的是 `writeJSON` ⇒ **无信封**，
  * 与同族的另外七条（`api/dashboard.ts`，`{success,data,metadata}` 信封 +
@@ -210,7 +210,7 @@ export function operationalAnyDegraded(r: OperationalResponse): boolean {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * B. GET /api/admin/dashboard/board/error-drill
+ * B. GET /api/admin/dashboard/v2/board/error-drill
  * ═════════════════════════════════════════════════════════════════════════ */
 
 /** boardPieItem（dashboard_board.go:10-16），逐字照抄。 */
@@ -274,7 +274,7 @@ export function fetchErrorDrill(
 ): Promise<ErrorDrillResponse> {
   return req<unknown>(
     'GET',
-    `/api/admin/dashboard/board/error-drill${errorDrillSuffix(q)}`,
+    `/api/admin/dashboard/v2/board/error-drill${errorDrillSuffix(q)}`,
     undefined,
     options,
   ).then(unwrapErrorDrill)

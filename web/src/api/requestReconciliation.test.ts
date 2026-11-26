@@ -19,10 +19,12 @@ describe('daily reconciliation CSV', () => {
     const csv = 'estimated_amount\n0.000000000000000123\n'
     const network = vi.fn().mockResolvedValue(new Response(csv, { headers: {
       'Content-Type': 'text/csv', 'X-Report-Export': 'page', 'X-Report-Day': query.day, 'X-Report-Timezone': query.timezone,
+      'X-Report-Version': 'request-reconciliation-v2', 'X-Report-Limit': '50', 'X-Report-Offset': '50',
     } }))
     vi.stubGlobal('fetch', network)
     await exportDailyReport(query, 'csv')
     const url = new URL(network.mock.calls[0][0], 'http://fixture.invalid')
+    expect(url.pathname).toBe('/api/admin/usage/v2/request-reconciliation')
     expect(Object.fromEntries(url.searchParams)).toEqual({
       section: 'attempts', day: '2026-11-23', timezone: 'Asia/Shanghai', tenant_id: 'tenant-a', limit: '50', offset: '50', format: 'csv',
     })
@@ -34,8 +36,18 @@ describe('daily reconciliation CSV', () => {
   it('rejects a CSV carrying a different reconciliation date', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('metric,value', { headers: {
       'X-Report-Export': 'summary', 'X-Report-Day': '2026-11-22', 'X-Report-Timezone': query.timezone,
+      'X-Report-Version': 'request-reconciliation-v2', 'X-Report-Limit': '50', 'X-Report-Offset': '50',
     } })))
     await expect(exportDailyReport(query, 'csv-summary')).rejects.toThrow('reconciliation CSV unavailable')
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('rejects a requests export without terminal projection provenance', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('metric,value', { headers: {
+      'X-Report-Export': 'summary', 'X-Report-Day': query.day, 'X-Report-Timezone': query.timezone,
+      'X-Report-Version': 'request-reconciliation-v2', 'X-Report-Limit': '50', 'X-Report-Offset': '50',
+    } })))
+    await expect(exportDailyReport({ ...query, section: 'requests' }, 'csv-summary')).rejects.toThrow('reconciliation CSV unavailable')
     expect(save).not.toHaveBeenCalled()
   })
 

@@ -17,6 +17,7 @@ fi
 # build-upgrade-package.sh — 构建离线升级包（符合 installer/internal/upgrader 契约）
 #
 # 用途：已有环境的版本升级（非首次部署）
+# 需要支持 installer-startup 清单的 llm-gw-installer。
 # 输出：llm-gateway-go-{version}-upgrade.tar.gz
 #
 # Usage:
@@ -51,6 +52,10 @@ if [[ -z "$VERSION_ARG" ]]; then
   VERSION_ARG="v$(python3 -c "import json;print(json.load(open('version.json'))['git_tag'])")"
 fi
 VERSION="${VERSION_ARG#v}"
+if [[ ! "$VERSION" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+  echo "upgrade-package: invalid version tag" >&2
+  exit 1
+fi
 GIT_TAG="v${VERSION}"
 
 if [[ -z "$OUT_DIR" ]]; then
@@ -75,67 +80,42 @@ chmod +x "$WORK/kx-gateway"
 # 2. 导出 Docker 镜像
 echo "[2/5] Exporting Docker image..."
 IMAGE_TAG="${DOCKER_IMAGE_TAG:-kx-llm-gateway-go:${VERSION}}"
+if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.:/-]*$ ]]; then
+  echo "upgrade-package: invalid Docker image reference" >&2
+  exit 1
+fi
 if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
   echo "  Building Docker image $IMAGE_TAG..."
   docker build -t "$IMAGE_TAG" .
 fi
 docker save "$IMAGE_TAG" -o "$WORK/images.tar"
+IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
+if [[ ! "$IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  echo "upgrade-package: invalid Docker image ID" >&2
+  exit 1
+fi
 
-# 3. 组装 startup migration bundle（**动态枚举**，不再手抄清单）。
-#
-# 历史教训：这里曾是一份手抄数组，最后更新停在 654 —— 此后新增的全部迁移
-# （700~980+）都进不了离线升级包，走离线通道的存量库 schema 静默落后且无人
-# 报错。枚举规则与内部升级通道对齐：
-#   - 只收 sql/migrations/startup/ 下的 NNN_*.sql（排除 *.down.sql —— 回滚
-#     脚本是发布产物，不是升级输入；与 installer/internal/upgrader 的
-#     forwardMigrationFiles 同一契约）；
-#   - version >= 412 地板（内部通道 DB_LEDGER_RECONCILE_FROM=412 同款）：
-#     <412 的结构由 01-schema.sql 基线覆盖，且已知非幂等文件（315/364，
-#     与基线互斥定义）都在地板之下，天然排除；
-#   - 离线升级器（OfflineApplier）没有 checksum ledger，靠「每个迁移幂等」
-#     的通道契约全量重放包内文件 —— 与 apply-db-revision-sequence.sh 同一
-#     契约。
-echo "[3/5] Assembling startup migration bundle (dynamic enumeration, floor=412)..."
+# 3. 用安装器的顺序和 SQL 字节投递 Compose 增量迁移。生成的 TSV
+# 由 TestStartupManifestMatchesStartupFiles 逐项核对。
+echo "[3/5] Assembling installer startup migrations..."
 mkdir -p "$WORK/migrations/startup"
 startup_migrations=()
-for f in sql/migrations/startup/[0-9]*.sql; do
-  [[ -f "$f" ]] || continue
-  base="$(basename "$f")"
-  case "$base" in
-    *.down.sql) continue ;;
-  esac
-  ver="${base%%_*}"
-  if ! [[ "$ver" =~ ^[0-9]+$ ]]; then
-    continue
+while IFS=$'\t' read -r ordinal name; do
+  [[ -z "$ordinal" || "$ordinal" == \#* ]] && continue
+  if [[ "$ordinal" != "${#startup_migrations[@]}" || ! "$name" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*\.sql$ || "$name" == *.down.sql ]]; then
+    echo "upgrade-package: invalid startup manifest entry $ordinal $name" >&2
+    exit 1
   fi
-  # 10# 强制十进制：前导零编号（008/018/...）会被 bash 按八进制解析，
-  # "value too great for base" 报错时 -lt 判假 ⇒ 地板失效、老迁移漏进包。
-  if [[ "$((10#$ver))" -lt 412 ]]; then
-    continue
-  fi
-  startup_migrations+=("$base")
-done
-# 防 stagnation 门：清单非空、锚点必须在场（锚点失踪说明枚举路径/glob 失效，
-# 而不是「迁移真的没了」）。
-if [[ "${#startup_migrations[@]}" -lt 20 ]]; then
-  echo "upgrade-package: enumerated only ${#startup_migrations[@]} startup migrations (expected far more) — refusing to build a hollow package" >&2
-  exit 1
-fi
-need_anchor="654_archive_credential_model_index_detach_drop.sql"
-anchor_found=0
-for name in "${startup_migrations[@]}"; do
-  [[ "$name" == "$need_anchor" ]] && { anchor_found=1; break; }
-done
-if [[ "$anchor_found" != "1" ]]; then
-  echo "upgrade-package: floor anchor $need_anchor missing from enumeration" >&2
-  exit 1
-fi
-echo "  bundled ${#startup_migrations[@]} startup migrations (floor 412 → latest)"
-for name in "${startup_migrations[@]}"; do
-  source="sql/migrations/startup/$name"
+  source="installer/cmd/llm-gw-installer/embeddata/startup/$name"
   [[ -f "$source" ]] || { echo "missing required startup migration: $source" >&2; exit 1; }
   cp "$source" "$WORK/migrations/startup/$name"
-done
+  startup_migrations+=("$name")
+done < sql/schema/installed_startup_migrations.tsv
+if [[ "${#startup_migrations[@]}" -lt 20 ]]; then
+  echo "upgrade-package: only ${#startup_migrations[@]} installer startup migrations found" >&2
+  exit 1
+fi
+echo "  bundled ${#startup_migrations[@]} installer startup migrations"
 
 # 4. 生成 manifest.json
 echo "[4/5] Generating manifest.json..."
@@ -146,17 +126,20 @@ for file in kx-gateway images.tar; do
     FILES+=("{\"path\":\"$file\",\"sha256\":\"$sha\"}")
   fi
 done
-while IFS= read -r file; do
-  relative="${file#$WORK/}"
-  sha=$(shasum -a 256 "$file" | awk '{print $1}')
+for name in "${startup_migrations[@]}"; do
+  relative="migrations/startup/$name"
+  sha=$(shasum -a 256 "$WORK/$relative" | awk '{print $1}')
   FILES+=("{\"path\":\"$relative\",\"sha256\":\"$sha\"}")
-done < <(find "$WORK/migrations" -type f -name '*.sql' -print | LC_ALL=C sort)
+done
 
 IFS=,
 cat > "$WORK/manifest.json" <<JSON
 {
   "version": "${GIT_TAG}",
   "build_seq": ${BUILD_SEQ},
+  "migration_mode": "installer-startup",
+  "app_image": "${IMAGE_TAG}",
+  "app_image_id": "${IMAGE_ID}",
   "files": [
     ${FILES[*]}
   ]
@@ -180,9 +163,11 @@ echo "   Size: $(numfmt --to=iec-i --suffix=B $SIZE 2>/dev/null || echo "$SIZE b
 echo "   SHA256: $SHA256"
 echo
 echo "Contents:"
-tar tzf "$OUT_DIR/$ARTIFACT" | head -20
-if [[ $(tar tzf "$OUT_DIR/$ARTIFACT" | wc -l) -gt 20 ]]; then
-  echo "   ... ($(tar tzf "$OUT_DIR/$ARTIFACT" | wc -l) files total)"
+tar tzf "$OUT_DIR/$ARTIFACT" > "$WORK/archive-contents.txt"
+sed -n '1,20p' "$WORK/archive-contents.txt"
+file_count=$(wc -l < "$WORK/archive-contents.txt" | awk '{print $1}')
+if [[ "$file_count" -gt 20 ]]; then
+  echo "   ... ($file_count entries total)"
 fi
 
 # 输出 JSON 供自动化流程使用

@@ -26,6 +26,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -54,14 +55,34 @@ type reconciliationCalendar struct {
 // ★ 派生而非存储：与「端点是否注册」共用同一个真相来源
 // （`providerCostReconciliationHandler != nil`）⇒ ⇒ ⇒ 不存在
 // 「能力位说开着、端点却 404」的可能。
-func (h *Handler) featureCapabilities() FeatureCapabilities {
+func (h *Handler) featureCapabilities(ctx context.Context) FeatureCapabilities {
 	caps := FeatureCapabilities{
 		CostReconciliation: h.providerCostReconciliationHandler != nil,
 	}
 	if h.db != nil && os.Getenv("LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED") == "true" {
-		caps.DailyReconciliationDefault = previousReconciliationDay(time.Now(), settings.SystemTimezoneLocation())
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		calendar, readAt, err := reconciliation.ReadFinancialCalendar(ctx, h.db)
+		if err == nil {
+			if calendar == nil {
+				caps.DailyReconciliationDefault = previousReconciliationDay(readAt, settings.SystemTimezoneLocation())
+			} else {
+				caps.DailyReconciliationDefault = lastClosedReconciliationDay(readAt, calendar)
+			}
+		}
 	}
 	return caps
+}
+
+func lastClosedReconciliationDay(now time.Time, calendar *settings.ReconciliationCalendar) *reconciliationCalendar {
+	if calendar.ClosedThrough == "" {
+		return nil
+	}
+	_, end, err := reconciliation.NaturalDay(calendar.ClosedThrough, calendar.Timezone)
+	if err != nil || end.After(now) {
+		return nil
+	}
+	return &reconciliationCalendar{Day: calendar.ClosedThrough, Timezone: calendar.Timezone}
 }
 
 func previousReconciliationDay(now time.Time, zone *time.Location) *reconciliationCalendar {
@@ -84,7 +105,7 @@ func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(h.featureCapabilities())
+	_ = json.NewEncoder(w).Encode(h.featureCapabilities(r.Context()))
 }
 
 // RegisterCapabilityRoutes 注册能力位端点。

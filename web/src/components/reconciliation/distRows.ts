@@ -3,12 +3,12 @@ import { UNASSIGNED_ID, type RangeReport, type ReportTotals } from '../../api/re
 import type { BarTone, DistRow } from './distTypes'
 import {
   failTone,
-  fmtCny,
+  fmtReportInternal,
+  fmtReportLatency,
+  fmtReportUsd,
   fmtCompact,
-  fmtDuration,
   fmtInt,
   fmtPct,
-  fmtUsd,
   topReasons,
 } from './format'
 
@@ -38,7 +38,7 @@ function barPct(value: number, total: number): number {
 }
 
 function moneyText(totals: ReportTotals, showCost: boolean): string {
-  return showCost ? fmtUsd(totals.estimated_cost_cents) : fmtInt(totals.credits_charged)
+  return showCost ? fmtReportUsd(totals) : fmtInt(totals.credits_charged)
 }
 
 export function providerDist(
@@ -88,7 +88,7 @@ export function tenantDist(report: RangeReport, metric: Metric): DistRow[] {
     cells: [
       { text: fmtInt(row.totals.request_count), sub: requestShare(row.totals.request_count, totalReq) },
       { text: fmtCompact(row.totals.total_tokens) },
-      { text: fmtInt(row.totals.credits_charged), sub: fmtCny(row.totals.internal_cost_cents) },
+      { text: fmtInt(row.totals.credits_charged), sub: row.totals.usd_measured_requests === undefined ? fmtReportInternal(row.totals) : undefined },
       { text: fmtPct(row.totals.error_rate), tone: failTone(row.totals.error_rate) },
       { text: requestShare(vals[index], total) },
     ],
@@ -118,7 +118,7 @@ export function modelDist(
       { text: fmtInt(row.totals.request_count) },
       { text: fmtCompact(row.totals.total_tokens) },
       { text: moneyCents ? moneyText(row.totals, true) : fmtInt(row.totals.credits_charged) },
-      { text: fmtDuration(row.totals.latency_p95_ms) },
+      { text: fmtReportLatency(row.totals, 'p95') },
       { text: fmtPct(row.totals.cache_hit_ratio) },
     ],
   }))
@@ -139,7 +139,7 @@ export function personDist(report: RangeReport): DistRow[] {
       { text: fmtInt(row.totals.request_count) },
       { text: fmtCompact(row.totals.total_tokens) },
       { text: fmtInt(row.totals.credits_charged) },
-      { text: fmtCny(row.totals.internal_cost_cents) },
+      { text: fmtReportInternal(row.totals) },
     ],
   }))
 }
@@ -159,7 +159,7 @@ export function dayDist(report: RangeReport, showCost: boolean, uncoveredLabel?:
       { text: fmtInt(row.totals.error_count) },
       { text: fmtPct(row.totals.error_rate), tone: failTone(row.totals.error_rate) },
       { text: fmtCompact(row.totals.total_tokens) },
-      { text: useCost ? fmtUsd(row.totals.estimated_cost_cents) : fmtInt(row.totals.credits_charged) },
+      { text: moneyText(row.totals, useCost) },
     ],
   }))
 }

@@ -15,6 +15,35 @@ func embeddataStartupDir(t *testing.T) string {
 	return filepath.Join(embeddataRoot(t), "startup")
 }
 
+func TestDurableSettlementPolicyReplayRetainsOriginalCreate(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join(embeddataStartupDir(t), "520_durable_task_settlement_intents.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, policy, ok := strings.Cut(string(content), "CREATE POLICY durable_task_settlement_access")
+	policy, _, terminated := strings.Cut(policy, "\nCOMMIT;")
+	if !ok || !terminated {
+		t.Fatal("520 asset does not contain the expected policy statement")
+	}
+	adapted, err := adaptDurableSettlementPolicy(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"polcmd = '*' AND polpermissive AND polroles = ARRAY[0::oid]",
+		"pg_get_expr(polqual, polrelid)",
+		"pg_get_expr(polwithcheck, polrelid)",
+		"THEN\nCREATE POLICY durable_task_settlement_access" + policy + "\n    END IF;",
+	} {
+		if !strings.Contains(string(adapted), want) {
+			t.Errorf("520 replay SQL omits %q", want)
+		}
+	}
+	if _, err := adaptDurableSettlementPolicy([]byte("BEGIN; COMMIT;")); err == nil {
+		t.Fatal("an unrecognized policy statement boundary must fail")
+	}
+}
+
 func TestRetiredRequestCostBackfillPreservesCatalogUpdates(t *testing.T) {
 	path := filepath.Join(embeddataStartupDir(t), "565_cost_usd_pricing_backfill.sql")
 	content, err := os.ReadFile(path)
@@ -26,6 +55,9 @@ func TestRetiredRequestCostBackfillPreservesCatalogUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(adapted)
+	if !strings.Contains(sql, "SELECT NOT ("+requestLogsRetiredSQL+") AS apply_legacy_hot_backfill") {
+		t.Fatal("565 backfill must use the same 890 retirement proof as the installer")
+	}
 	guard := strings.Index(sql, `\if :apply_legacy_hot_backfill`)
 	if guard <= strings.Index(sql, "-- 3) catalog_estimate") ||
 		guard >= strings.Index(sql, "FROM request_logs_hot h") ||
@@ -51,6 +83,28 @@ func TestPsqlQueryKeepsNoticesOutOfSuccessfulProbe(t *testing.T) {
 	result, err := r.psqlQuery("SELECT true")
 	if err != nil || result != "t\n" {
 		t.Fatalf("successful catalog probe output = %q, error = %v", result, err)
+	}
+}
+
+func TestUpgradeSchemaRejectsMissingLedgerBeforeExecutingSQL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires an executable shell fixture")
+	}
+	dir := t.TempDir()
+	probe := `#!/bin/sh
+case "$*" in
+  *"SELECT to_regclass('public.schema_migrations')"*) exit 0 ;;
+  *) printf 'unexpected database command\n' >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(probe), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	r := NewRunner("fixture", "fixture", "fixture", dir)
+	err := r.UpgradeSchema(func(message string) { t.Log(message) })
+	if err == nil || !strings.Contains(err.Error(), "requires an existing migration ledger") {
+		t.Fatalf("upgrade without an existing ledger returned %v", err)
 	}
 }
 

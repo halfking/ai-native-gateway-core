@@ -1199,11 +1199,21 @@ func (h *Handler) updateKeyCapabilities(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// ★ 2026-11-26 12h 审计轮：★ nil 切片交给 pgx ⇒ JSONCodec 走
+	// `json.Marshal([]string(nil))` ⇒ 落库的是 jsonb **`null`**（★ 不是 SQL NULL
+	// ⇒ `COALESCE($1::jsonb, '[]'::jsonb)` **不生效** ★）⇒ 列值形态与创建路径
+	// （SQL NULL ⇒ `'[]'`）**不一致** ⇒ `jsonb_array_length(capabilities)` 这类
+	// SQL 消费会拿到 NULL 而不是 0。
+	// ⇒ 写前归一：**未提供 / 空清单一律落 `'[]'`**（★ 值形态唯一 ★）。
+	caps := body.Capabilities
+	if caps == nil {
+		caps = []string{}
+	}
 	if _, err := db.Exec(ctx, `
 		UPDATE api_keys
 		SET capabilities = COALESCE($1::jsonb, '[]'::jsonb)
 		WHERE id = $2
-	`, body.Capabilities, id); err != nil {
+	`, caps, id); err != nil {
 		writeInternalErr(w, "update failed", err)
 		return
 	}

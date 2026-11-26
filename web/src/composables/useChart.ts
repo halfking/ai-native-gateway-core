@@ -321,7 +321,8 @@ export function createTimeSeriesConfig(
  * 轴级 stacking 由调用方经 options.scales 控制（y:{stacked:true} 等），
  * 右轴线所在的 y1 不要开 stacked，避免把折线也叠进面积/柱。
  */
-export interface ComboDataset extends ChartDataset {
+export interface ComboDataset extends Omit<ChartDataset, 'data'> {
+  data: (number | null)[]
   /** 覆盖本 dataset 的图表类型（缺省 = baseType） */
   type?: 'line' | 'bar'
   /** 堆叠组名（同一组内柱/面积互相堆叠） */

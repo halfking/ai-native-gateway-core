@@ -20,7 +20,6 @@ const props = defineProps<{
   dimsLoading: boolean
   loading: boolean
   exporting: boolean
-  rerunning: boolean
   coverage: string
 }>()
 
@@ -30,7 +29,6 @@ const emit = defineEmits<{
   patch: [Partial<ReportFilter>]
   refresh: []
   export: []
-  rerun: []
   clear: []
 }>()
 
@@ -103,6 +101,12 @@ function onView(value: string | number | boolean | undefined) {
       <el-radio-button value="provider">{{ t('reports.providerView') }}</el-radio-button>
       <el-radio-button value="internal">{{ t('reports.internalView') }}</el-radio-button>
     </el-radio-group>
+    <el-button
+      v-if="view === 'provider'"
+      data-testid="reconciliation-business-scope"
+      :aria-pressed="filters.traffic_scope === 'business'"
+      @click="emit('patch', { traffic_scope: filters.traffic_scope === 'business' ? undefined : 'business' })"
+    >{{ t('sessions.stats.attribution.businessOnly') }}</el-button>
     <KxDateRangePicker
       :model-value="range"
       :presets="presets"
@@ -160,7 +164,6 @@ function onView(value: string | number | boolean | undefined) {
     <el-button :icon="Download" :loading="exporting" @click="emit('export')">
       {{ t('reports.exportExcel') }}
     </el-button>
-    <el-button :loading="rerunning" @click="emit('rerun')">{{ t('reports.rerun') }}</el-button>
     <span v-if="coverage" class="coverage">{{ coverage }}</span>
   </div>
 

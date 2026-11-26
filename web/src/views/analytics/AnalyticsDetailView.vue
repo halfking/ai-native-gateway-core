@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // AnalyticsDetailView — 分析详情主容器 (2026-11-20)
 // 参数化复用: 通过 route.params 区分维度和对象
-import { onMounted, ref, computed, watchEffect } from 'vue'
+import { ref, computed, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { surfaceError } from '../../i18n/errorSurface'
 import { fetchAnalyticsDetail, type AnalyticsDetailPayload } from '../../api/board'
@@ -18,6 +18,7 @@ const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const data = ref<AnalyticsDetailPayload | null>(null)
+let loadGeneration = 0
 
 // 从路由获取维度和标识符
 const dimension = computed(() => route.params.dimension as AnalyticsDimension)
@@ -62,24 +63,31 @@ const breadcrumbs = computed(() => {
 function onRangeApply(range: KxDateRange) {
   applyRange(range)
   router.push({
-    query: { ...route.query, days: timeRange.value }
+    query: { ...route.query, days: timeRange.value, start: undefined, end: undefined },
   })
-  void load()
 }
 
 async function load() {
+  const generation = ++loadGeneration
   loading.value = true
   error.value = ''
   try {
-    data.value = await fetchAnalyticsDetail(
+    const response = await fetchAnalyticsDetail(
       dimension.value,
       identifier.value,
-      { days: timeRange.value }
+      {
+        days: timeRange.value,
+        start: typeof route.query.start === 'string' ? route.query.start : undefined,
+        end: typeof route.query.end === 'string' ? route.query.end : undefined,
+        tenant_id: typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined,
+        include_probes: route.query.include_probes === '1' || route.query.include_probes === 'true',
+      },
     )
+    if (generation === loadGeneration) data.value = response
   } catch (e) {
-    error.value = surfaceError(e)
+    if (generation === loadGeneration) error.value = surfaceError(e)
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
@@ -87,7 +95,7 @@ function goBack() {
   const registry = ANALYTICS_REGISTRY[dimension.value]
   router.push({
     path: registry.listPath,
-    query: { days: timeRange.value }
+    query: { ...route.query, days: timeRange.value }
   })
 }
 
@@ -98,13 +106,20 @@ function onCrossItemClick(crossDimension: string, itemKey: string) {
   const path = registry.detailPath(itemKey)
   router.push({
     path,
-    query: { days: timeRange.value }
+    query: { ...route.query, days: timeRange.value }
   })
 }
 
-onMounted(() => {
-  void load()
-})
+watch(
+  () => [dimension.value, identifier.value, route.query.days, route.query.start, route.query.end, route.query.tenant_id, route.query.include_probes],
+  () => {
+    if (!registry.value) return
+    timeRange.value = Number(route.query.days) || 7
+    data.value = null
+    void load()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -169,7 +184,7 @@ onMounted(() => {
       </div>
 
       <!-- 核心指标卡片 -->
-      <section class="ad-section">
+      <section v-if="!data.degraded" class="ad-section">
         <h2 class="ad-section-title">{{ $t('analytics.detail.summary') }}</h2>
         <AnalyticsSummaryCards :summary="data.summary" />
       </section>

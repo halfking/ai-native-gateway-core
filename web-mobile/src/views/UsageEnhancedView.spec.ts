@@ -282,18 +282,22 @@ describe('① 权限档 admin（本仓第一个「有租户维度但缺角色下
     }
   })
 
-  it('①-8 ★★★★★ 注册处行号订正：模块头原写 `:1267`，经 `:1297`（批153）、`:1332`（12h-audit 20261017）再漂至 `:1339`（2026-10-21 views 行号订正轮）→ 实为 `:1342`（2026-10-26 行号漂移订正轮）', () => {
-    const src = goSrc('admin/handler.go')
-    const lines = src.split('\n')
-    const at = lines.findIndex((l) => l.includes('"/api/admin/usage/"'))
-    expect(at, '找不到 /api/admin/usage/ 的注册行').toBeGreaterThan(-1)
-    // ★ 12h-audit 20261017：a18db7b84/c286e505a/eb0aee4ec 三笔再推 35 行 ⇒ :1332；
-    //   2026-10-21 views 行号订正轮：再推 7 行 ⇒ :1339；
-    //   2026-10-26 行号漂移订正轮：再推 3 行 ⇒ 真实行号 :1342。
-    expect(at + 1).toBe(1342)
-    expect(lines[at]).toMatch(/h\.admin\(h\.HandleUsageAdmin\)/)
-    // ★★ 反向护栏：原行号那行必须**不是**本族注册处（它其实是 errorsTrend 相关）。
-    expect(lines[1266]).not.toMatch(/usage/i)
+  it('①-8 ★★★★★ usage/ 前缀注册行逐字对表（历史 :1267 → :1297 → :1332 → :1339 → :1342，行号已漂 5 次 ⇒ 2026-11-26 起按结构锚点判，不钉行号）', () => {
+    const lines = goSrc('admin/handler.go').split('\n')
+    const needle = 'HandleFunc("/api/admin/usage/",'
+    const hits = lines.filter((l) => l.includes(needle))
+    // ★ 唯一存在性：前缀注册必须恰好一条（搬家/改名时这条红 ⇒ 重新对表）。
+    expect(hits, `/api/admin/usage/ 注册行必须恰好一条（实得 ${hits.length} 条）`).toHaveLength(1)
+    expect(hits[0]).toMatch(/h\.admin\(h\.HandleUsageAdmin\)/)
+    // ★ 同族相邻注册同档：request-reconciliation 也是 h.admin。
+    const rr = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/usage/request-reconciliation",'))
+    expect(rr, '找不到 request-reconciliation 注册行').toBeGreaterThan(-1)
+    expect(lines[rr]).toMatch(/h\.admin\(h\.handleRequestReconciliation\)/)
+    // ★ 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：本车道带来的
+    // ★ V2 同期对比路由注册行也要同档守护（同族结构锚点判，不钉行号）。
+    const pc = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/usage/v2/period-compare",'))
+    expect(pc, '找不到 usage/v2/period-compare 注册行').toBeGreaterThan(-1)
+    expect(lines[pc]).toMatch(/h\.admin\(h\.handleUsagePeriodCompareV2\)/)
   })
 
   it('①-9 ★★★★ 角色判别 helper 随 role 变（不是恒真）', () => {

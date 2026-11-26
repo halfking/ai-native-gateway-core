@@ -1,11 +1,32 @@
 package upgrader
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestApplyPackageMigrationsUsesInstallerStartupOrder(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "migrations")
+	want := []string{"983_request_metrics.sql", "973_request_metrics_projection.sql"}
+	startupErr := errors.New("startup failure")
+	a := OfflineApplier{UpgradeStartup: func(sqlDir string, files []string) error {
+		if sqlDir != dir || !slices.Equal(files, want) {
+			t.Fatalf("unexpected installer plan in %s: %v", sqlDir, files)
+		}
+		return startupErr
+	}}
+	if err := a.applyPackageMigrations(context.Background(), dir, want); !errors.Is(err, startupErr) {
+		t.Fatalf("installer startup error = %v, want %v", err, startupErr)
+	}
+	if err := a.applyPackageMigrations(context.Background(), dir, nil); err != nil {
+		t.Fatalf("legacy package without a migrations directory: %v", err)
+	}
+}
 
 func TestNewOfflineApplier(t *testing.T) {
 	tmpDir := t.TempDir()

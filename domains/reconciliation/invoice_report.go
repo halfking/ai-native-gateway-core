@@ -322,10 +322,10 @@ const invoiceReportSQL = `WITH bill AS (
 	       (comparable_reported-invoice_amount)::text AS reported_minus_invoiced_amount
 	FROM lines ORDER BY line_ref LIMIT $2 OFFSET $3
 )
-SELECT statement_timestamp(), to_jsonb(bill), to_jsonb(totals) || to_jsonb(send_coverage) || jsonb_build_object(
+SELECT transaction_timestamp(), to_jsonb(bill), to_jsonb(totals) || to_jsonb(send_coverage) || jsonb_build_object(
        'invoice_currency',bill.currency,'invoice_ref',bill.invoice_ref,'month',bill.month,
        'timezone',bill.timezone,'window_start',bill.window_start,'window_end',bill.window_end,
        'period_start_day',bill.period_start_day,'period_end_day',bill.period_end_day,
-       'read_at',statement_timestamp(),'version','` + invoiceReportVersion + `'),
+       'read_at',transaction_timestamp(),'version','` + invoiceReportVersion + `'),
        COALESCE((SELECT jsonb_agg(to_jsonb(page) ORDER BY line_ref) FROM page), '[]'::jsonb)
 FROM bill CROSS JOIN totals CROSS JOIN send_coverage`

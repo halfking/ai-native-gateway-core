@@ -2,15 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import BoardOperationalView from './BoardOperationalView.vue'
 import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
-import { fetchBoardOperational, fetchDashboardBoard } from '../api/board'
+import { fetchDashboardBoard } from '../api/board'
 import { testI18n } from '../test-utils/i18n'
 
 vi.mock('../api/board', () => ({
-  fetchBoardOperational: vi.fn(),
   fetchDashboardBoard: vi.fn(),
 }))
 
-const mockedFetchOperational = vi.mocked(fetchBoardOperational)
 const mockedFetchBoard = vi.mocked(fetchDashboardBoard)
 
 beforeEach(() => {
@@ -41,6 +39,7 @@ const SAMPLE_OPERATIONAL = {
 }
 
 const SAMPLE_BOARD = {
+  operational: SAMPLE_OPERATIONAL,
   summary: {
     total_requests: 10000,
     total_prompt_tokens: 50000,
@@ -84,7 +83,6 @@ const SAMPLE_BOARD = {
 
 describe('BoardOperationalView', () => {
   it('renders all sections with full data', async () => {
-    mockedFetchOperational.mockResolvedValueOnce(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValueOnce(SAMPLE_BOARD)
     const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
@@ -125,7 +123,6 @@ describe('BoardOperationalView', () => {
   })
 
   it('handles time range selection', async () => {
-    mockedFetchOperational.mockResolvedValue(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValue(SAMPLE_BOARD)
     const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
@@ -138,7 +135,6 @@ describe('BoardOperationalView', () => {
   })
 
   it('handles missing board data gracefully', async () => {
-    mockedFetchOperational.mockResolvedValueOnce(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValueOnce({
       summary: {},
       pies: {
@@ -165,7 +161,6 @@ describe('BoardOperationalView', () => {
 
 
   it('shows error message on fetch failure and keeps refresh button re-clickable', async () => {
-    mockedFetchOperational.mockRejectedValueOnce(new Error('upstream 503'))
     mockedFetchBoard.mockRejectedValueOnce(new Error('upstream 503'))
     const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
@@ -174,7 +169,6 @@ describe('BoardOperationalView', () => {
     expect(w.text()).toContain('upstream 503')
 
     // 重试：第二次 fetch 成功
-    mockedFetchOperational.mockResolvedValueOnce(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValueOnce(SAMPLE_BOARD)
     await w.find('.btn').trigger('click')
     await flushPromises()
@@ -184,7 +178,6 @@ describe('BoardOperationalView', () => {
   })
 
   it('calculates derived metrics correctly', async () => {
-    mockedFetchOperational.mockResolvedValueOnce(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValueOnce(SAMPLE_BOARD)
     const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
@@ -198,7 +191,6 @@ describe('BoardOperationalView', () => {
   })
 
   it('shows degradation warnings when present', async () => {
-    mockedFetchOperational.mockResolvedValueOnce({})
     mockedFetchBoard.mockResolvedValueOnce({
       ...SAMPLE_BOARD,
       summary: {
@@ -218,7 +210,6 @@ describe('BoardOperationalView', () => {
 
   // ── 2026-11-25 统一轮：本页并入**共享时间范围组件**（四处结构同构）─────────
   it('统一轮：用的是共享封装 StatsDateRangePicker，且自定义区间的窗口与界面显示一致', async () => {
-    mockedFetchOperational.mockResolvedValue(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValue(SAMPLE_BOARD)
     const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()
@@ -239,7 +230,6 @@ describe('BoardOperationalView', () => {
   })
 
   it('统一轮：默认档位仍是「近 7 天 ⇒ days=7」，文案与请求都逐字不变（等价替换）', async () => {
-    mockedFetchOperational.mockResolvedValue(SAMPLE_OPERATIONAL)
     mockedFetchBoard.mockResolvedValue(SAMPLE_BOARD)
     const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
     await flushPromises()

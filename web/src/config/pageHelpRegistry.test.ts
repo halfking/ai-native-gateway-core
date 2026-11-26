@@ -39,10 +39,10 @@ function listContentIds(): string[] {
   return ids
 }
 
-/** router.ts 中 path: '...' 的字面量集合（静态可解析；redirect 行同样带 path，一并覆盖）。 */
+/** router.ts 中 path: / alias: '...' 的字面量集合（静态可解析；redirect 行同样带 path，一并覆盖；alias 也是可访问的真实路径 ⇒ 2026-11-26 合并轮补收，211 轮把 /admin/session-analytics/user-profiles 挂成了 alias）。 */
 function routerPaths(): string[] {
   const out: string[] = []
-  const re = /path: '([^']+)'/g
+  const re = /(?:path|alias): '([^']+)'/g
   let m: RegExpExecArray | null
   while ((m = re.exec(routerSource)) !== null) out.push(m[1])
   return out

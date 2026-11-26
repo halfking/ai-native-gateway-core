@@ -25,7 +25,7 @@
 // 用法：
 //   node assert-stats-range-picker.mjs --cdp http://127.0.0.1:9223 \
 //         --url https://llm.itestu.cn --user admin --password '...'
-import { connect, openPage, evaluate, waitFor } from './cdp-client.mjs'
+import { connect, openPage, evaluate, waitFor, navigateToDocument } from './cdp-client.mjs'
 import { summarize } from './result.mjs'
 
 const args = Object.fromEntries(
@@ -63,21 +63,21 @@ async function js(expression) {
 }
 
 /** 导航到某 URL 并等 DOM 就绪。 */
-async function goto(url, readyExpr, timeoutMs = 30000) {
-  await js(`location.href = ${JSON.stringify(url)}; true`)
-  await waitFor(cdp, sessionId, `document.readyState === 'complete'`, timeoutMs)
+async function goto(url, readyExpr, timeoutMs = 60000) {
+  await navigateToDocument(cdp, sessionId, url, timeoutMs)
   if (readyExpr) {
     try {
       await waitFor(cdp, sessionId, readyExpr, timeoutMs)
     } catch {
-      /* 交给断言去判红（页面没渲染出目标元素 = 产品问题，不是工具坏了） */
+      const state = await js(`({ path: location.pathname, ready: document.readyState, app: !!document.querySelector('#app') })`)
+      console.log('页面条件等待超时', JSON.stringify(state))
     }
   }
   await sleep(800)
 }
 
 // ── 登录（同 assert-session-analytics.mjs 的口径：先 /api/auth/me 再 /api/auth/token）
-await goto(`${BASE}/dashboard`, '!!document.querySelector("#app, body")')
+await goto(`${BASE}/version`)
 let loginStatus = await js(`fetch('/api/auth/me',{credentials:'include'}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
 if (String(loginStatus) !== '200') {
   if (!PASSWORD) {
@@ -92,8 +92,8 @@ if (String(loginStatus) !== '200') {
     console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
     process.exit(2)
   }
-  await goto(`${BASE}/dashboard`, '!!document.querySelector("#app, body")')
 }
+await goto(`${BASE}/dashboard`, `!!document.querySelector('#app .app-layout, #app main, .kx-dr-trigger')`)
 console.log(`ℹ️ 登录态就绪（${BASE}）`)
 
 // ══════════════════════════════════════════════════════════════════════
@@ -345,7 +345,7 @@ async function probeHint(label) {
   const after = await js(PROBE_HINT)
   check(
     `${label}3 **点击后**说明正文可见且有实质内容`,
-    after.bodyVisible && after.bodyText.length > 10,
+    after.bodyVisible && after.bodyText.includes('request_metrics'),
     `bodyVisible=${after.bodyVisible}  正文前 80 字：${(after.bodyText || '').slice(0, 80)}`,
   )
   check(
@@ -423,7 +423,7 @@ function expectedWindowFromRangeText(text) {
   return { start: fmt(start), end: fmt(end), days: Math.round((end - start) / 86400000) + 1 }
 }
 const boReqUrls =
-  (await js(`(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`)) || []
+  (await js(`(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => new URL(n).pathname === '/api/admin/dashboard/v2/board'))()`)) || []
 const boReqUrl = boReqUrls[boReqUrls.length - 1] || ''
 let boQs = {}
 try {

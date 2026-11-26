@@ -43,6 +43,12 @@ export default {
     close: "Fermer"
   },
   detail: {
+    estimatedRevenue: 'Revenu estimé',
+    estimatedMargin: 'Marge brute estimée',
+    estimatedMarginRate: 'Taux de marge estimé',
+    creditReferenceNotice: 'Les estimations utilisent le prix actuel du crédit. Les débits réels figurent dans le registre des crédits.',
+    cancellationCoverage: '{n} requêtes débitées sans information sur leur annulation',
+    usdCoverage: '{n} coûts de requête exclus du total en USD',
     loadUsersFailed: 'Le chargement de la liste des utilisateurs a échoué. Veuillez réessayer.',
     loadKeysFailed: 'Le chargement de la liste des clés a échoué. Veuillez réessayer.',
     loadStatsFailed: 'Le chargement des statistiques d’utilisation a échoué. Veuillez réessayer.',

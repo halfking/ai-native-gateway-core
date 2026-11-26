@@ -14,7 +14,7 @@ vi.mock('../../api/requestReconciliation', () => ({ readDailyReport, exportDaily
 
 function response(query: DailyQuery): DailyReport {
   return {
-    version: 'request-reconciliation-v1', section: query.section, day: query.day, timezone: query.timezone,
+    version: 'request-reconciliation-v2', section: query.section, day: query.day, timezone: query.timezone,
     tenant_id: query.tenantId, platform_scope: query.section !== 'internal', start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z',
     read_at: '2026-11-24T01:00:00Z', coverage: 'retained-evidence', limit: query.limit, offset: query.offset, rows: [], summary: {},
   }

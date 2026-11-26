@@ -1,5 +1,13 @@
 # Règles de calcul du tableau de bord et des statistiques de session
 
+## Définitions actuelles de V2
+
+Le tableau de bord lit la table `request_metrics`, mise à jour de façon asynchrone, selon la date de chaque requête. Les statistiques de session comptent les requêtes liées sur la même période et dédupliquent les sessions par locataire et identifiant. La création et la fermeture suivent la première requête et la fermeture effective. Les sondes sont exclues par défaut. Les coûts en USD, les crédits et les autres devises sont distincts. Les mises à jour en attente et les données de coût manquantes sont signalées.
+
+Les rapports historiques couvrent les jours calendaires terminés dans le fuseau horaire du système. Le rapprochement quotidien se base sur la réception par la passerelle et utilise la projection des requêtes pour l’usage final. Les envois aux fournisseurs, les factures et les écritures internes sont vérifiés séparément.
+
+## Mesures historiques (V1)
+
 Le « Tableau de bord », les « Statistiques de session » et le « Rapprochement fournisseurs » résument le même flux d'appels de modèles selon **trois règles de calcul**. Cette page explique comment chaque nombre est obtenu, d'où viennent les données et quelle fenêtre temporelle ils couvrent, avec un **détail poste par poste** reliant chaque écart à sa cause. Objectif : aligner les données et vérifier soi-même les écarts.
 
 > Base de mesure : 2026-11-23 21:05 (Asia/Shanghai) en production. Tous les chiffres ont été relevés au **même instant** (dans une seule requête SQL), fenêtre = `NOW()-7 jours` ; le rapprochement fournisseurs a été mesuré séparément sur l'intervalle fermé de journées calendaires `2026-11-17 ~ 2026-11-23` et rapproché jour par jour de la table de faits.

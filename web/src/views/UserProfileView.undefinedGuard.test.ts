@@ -85,7 +85,7 @@ vi.mock('../components/ui/KxDateRangePicker.vue', () => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { owner: 'alice' } }),
+  useRoute: () => ({ params: { owner: 'alice' }, query: {} }),
   useRouter: () => ({ back: vi.fn(), push: vi.fn() }),
 }))
 

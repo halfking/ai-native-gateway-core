@@ -195,7 +195,10 @@ func LoadDimensionOptions(ctx context.Context, q Querier, view View, start, end 
      WHERE scope = $2 AND report_date >= $3 AND report_date <= $4
        AND report_date NOT IN (SELECT gd.report_date FROM report_snapshots gd WHERE gd.scope = $5)`
 	args := []any{string(grainScope), string(legacyScope), start, end, string(grainScope)}
+	return loadDimensionOptions(ctx, q, "", src, legacyScope, args)
+}
 
+func loadDimensionOptions(ctx context.Context, q Querier, cte, src string, legacyScope Scope, args []any) (*DimensionOptions, error) {
 	// 每个维度一条 UNION ALL 分支：PG 各分支独立 GROUP BY，每维返回的行数
 	// 就是候选数本身（几十~几千行），比拉全量明细再在 Go 里聚合便宜一个
 	// 数量级。
@@ -204,7 +207,7 @@ func LoadDimensionOptions(ctx context.Context, q Querier, view View, start, end 
 		branches = append(branches, dimensionBranchSQL(d, src, legacyScope))
 	}
 
-	full := "SELECT dim, key, requests FROM (" + unionAll(branches) + ") u"
+	full := cte + " SELECT dim, key, requests FROM (" + unionAll(branches) + ") u"
 	if path := os.Getenv("REPORT_DUMP_SQL"); path != "" {
 		_ = os.WriteFile(path, []byte(full), 0o600)
 	}

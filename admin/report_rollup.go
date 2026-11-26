@@ -367,7 +367,11 @@ func (h *Handler) handleReportRollupDimensions(w http.ResponseWriter, r *http.Re
 		return
 	}
 	// 就地补展示名（不新增往返）。
-	names := h.dimensionNames(r.Context())
+	fillReportDimensionNames(dims, h.dimensionNames(r.Context()))
+	writeJSON(w, http.StatusOK, map[string]any{"dimensions": dims})
+}
+
+func fillReportDimensionNames(dims *reportrollup.DimensionOptions, names reportrollup.Names) {
 	// 候选键是文本（同一维度里 provider/credential/apikey 都是数值 id，
 	// 但模型/租户/用户是字符串，统一成 string 交给前端）；名称映射按
 	// ParseInt 回查，查不到就留空由前端显示 key。
@@ -385,7 +389,6 @@ func (h *Handler) handleReportRollupDimensions(w http.ResponseWriter, r *http.Re
 	fill(dims.Providers, names.Providers)
 	fill(dims.Credentials, names.Credentials)
 	fill(dims.APIKeys, names.APIKeys)
-	writeJSON(w, http.StatusOK, map[string]any{"dimensions": dims})
 }
 
 func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Request) {
@@ -436,13 +439,17 @@ func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Reques
 	// 完全无效（前端只在打开时才发 detail=daily，关掉就不发这个参数，后端
 	// 分不清「要汇总」和「没指定」）。
 	detail := reportExportDetail(r)
+	writeReportRollupWorkbook(w, rep, group, detail, start, end)
+}
+
+func writeReportRollupWorkbook(w http.ResponseWriter, rep *reportrollup.GrainReport, group reportrollup.GrainGroup, detail bool, start, end time.Time) {
 	xlsxBytes, err := reportrollup.BuildGrainWorkbookBytes(rep, group, detail)
 	if err != nil {
 		slog.Error("report rollup xlsx build failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "report xlsx build failed")
 		return
 	}
-	filename := reportrollup.ExportFilename(view, start, end)
+	filename := reportrollup.ExportFilename(rep.View, start, end)
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(xlsxBytes)))

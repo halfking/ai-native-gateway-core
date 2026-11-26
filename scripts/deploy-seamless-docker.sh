@@ -488,6 +488,22 @@ done
 CLAIM_FILE="$DD_STATE_DIR/redis-db.claim"
 ENV_FILE="$DD_STATE_DIR/env/gateway.env"
 
+# Carry explicit statistics and reconciliation settings to the candidate.
+dd_statistics_candidate_env() {
+  local key quoted
+  DD_STATS_REMOTE_ENV=""
+  DD_STATS_CONTAINER_ENV=()
+  for key in LLM_GATEWAY_METRICS_INTERVAL LLM_GATEWAY_METRICS_BATCH_SIZE LLM_GATEWAY_METRICS_MAX_ROUNDS \
+             LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED LLM_GATEWAY_RECONCILIATION_DAILY_DEFAULT_ENABLED; do
+    if [[ -n "${!key:-}" ]]; then
+      printf -v quoted '%q' "${!key}"
+      DD_STATS_REMOTE_ENV+=" ${key}=${quoted}"
+      DD_STATS_CONTAINER_ENV+=( -e "${key}=${!key}" )
+    fi
+  done
+}
+dd_statistics_candidate_env
+
 # ── AUTO-GENERATOR-ENV:BEGIN ──
 # Keep explicit false across blue/green releases. Never source the saved file:
 # values must match Gateway's boolean grammar before persistence or SSH forwarding.
@@ -570,7 +586,7 @@ if [[ -n "$VIA" ]]; then
             DD_REDIS_CONTAINER DD_REDIS_IMAGE DD_REDIS_DB_START DD_REDIS_DB_END \
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
-            DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES \
+            DD_SKIP_LOGIN_SMOKE DD_REQUIRE_REQUEST_METRICS DD_REQUEST_METRICS_WAIT_SECS LLM_GATEWAY_HARD_BLOCK_RULES \
             LLM_GATEWAY_PROBE_LANE_PHYSICAL LLM_GATEWAY_INGRESS_MAX_CONCURRENT \
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
@@ -583,6 +599,7 @@ if [[ -n "$VIA" ]]; then
             DD_GOACOS_GROUP DD_GOACOS_ENV DD_REMOTE_LOCK_PATH DD_TEST_GO_BIN; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
+  _dd_fwd+="$DD_STATS_REMOTE_ENV"
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
 
   # ── 非 deploy 模式（--status / --probe-only / --stop）──────────────────
@@ -1597,7 +1614,7 @@ show_status() {
 # 容器名 = <DD_CONTAINER_PREFIX>-<slot>。
 DD_ACTIVE_SLOT=""       # 本次开始前在服务的槽
 DD_CANDIDATE_SLOT=""    # 本次要发布的槽
-DD_SWITCHED=0           # 是否已切过 nginx upstream（决定 abort 时要不要切回）
+DD_SWITCHED=0           # 是否已开始修改 nginx upstream（决定 abort 时要不要切回）
 DD_OLD_STOPPED=0        # 旧槽是否已被停（切流成功后才会停）
 
 dd_slot_port() {
@@ -1898,32 +1915,100 @@ dd_switch_upstream() {
   fi
 }
 
-# ---- abort：丢掉候选槽 + 把 upstream 切回旧槽 + 旧槽若已停则拉回 ----------
-# 这是蓝绿的核心安全网：**旧槽一直在服务**，任何一步失败都只是「没发上」，
-# 而不是「服务下线」。
-dd_abort_deploy() {
-  local _reason="$1"
-  warn "回退本次部署（蓝绿 abort）：$_reason"
-  if [[ -n "$DD_CANDIDATE_SLOT" ]]; then
-    docker rm -f "$(dd_container_name "$DD_CANDIDATE_SLOT")" >/dev/null 2>&1 || true
-    log "候选槽 ${DD_CANDIDATE_SLOT} 已丢弃（容器 $(dd_container_name "$DD_CANDIDATE_SLOT")）"
-  fi
-  if [[ "$DD_SWITCHED" == "1" && -n "$DD_ACTIVE_SLOT" ]]; then
-    if dd_switch_upstream "$(dd_slot_port "$DD_ACTIVE_SLOT")"; then
-      log "upstream 已切回旧槽 ${DD_ACTIVE_SLOT}:$(dd_slot_port "$DD_ACTIVE_SLOT")"
-    else
-      warn "upstream 切回失败 —— 需手工改 ${DD_NGINX_CONF} 的 ${DD_NGINX_UPSTREAM} 块"
+# 就绪探测需要排除 HTTP 200 的 lite 模式，并兼容旧版仅返回 status 的形态。
+dd_ready_state() {
+  python3 -c 'import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    print("parse_error")
+    sys.exit()
+if not isinstance(data, dict):
+    print("parse_error")
+elif str(data.get("mode") or data.get("storage_mode") or "").lower() == "lite":
+    print("lite")
+else:
+    for key, error in (("database", "db_down"), ("redis", "redis_down")):
+        value = data.get(key)
+        if key in data and (not isinstance(value, dict) or value.get("connected") is not True):
+            print(error)
+            sys.exit()
+    status = str(data.get("status") or "").lower()
+    print("ok" if status in ("ready", "ok", "healthy") else "not_ready")
+' 2>/dev/null || printf '%s\n' parse_error
+}
+
+# nginx reload 是异步的。切回后先从入口确认旧槽身份，再允许停候选。
+dd_restore_old_upstream() {
+  local _port="$1" _tries="${DD_SWITCH_VERIFY_TRIES:-10}" _old="" _candidate="" _public _i
+  local _ready
+  for _i in $(seq 1 "$_tries"); do
+    if _ready="$(curl -fsS --max-time 2 "http://127.0.0.1:${_port}/readyz" 2>/dev/null)" \
+      && [[ "$(dd_ready_state <<<"$_ready")" == "ok" ]] \
+      && _old="$(curl -fsS --max-time 2 "http://127.0.0.1:${_port}/version" 2>/dev/null)" \
+      && [[ -n "$_old" ]]; then
+      break
     fi
+    _old=""
+    (( _i == _tries )) || sleep 1
+  done
+  if [[ -z "$_old" ]]; then
+    warn "旧槽 ${DD_ACTIVE_SLOT}:${_port} 尚未就绪，保留候选槽"
+    return 1
   fi
+  if ! _candidate="$(curl -fsS --max-time 2 "http://127.0.0.1:${DD_CANDIDATE_PORT}/version" 2>/dev/null)"; then
+    _candidate=""
+  fi
+  if ! dd_switch_upstream "$_port"; then
+    warn "upstream 切回失败，保留候选槽；请核对 ${DD_NGINX_CONF} 的 ${DD_NGINX_UPSTREAM} 块"
+    return 1
+  fi
+  if [[ -n "$_candidate" && "$_candidate" != "$_old" ]]; then
+    for _i in $(seq 1 "$_tries"); do
+      _public="$(dd_public_version)"
+      if [[ "$_public" == "$_old" ]]; then
+        log "upstream 已切回旧槽 ${DD_ACTIVE_SLOT}:${_port}（入口版本已复验）"
+        return 0
+      fi
+      (( _i == _tries )) || sleep 1
+    done
+  fi
+  warn "入口未证实切回旧槽 ${DD_ACTIVE_SLOT}:${_port}，保留候选槽"
+  return 1
+}
+
+# ---- abort：恢复旧槽服务，确认入口切回后再清理候选槽 ---------------------
+dd_abort_deploy() {
+  local _reason="$1" _candidate_container
+  warn "回退本次部署（蓝绿 abort）：$_reason"
   if [[ "$DD_OLD_STOPPED" == "1" && -n "$DD_ACTIVE_SLOT" ]]; then
     if docker start "$(dd_container_name "$DD_ACTIVE_SLOT")" >/dev/null 2>&1; then
       log "旧槽 ${DD_ACTIVE_SLOT} 已重新拉起"
     else
-      warn "旧槽拉起失败 —— 需手工 docker start $(dd_container_name "$DD_ACTIVE_SLOT")"
+      warn "旧槽拉起失败，保留候选槽；请检查 $(dd_container_name "$DD_ACTIVE_SLOT")"
+      return 1
     fi
+  fi
+  if [[ "$DD_SWITCHED" == "1" ]]; then
+    [[ -n "$DD_ACTIVE_SLOT" ]] || return 1
+    dd_restore_old_upstream "$(dd_slot_port "$DD_ACTIVE_SLOT")" || return 1
   fi
   if [[ -n "$DD_ACTIVE_SLOT" ]]; then
     dd_write_active_slot "$DD_ACTIVE_SLOT" || true
+  fi
+  if [[ -n "$DD_CANDIDATE_SLOT" ]]; then
+    _candidate_container="$(dd_container_name "$DD_CANDIDATE_SLOT")"
+    # 候选曾接流时先发停止信号，留出网关 23 秒 HTTP 排空及后台退出时间。
+    if [[ "$DD_SWITCHED" == "1" ]] && ! dd_stop_container "$_candidate_container" >/dev/null 2>&1; then
+      warn "候选槽停止失败，保留容器 ${_candidate_container}"
+      return 1
+    fi
+    if docker rm -f "$_candidate_container" >/dev/null 2>&1; then
+      log "候选槽 ${DD_CANDIDATE_SLOT} 已丢弃（容器 ${_candidate_container}）"
+    elif [[ "$DD_SWITCHED" == "1" ]]; then
+      warn "候选槽清理失败，容器 ${_candidate_container} 可能仍在"
+      return 1
+    fi
   fi
   return 0
 }
@@ -2788,6 +2873,7 @@ GW_ENV=(
   -e "LLM_GATEWAY_API_KEY=${GW_STATIC_API_KEY}"
   -e "LLM_GATEWAY_ADMIN_API_KEY=${GW_ADMIN_API_KEY}"
   -e "CURSOR_HMAC_SECRET=${GW_CURSOR_HMAC}"
+  ${DD_STATS_CONTAINER_ENV[@]+"${DD_STATS_CONTAINER_ENV[@]}"}
 )
 if [[ -n "$CRED_ENC_KEY" ]]; then
   GW_ENV+=( -e "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CRED_ENC_KEY}" )
@@ -3328,30 +3414,7 @@ if (( ready == 0 )); then
   dd_fail "网关部署失败"
 fi
 
-# 就绪不等于可用：历史上 lite 回落也返 HTTP 200。当前 readyz 契约是
-# status=ready + database.connected + redis.connected（无独立 mode 字段）；
-# 若将来重新出现 mode=lite 字面，同样判失败。
-ready_check="$(printf '%s' "$ready_body" | python3 -c 'import sys,json
-try:
-  d=json.load(sys.stdin)
-except Exception as e:
-  print("parse_error"); raise SystemExit(0)
-mode=(d.get("mode") or d.get("storage_mode") or "")
-if str(mode).lower()=="lite":
-  print("lite"); raise SystemExit(0)
-st=str(d.get("status") or "").lower()
-db=d.get("database") if isinstance(d.get("database"), dict) else {}
-rd=d.get("redis") if isinstance(d.get("redis"), dict) else {}
-ok = (st in ("ready","ok","healthy")
-      and bool(db.get("connected") is True or db.get("ok") is True or db=={})
-      and bool(rd.get("connected") is True or rd.get("ok") is True or rd=={}))
-# 有 database/redis 对象时必须 connected；都没有对象时只信 status（旧形态）
-if "database" in d and db.get("connected") is not True:
-  print("db_down"); raise SystemExit(0)
-if "redis" in d and rd.get("connected") is not True:
-  print("redis_down"); raise SystemExit(0)
-print("ok" if ok or st=="ready" else "not_ready")
-' 2>/dev/null || echo parse_error)"
+ready_check="$(dd_ready_state <<<"$ready_body")"
 case "$ready_check" in
   ok) log "readyz OK (database+redis connected, status=ready)" ;;
   lite)
@@ -3364,6 +3427,14 @@ case "$ready_check" in
     dd_fail "部署验证失败：readyz 未证明 DB/Redis 就绪（check=${ready_check}）"
     ;;
 esac
+
+# The V2 pages depend on the asynchronous projection as well as DB/Redis.
+if [[ "${DD_REQUIRE_REQUEST_METRICS:-0}" == "1" ]]; then
+  if ! printf '%s\n' "$GW_ADMIN_API_KEY" | python3 "$DD_REPO_ROOT/scripts/ops/wait-request-metrics-ready.py" \
+      "$DD_CANDIDATE_PORT" "${DD_REQUEST_METRICS_WAIT_SECS:-1800}"; then
+    dd_fail "候选槽的请求统计投影未达到发布水位"
+  fi
+fi
 
 # 版本戳与前端：部署成功后必须能读到本次构建痕迹（有 DD_BUILD_SHA 时）
 if ver_body="$(curl -fsS "http://127.0.0.1:${DD_CANDIDATE_PORT}/version" 2>/dev/null || true)"; then
@@ -3583,8 +3654,9 @@ dd_switch_and_verify() {
   local _before _after _i _ok=0
   _before="$(dd_upstream_port || true)"
   log "切流：nginx upstream ${DD_NGINX_UPSTREAM} 由 127.0.0.1:${_before:-?} 切到 127.0.0.1:${DD_CANDIDATE_PORT}"
-  dd_switch_upstream "$DD_CANDIDATE_PORT" || return 1
+  # reload 返回失败也可能已经写入候选 upstream，交由 abort 恢复配置和入口。
   DD_SWITCHED=1
+  dd_switch_upstream "$DD_CANDIDATE_PORT" || return 1
   if [[ -n "${DD_BUILD_SHA:-}" ]]; then
     for _i in $(seq 1 "${DD_SWITCH_VERIFY_TRIES:-10}"); do
       _after="$(dd_public_version)"
@@ -3676,6 +3748,7 @@ fi
 # ── 切流成功：停旧槽 + 写活跃槽 + 清历史单机容器 ─────────────────────
 # 旧槽容器**停而不删**：容器对象与镜像都留着 ⇒ 人工回滚只要 docker start。
 # 停掉它是为了释放它的端口给下一轮的候选槽（槽位与端口是绑定的）。
+# 给旧槽留出与候选回退相同的时间，让网关在 23 秒 HTTP 关闭窗口内排空。
 if docker inspect --type container "$DD_ACTIVE_CONTAINER" >/dev/null 2>&1; then
   # ★★ 2026-11-17：必须经 dd_stop_container（带 --time 等待预算）。
   #   裸 `docker stop` 的默认 10 秒会**在网关排空完成前 SIGKILL**它 ⇒

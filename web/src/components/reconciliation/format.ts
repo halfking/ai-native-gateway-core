@@ -1,4 +1,5 @@
 // format.ts — reconciliation display helpers (no Vue, unit-tested).
+import type { ReportTotals } from '../../api/reportrollup'
 
 export function fmtInt(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—'
@@ -29,6 +30,23 @@ export function fmtUsd(cents: number | null | undefined): string {
   return `$${(cents / 100).toFixed(2)}`
 }
 
+export function reportUsdCents(totals: Pick<ReportTotals, 'request_count' | 'usd_measured_requests' | 'estimated_cost_cents'>): number | null {
+  return totals.usd_measured_requests === 0 && totals.request_count > 0 ? null : totals.estimated_cost_cents
+}
+
+export function fmtReportUsd(totals: ReportTotals): string {
+  const cents = reportUsdCents(totals)
+  if (cents == null) return '—'
+  if (totals.usd_measured_requests !== undefined && Math.abs(cents) % 1 !== 0) {
+    return `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })}`
+  }
+  return fmtUsd(cents)
+}
+
+export function fmtReportInternal(totals: ReportTotals): string {
+  return totals.usd_measured_requests === undefined ? fmtCny(totals.internal_cost_cents) : '—'
+}
+
 export function fmtCny(cents: number | null | undefined): string {
   if (cents == null || Number.isNaN(cents)) return '—'
   return `¥${(cents / 100).toFixed(2)}`
@@ -39,6 +57,11 @@ export function fmtDuration(ms: number | null | undefined): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
   const seconds = ms / 1000
   return seconds >= 10 ? `${seconds.toFixed(1)}s` : `${seconds.toFixed(2)}s`
+}
+
+export function fmtReportLatency(totals: ReportTotals, percentile: 'p50' | 'p95'): string {
+  const value = percentile === 'p50' ? totals.latency_p50_ms : totals.latency_p95_ms
+  return fmtDuration(totals.latency_measured_requests === 0 ? null : value)
 }
 
 export function failTone(errorRate: number | null | undefined): 'ok' | 'warn' | 'bad' {

@@ -41,8 +41,14 @@ export function rangeFromQuery(query: Record<string, unknown> | null | undefined
   const end = readQueryString(query.end_date)
   if (!start || !end) return null
   if (!DATE_RE.test(start) || !DATE_RE.test(end)) return null
-  // 后端要求 start_date 早于 end_date（handlers.go:65-71 "start_date must be before"）
-  if (start >= end) return null
+  if (start > end) return null
+  return { start, end }
+}
+
+export function exactRangeFromQuery(query: Record<string, unknown>): SaDateRange | undefined {
+  const start = readQueryString(query.start_time)
+  const end = readQueryString(query.end_time)
+  if (!start.includes('T') || !end.includes('T') || !(Date.parse(end) > Date.parse(start))) return
   return { start, end }
 }
 

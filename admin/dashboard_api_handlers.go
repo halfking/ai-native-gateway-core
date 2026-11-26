@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin/dashboardapi"
+	"github.com/kaixuan/llm-gateway-go/domains/metrics"
 )
 
 type dashboardResponseWriter struct {
@@ -83,6 +84,14 @@ func (h *Handler) handleDashboardSessionOverviewAudited(w http.ResponseWriter, r
 func (h *Handler) handleDashboardSessionTrend(w http.ResponseWriter, r *http.Request) {
 	handler := dashboardapi.NewSessionTrendHandler(h.db)
 	h.serveDashboardAPI(w, r, handler.HandleSessionTrend)
+}
+
+func (h *Handler) dashboardSessionV2(section metrics.SessionDashboardSection) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h.serveDashboardAPI(w, r, func(w http.ResponseWriter, r *http.Request) {
+			dashboardapi.HandleProjectedSessionDashboard(w, r, h.db, section)
+		})
+	}
 }
 
 // handleDashboardSessionHealth 处理会话健康度请求

@@ -2,8 +2,8 @@
 // DashboardOpsView — 看板读面（/dashboard-ops，**admin 档**）。
 //
 // 数据源（九条，全部 admin 档，见 admin/handler.go:1052-1069）：
-//   GET /api/admin/dashboard/session-overview   信封族（api/dashboard.ts）
-//   GET /api/admin/dashboard/session-trend     信封族
+//   GET /api/admin/dashboard/v2/session-overview   信封族（api/dashboard.ts）
+//   GET /api/admin/dashboard/v2/session-trend     信封族
 //   GET /api/admin/dashboard/session-health    信封族
 //   GET /api/admin/dashboard/session-active    信封族（带分页）
 //   GET /api/admin/dashboard/module-stats      信封族
@@ -272,6 +272,20 @@ const overviewPeriod = computed(() => {
   if (!d) return NO_DATA
   return `${d.period_start} → ${d.period_end}`
 })
+const overviewCost = computed(() => overview.value?.data?.cost_stats)
+const attribution = computed(() => overview.value?.data?.session_attribution?.totals ?? [])
+const attributionLabels = computed(() => ({
+  no_session: t('dashboardOps.overview.attribution.noSession'),
+  missing_session_record: t('dashboardOps.overview.attribution.missingRecord'),
+  missing_session_owner: t('dashboardOps.overview.attribution.missingOwner'),
+  unknown_session_start: t('dashboardOps.overview.attribution.unknownStart'),
+  opened_before_window: t('dashboardOps.overview.attribution.openedBeforeWindow'),
+  other_session_requests: t('dashboardOps.overview.attribution.otherSessions'),
+}))
+const overviewUSDUnmeasured = computed(() => {
+  const cost = overviewCost.value
+  return cost?.usd_requests === undefined ? 0 : (cost.total_requests ?? 0) - cost.usd_requests
+})
 
 /* ── trend ─────────────────────────────────────────────────────────── */
 
@@ -449,6 +463,7 @@ onBeforeUnmount(() => {
         <p v-if="degradedText(overview)" class="do__msg do__msg--warn">{{ degradedText(overview) }}</p>
         <p v-if="degradedBlind(overview)" class="do__msg do__msg--warn">{{ t('dashboardOps.degraded.blind') }}</p>
         <p v-if="dashboardHint(overview)" class="do__echo">{{ dashboardHint(overview) }}</p>
+        <p v-if="overview.data?.pending_since" class="do__msg do__msg--warn">{{ t('rr.projectedPending') }}</p>
 
         <div class="do__kpis">
           <div class="do__kpi">
@@ -464,20 +479,34 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="do__kpi">
-            <span class="do__kpi-label">{{ t('dashboardOps.overview.new24h') }}</span>
+            <span class="do__kpi-label">{{ t(overview.data?.new_sessions == null ? 'dashboardOps.overview.new24h' : 'dashboardOps.overview.newSessions') }}</span>
             <span class="do__kpi-value" :class="{ 'do__nodata': degradedNoData(overview) }">
-              {{ degradedNoData(overview) ? NO_DATA : fmtInt(overview.data?.new_sessions_24h ?? 0) }}
+              {{ degradedNoData(overview) ? NO_DATA : fmtInt(overview.data?.new_sessions ?? overview.data?.new_sessions_24h ?? 0) }}
             </span>
           </div>
           <div class="do__kpi">
-            <span class="do__kpi-label">{{ t('dashboardOps.overview.closed24h') }}</span>
+            <span class="do__kpi-label">{{ t(overview.data?.closed_sessions == null ? 'dashboardOps.overview.closed24h' : 'dashboardOps.overview.closedSessions') }}</span>
             <span class="do__kpi-value" :class="{ 'do__nodata': degradedNoData(overview) }">
-              {{ degradedNoData(overview) ? NO_DATA : fmtInt(overview.data?.closed_sessions_24h ?? 0) }}
+              {{ degradedNoData(overview) ? NO_DATA : fmtInt(overview.data?.closed_sessions ?? overview.data?.closed_sessions_24h ?? 0) }}
             </span>
           </div>
         </div>
 
         <dl class="do__kv">
+          <template v-if="overviewCost?.total_requests !== undefined">
+            <div class="do__kv-row">
+              <dt>{{ t('dashboardOps.active.requests') }}</dt>
+              <dd>{{ fmtInt(overviewCost.total_requests) }}</dd>
+            </div>
+            <div class="do__kv-row">
+              <dt>{{ t('dashboardOps.overview.tokens') }}</dt>
+              <dd>{{ overviewCost.total_tokens == null ? NO_DATA : fmtInt(overviewCost.total_tokens) }}</dd>
+            </div>
+            <div class="do__kv-row">
+              <dt>{{ t('dashboardOps.overview.cost') }}</dt>
+              <dd>{{ fmtUsd(overviewCost.total_cost_usd) }}</dd>
+            </div>
+          </template>
           <div class="do__kv-row">
             <dt>{{ t('dashboardOps.overview.generatedAt') }}</dt>
             <dd>{{ overviewGenerated }}</dd>
@@ -487,6 +516,16 @@ onBeforeUnmount(() => {
             <dd>{{ overviewPeriod }}</dd>
           </div>
         </dl>
+        <p v-if="overviewUSDUnmeasured > 0" class="do__echo">{{ t('rr.projectedMissingUSD', { n: overviewUSDUnmeasured }) }}</p>
+        <div v-if="attribution.length" data-testid="session-attribution">
+          <p class="do__echo">{{ t('dashboardOps.overview.attribution.title') }}</p>
+          <dl class="do__kv">
+            <div v-for="row in attribution" :key="row.reason" class="do__kv-row">
+              <dt>{{ attributionLabels[row.reason] }}</dt>
+              <dd>{{ t('dashboardOps.overview.attribution.measures', { requests: fmtInt(row.requests), usd: fmtUsd(row.cost_usd) }) }}</dd>
+            </div>
+          </dl>
+        </div>
       </template>
     </section>
 
@@ -510,6 +549,7 @@ onBeforeUnmount(() => {
       <template v-if="trend">
         <p v-if="degradedText(trend)" class="do__msg do__msg--warn">{{ degradedText(trend) }}</p>
         <p v-if="degradedBlind(trend)" class="do__msg do__msg--warn">{{ t('dashboardOps.degraded.blind') }}</p>
+        <p v-if="trend.data?.pending_since" class="do__msg do__msg--warn">{{ t('rr.projectedPending') }}</p>
         <dl class="do__kv">
           <div class="do__kv-row">
             <dt>{{ t('dashboardOps.trend.points') }}</dt>
@@ -545,10 +585,11 @@ onBeforeUnmount(() => {
       <template v-if="health">
         <p v-if="degradedText(health)" class="do__msg do__msg--warn">{{ degradedText(health) }}</p>
         <p v-if="degradedBlind(health)" class="do__msg do__msg--warn">{{ t('dashboardOps.degraded.blind') }}</p>
+        <p v-if="health.data?.pending_since" class="do__msg do__msg--warn">{{ t('rr.projectedPending') }}</p>
 
         <ul v-if="distributionEntries(health).length" class="do__chips">
           <li v-for="[k, v] in distributionEntries(health)" :key="k" class="do__chip">
-            {{ k }} · {{ degradedNoData(health) ? NO_DATA : String(v) }}
+            {{ k }} · {{ degradedNoData(health) || v == null ? NO_DATA : String(v) }}
           </li>
         </ul>
         <p v-else class="do__msg">{{ t('dashboardOps.empty') }}</p>
@@ -575,6 +616,7 @@ onBeforeUnmount(() => {
       <template v-if="active">
         <p v-if="degradedText(active)" class="do__msg do__msg--warn">{{ degradedText(active) }}</p>
         <p v-if="degradedBlind(active)" class="do__msg do__msg--warn">{{ t('dashboardOps.degraded.blind') }}</p>
+        <p v-if="active.data?.pending_since" class="do__msg do__msg--warn">{{ t('rr.projectedPending') }}</p>
         <!-- ★ data 与 metadata 各有一份分页，不一致即契约漂移 -->
         <p v-if="activePaginationDisagrees" class="do__msg do__msg--err">
           {{ t('dashboardOps.active.paginationDisagrees') }}

@@ -24,11 +24,11 @@ let policyTimer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 
 const {
-  t, loading, dimsLoading, exporting, rerunning, errorText, metric, reasonFilter, daysOpen,
+  t, loading, dimsLoading, exporting, errorText, metric, reasonFilter, daysOpen,
   report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
   reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
   personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-  applyRange, exportXlsx, rerunEndDay, reload, clearReason, setView, setMetric,
+  applyRange, exportXlsx, reload, clearReason, setView, setMetric,
 } = useReconciliationPage(showSnapshots)
 
 watch(() => snapshotQueryKeys.map(key => route.query[key]), () => {
@@ -63,7 +63,7 @@ onBeforeUnmount(() => {
   <div class="report-page">
     <div v-if="primaryCalendar && platform" class="reconciliation-mode">
       <button type="button" class="btn btn-secondary" data-testid="reconciliation-mode-daily" :aria-pressed="mode === 'daily'" @click="mode = 'daily'">{{ t('reports.daily.title') }}</button>
-      <button type="button" class="btn btn-secondary" data-testid="reconciliation-mode-legacy" :aria-pressed="mode === 'legacy'" @click="mode = 'legacy'">{{ t('reports.legacySnapshotView') }}</button>
+      <button type="button" class="btn btn-secondary" data-testid="reconciliation-mode-legacy" :aria-pressed="mode === 'legacy'" @click="mode = 'legacy'">{{ t('reports.projectedView') }}</button>
     </div>
     <p v-if="mode === 'pending'" role="status">{{ t('reports.daily.loading') }}</p>
     <ReconciliationToolbar
@@ -75,14 +75,12 @@ onBeforeUnmount(() => {
       :dims-loading="dimsLoading"
       :loading="loading"
       :exporting="exporting"
-      :rerunning="rerunning"
       :coverage="coverageText"
       @update:view="setView"
       @apply-range="applyRange"
       @patch="patchFilters"
       @refresh="reload"
       @export="exportXlsx"
-      @rerun="rerunEndDay"
       @clear="clearExtra"
     />
 
@@ -95,7 +93,7 @@ onBeforeUnmount(() => {
     <el-alert v-if="errorText" :title="errorText" type="error" show-icon :closable="false" class="block" />
     <el-alert
       v-else-if="report && !hasData"
-      :title="t('reports.noSnapshots')"
+      :title="t(report.source === 'request_metrics' ? 'reports.projectedEmpty' : 'reports.noSnapshots')"
       type="info"
       show-icon
       :closable="false"
@@ -110,7 +108,10 @@ onBeforeUnmount(() => {
       :title="`${t('reports.legacyCoverage')}${legacyDays.length}${t('reports.legacyCoverageRest')}`"
     />
 
-    <template v-if="report">
+    <p v-if="report?.projection" class="hint">{{ t('reports.projectedBasis', { zone: report.projection.timezone }) }}</p>
+    <el-alert v-if="report?.projection?.pending_since" :title="t('reports.projectedPending')" type="warning" :closable="false" show-icon class="block" />
+    <p v-if="showCost && report?.totals.usd_unmeasured_requests" class="hint">{{ t('reports.projectedMissingUSD', { n: report.totals.usd_unmeasured_requests }) }}</p>
+    <template v-if="report && (report.source !== 'request_metrics' || hasData)">
       <ReconciliationKpiGrid :report="report" :view="view" :show-cost="showCost" />
       <ReconciliationCharts
         :days="report.days"

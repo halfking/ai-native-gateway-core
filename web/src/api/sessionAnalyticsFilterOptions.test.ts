@@ -6,27 +6,30 @@ import { listSessionAnalyticsFilterOptions } from './sessionAnalyticsFilterOptio
 
 vi.mock('./_core', () => ({
   req: vi.fn(async (method: string, path: string) => {
-    if (path.startsWith('/api/admin/session-analytics/clients')) {
+    if (path.startsWith('/api/admin/session-analytics/v2/clients')) {
       return {
+        refreshed_at: '2026-11-23T12:01:00Z',
         clients: [
           { client_id: 'cli-001' },
           { client_id: 'cli-002' },
         ],
       }
     }
-    if (path.startsWith('/api/admin/session-analytics/tasks')) {
+    if (path.startsWith('/api/admin/session-analytics/v2/tasks')) {
       return {
+        refreshed_at: '2026-11-23T12:00:00Z',
         tasks: [
           { task_id: 'task-1' },
           { task_id: 'task-2' },
         ],
       }
     }
-    if (path.startsWith('/api/admin/session-analytics/users')) {
+    if (path.startsWith('/api/admin/session-analytics/v2/user-ranking')) {
       return {
+        updated_at: '2026-11-23T12:02:00Z',
         users: [
-          { owner: 'alice' },
-          { owner: 'bob' },
+          { owner: 'alice', tenant_id: 'a' },
+          { owner: 'alice', tenant_id: 'b' },
         ],
       }
     }
@@ -39,8 +42,8 @@ describe('listSessionAnalyticsFilterOptions', () => {
     const result = await listSessionAnalyticsFilterOptions({ hours: 24, limit: 20 })
     expect(result.clients).toEqual(['cli-001', 'cli-002'])
     expect(result.tasks).toEqual(['task-1', 'task-2'])
-    expect(result.users).toEqual(['alice', 'bob'])
-    expect(result.refreshedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(result.users).toEqual([{ owner: 'alice', tenant_id: 'a' }, { owner: 'alice', tenant_id: 'b' }])
+    expect(result.refreshedAt).toBe('2026-11-23T12:00:00.000Z')
   })
 
   it('空响应返回空数组', async () => {
@@ -54,7 +57,7 @@ describe('listSessionAnalyticsFilterOptions', () => {
     expect(result.users).toEqual([])
   })
 
-  it('默认参数 hours=24 limit=20', async () => {
+  it('uses the same natural day and default limit for every filter', async () => {
     const { req } = await import('./_core')
     const calls: Array<[string, string]> = []
     ;(req as any).mockImplementation(async (_m: string, p: string) => {
@@ -62,7 +65,13 @@ describe('listSessionAnalyticsFilterOptions', () => {
       return { clients: [], tasks: [], users: [] }
     })
     await listSessionAnalyticsFilterOptions()
-    expect(calls[0][1]).toContain('hours=24')
-    expect(calls[0][1]).toContain('limit=20')
+    const scopes = calls.map(([, url]) => new URLSearchParams(url.split('?')[1]))
+    const start = scopes[0].get('start_date')
+    expect(start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    for (const scope of scopes) {
+      expect(scope.get('start_date')).toBe(start)
+      expect(scope.get('end_date')).toBe(start)
+      expect(scope.get('limit')).toBe('20')
+    }
   })
 })

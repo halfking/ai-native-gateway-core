@@ -502,12 +502,11 @@ describe('④ ★★★★★ 排序去重可观测；两个维度**都**有 30 
     await flushPromises()
     expect(w.find('[data-testid="saf-sorted-models"]').exists()).toBe(true)
     expect(w.find('[data-testid="saf-sorted-providers"]').exists()).toBe(true)
-    // ★★ 聚合来源列必须写对（models_used / providers，不是「models」）
+    // 说明列名跟随 V2 请求投影。
     const noteModels = w.find('[data-testid="saf-note-models"]').text()
-    expect(noteModels).toContain('models_used')
+    expect(noteModels).toContain('outbound_model')
     const noteProviders = w.find('[data-testid="saf-note-providers"]').text()
-    expect(noteProviders).toContain('providers')
-    expect(noteProviders).not.toContain('models_used')
+    expect(noteProviders).toContain('provider_code')
   })
 
   it('④-5 ★★★★ 占位符必须真的被替换（不许在页面上显示字面 {days}）', async () => {

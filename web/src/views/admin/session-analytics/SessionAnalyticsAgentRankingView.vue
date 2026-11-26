@@ -61,6 +61,8 @@
     </div>
 
     <p class="sa-note">{{ t('sessionAnalytics.costNote') }}</p>
+    <p v-if="projectionPending" class="sa-note" role="status">{{ t('reports.projectedPending') }}</p>
+    <p v-if="usdUnmeasured" class="sa-note">{{ t('reports.projectedMissingUSD', { n: usdUnmeasured }) }}</p>
 
     <DataTable
       :loading="loading"
@@ -85,7 +87,7 @@
             <th data-testid="sa-agent-ranking-col-sessions">{{ t('sessionAnalytics.col.sessions') }}</th>
             <th data-testid="sa-agent-ranking-col-tasks">{{ t('sessionAnalytics.col.tasks') }}</th>
             <th>{{ t('sessionAnalytics.col.tokens') }}</th>
-            <th>{{ t('sessionAnalytics.col.cost') }}</th>
+            <th>{{ t('dashboard.charts.costUSD') }}</th>
             <th>{{ t('sessionAnalytics.col.avgDuration') }}</th>
             <th>{{ t('sessionAnalytics.col.lastUsed') }}</th>
           </tr>
@@ -99,9 +101,9 @@
             <td>{{ fmt(a.task_count) }}</td>
             <td>{{ fmt(a.total_tokens) }}</td>
             <td>
-              <SaCostCell :internal-cost="a.internal_cost" :external-cost="a.external_cost" />
+              <SaCostCell :internal-cost="a.internal_cost" :external-cost="a.external_cost" :terminal-cost="a.usd_unmeasured_requests === undefined ? undefined : a.total_cost" :usage-credits="a.credits_charged" />
             </td>
-            <td>{{ t('sessionAnalytics.unit.seconds', { value: fmt(a.avg_duration_seconds) }) }}</td>
+            <td>{{ a.avg_duration_seconds == null ? '—' : t('sessionAnalytics.unit.seconds', { value: fmt(a.avg_duration_seconds) }) }}</td>
             <td>{{ formatTime(a.last_used_at) }}</td>
           </tr>
         </tbody>
@@ -150,6 +152,8 @@ const sortBy = ref<AgentRankingSort>('sessions')
 const order = ref<'asc' | 'desc'>('desc')
 
 const rows = ref<AgentRankingRow[]>([])
+const projectionPending = ref(false)
+const usdUnmeasured = computed(() => rows.value.reduce((total, row) => total + (row.usd_unmeasured_requests ?? 0), 0))
 
 /**
  * 名称列本地排序：none（默认，保持服务端指标排行）→ asc → desc → none。
@@ -203,6 +207,7 @@ async function load(): Promise<void> {
     'sessionAnalytics.error.agentRankingFailed',
   )
   rows.value = res?.agents ?? []
+  projectionPending.value = !!res?.pending_since
 }
 
 function applyFilters(): void {

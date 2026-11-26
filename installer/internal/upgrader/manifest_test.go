@@ -3,6 +3,7 @@ package upgrader
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -83,6 +84,34 @@ func TestLoadManifest(t *testing.T) {
 			t.Fatal("expected invalid checksum to be rejected")
 		}
 	})
+}
+
+func TestInstallerStartupFiles(t *testing.T) {
+	const mode = "installer-startup"
+	plan := &Manifest{MigrationMode: mode, Files: []FileChecksum{
+		{Path: "kx-gateway"},
+		{Path: "migrations/startup/983_request_metrics.sql"},
+		{Path: "migrations/startup/973_request_metrics_projection.sql"},
+	}}
+	got, err := installerStartupFiles(plan)
+	if want := []string{"983_request_metrics.sql", "973_request_metrics_projection.sql"}; err != nil || !slices.Equal(got, want) {
+		t.Fatalf("startup plan = %v, want %v, error %v", got, want, err)
+	}
+	for _, path := range []string{"migrations/startup/983_request_metrics.sql", "migrations/startup/983_request_metrics.down.sql", "migrations/legacy/560_test.sql"} {
+		plan.Files = append(plan.Files[:3], FileChecksum{Path: path})
+		if _, err := installerStartupFiles(plan); err == nil {
+			t.Errorf("startup plan accepted %q", path)
+		}
+	}
+	if _, err := installerStartupFiles(&Manifest{MigrationMode: mode}); err == nil {
+		t.Error("startup plan accepted an empty migration list")
+	}
+	if _, err := installerStartupFiles(&Manifest{MigrationMode: "unknown"}); err == nil {
+		t.Error("unrecognized migration mode was accepted")
+	}
+	if got, err := installerStartupFiles(&Manifest{}); got != nil || err != nil {
+		t.Fatalf("legacy package changed: %v %v", got, err)
+	}
 }
 
 func TestVerifyManifest(t *testing.T) {

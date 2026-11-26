@@ -63,6 +63,8 @@
     </div>
 
     <p class="sa-note">{{ t('sessionAnalytics.costNote') }}</p>
+    <p v-if="projectionPending" class="sa-note" role="status">{{ t('reports.projectedPending') }}</p>
+    <p v-if="usdUnmeasured" class="sa-note">{{ t('reports.projectedMissingUSD', { n: usdUnmeasured }) }}</p>
 
     <DataTable
       :loading="loading"
@@ -89,7 +91,7 @@
             <th>{{ t('sessionAnalytics.col.tokens') }}</th>
             <th>{{ t('sessionAnalytics.col.cacheRate') }}</th>
             <th>{{ t('sessionAnalytics.col.avgDuration') }}</th>
-            <th>{{ t('sessionAnalytics.col.cost') }}</th>
+            <th>{{ t('dashboard.charts.costUSD') }}</th>
             <th>{{ t('sessionAnalytics.col.users') }}</th>
             <th>{{ t('sessionAnalytics.col.lastUsed') }}</th>
           </tr>
@@ -103,9 +105,9 @@
             <td>{{ t('sessionAnalytics.unit.percent', { value: fmt(m.success_rate) }) }}</td>
             <td>{{ fmt(m.total_tokens) }}</td>
             <td>{{ t('sessionAnalytics.unit.percent', { value: fmt(m.cache_rate) }) }}</td>
-            <td>{{ t('sessionAnalytics.unit.milliseconds', { value: fmt(m.avg_duration_ms) }) }}</td>
+            <td>{{ m.avg_duration_ms == null ? '—' : t('sessionAnalytics.unit.milliseconds', { value: fmt(m.avg_duration_ms) }) }}</td>
             <td>
-              <SaCostCell :internal-cost="m.internal_cost" :external-cost="m.external_cost" />
+              <SaCostCell :internal-cost="m.internal_cost" :external-cost="m.external_cost" :terminal-cost="m.usd_unmeasured_requests === undefined ? undefined : m.total_cost" :usage-credits="m.credits_charged" />
             </td>
             <td>{{ fmt(m.user_count) }}</td>
             <td>{{ formatTime(m.last_used_at) }}</td>
@@ -157,6 +159,8 @@ const sortBy = ref<ModelRankingSort>('requests')
 const order = ref<'asc' | 'desc'>('desc')
 
 const rows = ref<ModelRankingRow[]>([])
+const projectionPending = ref(false)
+const usdUnmeasured = computed(() => rows.value.reduce((total, row) => total + (row.usd_unmeasured_requests ?? 0), 0))
 
 /**
  * 名称列本地排序：none（默认，保持服务端指标排行）→ asc → desc → none。
@@ -207,6 +211,7 @@ async function load(): Promise<void> {
     'sessionAnalytics.error.modelRankingFailed',
   )
   rows.value = res?.models ?? []
+  projectionPending.value = !!res?.pending_since
 }
 
 function applyFilters(): void {

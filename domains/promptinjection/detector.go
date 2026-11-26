@@ -118,6 +118,18 @@ func (d *Detector) collectError(ctx context.Context, collected *CollectedError) 
 	if d == nil || d.errorCollector == nil || collected == nil {
 		return
 	}
+	// ★ 2026-11-25：**调用方取消不是检测系统故障**，不入队。
+	//
+	//	请求的 ctx 被取消（客户端断连 / 上游超时中间件取消 / 优雅停机）时，
+	// 正在进行的 canary 查询 / 策略加载会以 context canceled 失败——245/154
+	//	实测 13 条队列行里 10 条是这种，每条都触发了一次模型分析，而模型的
+	//	结论清一色是「这是调用方取消，不是故障」。
+	//	只拦 Canceled：DeadlineExceeded 是**内部超时预算用尽**，那才是要分析的。
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		slog.Debug("prompt_injection: caller canceled during detection; not collected as a detection failure",
+			"error_type", collected.ErrorType)
+		return
+	}
 	// 用 detached context：请求 ctx 可能已经取消，但错误仍值得入队分析。
 	d.errorCollector.CollectAsync(context.WithoutCancel(ctx), collected)
 }

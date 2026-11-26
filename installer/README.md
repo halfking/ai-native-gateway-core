@@ -67,8 +67,10 @@ llm-gw-installer uninstall   # 卸载（--purge 彻底清理）
 `upgrade` 的两条路径与迁移投递面（重要）：
 
 - `--offline --offline-package <pkg.tar.gz>`（**docker compose 安装的正确通道**）：
-  备份二进制+compose+.env → docker load 镜像 → 逐个执行包内 `migrations/*.sql`
-  （数值序）→ 替换二进制 → 重启 → 健康检查失败自动回滚。
+  新包使用 `installer-startup` 清单，需先更新安装器。安装器校验文件后加载镜像，
+  按清单顺序和既有台账应用待执行 SQL，再按新镜像重建网关服务并等待健康检查。
+  切换失败时恢复原网关镜像、`.env` 和 `app/VERSION`。已提交的增量迁移保留在数据库中，
+  台账支持重跑。旧格式升级包沿用原来的 SQL 处理方式。
 - 在线（默认，**仅 systemd 单机布局**）：下载二进制 → SHA256 → 备份 → 替换 →
   `systemctl restart`。检测到 `compose.yml` 时会 fail-fast 并指路离线包。
   在线路径**不投递 SQL 迁移文件链** —— 新版本的启动迁移靠网关重启时

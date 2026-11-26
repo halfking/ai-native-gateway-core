@@ -89,6 +89,10 @@
       </StatsRow>
 
       <p class="sa-note">{{ t('sessionAnalytics.costNote') }}</p>
+      <p v-if="detail.pending_since" class="sa-note" role="status">{{ t('reports.projectedPending') }}</p>
+      <p v-if="detail.summary.usd_unmeasured_requests" class="sa-note" data-testid="sa-usd-coverage">
+        {{ t('reports.projectedMissingUSD', { n: detail.summary.usd_unmeasured_requests }) }}
+      </p>
 
       <section class="sa-section" data-testid="sa-trend-sessions">
         <h3 class="sa-section__title">{{ t('sessionAnalytics.trend.sessions') }}</h3>
@@ -312,7 +316,7 @@
                 <td>{{ money(m.total_cost) }}</td>
                 <td>{{ percent(m.success_rate) }}</td>
                 <td>{{ percent(m.cache_hit_rate) }}</td>
-                <td>{{ fmt(Math.round(m.avg_response_time_ms)) }} ms</td>
+                <td>{{ m.avg_response_time_ms == null ? '—' : fmt(Math.round(m.avg_response_time_ms)) + ' ms' }}</td>
                 <td>{{ formatTime(m.last_used_at) }}</td>
               </tr>
             </tbody>
@@ -391,6 +395,7 @@ import SaRangeHint from './components/SaRangeHint.vue'
 import SaCostCell from './components/SaCostCell.vue'
 import { creditsCostText, usdCostText } from './saCostSplit'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
+import { rangeFromQuery } from './saQueryParams'
 import {
   getProjectTasks,
   getUserDetail,
@@ -426,7 +431,7 @@ const tasksLoading = computed(() => tasksLoader.loading.value)
 const modelsLoading = computed(() => modelsLoader.loading.value)
 const apiKeysLoading = computed(() => apiKeysLoader.loading.value)
 
-const range = ref<KxDateRange>(rangeFromSpanDays(7))
+const range = ref<KxDateRange>(rangeFromQuery(route.query) ?? rangeFromSpanDays(7))
 const draftRange = ref<KxDateRange>(range.value)
 
 const detail = ref<UserDetailResponse | null>(null)
@@ -508,6 +513,12 @@ function toggleTaskSort(): void {
 }
 
 const owner = computed(() => String(route.params.owner ?? ''))
+const tenant = computed(() => typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined)
+const dataScope = computed(() => ({
+  tenant_id: tenant.value,
+  start_date: range.value.start,
+  end_date: range.value.end,
+}))
 
 const presets = computed<KxDateRangePreset[]>(() => [
   { id: 'sa-7d', labelKey: 'sessionAnalytics.range.preset7', resolve: () => rangeFromSpanDays(7) },
@@ -521,7 +532,7 @@ const taskTrend = computed(() =>
   (detail.value?.trends?.tasks ?? []).map((p) => ({ label: p.date, value: p.count })),
 )
 const costTrend = computed(() =>
-  (detail.value?.trends?.cost ?? []).map((p) => ({ label: p.date, value: p.internal })),
+  (detail.value?.trends?.cost ?? []).flatMap((p) => p.total_cost_usd == null ? [] : [{ label: p.date, value: p.total_cost_usd }]),
 )
 /** 排名趋势：数值越小越靠前 ⇒ 曲线按原值画即可（下降 = 上升）。 */
 const rankTrend = computed(() =>
@@ -573,10 +584,7 @@ function formatTime(value: string): string {
 async function load(): Promise<void> {
   if (!owner.value) return
   const res = await detailLoader.run(
-    () => getUserDetail(owner.value, {
-      start_date: range.value.start,
-      end_date: range.value.end,
-    }),
+    () => getUserDetail(owner.value, dataScope.value),
     'sessionAnalytics.error.userDetailFailed',
   )
   if (res) detail.value = res
@@ -584,53 +592,58 @@ async function load(): Promise<void> {
 
 async function loadProjects(): Promise<void> {
   if (!owner.value) return
+  const scope = dataScope.value
+  const username = owner.value
   const res = await projectsLoader.run(
-    () => getUserProjects(owner.value, {
-      start_date: range.value.start,
-      end_date: range.value.end,
+    () => getUserProjects(username, {
+      ...scope,
       sort_by: 'sessions',
       order: 'desc',
     }),
     'sessionAnalytics.error.userProjectsFailed',
   )
+  if (scope !== dataScope.value || username !== owner.value) return
   projects.value = res?.projects ?? []
 }
 
 async function loadTasks(): Promise<void> {
   if (!owner.value || !selectedProject.value) return
+  const scope = dataScope.value
+  const username = owner.value
+  const project = selectedProject.value
   const res = await tasksLoader.run(
-    () => getProjectTasks(owner.value, selectedProject.value, {
-      start_date: range.value.start,
-      end_date: range.value.end,
+    () => getProjectTasks(username, project, {
+      ...scope,
       sort_by: 'sessions',
     }),
     'sessionAnalytics.error.projectTasksFailed',
   )
+  if (scope !== dataScope.value || username !== owner.value || project !== selectedProject.value) return
   tasks.value = res?.tasks ?? []
 }
 
 async function loadModels(): Promise<void> {
   if (!owner.value) return
+  const scope = dataScope.value
+  const username = owner.value
   const res = await modelsLoader.run(
-    () => getUserModelUsage(owner.value, {
-      start_date: range.value.start,
-      end_date: range.value.end,
-    }),
+    () => getUserModelUsage(username, scope),
     'sessionAnalytics.error.userModelsFailed',
   )
+  if (scope !== dataScope.value || username !== owner.value) return
   models.value = res?.models ?? []
   modelsLoaded.value = true
 }
 
 async function loadAPIKeys(): Promise<void> {
   if (!owner.value) return
+  const scope = dataScope.value
+  const username = owner.value
   const res = await apiKeysLoader.run(
-    () => getUserAPIKeyUsage(owner.value, {
-      start_date: range.value.start,
-      end_date: range.value.end,
-    }),
+    () => getUserAPIKeyUsage(username, scope),
     'sessionAnalytics.error.userAPIKeysFailed',
   )
+  if (scope !== dataScope.value || username !== owner.value) return
   apiKeys.value = res?.api_keys ?? []
   apiKeysLoaded.value = true
 }
@@ -654,7 +667,10 @@ function goBack(): void {
   void router.push({ name: 'session-analytics-user-ranking' })
 }
 
-watch(owner, () => {
+watch([owner, tenant, () => route.query.start_date, () => route.query.end_date], () => {
+  range.value = rangeFromQuery(route.query) ?? rangeFromSpanDays(7)
+  draftRange.value = range.value
+  for (const loader of [detailLoader, projectsLoader, tasksLoader, modelsLoader, apiKeysLoader]) loader.reset()
   detail.value = null
   projects.value = []
   tasks.value = []

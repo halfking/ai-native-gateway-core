@@ -64,14 +64,18 @@ func TestDeployChannelSkipsOnlyByItsOwnLedger(t *testing.T) {
 	if !strings.Contains(text, "public.gateway_db_revision_sequences") {
 		t.Fatalf("★ 部署通道脚本里找不到它自己的权威台账 public.gateway_db_revision_sequences ⇒ ★ 判据已失效（★ 别按本门结论改代码）")
 	}
-	// ★ 判据：★ 脚本**不得**用 psql_query / psql_stream 去查安装器那张账
-	// （★ `public.schema_migrations`）⇒ ★ ⇒ 它的「跳过/已应用」判据只认自己那本
-	// ★ `public.gateway_db_revision_sequences` ★★。
+	// ★ 判据（★ 2026-11-26 合并轮按【方案 A 已落地】的现行口径重钉）：★
+	// 脚本**允许**用 psql_query 查安装器那张账（public.schema_migrations），
+	// 但**只许**出现在「安装器台账推断」块里，且**必须**先过
+	// `migration_version_conflict_count == 1` 的唯一性闸（★ 键不唯一 ⇒ 不推断、
+	// 宁可重放不可假跳过 ★）。这就是方案 A（`4e0bd431b`，0715 审计轮判「方向对、
+	// 三段判定实测冲突组 0」）的落地面。
 	//
 	// ★ 为什么按「调用点」而不是按「文本里出现过 schema_migrations」来判：★
 	// ★ 脚本里出现 `schema_migrations` 的**合法**用法是**产物探针**
 	// （★ `ledger_artifact_probe "<file>" "<SQL 表达式>"` ★ ⇒ 它只是**读产物**、
-	// ★ 不参与「跳过」判定）★ ⇒ ★ 按文本判会误报 ⇒ ★ ⇒ 必须按**调用点**判 ★★。
+	// ★ 不参与「跳过」判定）与**方案 A 的推断块**（★ 带唯一性闸 ★）★
+	// ⇒ ★ 按文本判会误报 ⇒ ★ ⇒ 必须按**调用点**判 ★★。
 	lines := strings.Split(text, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -86,11 +90,17 @@ func TestDeployChannelSkipsOnlyByItsOwnLedger(t *testing.T) {
 		if !strings.Contains(window, "schema_migrations") {
 			continue
 		}
+		// ★ 方案 A 的合法形态：推断块的 SELECT 必须与唯一性闸同文件共存。
+		//   用「闸的调用点存在于脚本」＋「本调用点带 LIMIT 1 的幂等 SELECT」识别；
+		//   其它任何对 schema_migrations 的 psql_query/psql_stream 仍一律红。
+		if strings.Contains(text, "migration_version_conflict_count") &&
+			strings.Contains(window, "SELECT 1 FROM public.schema_migrations") {
+			continue
+		}
 		t.Errorf("★ 部署通道脚本第 %d 行用 psql_query/psql_stream 查了安装器那张账（public.schema_migrations）：%s\n"+
-			"★ ⇒ 这意味着它可能把安装器的账当成了「跳过/已应用」的判据 ⇒ ★ 而今天的实测是：\n"+
-			"★   新装库上部署通道会全量重放、★ 并在第 13 个文件中止（★ 报告 §7.31.2 臂 D）\n"+
-			"★ ⇒ ★ 若这是**刻意**落地的方案 A（★ 部署通道改读 schema_migrations）★\n"+
-			"★ ⇒ ★ 请连同本门与报告 §7.31 一起更新（★ 刻意留红、★ 别让口径悄悄漂掉）",
+			"★ ⇒ 方案 A 只允许【带 migration_version_conflict_count 唯一性闸的推断块】这一种形态\n"+
+			"★ ⇒ 任何其它对安装器台账的查询（把安装器的账当成「跳过/已应用」判据而不过闸）一律红\n"+
+			"★ ⇒ 请改走推断块（先 conflict_count 闸、再 SELECT 1 ... LIMIT 1）、或改成产物探针",
 			i+1, strings.TrimSpace(window))
 	}
 }
@@ -262,7 +272,7 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     StartupFiles 末尾）⇒ **交集 +1**（★ 343 → 344 ★★）；
 		//     两通道独有清单不变（25 / 63）。
 		//
-		wantBoth          = 344
+		wantBoth          = 345
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)

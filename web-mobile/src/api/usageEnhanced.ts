@@ -4,7 +4,7 @@ import { req, type RequestOptions } from './client'
  * usageEnhanced.ts — 用量成本增强面的三条**只读**端点（2026-10-08，第七十批）。
  *
  * GET /api/admin/usage/cost-trend       （handler.go:1332 `h.admin` 前缀子路由）
- * GET /api/admin/usage/period-compare
+ * GET /api/admin/usage/v2/period-compare
  * GET /api/admin/usage/cache-economics
  *
  * ⚠️⚠️⚠️ ★★★★★★ **本条已于 2026-10-14（第一百二十二批）整体订正。**
@@ -176,8 +176,8 @@ export interface CostTrendEntry {
   dimension_value: string
   request_count: number
   total_cost_usd: number
-  input_cost_usd: number
-  output_cost_usd: number
+  input_cost_usd: number | null
+  output_cost_usd: number | null
   prompt_tokens: number
   completion_tokens: number
   avg_latency_ms: number
@@ -256,7 +256,7 @@ export function fetchCostTrend(
   const gb = q?.group_by ?? costTrendGroupByDefault()
   return req<unknown>(
     'GET',
-    `/api/admin/usage/cost-trend${usageRangeQuery(q, COST_TREND_DAYS_DEFAULT)}&group_by=${gb}`,
+    `/api/admin/usage/v2/cost-trend${usageRangeQuery(q, COST_TREND_DAYS_DEFAULT)}&group_by=${encodeURIComponent(gb)}`,
     undefined,
     options,
   ).then(unwrapCostTrend)
@@ -305,7 +305,7 @@ export function costTrendTotalDisagrees(m: CostTrendResponse): boolean {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * B. GET /api/admin/usage/period-compare
+ * B. GET /api/admin/usage/v2/period-compare
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
@@ -333,7 +333,7 @@ export interface DimChange {
    * ★ 分母 `previous_cost` 为 0 时留 **0**（:554-558 的 CASE WHEN）
    * ⇒ 「新出现的模型」change_pct 是 0，不是无穷大，也不是 null。
    */
-  change_pct: number
+  change_pct: number | null
 }
 
 /** admin/usage_enhanced.go:316-337。 */
@@ -341,7 +341,7 @@ export interface PeriodCompareResponse {
   current: PeriodStats
   previous: PeriodStats
   /** 分母 `previous.total_cost_usd > 0`，否则留 0（:421-423）。 */
-  change_pct: number
+  change_pct: number | null
   change_abs: number
   /** ★ 阈值是 **±5%**（:426-430），不是 ±1%。 */
   trend: 'up' | 'down' | 'flat'
@@ -389,7 +389,7 @@ export function fetchPeriodCompare(
   const previous = q.previous ?? ''
   return req<unknown>(
     'GET',
-    `/api/admin/usage/period-compare?current=${encodeURIComponent(current)}&previous=${encodeURIComponent(previous)}`,
+    `/api/admin/usage/v2/period-compare?current=${encodeURIComponent(current)}&previous=${encodeURIComponent(previous)}`,
     undefined,
     options,
   ).then(unwrapPeriodCompare)
@@ -424,9 +424,9 @@ export function periodCompareDegradedReason(m: PeriodCompareResponse): string | 
   return m.degraded_reason !== undefined && m.degraded_reason !== '' ? m.degraded_reason : null
 }
 
-/** ★ 上期为 0 ⇒ `change_pct` 留 0（:421-423），**不是**无穷大也不是 null。 */
+/** 相对变化需要非零的上期成本。 */
 export function periodChangeMeaningless(m: PeriodCompareResponse): boolean {
-  return Number(m.previous.total_cost_usd) === 0
+  return m.change_pct === null || Number(m.previous.total_cost_usd) === 0
 }
 
 /** ★★ 缺 `"model"` 键 ⇒ **查询失败或无变化，二者同形**（:443-449 只留 slog.Warn）。 */
@@ -464,20 +464,26 @@ export interface CacheEconomicsResponse {
   cache_read_tokens: number
   prompt_tokens: number
   /** 0-1 比例。分母为 0 时留 0（:719-722）。 */
-  cache_hit_ratio: number
+  cache_hit_ratio: number | null
+  cache_input_tokens?: number
+  eligible_cache_read_tokens?: number
+  cache_scope_requests?: number
+  compression_scope_requests?: number
+  cache_write_tokens?: number
+  source?: 'request_metrics'
   /** ★ 估算：`cacheRead × avgPrice × 0.9`。 */
-  dollars_saved: number
+  dollars_saved: number | null
   dollars_spent: number
   /** 0-1 比例。★ 分母为 0 时**留 1.0**（:746 初始化），不是 0。 */
-  effective_cost_ratio: number
+  effective_cost_ratio: number | null
   /** ★★ 查询失败时也是 0（:694-697 静默）⇒ 与「真的没压缩」**不可分**。 */
-  compressed_requests: number
+  compressed_requests: number | null
   /** ★ 估算：`compressed × 8000 × avgPrice`。 */
-  compression_saved: number
+  compression_saved: number | null
   /** ★ 估算：上面两项之和。 */
-  total_saved: number
+  total_saved: number | null
   /** ★ 估算：0-100 百分数。 */
-  savings_rate: number
+  savings_rate: number | null
   /** ★ 恒发（不带 omitempty）。 */
   degraded: boolean
   degraded_reason?: string
@@ -495,7 +501,7 @@ export function fetchCacheEconomics(
 ): Promise<CacheEconomicsResponse> {
   return req<unknown>(
     'GET',
-    `/api/admin/usage/cache-economics${usageRangeQuery(q, CACHE_ECONOMICS_DAYS_DEFAULT)}`,
+    `/api/admin/usage/v2/cache-economics${usageRangeQuery(q, CACHE_ECONOMICS_DAYS_DEFAULT)}`,
     undefined,
     options,
   ).then(unwrapCacheEconomics)
@@ -518,7 +524,7 @@ export function cacheEconomicsDegradedReason(m: CacheEconomicsResponse): string 
 
 /** 分母 `cache_read + prompt` 为 0 ⇒ 那个 0 无意义（不是「命中率 0%」）。 */
 export function cacheHitRatioMeaningless(m: CacheEconomicsResponse): boolean {
-  return Number(m.cache_read_tokens) + Number(m.prompt_tokens) === 0
+  return m.cache_hit_ratio === null || (m.cache_input_tokens ?? (Number(m.cache_read_tokens) + Number(m.prompt_tokens))) === 0
 }
 
 /** ★★ 没有 token 时 `effective_cost_ratio` 留 **1.0**（:746）⇒ 显示 100% 会误导。 */
@@ -528,6 +534,7 @@ export function effectiveCostRatioIsFakeFull(m: CacheEconomicsResponse): boolean
 
 /** ★ `compressed_requests === 0` ⇒ 分不清「没压缩」与「压缩计数查询失败」。 */
 export function compressedCountMayBeFailed(m: CacheEconomicsResponse): boolean {
+  if (m.source === 'request_metrics') return (m.compression_scope_requests ?? 0) < m.total_requests
   return Number(m.compressed_requests) === 0
 }
 

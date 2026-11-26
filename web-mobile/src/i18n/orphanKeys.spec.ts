@@ -84,6 +84,10 @@ const blankNotes = (rows: { key: string; note: string }[]): string[] =>
  *   B. **块内死**（5 条）：命名空间在用，只有这几条没有
  */
 const KNOWN_ORPHAN_I18N: { key: string; note: string }[] = [
+  // ── 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：
+  //   ReportRollupView 改 V2 投影（days 参数）后遗留的孤儿键
+  { key: 'rr.query.range', note: 'V2 投影改造（2026-11-26 合并轮）：视图从 start/end 区间参数改为 days 参数，range 回显行整体删除 ⇒ 键遗留无人用' },
+  { key: 'rr.legacySnapshotView', note: 'V2 投影改造（2026-11-26 合并轮）：legacy 模式按钮文案改用 rr.projectedView ⇒ 本键遗留无人用' },
   // ── `account.role` 整块：命名空间在源码里零出现
   { key: 'account.role', note: '整块无人引用' },
   // ── `account.versionInfo` 整块：命名空间在源码里零出现
@@ -341,8 +345,8 @@ describe('③ ★★★ 登记项必须仍然是孤儿（有人用了就要删�
 // ── ④ 名单规模与质量 ────────────────────────────────────────────────────────
 
 describe('④ 名单规模与质量', () => {
-  it('④-1 ★★★★ KNOWN_ORPHAN_I18N 恰好 72 条（逐条定性过）', () => {
-    expect(KNOWN_ORPHAN_I18N).toHaveLength(72)
+  it('④-1 ★★★★ KNOWN_ORPHAN_I18N 恰好 74 条（逐条定性过；2026-11-26 合并轮 +2：V2 投影改造遗留 rr.query.range / rr.legacySnapshotView）', () => {
+    expect(KNOWN_ORPHAN_I18N).toHaveLength(74)
   })
 
   it('④-2 ★★★★ 每一条都必须有非空的「为什么确定没人用」', () => {

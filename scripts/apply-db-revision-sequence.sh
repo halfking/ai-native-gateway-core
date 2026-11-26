@@ -274,18 +274,63 @@ sha256_file() {
   fi
 }
 
-# Extract version number from migration filename (e.g., "392" from "392_name.sql",
-# "983" from "983b_name.sql"). Returns empty string if no numeric prefix found.
-# This matches the installer's migrationVersionOf logic in runner.go.
+# ── 迁移版本键提取（★ 与安装器 `dbinit.migrationVersionOf` **严格同口径** ★）──
+# ★★ 口径来源（★ installer/internal/dbinit/runner.go:2787 ★★）：
+#     idx := strings.Index(base, "_"); v, err := strconv.Atoi(base[:idx])
+#     ⇒ ★ **纯数字前缀才成立**；★ 字母后缀件（"983b_"、"361b_"、"999a_"）⇒
+#       Atoi 失败 ⇒ **无版本键** ⇒ ★★ **不折叠回主号** ★★
+# ★★ **为什么「不折叠」是硬要求（★ 仓内既有实测结论 ★★）★★：
+#     installer/internal/dbinit/migration_version_identity_test.go 与
+#     installer/internal/upgrader/migration_order_suffix_test.go 都明写：
+#     「台账跳过口径**必须不折叠** ⇒ 折叠后 983b 会去查台账 '983' ⇒ 而 '983'
+#       行是 request_metrics 建表件写的 ⇒ 983b 被**假跳过** ⇒ 补列件永不落地」
+#     ⇒ ★★ 本函数**曾经**写成 `^([0-9]+)[a-z]?_`（折叠）⇒ ★ 与安装器口径相反
+#       ⇒ 本轮已订正（★ 见 AGENTS.md L121 轮块 ★）
+# ★★ 前导零按 Atoi 归一（"00001_x.sql" ⇒ "1"）★★：安装器用 %d 写台账 ⇒
+#     台账里存的是归一后的十进制 ⇒ 推断查询必须用同一形态才查得到。
 extract_migration_version() {
-  local filename="$1"
-  # Match: start of string, 1+ digits, optional letter suffix, underscore
-  # Handles: 392_, 983b_, 361b_, etc.
-  if [[ "$filename" =~ ^([0-9]+)[a-z]?_ ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-  else
-    printf ''
-  fi
+  local filename="$1" prefix
+  prefix="${filename%%_*}"
+  # ★ 纯数字前缀才成立（Atoi 可解析）⇒ 字母后缀件返回空串（★ 不折叠 ★）
+  [[ "$prefix" =~ ^[0-9]+$ ]] || { printf ''; return 0; }
+  # ★ 归一（去前导零）★："00001" ⇒ "1"（★ 与安装器写台账的形态一致 ★）
+  printf '%s' "$((10#$prefix))"
+}
+
+# ── 版本键冲突计数（★ 推断「安装器台账已应用」的**唯一性前提** ★）──────────
+# ★ 为什么要这道闸：★ schema_migrations.version 是 **text**、**一行只能属于一个
+#   version** ⇒ ★ 若投递面里有两个文件共用同一个版本键 ⇒ 台账那一行**无法证明**
+#   是哪一个文件写的 ⇒ ★★ 用它推断「本文件已被应用」＝**假跳过** ⇒ 产物永不落地 ★★
+# ★ 用法：migration_version_conflict_count "<version>" <basename...>
+#   ⇒ 打印同键的**不同文件**数（★ 1 ⇒ 键在本投递面内唯一 ⇒ 推断成立 ★；
+#     ★ ≥2 ⇒ 拒绝推断 ★）
+# ★ 实测（★ 2026-11-26 L121 轮 ★）：★ 投递面 369 条内部 = 0 组冲突；
+#   ★ 投递面 ∪ 安装器清单（407 条）= 0 组冲突 ⇒ ★ 当前唯一性成立 ★★
+#   ⇒ 但这是**实测读数、不是恒真** ⇒ ⇒ 运行时必须每次现查、★ 不能写死 ★
+#
+# ★★ 2026-11-26 12h 审计轮订正（★ **计数口径** ★）：★★
+#   原实现按**数组条目**计数 ⇒ 而投递面 files=() 里**同一个文件被登记了两次**
+#   （800_provider_endpoint_protocols.sql / 856_usage_ledger_ts_cover_agg_idx.sql
+#   —— 两处都是不同轮次的**重复登记**，不是两个不同文件）⇒ 该版本的「同键文件数」
+#   被算成 2 ⇒ ★ 唯一性闸对这两个版本**误判为冲突** ⇒ 方案A 的推断被**误关**
+#   ⇒ 这两个文件在历史库上会被**重放**（而不是被识别为「安装器已应用」）。
+#   ⇒ ★⇒ 闸要问的是「**几个不同的文件**共用这个版本键」⇒ ⇒ **按不同文件计数** ★
+#   ⇒ ★ 这与仓内**唯一真源**的口径一致：scripts/lib/deploy-surface.sh 的
+#     deploy_surface_extract **本来就去重**（★ 「去重且保留首次位置」★）⇒
+#     ★ 本函数若不按不同文件计数，★ **同一口径就分叉成了两份** ★（★ 仓内既有教训 ★）。
+migration_version_conflict_count() {
+  local version="$1" base count=0 seen=" "
+  shift
+  for base in "$@"; do
+    [[ "$(extract_migration_version "$base")" == "$version" ]] || continue
+    # ★ 同一 basename 只计一次（★ 「几个不同的文件」而不是「几个条目」★）
+    case "$seen" in
+      *" $base "*) continue ;;
+    esac
+    seen="$seen$base "
+    count=$((count + 1))
+  done
+  printf '%s' "$count"
 }
 
 # Fixed order: 655 restores the canonical session_summaries columns; 560
@@ -1305,13 +1350,17 @@ files=(
   # 序列通道缺席 → 目录驱动门报「startup migration 801 exists but is missing
   # from the channel files=(...) array」，正是该门注释里点名的 693/699/701/703
   # 复发形态：fresh install 有、存量库升级永远不落地）。
-  # 800：每 provider 多端点表 + providers 旧行回填，CREATE TABLE IF NOT
-  # EXISTS + ON CONFLICT DO NOTHING 幂等。
   # 801（原 759，撞号让位后改号）：只 CREATE OR REPLACE 733 建的
   # promote_session_turn_details_hot_to_partition，不跑批量 DELETE、不改
   # 存量分区，重放安全。位置约束同 StartupFiles：必须晚于 733（其目标函数
   # 依赖 733 建的 session_turn_details 表与 hot 表），故排在序列末尾。
-  "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
+  # ★ 2026-11-26 12h 审计轮：★ 800 在本数组里**被登记了两次**（一次在 631 之后
+  # ★ —— 那里它的回填依赖 631 加的 providers.deleted_at；★ 一次在这里）★★
+  #   ⇒ 按仓内唯一真源 scripts/lib/deploy-surface.sh 的口径（★ 「去重且保留
+  #   首次位置」★）★ 生效位置一直是**首次登记处**（631 之后）★ ⇒ ★ 这一处是
+  #   **重复登记**、删除它**不改变投递顺序与投递内容**（★ 第二次走到时早已被
+  #   台账指纹判为已应用 ★）⇒ 删除，避免「同一文件两个条目」被误读成
+  #   「版本键冲突」（★ 唯一性闸按条目计数时会把 800 误判为冲突 ★）。
   "$ROOT_DIR/sql/migrations/startup/801_session_turn_details_duplicate_drain.sql"
   # 2026-09-30 会话存储解耦 v3 S4 前置（802）：session_turn_details 族补
   # (tenant_id, gw_task_id) 部分索引（母表 + hot）。跨租户访问门
@@ -1626,7 +1675,11 @@ files=(
   # 与 842 同款取舍：不加 CONCURRENTLY（分区父表上会被拒），窗口内写被阻塞、
   # 读不受影响，逐分区合计 <900 MB，实测窗口秒级，建议低峰应用。
   # 两条 CREATE INDEX IF NOT EXISTS 均幂等；无表依赖，可放链尾。
-  "$ROOT_DIR/sql/migrations/startup/856_usage_ledger_ts_cover_agg_idx.sql"
+  # ★ 2026-11-26 12h 审计轮：★ 856 在本数组里**被登记了两次**（★ 一次在上面
+  # ★ 「856（2026-10-13 …本轮补齐五点同步的另一腿）」那一组 ★）★★
+  #   ⇒ 按唯一真源 deploy-surface.sh 的口径（★ 「去重且保留首次位置」★）
+  #   ★ 生效位置一直是**首次登记处** ★ ⇒ ★ 这一处是重复登记、删除它不改变
+  #   投递顺序与投递内容 ★ ⇒ 删除（同 800，★ 避免被误读成版本键冲突 ★）。
   # 2026-10-07 §10.106.28：candidate_failure_logs 两臂补 (ts DESC) 索引。
   # 该族无任何 ts 打头的索引 ⇒ 无过滤的 max(ts) 只能全量扫索引条目
   # （父表 cost 4566 / hot 171，26 倍差），而告警语句 58,001 次调用。
@@ -2923,6 +2976,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/056_user_teams.sql"
   "$ROOT_DIR/sql/migrations/startup/057_api_keys_team_id.sql"
   "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
+  "$ROOT_DIR/sql/migrations/startup/973_request_metrics_projection.sql"
 )
 
 
@@ -3343,8 +3397,20 @@ END
 # fixture 树与合成的 legacy 记账行不在其中 —— 探针判的是「本轮认过账的文件，
 # 产物必须真实在场」，不是「库里所有记账行」）。
 declare -a sha_matched_markers=()
-# 本轮识别为「安装器已应用」而跳过的文件（★ 方案 A：部署通道账本统一）
-declare -a installer_applied_markers=()
+# ★ 2026-11-26 12h 审计轮：★ 删除 `installer_applied_markers`（★ 写而不读 ★）：
+#   它只被 append、从不被读取 ⇒ 留着的唯一效果是**让读代码的人以为**存在一条
+#   「推断跳过也要进探针范围」的路径（★ 而探针范围是 `sha_matched_markers` ★）
+#   ⇒ ★ 推断跳过**不进**探针范围是**刻意的**（★ 推断出来的跳过没有文件身份
+#   证明 ⇒ 不拿它做「台账 ↔ 产物」对账 ★）⇒ 变量删掉，口径留在注释里 ★。
+
+# ★ 投递面 basename 清单（★ 版本键唯一性闸门的输入 ★）
+# ★ 为什么需要它：★ schema_migrations.version 一行只能属于一个 version ⇒
+#   ⇒ 只有当某个版本键在**投递面内唯一**时，那一行才能证明「是本文件写的」
+#   ⇒ ⇒ 唯一性必须**每次现查**（★ 实测读数不是恒真 ★）★
+declare -a surface_bases=()
+for f in "${files[@]}"; do
+  [[ -n "$f" ]] && surface_bases+=("${f##*/}")
+done
 
 # A fresh installer seals these receipts only after all of its SQL succeeds.
 # The version ledger cannot establish file identity or prove execution.
@@ -3449,25 +3515,45 @@ for file in "${files[@]}"; do
   # 若版本已在安装器台账 ⇒ 跳过（该迁移已被安装器应用）+ 回填部署通道台账，
   # 防止下次部署重复查询。这使得「安装器新装 → 部署通道升级」路径不再重放
   # 已应用的迁移，解决 252 上 392 漂移风险 + 账本语义统一。
+  # ★★ 2026-11-26 L121 轮订正（★ 见 AGENTS.md L121 轮块 ★）★★：
+  #   ★ ① 版本键口径与安装器**严格同口径**（★ 字母后缀件**无版本键**、★ 不折叠 ★）
+  #   ★ ② **唯一性闸门**：★ 版本键在投递面内被多个文件共用 ⇒ **拒绝推断**
+  #     （★ schema_migrations.version 一行只能属于一个 version ⇒ 那一行无法
+  #       证明是哪个文件写的 ⇒ 用它推断＝**假跳过** ⇒ 产物永不落地 ★）
+  #   ★ ③ **不写权威账**：★ 版本台账**证不出文件身份、也证不出执行事实**
+  #     （★ 本文件上方 installer receipt 段落的原话 ★）⇒ ⇒ 推断出来的跳过
+  #       **不写进 gateway_db_revision_sequences** ⇒ ★ 权威账里只有真跑过的行 ★
   version="$(extract_migration_version "$base")"
   installer_applied=""
   if [[ -n "$version" ]]; then
-    # 查询时处理表不存在的情况（全新库 / 仅部署通道管理的库）
-    installer_applied="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='${version}' LIMIT 1" 2>/dev/null || true)"
+    version_conflicts="$(migration_version_conflict_count "$version" "${surface_bases[@]}")"
+    if [[ "$version_conflicts" == "1" ]]; then
+      # 查询时处理表不存在的情况（全新库 / 仅部署通道管理的库）
+      installer_applied="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='${version}' LIMIT 1" 2>/dev/null || true)"
+    else
+      # ★ 键不唯一 ⇒ 不推断（★ 宁可重放、不可假跳过 ★）
+      printf 'note: version %s is shared by %s files in the delivery surface ⇒ installer-ledger inference disabled: %s\n' \
+        "${version}" "${version_conflicts}" "${file#"$ROOT_DIR/"}"
+    fi
   fi
-  
+
   if [[ "$installer_applied" == "1" ]]; then
-    # 安装器已应用：跳过 + 回填部署通道台账（INSERT ... ON CONFLICT DO NOTHING 幂等）
-    printf 'applied by installer (backfilling deployment ledger): %s\n' "${file#"$ROOT_DIR/"}"
-    installer_applied_markers+=("${base}")
-    psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${file_sha}', 'none') ON CONFLICT (sequence_name) DO NOTHING"
+    # ★ 安装器台账有该版本行 ⇒ 推断为「已应用」⇒ 跳过本文件。
+    # ★★ **不写权威账**（★ content_sha256/execution_sha256 都留空 ★）⇒
+    #   ★ 权威账只记录「本通道真跑过」的行 ⇒ ★ 不制造假指纹、不吸收后续漂移 ★
+    printf 'skipped by installer-ledger inference (version %s; not recorded in the deployment ledger): %s\n' \
+      "${version}" "${file#"$ROOT_DIR/"}"
+    # ★ 推断跳过**不进**探针范围（★ 探针范围＝sha_matched_markers＝本通道真跑过的 ★）
     continue
   fi
-  
+
   # 部署通道与安装器台账均无记录：按全新迁移应用
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
   psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${execution_sha}', '${runtime_adaptation}') ON CONFLICT (sequence_name) DO NOTHING"
+  if [[ "$base" == 973_request_metrics_projection.sql ]]; then
+    sha_matched_markers+=("$base")
+  fi
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"
@@ -3900,6 +3986,8 @@ ledger_artifact_probe "925_supplier_contract_rates.sql" \
 #   ★ 注：生产上该列已由别的路径在场（211 只读实测：45 列、末列即 raw_model_name），
 #     但本迁移未 applied、未记账 ⇒ probe 的台账行判据（version='983b'）仍未满足
 #     ⇒ 这正是本迁移要补的缺口（幂等重跑无害）。
+ledger_artifact_probe "973_request_metrics_projection.sql" \
+  "to_regclass('public.request_metrics_projection_state') IS NOT NULL AND to_regclass('public.idx_request_metrics_projected_time') IS NOT NULL AND to_regclass('public.idx_request_metrics_fact_request') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (request_id, occurred_at)') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND conname='request_metrics_fact_identity' AND convalidated) AND to_regclass('public.request_metrics_pending') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics_pending' AND column_name='tenant_id') AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact') AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name IN ('raw_model_name','credential_id','provider_code','provider_name','client_id','client_model','agent_name','client_ip','identity_hash','task_type','owner_user','api_key_prefix','application_code','person_key','cache_write_tokens','cost_amount','cost_currency','source_revision','source_fact_id','work_type','session_intent','compression_applied','cache_input_tokens','credential_label','api_key_owner_user','client_cancelled','usage_source','source_finalized_at')) = 28 AND (SELECT count(*) FROM public.schema_migrations WHERE version='973') = 1"
 ledger_artifact_probe "983b_add_raw_model_name.sql" \
   "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983b') = 1"
 # ★ 983c 的产物 = 复合游标索引 + 台账行。

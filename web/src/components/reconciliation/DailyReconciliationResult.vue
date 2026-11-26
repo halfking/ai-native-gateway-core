@@ -34,6 +34,8 @@ function value(v: unknown, field: string): string {
       · {{ report.version }}
     </p>
     <p class="daily-meta">{{ t(`reports.daily.cohorts.${report.section}`) }}</p>
+    <p v-if="report.projection" class="daily-meta" data-testid="daily-terminal-source">{{ t('reports.daily.terminalProjection') }}</p>
+    <p v-if="report.projection?.pending_since" class="daily-meta" role="status">{{ t('reports.daily.terminalProjectionPending', { at: report.projection.pending_since }) }}</p>
     <dl class="daily-metrics">
       <div v-for="field in fields.summary" :key="field">
         <dt>{{ labels(field) }}</dt><dd>{{ value(report.summary[field], field) }}</dd>

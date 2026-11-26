@@ -63,9 +63,9 @@ url: ${BASE_URL}
     optional: true
     label: 'slow-check:/request-detail/:requestId'
 
-# ── /admin/session-analytics/users ─────────────────────────────────────────────
+# ── /admin/session-analytics/user-profiles ──────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"
-- openLink: "${BASE_URL}/admin/session-analytics/users"
+- openLink: "${BASE_URL}/admin/session-analytics/user-profiles"
 - extendedWaitUntil:
     visible: '用户画像'
     timeout: 20000
@@ -73,7 +73,7 @@ url: ${BASE_URL}
 - assertTrue:
     condition: "${output.ms__admin_session_analytics_users < 2000}"
     optional: true
-    label: 'slow-check:/admin/session-analytics/users'
+    label: 'slow-check:/admin/session-analytics/user-profiles'
 
 # ── /admin/session-analytics/users/:owner ─────────────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"

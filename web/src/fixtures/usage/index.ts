@@ -1,4 +1,4 @@
-// fixtures/usage/index.ts —— 5 个 usage 端点的**真端点原始响应**（2026-10-21 采集）
+// 2026-10-21 的原始端点样本，用于核对新版保留的用量字段。
 //
 // ## 来源（可复现）
 //
@@ -35,11 +35,11 @@ export const realUsageFixtures = {
 
 /** 5 个端点的真实路径。测试用它断言「请求打到了哪些 URL」。 */
 export const REAL_USAGE_PATHS = [
-  '/api/usage/summary',
-  '/api/admin/usage/cost-trend',
-  '/api/admin/usage/period-compare',
-  '/api/admin/usage/cache-economics',
-  '/api/usage/hot-keys',
+  '/api/usage/v2/summary',
+  '/api/admin/usage/v2/cost-trend',
+  '/api/admin/usage/v2/period-compare',
+  '/api/admin/usage/v2/cache-economics',
+  '/api/usage/v2/hot-keys',
 ] as const
 
 /**
@@ -54,14 +54,16 @@ export function realUsageResponse(rawUrl: string): unknown {
   const path = new URL(rawUrl, 'http://localhost').pathname
   switch (path) {
     case '/api/usage/summary':
+    case '/api/usage/v2/summary':
       return realUsageFixtures.summary
-    case '/api/admin/usage/cost-trend':
+    case '/api/admin/usage/v2/cost-trend':
       return realUsageFixtures.costTrend
-    case '/api/admin/usage/period-compare':
+    case '/api/admin/usage/v2/period-compare':
       return realUsageFixtures.periodCompare
-    case '/api/admin/usage/cache-economics':
+    case '/api/admin/usage/v2/cache-economics':
       return realUsageFixtures.cacheEconomics
     case '/api/usage/hot-keys':
+    case '/api/usage/v2/hot-keys':
       return realUsageFixtures.hotKeys
     default:
       throw new Error(`unexpected endpoint (no such route on the gateway): ${rawUrl}`)

@@ -233,6 +233,13 @@ describe('(1) 降级信封', () => {
     expect(reportRollupHasData(ok)).toBe(true)
     expect(reportRollupIsDegraded(ok)).toBe(false)
   })
+
+  it('requires coverage metadata for the request projection source', () => {
+    expect(() => unwrapReportRollupSummary(summary({ source: 'request_metrics' }))).toThrow(/projection/)
+    expect(() => unwrapReportRollupSummary(summary({ source: 'request_metrics', projection: {
+      from: '2026-09-30T16:00:00Z', through: '2026-10-07T16:00:00Z', timezone: 'Asia/Shanghai', updated_at: null, pending_since: null,
+    }, totals: { ...grain().totals, internal_cost_cents: null, estimated_cost_cents: null, latency_p95_ms: null } }))).not.toThrow()
+  })
 })
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1008,14 +1015,14 @@ describe('fetch URL 拼装', () => {
   it('★ 无参数 ⇒ summary 路径不带问号（后端前缀带尾斜杠，必须自己拼对）', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(summary()))
     await fetchReportRollupSummary()
-    expect(lastUrl()).toContain('/api/admin/report-rollup/summary')
+    expect(lastUrl()).toContain('/api/admin/report-rollup/v2/summary')
     expect(lastUrl()).not.toContain('?')
   })
 
   it('★ 无参数 ⇒ dimensions 路径不带问号', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ dimensions: dims() }))
     await fetchReportRollupDimensions()
-    expect(lastUrl()).toContain('/api/admin/report-rollup/dimensions')
+    expect(lastUrl()).toContain('/api/admin/report-rollup/v2/dimensions')
     expect(lastUrl()).not.toContain('?')
   })
 
@@ -1168,8 +1175,8 @@ describe('常量取值', () => {
     expect(REPORT_ROLLUP_DEFAULT_VIEW).toBe('provider')
   })
 
-  it('★ REPORT_ROLLUP_SOURCES 三值与 grainreport.go:946-950 一致', () => {
-    expect([...REPORT_ROLLUP_SOURCES]).toEqual(['grain', 'mixed', 'legacy'])
+  it('★ REPORT_ROLLUP_SOURCES 包含原快照来源与请求投影', () => {
+    expect([...REPORT_ROLLUP_SOURCES]).toEqual(['grain', 'mixed', 'legacy', 'request_metrics'])
   })
 
   it('★ REPORT_ROLLUP_MAX_RANGE_DAYS === report_rollup.go:144 的 366', () => {

@@ -316,17 +316,15 @@ onBeforeUnmount(() => {
 
       <div class="tnd__grid">
         <span class="tnd__cell">
-          <!-- ★ 来自 usage_ledger -->
           <span class="tnd__cell-l">{{ t('tnd.totalRequests') }}</span>
           <span class="tnd__cell-v">{{ fmtInt(stats.total_requests) }}</span>
         </span>
         <span class="tnd__cell">
-          <!-- ★ 来自 usage_ledger -->
           <span class="tnd__cell-l">{{ t('tnd.totalCost') }}</span>
           <span class="tnd__cell-v">${{ fmtNum(stats.total_cost_usd, 4) }}</span>
+          <small v-if="stats.cost_rows_outside_usd">{{ t('tnd.usdCoverage', { n: stats.cost_rows_outside_usd }) }}</small>
         </span>
         <span class="tnd__cell">
-          <!-- ★ 来自 logsTable（另一张表） -->
           <span class="tnd__cell-l">{{ t('tnd.totalCredits') }}</span>
           <span class="tnd__cell-v">{{ fmtInt(stats.total_credits) }}</span>
         </span>

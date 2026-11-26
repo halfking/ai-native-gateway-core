@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
@@ -134,7 +135,7 @@ func (w *ReportRollupWorker) catchUpMissed(ctx context.Context, trigger string, 
 		}
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, time.Minute)
-	missing, err := probe(probeCtx, rollupCatchupLookbackDays, time.Now().UTC())
+	missing, err := probe(probeCtx, rollupCatchupLookbackDays, time.Now())
 	cancel()
 	if err != nil {
 		slog.Warn("report rollup catchup probe failed", "trigger", trigger, "error", err)
@@ -142,7 +143,7 @@ func (w *ReportRollupWorker) catchUpMissed(ctx context.Context, trigger string, 
 	}
 	attempted := 0
 	for _, d := range missing {
-		if d.Equal(skip) {
+		if d.Format(time.DateOnly) == skip.Format(time.DateOnly) {
 			continue // runRecovered 刚聚合过的昨日不重复跑
 		}
 		attempted++
@@ -159,13 +160,13 @@ func (w *ReportRollupWorker) catchUpMissed(ctx context.Context, trigger string, 
 	return attempted
 }
 
-// RollupDate 聚合指定 UTC 日（调度与测试入口）。单日聚合包在一个事务里
+// RollupDate 聚合系统时区的指定自然日（调度与测试入口）。单日聚合包在一个事务里
 // （2026-09-25 审计轮：原实现逐行 upsert 无事务，中途失败留新旧混合快照），
 // 失败整体回滚， MissingRollupDates 下一轮会重新探测到该日。
 func (w *ReportRollupWorker) RollupDate(ctx context.Context, day time.Time) (reportrollup.RollupStats, error) {
 	runCtx, cancel := context.WithTimeout(ctx, rollupRunTimeout)
 	defer cancel()
-	tx, err := w.db.Begin(runCtx)
+	tx, err := w.db.BeginTx(runCtx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return reportrollup.RollupStats{}, fmt.Errorf("begin rollup tx: %w", err)
 	}

@@ -35,11 +35,14 @@ package promptinjection
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,7 +62,30 @@ type GatewayLLMClient struct {
 	baseURL  string
 
 	httpClient *http.Client
+
+	// finishReasons 按**提示词**记最近一次回答的结束原因（finish_reason）。
+	// ★ 为什么按提示词而不是「最近一次」：定向分析与后台 worker 可能并发共用同一个
+	//   客户端 ⇒ 只存「最近一次」会把别的调用的结束原因记到这条分析头上。
+	// ★★★ **必须有界（2026-11-26 12h 审计轮 D-C-3）**：★★★ 原来这里是个
+	//   `sync.Map`，**只写不删**（全文件 1 处 Store、**0** 处 Delete）⇒ 键是
+	//   **逐次不同**的提示词哈希（提示词含本次取证的摘要 ⇒ 每次分析都不同）
+	//   ⇒ ⇒ **每条分析新增一条永不留存的记录** ⇒ ⇒ 长生命周期进程内
+	//   **无上界增长**（只有进程重启才释放）⇒ ⇒ 改用**有界 FIFO**。
+	finishReasons finishReasonStore // prompt 哈希 → finish_reason（有界）
 }
+
+// analyzerMaxTokens 是分析回答的输出额度。
+//
+//	★ 2026-11-26 实测调大（4000 → 6000）：分析模型带推理，**推理过程的 token 计入
+//	  输出额度**（211 上回一个「ok」就用掉 51 个推理 token）⇒ 4000 里先扣推理、剩下
+//	  的才轮到正式 JSON；本轮又让模型多输出结构化修正方案 ⇒ 211 首批 6 条新分析里
+//	  2 条在额度处被截断（结构化方案那一段丢失）。
+//	★ 为什么不是更大：额度越大、单次回答的生成越久，在上游不稳定时暴露窗口越大
+//	  （211 上 8000 的第一条定向分析就撞上 glm-5.3-flash 上游换节点重试、300s 超时——
+//	  成因是上游不稳定，但没必要再拉长生成时间）。完整回答多数不到 4000；被截断的
+//	  回答有 repairTruncatedJSON 兜着（断点之前的完整成员都保留）。
+//	  （211 上经网关实测 4000 / 8000 / 16000 均被接受。）
+const analyzerMaxTokens = 6000
 
 // NewGatewayLLMClient 创建网关 LLM 客户端。
 //
@@ -125,8 +151,8 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 				"content": prompt,
 			},
 		},
-		"temperature": 0.3,  // 降低随机性，提高一致性
-		"max_tokens":  4000, // 足够的响应空间
+		"temperature": 0.3, // 降低随机性，提高一致性
+		"max_tokens":  analyzerMaxTokens,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -168,6 +194,7 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			TotalTokens int `json:"total_tokens"`
@@ -189,5 +216,82 @@ func (c *GatewayLLMClient) Analyze(ctx context.Context, prompt string) (string, 
 		return "", 0, fmt.Errorf("analysis endpoint returned empty content")
 	}
 
+	c.finishReasons.store(promptFinishKey(prompt), strings.ToLower(strings.TrimSpace(apiResp.Choices[0].FinishReason)))
+
 	return content, apiResp.Usage.TotalTokens, nil
+}
+
+// FinishReasonForCall 返回某次调用（按提示词）得到的结束原因；没有记录 ⇒ 空串。
+// 它是分析端可选扩展 finishReasonForCaller 的实现。
+func (c *GatewayLLMClient) FinishReasonForCall(prompt string) string {
+	if c == nil {
+		return ""
+	}
+	if v, ok := c.finishReasons.load(promptFinishKey(prompt)); ok {
+		return v
+	}
+	return ""
+}
+
+// promptFinishKey 是提示词的哈希（提示词很长，不原样留作键）。
+func promptFinishKey(prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return hex.EncodeToString(sum[:])
+}
+
+// finishReasonStoreCap 是「提示词哈希 → finish_reason」的有界容量。
+//
+// ★ 取 256 的理由：★ 它要覆盖的是「**同时在飞**的定向分析 + 后台 worker 分析」
+// 的去重要求（★ 按提示词存就是为了不让并发调用互相串台 ★）⇒ 容量必须**明显大于**
+// 并发分析数；★ 但又必须**有上界** ⇒ ⇒ 256 条在正常并发下远远够用
+// （每条 ≈ 64B 键 ＋ 值 ⇒ 上界 ≈ 几十 KB ⇒ 可忽略）。
+const finishReasonStoreCap = 256
+
+// finishReasonStore 是「提示词哈希 → finish_reason」的**有界 FIFO**。
+//
+// ★★ **语义保持不变**（★ 逐条对齐原 `sync.Map` 的用法 ★）：
+//   · 同一个键重复写入 ⇒ **就地更新**、**不换位** ⇒ 「最近一次」这个语义不变 ★；
+//   · 键不存在 ⇒ 追加；超过容量 ⇒ **淘汰最老的一条** ★。
+// ★ **淘汰的代价可接受**：读出口 `FinishReasonForCall` 是分析端的
+//   **可选扩展**（★ `finishReasonForCaller` ★）⇒ 读不到时返回空串 ⇒
+//   下游只是少一个可选字段，**不是错误路径** ⇒ ⇒ 有界化不引入新的失败面 ★。
+// ★ 并发：★ 全部读��都在**同一把锁**内 ⇒ 不存在 map 并发读写问题
+//   （★ 原 `sync.Map` 靠自身保证；这里换成本仓惯常的「一把锁」模型 ★）。
+type finishReasonStore struct {
+	mu    sync.Mutex
+	order []string         // 插入序（最老在前）
+	vals  map[string]string // 键 → finish_reason
+}
+
+func (s *finishReasonStore) store(key, reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vals == nil {
+		s.vals = make(map[string]string)
+	}
+	if _, ok := s.vals[key]; ok {
+		// ★ 同键更新 ⇒ 就地改值、不动顺序（★ 「最近一次」语义靠这个保住的 ★）。
+		s.vals[key] = reason
+		return
+	}
+	s.vals[key] = reason
+	s.order = append(s.order, key)
+	for len(s.order) > finishReasonStoreCap {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.vals, oldest)
+	}
+}
+
+func (s *finishReasonStore) load(key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.vals[key]
+	return v, ok
 }

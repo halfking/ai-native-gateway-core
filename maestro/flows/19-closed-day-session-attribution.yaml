@@ -1,0 +1,61 @@
+# Use with the isolated comparison fixture. Yesterday has linked requests,
+# a nonzero unlinked business request, and a paid probe.
+url: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+- openLink: ${BASE_URL}/dashboard?tab=board
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 25000
+- tapOn:
+    id: "kx-dr-trigger"
+- tapOn:
+    id: "kx-dr-preset-yesterday"
+
+- openLink: ${BASE_URL}/dashboard?tab=stats
+- extendedWaitUntil:
+    visible:
+      id: "kx-dr-trigger"
+    timeout: 25000
+- tapOn:
+    id: "kx-dr-trigger"
+- tapOn:
+    id: "kx-dr-preset-yesterday"
+- extendedWaitUntil:
+    visible:
+      id: "session-attribution-no_session"
+    timeout: 25000
+- assertVisible: '.*\$0\.0500.*'
+- assertVisible:
+    id: "session-attribution-opened_before_window"
+- tapOn:
+    id: "session-probe-scope-input"
+- extendedWaitUntil:
+    visible:
+      id: "session-probe-scope-badge"
+    timeout: 15000
+- assertVisible: '.*\$0\.0600.*'
+
+- openLink: ${BASE_URL}/admin/reconciliation?view=provider
+- extendedWaitUntil:
+    visible:
+      id: "reconciliation-business-scope"
+    timeout: 25000
+- tapOn:
+    id: "kx-dr-trigger"
+- tapOn:
+    id: "kx-dr-preset-yesterday"
+- tapOn:
+    id: "reconciliation-business-scope"
+- extendedWaitUntil:
+    visible:
+      id: "recon-kpi"
+    timeout: 25000

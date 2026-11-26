@@ -81,7 +81,7 @@ v2: {
         probeExclude: 'بدون فحص',
         probeInclude: 'مع فحص',
         probeIncludeBadge: 'يشمل حركة الفحص',
-        probeScopeTitle: 'معيار الملخص: بدون فحص = التسوية الداخلية؛ مع فحص = تسوية المزوّد (تشمل الفوترة الخارجية حركة الفحص).',    modelDistTitle: 'توزيع النماذج',
+        probeScopeTitle: 'يُطبَّق عامل تصفية حركة الفحص نفسه على الملخص والمخططات وتفاصيل الأخطاء.',    modelDistTitle: 'توزيع النماذج',
     modelTop: 'أفضل {n} في الفترة',
     colShare: 'الحصة',
     distTitle: 'تحليل التوزيع',

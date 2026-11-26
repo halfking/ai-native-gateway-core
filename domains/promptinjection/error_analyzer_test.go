@@ -38,7 +38,8 @@ func TestNewErrorAnalyzer(t *testing.T) {
 	assert.NotNil(t, analyzer)
 	assert.True(t, analyzer.enabled)
 	assert.Equal(t, "claude-3-5-sonnet", analyzer.analyzerModel)
-	assert.Equal(t, "1.0.0", analyzer.analyzerVersion)
+	// 2026-11-25：解析器换代（容错解析）⇒ 版本号升到 2.0.0。
+	assert.Equal(t, "2.0.0", analyzer.analyzerVersion)
 	assert.Equal(t, 10, analyzer.batchSize)
 }
 
@@ -363,15 +364,10 @@ func TestErrorAnalyzer_ParseResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestErrorAnalyzer_ExtractJSON(t *testing.T) {
-	db, _, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	collector := NewErrorCollector(db, true)
-	llmClient := &MockLLMClient{}
-	analyzer := NewErrorAnalyzer(db, collector, llmClient, "test-model", true)
-
+// TestErrorAnalyzer_JSONCandidates：候选块枚举（2026-11-25 容错改造后
+// extractJSON 退役——「取第一个合法块」的职责由 parseAnalysisResponse 承担，
+// 这里钉住候选枚举本身的顺序与内容）。
+func TestErrorAnalyzer_JSONCandidates(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -401,8 +397,12 @@ func TestErrorAnalyzer_ExtractJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := analyzer.extractJSON(tt.input)
-			assert.Equal(t, tt.expected, result)
+			cands := jsonCandidates(tt.input)
+			got := ""
+			if len(cands) > 0 {
+				got = cands[0]
+			}
+			assert.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -442,7 +442,7 @@ func TestErrorAnalyzer_SaveAnalysisResult(t *testing.T) {
 			int64(1),
 			"analysis-123",
 			"test-model",
-			"1.0.0",
+			"2.0.0",
 			"Test root cause",
 			"test_category",
 			false,

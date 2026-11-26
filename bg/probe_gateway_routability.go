@@ -19,13 +19,21 @@ import (
 //	  路由层找不到候选 → 503 no_candidate。
 //	· 网关自己的诊断日志给出了路由层的**真实判据面**：
 //	  `[candidate_diag] db_empty ... offers_total=N blocked_credential_quota=…
-//	  blocked_unavailable_reason=…` ⇒ **路由层的候选面是 `model_offers`**
-//	  （那张表按 (凭据, 模型) 记可用性与停放理由），**不是**建立在
-//	  `credential_model_bindings` 上的 `v_routable_credential_models`。
-//	· 两张表**已经漂移**：99023 的 `gpt-image-2.5-sunburst` 在
-//	  `credential_model_bindings` 上 available=true，在 `model_offers` 上却是
-//	  available=false / `probe_http_429` ⇒ **只问视图会读成「可路由」**
-//	  （⇒ 第一版判据因此对实测残留**不咬**，已按事实订正）。
+//	  blocked_unavailable_reason=…` ⇒ 候选面按 (凭据, 模型) 记可用性与停放理由。
+//
+//	★★ 2026-11-26 12h 审计轮**订正本段的前提事实**（★ 前一版把两张表当成了
+//	两张可漂移的表，★ 事实不是这样 ★）：★★
+//	  · `model_offers` **本身是视图**（sql/objects/views/model_offers.sql:5），
+//	    基表是 `credential_model_bindings JOIN provider_models`，它的
+//	    `available` 列**就是 `cmb.available`**（同一列的投影，★ 不存在漂移 ★）。
+//	  · 路由层**自己**的候选查询用的就是资格视图
+//	    （provider/client.go:2068：`AND v.is_routable = TRUE`）⇒
+//	    **「资格视图」才是路由层的判据面**，而不是「另一张表」。
+//	  ⇒ ⇒ 前一版「只问视图会读成可路由」这个推论**不成立**；★ 真正的缺口在
+//	    **判据只枚举了凭据级排除原因**（见下面的「判据口径」段）★★。
+//	· 99023 的 gpt-image-2.5-sunburst 停放（available=false / probe_http_429）
+//	  这类事实**成立**，且钉住方没有可用 offer ⇒ 候选数必为 0 ⇒ 网关轮**必然**是
+//	  no_candidate，**永远触达不到上游**（★ 这一条结论不受上面的订正影响 ★）。
 //	· 钉住方 99023 的 10 个 gpt-image 模型对里，**8 个**在 `model_offers` 上是
 //	  available=false（停放，理由 probe_http_429 / probe_http_502），而**同一批
 //	  模型在别的凭据（26/43/60/63/99025/99031）上的 offer 仍是 available=true**
@@ -46,18 +54,25 @@ import (
 //
 // ── 判据口径 ───────────────────────────────────────────────────────────
 //
-//	· 判据问**路由层真正在用的两张表**，两条**各自独立成立**的跳过理由：
-//	  ① offer 可用性（`model_offers`，路由候选面）：钉住凭据对该模型**没有可用
-//	     offer** ⇒ 硬过滤后候选必为 0；
-//	  ② 凭据/供应商级闸（`v_routable_credential_models.unavailable_reason`）：
-//	     排除原因落在凭据级/供应商级前缀（provider_ / credential_ / lifecycle_ /
-//	     availability_ / quota_ / recent_probe_unreachable）⇒ 这把凭据此刻整体
-//	     不可用 ⇒ 候选必为 0。
-//	  ⇒ ② 用**前缀**而不是枚举状态码：视图的排除原因是 CASE 出来的文本，枚举它
-//	    必然随视图演进而漂移；前缀匹配只依赖「凭据级理由排在绑定级理由前面」这
-//	    条顺序性质。
-//	· **不在 Go 侧抄一份可路由性合取**（视图是十二项 AND 合取，抄一份必然漂移；
-//	  仓库另有 routeguard 门守视图的定义）。
+//	· 判据问**路由层真正在用的那一张判据面**，两条**各自独立成立**的跳过理由：
+//	  ① offer 可用性（`model_offers`，= `cmb.available` 的投影）：钉住凭据对该
+//	     模型**没有任何可用 offer** ⇒ 硬过滤后候选必为 0；
+//	  ② ★★ 路由层自己的闸（`v_routable_credential_models.is_routable`）：★★
+//	     **这一对在视图里的每一行都 is_routable=false** ⇒ 路由层自己的候选查询
+//	     （provider/client.go:2068：`AND v.is_routable = TRUE`）**选不出任何一行**
+//	     ⇒ 候选必为 0。
+//	  ⇒ ② **直接读视图自己那一列**，**不抄一份合取、不枚举排除原因文本**：★
+//	    · 视图是十二项 AND 合取，**Go 侧抄一份必然漂移**（仓库另有 routeguard 门
+//	      守视图定义，但门守的是**定义**，不是**我们这份抄本**）；
+//	    · 排除原因是 CASE 出来的文本，**枚举它必然随视图演进而漂移**；★ 前一版
+//	      用「凭据级前缀」匹配排除原因，★ **漏掉了绑定/模型级与探针级的四类理由**
+//	      （binding_unavailable / model_unavailable / model_manual_disabled /
+//	      **node_probe_failed**）⇒ ★★ 而 `node_probe_failed` 恰恰是上一版自己
+//	      实测到的**残留主因**（10 个残留对里 7 个）⇒ ★★ 判据对它**不咬** ⇒
+//	      网关轮照跑 ⇒ 残留 no_candidate 不归零 ★★（★ 本轮订正的核心 ★）。
+//	    · 语义取的是「**没有一行可路由**」（`NOT bool_or(is_routable)`）而不是
+//	      「有一行被排除」⇒ **不会**因为同 canonical 下某个兄弟 offer 不可路由
+//	      就误判整对零候选（★ 兄弟 offer 仍可路由 ⇒ bool_or=true ⇒ 不跳过 ★）。
 //	· 只在**直连轮失败**时问：直连成功时网关轮有独立职责 —— 确认**路由层
 //	  看见了已恢复的状态**（此刻 offer 可能刚从停放被临时恢复，问它会误杀）。
 //	· **只判否、不判未知**：两张表都查不到这一对 ⇒ 不据此判否 ⇒ 照跑网关轮。
@@ -95,7 +110,7 @@ const probeGatewayRoundRoutableSQL = `
 				)
 			)
 			OR COALESCE((
-				SELECT bool_or(v.unavailable_reason ~ '^(provider_|credential_|lifecycle_|availability_|quota_|recent_probe_unreachable)')
+				SELECT NOT bool_or(v.is_routable)
 				  FROM v_routable_credential_models v
 				 WHERE v.credential_id = $1
 				   AND v.raw_model_name = $2
@@ -172,10 +187,12 @@ func (w *NodeProbeWorker) gatewayRoundRoutable(ctx context.Context, credID int, 
 //
 //	共用本函数，不是两份抄本）。
 //
-//	routable = 「该 (凭据, 模型) 对此刻在路由层是否还可能找到候选」。
-//	调用方只在直连轮失败时去问它（直连成功 ⇒路由层可能刚看见恢复，问判据
+//	routable  = 「该 (凭据, 模型) 对此刻在路由层是否还可能找到候选」（凭据级）。
+//	planEmpty = 「路由层对这个**模型**是否一个候选都没有」（模型级，
+//	            判据见 probe_gateway_plan.go —— 问路由层自己的候选解析器）。
+//	调用方只在直连轮失败时去问它们（直连成功 ⇒路由层可能刚看见恢复，问判据
 //	会误杀网关轮本来的职责）。
-func probeGatewayRoundDecision(direct nodeProbeRoundResult, routable bool) (run bool, skipReason string) {
+func probeGatewayRoundDecision(direct nodeProbeRoundResult, routable bool, planEmpty bool) (run bool, skipReason string) {
 	if direct.ok {
 		// 直连轮成功 ⇒ 网关轮照跑：它的职责是确认**路由层看见了已恢复的状态**。
 		return true, ""
@@ -190,17 +207,24 @@ func probeGatewayRoundDecision(direct nodeProbeRoundResult, routable bool) (run 
 		// ⇒ 零信息量，只会多写一条必然失败的业务形态请求记录。
 		return false, "gateway_round_skipped_unroutable"
 	}
+	if planEmpty {
+		// 路由层对这个模型**整体**零候选（plan_count=0）⇒ 钉住哪一把凭据都一样
+		// 是 503 no_candidate ⇒ 零信息量。
+		return false, gatewayRoundSkippedNoPlan
+	}
 	return true, ""
 }
 
 // probeGatewayRoundSkipDetail is the human-readable reason recorded on the
-// skipped gateway round (single source for both skip reasons).
+// skipped gateway round (single source for all skip reasons).
 func probeGatewayRoundSkipDetail(reason string) string {
 	switch reason {
 	case "gateway_round_skipped_redundant":
 		return "direct round already convicted this (credential, model) pair; the pinned gateway round would repeat the same upstream refusal"
 	case "gateway_round_skipped_unroutable":
 		return "routing layer currently has no available candidate for this (credential, model) pair, so the pinned gateway round can only be a no_candidate; it can never reach the upstream"
+	case gatewayRoundSkippedNoPlan:
+		return "routing layer currently has no candidate at all for this model (plan is empty), so the pinned gateway round can only be a no_candidate; it can never reach the upstream"
 	default:
 		return "gateway round skipped: " + reason
 	}

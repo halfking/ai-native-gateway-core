@@ -4,8 +4,8 @@
 # ★ 这层事实此前**不存在** ⇒ ⇒ 「列没了 ⇒ 索引被 PG 级联删掉」在仓内不可见
 # ★   ⇒ ⇒ 假缺口的第三种来源一直躺着（★ idx_sessions_last_full_at 实测命中）
 # ★ scope=expected-index-key-columns
-# ★ bundled_at=2026-11-23T07:03:47+00:00
-# ★ 211 rows=986 sha256=09ffa8a6a625eb9e97c5bb0d29bb83b898e550b97403aa6a3b6e09197632df81 collected_at=2026-11-08T23:15:42+00:00 | 252 rows=990 sha256=34572dcfbee93eb02a1c0af2c3ea6d7c57480d4c76c4baff3350b6433e6a72a7 collected_at=2026-11-08T23:15:41+00:00 | fresh rows=1055 sha256=8250beffffc3700abae0de8f9aad393271fcc8edd2059556ae0dfa669c414436 collected_at=2026-11-23T07:03:41+00:00 | local rows=905 sha256=cb77c1b1fa9fa8154e40723faa0b1dd86d7ab55e9ff78bcc9378ae2ba05f718b collected_at=2026-10-30T03:42:44+00:00
+# ★ bundled_at=2026-11-25T14:11:04+00:00
+# ★ 211 rows=986 sha256=09ffa8a6a625eb9e97c5bb0d29bb83b898e550b97403aa6a3b6e09197632df81 collected_at=2026-11-08T23:15:42+00:00 | 252 rows=990 sha256=34572dcfbee93eb02a1c0af2c3ea6d7c57480d4c76c4baff3350b6433e6a72a7 collected_at=2026-11-08T23:15:41+00:00 | fresh rows=1091 sha256=2de83ecc77d4abc23ea97d83f77147db16e57ae70605ad6172aa615f82e50151 collected_at=2026-11-25T14:11:03+00:00 | local rows=905 sha256=cb77c1b1fa9fa8154e40723faa0b1dd86d7ab55e9ff78bcc9378ae2ba05f718b collected_at=2026-10-30T03:42:44+00:00
 local	public	agent_relationships	dst_agent_id
 local	public	agent_relationships	src_agent_id
 local	public	agents	kind
@@ -1363,6 +1363,13 @@ fresh	public	prompt_injection_detections	tenant_id
 fresh	public	prompt_injection_llm_engines	enabled
 fresh	public	prompt_injection_llm_engines	priority
 fresh	public	prompt_injection_llm_engines	tenant_id
+fresh	public	provider_call_attempts	credential_id
+fresh	public	provider_call_attempts	prepared_at
+fresh	public	provider_call_attempts	provider_id
+fresh	public	provider_call_attempts	provider_request_id
+fresh	public	provider_call_attempts	request_id
+fresh	public	provider_call_attempts	sent_at
+fresh	public	provider_call_attempts	tenant_id
 fresh	public	provider_domains	catalog_code
 fresh	public	provider_domains	probe_status
 fresh	public	provider_domains	requires_proxy
@@ -1387,6 +1394,13 @@ fresh	public	provider_incidents	model
 fresh	public	provider_incidents	provider_id
 fresh	public	provider_incidents	resolved
 fresh	public	provider_incidents	started_at
+fresh	public	provider_invoice_lines	invoice_id
+fresh	public	provider_invoice_lines	provider_request_id
+fresh	public	provider_invoices	invoice_id
+fresh	public	provider_invoices	month_start
+fresh	public	provider_invoices	provider_id
+fresh	public	provider_invoices	window_end
+fresh	public	provider_invoices	window_start
 fresh	public	provider_metrics_hour	bucket
 fresh	public	provider_metrics_hour	provider_id
 fresh	public	provider_metrics_minute	bucket
@@ -1445,6 +1459,28 @@ fresh	public	request_journey_observation_outbox	claim_until
 fresh	public	request_journey_observation_outbox	created_at
 fresh	public	request_journey_observation_outbox	next_retry_at
 fresh	public	request_journey_observation_outbox	tenant_id
+fresh	public	request_metrics	billing_date
+fresh	public	request_metrics	fact_request_id
+fresh	public	request_metrics	gateway_node_id
+fresh	public	request_metrics	modality
+fresh	public	request_metrics	occurred_at
+fresh	public	request_metrics	occurred_date
+fresh	public	request_metrics	payer_id
+fresh	public	request_metrics	payer_type
+fresh	public	request_metrics	protocol
+fresh	public	request_metrics	provider_id
+fresh	public	request_metrics	raw_model_name
+fresh	public	request_metrics	request_id
+fresh	public	request_metrics	session_id
+fresh	public	request_metrics	status
+fresh	public	request_metrics	team_id
+fresh	public	request_metrics	tenant_id
+fresh	public	request_metrics	traffic_class
+fresh	public	request_metrics_pending	enqueued_at
+fresh	public	request_reconciliation_links	child_request_id
+fresh	public	request_reconciliation_links	parent_request_id
+fresh	public	request_reconciliation_links	registered_at
+fresh	public	request_reconciliation_links	tenant_id
 fresh	public	request_stage_events	created_at
 fresh	public	request_stage_events	event_timestamp
 fresh	public	request_stage_events	http_status

@@ -2,13 +2,13 @@
 // UsageEnhancedView — 用量成本增强面（2026-10-14，第一百二十二批）。
 //
 // GET /api/admin/usage/cost-trend        （group_by + start/end）
-// GET /api/admin/usage/period-compare     （current/previous 两个 YYYY-MM）
+// GET /api/admin/usage/v2/period-compare     （current/previous 两个 YYYY-MM）
 // GET /api/admin/usage/cache-economics    （start/end）
 //
 // ══ 权限 ══════════════════════════════════════════════════════════════════
 // ★★★★★★ 权限档**第一类（有租户维度）**，但**本族是第一个「服务端缺角色下限」的**。
 //
-//   三条端点都挂在 `admin/handler.go:1339` 的**前缀子路由**上：
+//   三条端点都挂在 `admin/handler.go:1560` 的**前缀子路由**上：
 //     `mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))`
 //   → `admin/usage.go:49` `HandleUsageAdmin` 按 path 尾段分发到
 //     `usageCostTrend`(`usage_enhanced.go:128`) / `usagePeriodCompare`(`:347`)
@@ -164,7 +164,9 @@ const scopeNoteKey = computed(() =>
           </button>
         </header>
         <p class="ue__msg" data-testid="ue-scope-note">{{ t(scopeNoteKey) }}</p>
-        <p class="ue__msg" data-testid="ue-estimate-note">{{ t('ue.estimate.note') }}</p>
+        <p v-if="cache" class="ue__msg" data-testid="ue-estimate-note">
+          {{ t(cache.dollars_saved === null ? 'ue.estimate.unavailable' : 'ue.estimate.note') }}
+        </p>
 
         <p v-if="error" class="ue__msg ue__msg--err" data-testid="ue-error">{{ error }}</p>
       </section>
@@ -188,9 +190,9 @@ const scopeNoteKey = computed(() =>
           {{ t('ue.check.hitRatioMeaningless') }}
         </p>
         <p v-if="compressedCountSuspect" class="ue__msg ue__msg--err" data-testid="ue-compressed-suspect">
-          {{ t('ue.check.compressedSuspect') }}
+          {{ t(cache.source === 'request_metrics' ? 'ue.cache.coverage' : 'ue.check.compressedSuspect', { known: cache.compression_scope_requests ?? 0, total: cache.total_requests }) }}
         </p>
-        <p v-if="compressionUnreliable" class="ue__msg ue__msg--err" data-testid="ue-compression-unreliable">
+        <p v-if="compressionUnreliable && cache.source !== 'request_metrics'" class="ue__msg ue__msg--err" data-testid="ue-compression-unreliable">
           {{ t('ue.check.compressionUnreliable') }}
         </p>
 
@@ -203,12 +205,21 @@ const scopeNoteKey = computed(() =>
             <dt>{{ t('ue.field.cacheReadTokens') }}</dt>
             <dd class="ue__mono" data-testid="ue-cache-read-tokens">{{ cache.cache_read_tokens }}</dd>
           </div>
+          <div v-if="cache.cache_scope_requests !== undefined" class="ue__kv">
+            <dt>{{ t('ue.cache.ratio') }}</dt>
+            <dd>{{ cache.cache_hit_ratio === null ? '—' : `${(cache.cache_hit_ratio * 100).toFixed(1)}%` }}</dd>
+            <dd>{{ t('ue.cache.coverage', { known: cache.cache_scope_requests, total: cache.total_requests }) }}</dd>
+          </div>
+          <div v-if="cache.source === 'request_metrics'" class="ue__kv">
+            <dt>{{ t('ue.field.compressedRequests') }}</dt>
+            <dd>{{ cache.compressed_requests ?? '—' }}</dd>
+          </div>
           <div v-for="f in SAVINGS_ESTIMATE_FIELDS" :key="f" class="ue__kv">
             <dt>
               {{ t(`ue.field.${f}`) }}
-              <span class="ue__tag" :data-testid="`ue-badge-${f}`">{{ t('ue.estimate.badge') }}</span>
+              <span v-if="cache[f] !== null" class="ue__tag" :data-testid="`ue-badge-${f}`">{{ t('ue.estimate.badge') }}</span>
             </dt>
-            <dd class="ue__mono" :data-testid="`ue-${f}`">{{ cache[f] }}</dd>
+            <dd class="ue__mono" :data-testid="`ue-${f}`">{{ cache[f] ?? '—' }}</dd>
           </div>
         </dl>
       </section>

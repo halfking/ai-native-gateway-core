@@ -33,6 +33,11 @@ describe('会话分析深链参数读取', () => {
     expect(taskFilterFromQuery({ task: ['a', 'b'] })).toBe('')
   })
 
+  it('retains a single closed natural day from a deep link', () => {
+    const day = '2026-11-23'
+    expect(rangeFromQuery({ start_date: day, end_date: day })).toEqual({ start: day, end: day })
+  })
+
   it('④ query 值只认单个字符串（trim 后）', () => {
     expect(readQueryString('  x ')).toBe('x')
     expect(readQueryString(['x'])).toBe('')

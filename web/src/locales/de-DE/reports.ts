@@ -1,7 +1,17 @@
 // reports.ts — Seite „Abstimmungsbericht“ (Doppelansicht Anbieter/intern, i18n-Ergänzung R65).
 export default {
+  projectedView: "Historische Anfragestatistik",
+  projectedDays: "Anfragen an {n} Tagen erfasst",
+  projectedBasis: "Kalendertage in {zone}. Jede abgeschlossene Ausführung zählt einmal, einschließlich der Orchestrierungsschritte. Die Tagesabstimmung enthält Eingänge, Anbieteraufrufe und Rechnungen. Buchungen stehen im Guthabenbuch.",
+  projectedPending: "Einige Anfragen in diesem Zeitraum werden noch verarbeitet.",
+  projectedMissingUSD: "{n} Anfragen haben keinen USD-Betrag oder verwenden eine andere Währung.",
+  projectedEmpty: "Für diese Daten und Filter wurden keine Anfragen erfasst.",
+  projectedToday: " (der aktuelle Tag ist noch offen)",
+  terminalExecutions: 'Abgeschlossene Ausführungen',
   legacySnapshotView: 'Historische Snapshots',
   daily: {
+    terminalProjection: "Endgültige Nutzung aus der Anfrageprojektion",
+    terminalProjectionPending: "Die abschließenden Nutzungsdaten werden noch synchronisiert. Der älteste Eintrag wartet seit {at}. Korrekturen aus anderen Tagen können diesen Bericht beeinflussen.",
     title: 'Tägliche Abgleichsbelege',
     section: 'Belegart',
     day: 'Abgleichsdatum',
@@ -111,6 +121,9 @@ export default {
       internal: 'Brutto-Abbuchungen, netto gebuchte Credits und Verbrauchsbuckets werden für dieses Datum getrennt ausgewiesen.',
     },
     fields: {
+      total_tokens: "Erfasste endgültige Token",
+      measured_total_requests: "Anfragen mit gemessener Gesamtzahl an Token",
+      usage_source: "Nutzungsquelle",
       requests: 'Client-Anfragen',
       success: 'Erfolgreich',
       failure: 'Fehlgeschlagen',

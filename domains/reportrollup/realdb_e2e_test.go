@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -211,7 +212,13 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	}
 
 	// ---- RollupDay ----
-	stats, err := RollupDay(ctx, pool, day)
+	var stats RollupStats
+	rollup := func(tx pgx.Tx) error {
+		var err error
+		stats, err = RollupDay(ctx, tx, day)
+		return err
+	}
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, rollup)
 	if err != nil {
 		t.Fatalf("RollupDay: %v", err)
 	}
@@ -312,7 +319,7 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	}
 
 	// 幂等回填：重跑一次，行数不翻倍。
-	if _, err := RollupDay(ctx, pool, day); err != nil {
+	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, rollup); err != nil {
 		t.Fatalf("RollupDay rerun: %v", err)
 	}
 	var count int

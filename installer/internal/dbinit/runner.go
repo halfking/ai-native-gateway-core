@@ -2146,6 +2146,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 幂等（纯 INSERT + ON CONFLICT DO NOTHING，零 DDL）⇒
 			//     内容指纹重放零冲突；零外部依赖 ⇒ 位置只受清单序约束。
 			"999a_data_maintenance_playbook.sql",
+			"973_request_metrics_projection.sql",
 		},
 	}
 }
@@ -2270,6 +2271,15 @@ ON CONFLICT (canonical_name) DO UPDATE
 //	  （★ 已被部署通道按同一内容指纹应用过的文件 ⇒ 不重放；★ 这与部署通道
 //	  ★ 自己的跳过判据同款 ⇒ ★ 两条通道从此对「什么算已应用」口径一致）。
 func (r *Runner) InitSchema(logger func(string)) error {
+	return r.initSchema(logger, false)
+}
+
+// UpgradeSchema requires an existing ledger because offline packages only contain startup SQL.
+func (r *Runner) UpgradeSchema(logger func(string)) error {
+	return r.initSchema(logger, true)
+}
+
+func (r *Runner) initSchema(logger func(string), upgradeOnly bool) error {
 	// ★★★ 2026-11-23（L30 轮·补②⑤）：★ **重号守卫（fail-closed）**。
 	//
 	//	★ 为什么这道守卫必须住在【安装器】里、而不只住在测试套件里：
@@ -2301,6 +2311,9 @@ func (r *Runner) InitSchema(logger func(string)) error {
 		return err
 	}
 	incremental := hasLedger && len(applied) > 0
+	if upgradeOnly && !incremental {
+		return fmt.Errorf("offline startup upgrade requires an existing migration ledger")
+	}
 
 	// ★ F3：增量路径**只读**部署通道的权威台账（★ 表不存在 ⇒ 空表 ⇒ 不影响）。
 	var deployApplied map[string]string
@@ -2468,7 +2481,8 @@ var retiredLegacyLogFiles = map[string]bool{
 }
 
 const requestLogsRetiredSQL = `SELECT
-	to_regclass('public.request_logs') IS NULL
+	EXISTS (SELECT FROM public.schema_migrations WHERE version='890')
+	AND to_regclass('public.request_logs') IS NULL
 	AND to_regclass('public._request_logs') IS NULL
 	AND to_regclass('public.request_logs_hot') IS NULL
 	AND to_regclass('public._request_logs_hot') IS NULL
@@ -2514,10 +2528,16 @@ const sessionBodiesPromotePresentSQL = `SELECT EXISTS (
 	  AND strpos(prosrc, 'v_parent_shape IS DISTINCT FROM v_hot_shape') > 0
 	  AND strpos(prosrc, 'FOR UPDATE SKIP LOCKED') > 0)`
 
+// 628 carries aggregation_id across the atomic move. Its deployed body
+// predates 698's timezone pin and must still survive older 535/624 replays.
+const candidateFailureCarriesAggregationSQL = `strpos(p.prosrc, 'FOR UPDATE SKIP LOCKED') > 0
+	  AND strpos(p.prosrc, 'h.aggregation_id') > 0
+	  AND p.prosrc ~ 'aggregation_id[[:space:]]+FROM moved_rows'`
+
 const candidateFailurePromotePresentSQL = `SELECT EXISTS (
-	SELECT FROM pg_proc WHERE oid=to_regprocedure('public.promote_candidate_failure_logs_hot_to_partition(interval,integer)')
-	  AND strpos(prosrc, 'FOR UPDATE SKIP LOCKED') > 0
-	  AND strpos(prosrc, 'Asia/Shanghai') > 0)`
+	SELECT FROM pg_proc p
+	WHERE p.oid=to_regprocedure('public.promote_candidate_failure_logs_hot_to_partition(interval,integer)')
+	  AND ` + candidateFailureCarriesAggregationSQL + `)`
 
 const promotionDefaultsPresentSQL = `SELECT count(*)=8
 	FROM (VALUES ('usage_ledger'), ('request_wal'), ('routing_decision_log'), ('credential_model_index'),
@@ -2525,7 +2545,10 @@ const promotionDefaultsPresentSQL = `SELECT count(*)=8
 	JOIN pg_proc p ON p.oid=to_regprocedure('public.promote_' || f.family || '_hot_to_partition(interval,integer)')
 	WHERE p.pronargdefaults=2
 	  AND (pg_get_function_arguments(p.oid) LIKE '%DEFAULT ''08:00:00''::interval%'
-	       OR (f.family='session_turns' AND pg_get_function_arguments(p.oid) LIKE '%DEFAULT ''7 days''::interval%'))`
+	       OR (f.family='session_turns' AND pg_get_function_arguments(p.oid) LIKE '%DEFAULT ''7 days''::interval%')
+	       OR (f.family='candidate_failure_logs'
+	           AND pg_get_function_arguments(p.oid) LIKE '%DEFAULT ''24:00:00''::interval%'))
+	  AND (f.family<>'candidate_failure_logs' OR (` + candidateFailureCarriesAggregationSQL + `))`
 
 var startupSupersessions = map[string]struct{ file, check string }{
 	"535_candidate_failure_logs_atomic_promote.sql": {"628_candidate_failure_logs_promote_atomic_v3.sql", candidateFailurePromotePresentSQL},
@@ -2845,6 +2868,8 @@ func (r *Runner) applySQL(filename string) (installerMigrationReceipt, error) {
 	}
 	sourceHash := sha256.Sum256(content)
 	switch filename {
+	case "startup/520_durable_task_settlement_intents.sql":
+		content, err = adaptDurableSettlementPolicy(content)
 	case "startup/565_cost_usd_pricing_backfill.sql":
 		content, err = adaptRetiredRequestCostBackfill(content)
 	case "startup/624_candidate_failure_logs_promote_atomic_v2.sql":
@@ -2886,6 +2911,33 @@ func (r *Runner) runSQL(content []byte, singleTransaction bool) error {
 	return nil
 }
 
+// Older databases may have the 520 policy without a receipt. Retain an
+// equivalent policy in place. If the definition differs, the original CREATE
+// raises a duplicate-policy error and the migration transaction rolls back.
+func adaptDurableSettlementPolicy(content []byte) ([]byte, error) {
+	const start = "CREATE POLICY durable_task_settlement_access ON durable_task_settlement_intents\n"
+	const commit = "\nCOMMIT;"
+	sql := string(content)
+	if strings.Count(sql, start) != 1 || strings.Count(sql, commit) != 1 || strings.Index(sql, start) > strings.Index(sql, commit) {
+		return nil, fmt.Errorf("520: unexpected durable settlement policy statement boundaries")
+	}
+	const expr = `$expr$((tenant_id = current_setting('app.current_tenant'::text, true)) OR (current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text))$expr$`
+	const guard = `DO $installer_520$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM pg_policy
+        WHERE polrelid = 'durable_task_settlement_intents'::regclass
+          AND polname = 'durable_task_settlement_access'
+          AND polcmd = '*' AND polpermissive AND polroles = ARRAY[0::oid]
+          AND pg_get_expr(polqual, polrelid) = ` + expr + `
+          AND pg_get_expr(polwithcheck, polrelid) = ` + expr + `
+    ) THEN
+`
+	sql = strings.Replace(sql, start, guard+start, 1)
+	sql = strings.Replace(sql, commit, "\n    END IF;\nEND\n$installer_520$;\n"+commit, 1)
+	return []byte(sql), nil
+}
+
 // Keep 565's pricing catalog updates. Its last step can only target the
 // original v1 hot table, so omit it after the proven 890 retirement.
 func adaptRetiredRequestCostBackfill(content []byte) ([]byte, error) {
@@ -2895,11 +2947,7 @@ func adaptRetiredRequestCostBackfill(content []byte) ([]byte, error) {
 	if strings.Count(sql, section) != 1 || strings.Count(sql, commit) != 1 || strings.Index(sql, section) > strings.Index(sql, commit) {
 		return nil, fmt.Errorf("565: unexpected request cost backfill statement boundaries")
 	}
-	const condition = `SELECT NOT (
-	EXISTS (SELECT FROM public.schema_migrations WHERE version='890' AND description LIKE 'v1 _request_logs family retired%')
-	AND to_regclass('public.request_logs_hot') IS NULL
-	AND to_regclass('public._request_logs_hot') IS NULL
-) AS apply_legacy_hot_backfill
+	const condition = `SELECT NOT (` + requestLogsRetiredSQL + `) AS apply_legacy_hot_backfill
 \gset
 \if :apply_legacy_hot_backfill
 `

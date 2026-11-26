@@ -24,7 +24,7 @@
         <div class="stat-info">
           <div class="stat-label">{{ t('dashboard.statsRow.activeSessions') }}</div>
           <div class="stat-value">{{ formatNumber(props.stats.activeSessions) }}</div>
-          <div class="stat-subtext">{{ t('dashboard.statsRow.activeHint') }}</div>
+          <div v-if="!activeThroughoutPeriod" class="stat-subtext">{{ t('dashboard.statsRow.activeHint') }}</div>
         </div>
       </div>
     </div>
@@ -36,7 +36,7 @@
         </div>
         <div class="stat-info">
           <div class="stat-label">{{ t('dashboard.statsRow.totalCost') }}</div>
-          <div class="stat-value">${{ formatCost(props.stats.totalCost) }}</div>
+          <div class="stat-value">{{ props.stats.totalCost == null ? '—' : '$' + props.stats.totalCost.toFixed(4) }}</div>
           <div v-if="props.stats.totalCostChange !== null" :class="['stat-change', changeClass(props.stats.totalCostChange, true)]">
             <el-icon><component :is="changeIcon(props.stats.totalCostChange)" /></el-icon>
             {{ Math.abs(props.stats.totalCostChange).toFixed(1) }}%
@@ -52,7 +52,7 @@
         </div>
         <div class="stat-info">
           <div class="stat-label">{{ t('dashboard.statsRow.complianceRate') }}</div>
-          <div class="stat-value">{{ props.stats.complianceRate.toFixed(1) }}%</div>
+          <div class="stat-value">{{ props.stats.complianceRate == null ? '—' : props.stats.complianceRate.toFixed(1) + '%' }}</div>
           <div v-if="props.stats.complianceRateChange !== null" :class="['stat-change', changeClass(props.stats.complianceRateChange, false)]">
             <el-icon><component :is="changeIcon(props.stats.complianceRateChange)" /></el-icon>
             {{ Math.abs(props.stats.complianceRateChange).toFixed(1) }}%
@@ -85,7 +85,7 @@
         </div>
         <div class="stat-info">
           <div class="stat-label">{{ t('dashboard.statsRow.avgLatency') }}</div>
-          <div class="stat-value">{{ formatLatency(props.stats.avgLatency) }}</div>
+          <div class="stat-value">{{ props.stats.avgLatency == null ? '—' : formatLatency(props.stats.avgLatency) }}</div>
           <div v-if="props.stats.avgLatencyChange !== null" :class="['stat-change', changeClass(props.stats.avgLatencyChange, true)]">
             <el-icon><component :is="changeIcon(props.stats.avgLatencyChange)" /></el-icon>
             {{ Math.abs(props.stats.avgLatencyChange).toFixed(1) }}%
@@ -141,13 +141,13 @@ export interface DashboardStats {
   totalSessions: number
   totalSessionsChange: number | null
   activeSessions: number
-  totalCost: number
+  totalCost: number | null
   totalCostChange: number | null
-  complianceRate: number
+  complianceRate: number | null
   complianceRateChange: number | null
   avgHealthScore: number | null
   avgHealthScoreChange: number | null
-  avgLatency: number
+  avgLatency: number | null
   avgLatencyChange: number | null
   totalRequests: number
   totalRequestsChange: number | null
@@ -161,6 +161,7 @@ const props = withDefaults(defineProps<{
   stats: DashboardStats
   loading?: boolean
   showTokens?: boolean
+  activeThroughoutPeriod?: boolean
 }>(), {
   showTokens: true,
 })
@@ -170,8 +171,6 @@ const formatNumber = (value: number): string => {
   if (value >= 1000) return (value / 1000).toFixed(1) + 'K'
   return value.toString()
 }
-
-const formatCost = (value: number): string => value.toFixed(4)
 
 const formatLatency = (ms: number): string => {
   if (ms >= 1000) return (ms / 1000).toFixed(2) + 's'

@@ -51,6 +51,7 @@ vi.mock('../../api/usage', async () => {
 })
 
 import BoardUsageTrendSection from './BoardUsageTrendSection.vue'
+import type { BoardPayload } from '../../api/board'
 
 const i18n = createI18n({
   legacy: false,
@@ -83,9 +84,14 @@ const i18n = createI18n({
 
 const timeRange = { preset: '7d', startMs: 0, endMs: 0, key: '7d' } as never
 
-async function mountSection() {
+const legacyBoard: BoardPayload = {
+  summary: {}, days: 7, trends: [], source: 'request_stats_dim_minute',
+  pies: { clients: [], client_ips: [], identity_hashes: [], models: [], errors: [], tenants: [], providers: [] },
+}
+
+async function mountSection(board = legacyBoard) {
   const w = mount(BoardUsageTrendSection, {
-    props: { board: null, timeRange },
+    props: { board, timeRange },
     global: { plugins: [i18n], stubs: { 'el-radio-group': true, 'el-radio-button': true } },
   })
   await flushPromises()
@@ -141,4 +147,17 @@ describe('趋势序列降级四态', () => {
     expect(w.find('.trend-sec__err').exists()).toBe(true)
     expect(w.find('.trend-sec__degraded').exists()).toBe(false)
   })
+})
+
+it('uses the board projection series and degradation state without another API request', async () => {
+  const w = await mountSection({
+    ...legacyBoard,
+    source: 'request_metrics',
+    model_series: [],
+    bucket_minutes: 15,
+    degraded_trends: true,
+    trends_missing_view: 'request_metrics',
+  })
+  expect(getUsageTrendSeries).not.toHaveBeenCalled()
+  expect(w.get('.trend-sec__degraded').text()).toContain('request_metrics')
 })

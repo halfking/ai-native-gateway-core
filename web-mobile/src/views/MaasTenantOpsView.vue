@@ -87,6 +87,8 @@ const dayChoices = [1, MAAS_USAGE_HOT_DAYS_MAX, 30, 90] as const
 
 /** ★★ 这是本批最要紧的一条：本次读的是哪张表。 */
 const readsHotTable = computed(() => maasUsageReadsHotTable(days.value))
+const projectedUsage = computed(() => summary.value?.source === 'request_metrics')
+const projectedDetail = computed(() => detail.value?.source === 'request_metrics')
 const effDays = computed(() => maasUsageDaysClamped(days.value))
 const effLimit = computed(() => maasUsageLimitEffective(limit.value))
 const effLedgerLimit = computed(() => maasLedgerLimitEffective(ledgerLimit.value))
@@ -134,9 +136,24 @@ async function load(): Promise<void> {
 
 /** ★★★ 复算服务端给的 revenue；对不上就标出来（不信服务端算的数）。 */
 function revenueMismatch(r: MaasConsumptionRow): boolean {
-  if (!detail.value) return false
-  const expect = maasTenantRevenueUsd(r.credits_charged, detail.value.cents_per_credit)
-  return Math.abs(expect - r.tenant_revenue_usd) > 1e-6
+  const reference = detail.value
+  const revenue = projectedDetail.value ? r.estimated_revenue_usd : r.tenant_revenue_usd
+  if (reference?.cents_per_credit == null || revenue == null) return false
+  const divisor = reference.credit_reference_currency === 'CNY' ? reference.credit_reference_cny_per_usd : 1
+  if (divisor == null || divisor <= 0) return false
+  const expect = maasTenantRevenueUsd(r.credits_charged, reference.cents_per_credit) / divisor
+  return Math.abs(expect - revenue) > 1e-6
+}
+
+function formatBillingUSD(amount: number | null | undefined): string {
+  return amount == null ? '—' : `$${fmtNum(amount, 4)}`
+}
+
+function marginRateDisplay(r: MaasConsumptionRow): string {
+  const rate = projectedDetail.value ? r.estimated_margin_rate : r.gross_margin_rate
+  return rate == null || maasMarginRateUndefined(r)
+    ? t(projectedDetail.value ? 'mt.estimatedMarginNA' : 'mt.marginNA')
+    : fmtNum(rate * 100, 1) + '%'
 }
 
 const marginUndefinedCount = computed(
@@ -144,6 +161,9 @@ const marginUndefinedCount = computed(
 )
 const cancelledBilledTotal = computed(
   () => (detail.value?.rows ?? []).reduce((s, r) => s + r.cancelled_billed_requests, 0),
+)
+const billedWithoutCancellationEvidence = computed(
+  () => (detail.value?.rows ?? []).reduce((s, r) => s + (r.billed_without_cancellation_evidence ?? 0), 0),
 )
 
 function subTone(): 'success' | 'muted' | 'warning' {
@@ -228,13 +248,12 @@ onBeforeUnmount(() => {
 
       <button type="button" class="mt__btn mt__btn--primary" @click="loadBtn">{{ t('mt.load') }}</button>
 
-      <!-- ★★★★ 本次读的是哪张表 —— 这条端点按 days 换源 -->
-      <p class="mt__note" :class="readsHotTable ? 'mt__note' : 'mt__note--warn'">
+      <p v-if="projectedUsage" class="mt__note"><AppIcon name="server" :size="13" /><span>{{ t('mt.projectedSource') }}</span></p>
+      <p v-else-if="summary" class="mt__note" :class="readsHotTable ? 'mt__note' : 'mt__note--warn'">
         <AppIcon :name="readsHotTable ? 'server' : 'alert'" :size="13" />
         <span>{{ readsHotTable ? t('mt.hotTable', { n: effDays }) : t('mt.monthTable', { n: effDays }) }}</span>
       </p>
-      <!-- ★★ days > 7 时必须点破「换了数据源」而不只是「窗口更长」 -->
-      <p v-if="!readsHotTable" class="mt__note mt__note--warn">
+      <p v-if="summary && !projectedUsage && !readsHotTable" class="mt__note mt__note--warn">
         <AppIcon name="alert" :size="13" />
         <span>{{ t('mt.tableSwitchNote') }}</span>
       </p>
@@ -314,7 +333,7 @@ onBeforeUnmount(() => {
           <span class="mt__cell">
             <!-- ★★ cost 键缺失 = 恰好 0 ⇒ 必须显示 0，不是「—」 -->
             <span class="mt__cell-l">{{ t('mt.cost') }}</span>
-            <span class="mt__cell-v">${{ fmtNum(maasCostUsd({ cost_usd: summary.total_cost_usd }), 4) }}</span>
+            <span class="mt__cell-v">{{ projectedUsage ? formatBillingUSD(summary.total_cost_usd) : '$' + fmtNum(maasCostUsd({ cost_usd: summary.total_cost_usd }), 4) }}</span>
           </span>
           <span class="mt__cell">
             <span class="mt__cell-l">{{ t('mt.echoedDays') }}</span>
@@ -324,6 +343,9 @@ onBeforeUnmount(() => {
         <p class="mt__note">
           <AppIcon name="key" :size="13" />
           <span>{{ t('mt.echoNote') }}</span>
+        </p>
+        <p v-if="summary.cost_rows_without_usd_evidence" class="mt__note">
+          {{ t('tnd.usdCoverage', { n: summary.cost_rows_without_usd_evidence }) }}
         </p>
 
         <DataTableFocus :title="t('mt.summary')">
@@ -342,7 +364,7 @@ onBeforeUnmount(() => {
               <td class="mt__td-v">{{ fmtInt(m.requests) }}</td>
               <td class="mt__td-v">{{ fmtInt(m.credits) }}</td>
               <!-- ★★ 零成本显示 0 -->
-              <td class="mt__td-v">${{ fmtNum(maasCostUsd(m), 4) }}</td>
+              <td class="mt__td-v">{{ projectedUsage ? formatBillingUSD(m.cost_usd) : '$' + fmtNum(maasCostUsd(m), 4) }}</td>
             </tr>
           </tbody>
         </table>
@@ -357,7 +379,7 @@ onBeforeUnmount(() => {
         <div class="mt__grid">
           <span class="mt__cell">
             <span class="mt__cell-l">{{ t('mt.centsPerCredit') }}</span>
-            <span class="mt__cell-v">{{ fmtNum(detail.cents_per_credit, 4) }}</span>
+            <span class="mt__cell-v">{{ detail.cents_per_credit == null ? '—' : fmtNum(detail.cents_per_credit, 4) }} {{ detail.credit_reference_currency ?? '' }}</span>
           </span>
           <span class="mt__cell">
             <span class="mt__cell-l">{{ t('mt.echoedDays') }}</span>
@@ -366,19 +388,22 @@ onBeforeUnmount(() => {
         </div>
         <p class="mt__note">
           <AppIcon name="key" :size="13" />
-          <span>{{ t('mt.cpcNote') }}</span>
+          <span>{{ t(projectedDetail ? 'mt.creditReferenceNotice' : 'mt.cpcNote') }}</span>
         </p>
 
         <!-- ★★ 零收入 ⇒ rate 无定义，不是零毛利 -->
         <p v-if="marginUndefinedCount > 0" class="mt__note mt__note--warn">
           <AppIcon name="alert" :size="13" />
-          <span>{{ t('mt.marginUndefined', { n: marginUndefinedCount }) }}</span>
+          <span>{{ t(projectedDetail ? 'mt.estimatedMarginUnavailable' : 'mt.marginUndefined', { n: marginUndefinedCount }) }}</span>
         </p>
 
         <!-- ★★ 已计费但被客户端取消 -->
         <p v-if="cancelledBilledTotal > 0" class="mt__note mt__note--warn">
           <AppIcon name="alert" :size="13" />
           <span>{{ t('mt.cancelledBilled', { n: cancelledBilledTotal }) }}</span>
+        </p>
+        <p v-if="billedWithoutCancellationEvidence" class="mt__note">
+          {{ t('mt.cancellationCoverage', { n: billedWithoutCancellationEvidence }) }}
         </p>
 
         <p v-if="!detail.rows.length" class="mt__msg">{{ t('mt.emptyDetail') }}</p>
@@ -404,17 +429,18 @@ onBeforeUnmount(() => {
                 <span class="mt__cell-v">{{ fmtInt(r.credits_charged) }}</span>
               </span>
               <span class="mt__cell">
-                <span class="mt__cell-l">{{ t('mt.revenue') }}</span>
-                <span class="mt__cell-v">${{ fmtNum(r.tenant_revenue_usd, 4) }}</span>
+                <span class="mt__cell-l">{{ t(projectedDetail ? 'mt.estimatedRevenue' : 'mt.revenue') }}</span>
+                <span class="mt__cell-v">{{ formatBillingUSD(projectedDetail ? r.estimated_revenue_usd : r.tenant_revenue_usd) }}</span>
               </span>
               <span class="mt__cell">
                 <span class="mt__cell-l">{{ t('mt.upstreamCost') }}</span>
-                <span class="mt__cell-v">${{ fmtNum(r.upstream_cost_usd, 4) }}</span>
+                <span class="mt__cell-v">{{ formatBillingUSD(r.upstream_cost_usd) }}</span>
+                <small v-if="r.cost_rows_without_usd_evidence">{{ t('tnd.usdCoverage', { n: r.cost_rows_without_usd_evidence }) }}</small>
               </span>
               <span class="mt__cell">
-                <span class="mt__cell-l">{{ t('mt.margin') }}</span>
+                <span class="mt__cell-l">{{ t(projectedDetail ? 'mt.estimatedMarginRate' : 'mt.margin') }}</span>
                 <span class="mt__cell-v">
-                  {{ maasMarginRateUndefined(r) ? t('mt.marginNA') : fmtNum(r.gross_margin_rate * 100, 1) + '%' }}
+                  {{ marginRateDisplay(r) }}
                 </span>
               </span>
             </div>

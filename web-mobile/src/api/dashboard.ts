@@ -159,6 +159,9 @@ export const DASHBOARD_DAYS_MAX = 90
 export interface DashboardQuery {
   tenantId?: string
   days?: number
+  startDate?: string
+  endDate?: string
+  includeProbes?: boolean
   page?: number
   size?: number
   sortBy?: string
@@ -173,6 +176,9 @@ function dashboardSuffix(q: DashboardQuery | undefined): string {
   if (!q) return ''
   if (q.tenantId !== undefined) qs.set('tenant_id', q.tenantId)
   if (q.days !== undefined) qs.set('days', String(q.days))
+  if (q.startDate !== undefined) qs.set('start_date', q.startDate)
+  if (q.endDate !== undefined) qs.set('end_date', q.endDate)
+  if (q.includeProbes !== undefined) qs.set('include_probes', String(q.includeProbes))
   if (q.page !== undefined) qs.set('page', String(q.page))
   if (q.size !== undefined) qs.set('size', String(q.size))
   if (q.sortBy !== undefined) qs.set('sort_by', q.sortBy)
@@ -215,19 +221,41 @@ export function dashboardTenantFilterHonored(role: string | null | undefined): b
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * A. GET /api/admin/dashboard/session-overview（session_overview.go:29）
+ * A. GET /api/admin/dashboard/v2/session-overview
  * ═════════════════════════════════════════════════════════════════════════ */
 
 /** health_distribution / compliance_stats / cost_stats 等子对象的形状随各自定义，
  *  本层只钉顶层键（下面用 index signature 承接，避免写死一个我们没验证过的子结构）。 */
+interface SessionAttributionRow {
+  reason: 'no_session' | 'missing_session_record' | 'missing_session_owner' | 'unknown_session_start' | 'opened_before_window' | 'other_session_requests'
+  requests: number
+  tokens: number
+  credits: number
+  cost_usd: number | null
+  usd_requests: number
+}
+
 export interface SessionOverviewData {
   total_sessions: number
   active_sessions: number
   new_sessions_24h: number
   closed_sessions_24h: number
+  new_sessions?: number
+  closed_sessions?: number
+  source?: 'request_metrics'
+  pending_since?: string | null
+  session_attribution?: {
+    totals: SessionAttributionRow[]
+    daily: (SessionAttributionRow & { day: string })[]
+  }
   health_distribution: Record<string, unknown>
   compliance_stats: Record<string, unknown>
-  cost_stats: Record<string, unknown>
+  cost_stats: Record<string, unknown> & {
+    total_requests?: number
+    total_tokens?: number
+    total_cost_usd?: number | null
+    usd_requests?: number
+  }
   model_usage: unknown[]
   top_clients: unknown[]
   top_tasks: unknown[]
@@ -249,7 +277,7 @@ export function fetchSessionOverview(
   q?: DashboardQuery,
   options?: RequestOptions,
 ): Promise<DashboardEnvelope<SessionOverviewData>> {
-  return req<unknown>('GET', `/api/admin/dashboard/session-overview${dashboardSuffix(q)}`, undefined, options)
+  return req<unknown>('GET', `/api/admin/dashboard/v2/session-overview${dashboardSuffix(q)}`, undefined, options)
     .then((r) => unwrapDashboardEnvelope<SessionOverviewData>(r))
     .then((env) => {
       if (env.data) requireKeys(env.data, SESSION_OVERVIEW_KEYS, 'session-overview')
@@ -258,7 +286,7 @@ export function fetchSessionOverview(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * B. GET /api/admin/dashboard/session-trend（session_trend.go:26）
+ * B. GET /api/admin/dashboard/v2/session-trend
  * ═════════════════════════════════════════════════════════════════════════ */
 
 export interface SessionTrendData {
@@ -266,6 +294,7 @@ export interface SessionTrendData {
   summary: Record<string, unknown>
   period_start: string
   period_end: string
+  pending_since?: string | null
 }
 
 export const SESSION_TREND_KEYS = ['trend', 'summary', 'period_start', 'period_end'] as const
@@ -274,7 +303,7 @@ export function fetchSessionTrend(
   q?: DashboardQuery,
   options?: RequestOptions,
 ): Promise<DashboardEnvelope<SessionTrendData>> {
-  return req<unknown>('GET', `/api/admin/dashboard/session-trend${dashboardSuffix(q)}`, undefined, options)
+  return req<unknown>('GET', `/api/admin/dashboard/v2/session-trend${dashboardSuffix(q)}`, undefined, options)
     .then((r) => unwrapDashboardEnvelope<SessionTrendData>(r))
     .then((env) => {
       if (env.data) requireKeys(env.data, SESSION_TREND_KEYS, 'session-trend')
@@ -290,6 +319,7 @@ export interface SessionHealthData {
   distribution: Record<string, unknown>
   trend: unknown[]
   top_issues: unknown[]
+  pending_since?: string | null
 }
 
 export const SESSION_HEALTH_KEYS = ['distribution', 'trend', 'top_issues'] as const
@@ -298,7 +328,7 @@ export function fetchSessionHealth(
   q?: DashboardQuery,
   options?: RequestOptions,
 ): Promise<DashboardEnvelope<SessionHealthData>> {
-  return req<unknown>('GET', `/api/admin/dashboard/session-health${dashboardSuffix(q)}`, undefined, options)
+  return req<unknown>('GET', `/api/admin/dashboard/v2/session-health${dashboardSuffix(q)}`, undefined, options)
     .then((r) => unwrapDashboardEnvelope<SessionHealthData>(r))
     .then((env) => {
       if (env.data) requireKeys(env.data, SESSION_HEALTH_KEYS, 'session-health')
@@ -320,6 +350,7 @@ export interface SessionActiveData {
   total_active: number
   page: number
   size: number
+  pending_since?: string | null
 }
 
 export const SESSION_ACTIVE_KEYS = ['sessions', 'total_active', 'page', 'size'] as const
@@ -328,7 +359,7 @@ export function fetchSessionActive(
   q?: DashboardQuery,
   options?: RequestOptions,
 ): Promise<DashboardEnvelope<SessionActiveData>> {
-  return req<unknown>('GET', `/api/admin/dashboard/session-active${dashboardSuffix(q)}`, undefined, options)
+  return req<unknown>('GET', `/api/admin/dashboard/v2/session-active${dashboardSuffix(q)}`, undefined, options)
     .then((r) => unwrapDashboardEnvelope<SessionActiveData>(r))
     .then((env) => {
       if (env.data) requireKeys(env.data, SESSION_ACTIVE_KEYS, 'session-active')

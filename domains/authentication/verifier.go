@@ -522,6 +522,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 
 	var appID int64
 	var info KeyInfo
+	var rawCapabilities []byte
 	err := kv.dbPool.QueryRow(ctx, `
 		SELECT
 			ak.id,
@@ -541,7 +542,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			app.customer_id,
 			ak.expires_at,
 			COALESCE(ak.is_system, FALSE),
-			COALESCE(ak.capabilities, '[]'::jsonb)
+			COALESCE(ak.capabilities, '[]'::jsonb)::text
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -566,8 +567,17 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.CustomerID,
 		&info.ExpiresAt,
 		&info.IsSystem,
-		&info.Capabilities,
+		&rawCapabilities,
 	)
+	// ★ 2026-11-26 12h 审计轮：capabilities **容错解析**（★ 坏值不让整条鉴权
+	// 路径失败 ★）—— 解析不出 ⇒ 按「无能力」处理（★ fail-closed：W4.3 接线后
+	// 这把 Key 在能力闸前会被拒；★ 现在它仍然是一把正常的 Key ★）＋ 告警。
+	caps, capsOK := parseCapabilityList(rawCapabilities)
+	if !capsOK {
+		slog.Warn("key verifier: malformed api_keys.capabilities; treating the key as having no capabilities",
+			"key_id", info.ID, "error", ErrMalformedCapabilities)
+	}
+	info.Capabilities = caps
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			// Reconcile every local authorization copy: a row that vanished
@@ -629,6 +639,7 @@ func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error)
 	}
 	var appID int64
 	var info KeyInfo
+	var rawCapabilities []byte
 	err := kv.dbPool.QueryRow(ctx, `
 		SELECT
 			ak.id,
@@ -646,7 +657,8 @@ func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error)
 			COALESCE(ak.status, 'active') AS status,
 			ak.key_alias,
 			app.customer_id,
-			COALESCE(ak.is_system, FALSE)
+			COALESCE(ak.is_system, FALSE),
+			COALESCE(ak.capabilities, '[]'::jsonb)::text
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.id = $1
@@ -670,7 +682,18 @@ func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error)
 		&info.KeyAlias,
 		&info.CustomerID,
 		&info.IsSystem,
+		&rawCapabilities,
 	)
+	// ★ 2026-11-26 12h 审计轮：★ VerifyByID 的投影**原先漏了 capabilities** ★
+	// ⇒ 这条路径读出的 KeyInfo.Capabilities 恒为 nil ⇒ 一旦 W4.3 把能力闸接上，
+	// 走这条路径的调用方会**一律判「无能力」** ⇒ 同一把 Key 在两条读路径上
+	// 读出**两副面孔**。⇒ 这里补齐投影 + 容错解析（★ 与 callVerifyDB 同口径 ★）。
+	caps, capsOK := parseCapabilityList(rawCapabilities)
+	if !capsOK {
+		slog.Warn("key verifier: malformed api_keys.capabilities; treating the key as having no capabilities",
+			"key_id", info.ID, "error", ErrMalformedCapabilities)
+	}
+	info.Capabilities = caps
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, &InvalidKeyError{Message: fmt.Sprintf("api key %d invalid, revoked or expired", id)}

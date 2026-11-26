@@ -2,7 +2,7 @@
 //
 // 本页与前五条**结构不同**：它没有分页主列表。真候选是**明细下钻表**
 // （点模型柱 / 点某天 → 请求明细）。那张表是全页唯一真正需要卡片的列表，
-// 而且它暴露了一个**既有功能缺口**：`getRequestLogs(page: 1, page_size: 50)`
+// 而且它暴露了一个**既有功能缺口**：`getMaasUsageRequests(page: 1, page_size: 50)`
 // 之后再无任何翻页入口 ⇒ 超过 50 条的明细后面**根本看不到**。
 // compact 侧接入连续加载顺带补上这个缺口；桌面侧**维持现状**（补页码条属新增 UI，
 // 不在本次零回归范围内，已登记）。
@@ -109,6 +109,11 @@ const { logCalls, ctrl, mockApi, routerPush } = vi.hoisted(() => {
     tenant_id: 'default',
     total_requests: 4321,
     total_credits: 987654,
+    success_count: 4000,
+    avg_latency_ms: 149.6,
+    window_start: '2026-09-30T16:00:00Z',
+    window_end: '2026-10-07T16:00:00Z',
+    timezone: 'Asia/Shanghai',
     by_model: [
       { model: 'zeta-model', requests: 300, credits: 9000 },
       { model: 'alpha-model', requests: 100, credits: 1000 },
@@ -139,7 +144,7 @@ const { logCalls, ctrl, mockApi, routerPush } = vi.hoisted(() => {
     mockApi: () => ({
       getMaasUsageSummary: vi.fn(async () => SUMMARY),
       getMaasWallet: vi.fn(async () => WALLET),
-      getRequestLogs: vi.fn(async (params: Record<string, unknown> = {}) => {
+      getMaasUsageRequests: vi.fn(async (params: Record<string, unknown> = {}) => {
         logCalls.push(params)
         const page = Number(params.page ?? 1)
         const generation = ++gen
@@ -162,7 +167,7 @@ const { logCalls, ctrl, mockApi, routerPush } = vi.hoisted(() => {
           items = [mk(1, generation), mk(2, generation), mk(3, generation)]
         }
         if (ctrl.defer) await new Promise<void>((res) => ctrl.resolvers.push(res))
-        return { items, count: ctrl.empty ? 0 : 137 }
+        return { rows: items, total: ctrl.empty ? 0 : 137 }
       }),
     }),
   }
@@ -313,6 +318,12 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 
 describe('TenantDashboardView：桌面明细表零回归', () => {
+  it('顶部成功率与平均延迟来自请求统计响应', async () => {
+    const w = await factory()
+    expect(w.text()).toContain('92.6%')
+    expect(w.text()).toContain('150 ms')
+  })
+
   it('5 列表头，文案与顺序不变', async () => {
     const w = await factory()
     await openDetail(w)
@@ -560,8 +571,12 @@ describe('TenantDashboardView：compact 连续加载路径', () => {
     await flushPromises()
     expect(logCalls).toHaveLength(1)
     expect(logCalls[0].model).toBeUndefined()
-    expect(logCalls[0].from).toBe('2026-10-02T00:00:00.000Z')
-    expect(logCalls[0].to).toBe('2026-10-03T00:00:00.000Z')
+    expect(logCalls[0]).toMatchObject({
+      bucket_day: '2026-10-02',
+      start: '2026-09-30T16:00:00Z',
+      end: '2026-10-07T16:00:00Z',
+      timezone: 'Asia/Shanghai',
+    })
   })
 
   /**
@@ -593,10 +608,10 @@ describe('TenantDashboardView：跨层契约', () => {
    *   ⇒ 这里断的是**形态**：两个取数处的参数对象只能由 `展开真源 + 两个分页键` 构成。
    */
   it('两个取数处的参数对象都只由 detailQuery 展开 + 分页参数构成（不得内联筛选键）', () => {
-    const sites = codeOnly.match(/getRequestLogs\(\{[^}]*\}\)/g) ?? []
+    const sites = codeOnly.match(/getMaasUsageRequests\(\{[^}]*\}\)/g) ?? []
     expect(sites, `取数处应为 2 处（loadDetail / fetchPage），实际 ${sites.length}`).toHaveLength(2)
     for (const s of sites) {
-      expect(s).toMatch(/^getRequestLogs\(\{ \.\.\.detailQuery\(\), page: [A-Za-z0-9_.]+, page_size: DETAIL_PAGE_SIZE \}\)$/)
+      expect(s).toMatch(/^getMaasUsageRequests\(\{ \.\.\.detailQuery\(\), page: [A-Za-z0-9_.]+, page_size: DETAIL_PAGE_SIZE \}\)$/)
     }
   })
 
@@ -608,8 +623,8 @@ describe('TenantDashboardView：跨层契约', () => {
     expect(body).not.toMatch(/page_size/)
   })
 
-  it('rowKey 用后端主键 request_id，不是数组下标', () => {
-    expect(codeOnly).toContain('rowKey: (r) => r.request_id')
+  it('rowKey 使用请求 ID 和发生时间', () => {
+    expect(codeOnly).toContain('rowKey: (r) => `${r.request_id}:${r.ts}`')
     expect(codeOnly).not.toMatch(/rowKey:\s*\(.*\)\s*=>\s*i\b/)
   })
 
@@ -618,13 +633,13 @@ describe('TenantDashboardView：跨层契约', () => {
     //   —— 它用的是**配置里那个数**，不是 fetchPage 发出去的那个数。两者一旦不一致：
     //   配置写 100 而请求发 50 ⇒ 第 1 页回来 50 行就被判成「短页」⇒ hasMore=false
     //   ⇒ 本切片要修的「超过 50 条看不到」在 compact 下又回来了，而且**静默**。
-    expect(codeOnly).toMatch(/createHyperPages<RequestLogRow>\(\{\s*pageSize: DETAIL_PAGE_SIZE,/)
+    expect(codeOnly).toMatch(/createHyperPages<MaasUsageRequest>\(\{\s*pageSize: DETAIL_PAGE_SIZE,/)
     expect((codeOnly.match(/pageSize: DETAIL_PAGE_SIZE/g) ?? []).length).toBe(1)
   })
 
   it('页码与连续加载各自独立，不共享同一个 ref', () => {
-    expect(codeOnly).toContain('const detailRows = ref<RequestLogRow[]>([])')
-    expect(codeOnly).toContain('const detailPages = createHyperPages<RequestLogRow>(')
+    expect(codeOnly).toContain('const detailRows = ref<MaasUsageRequest[]>([])')
+    expect(codeOnly).toContain('const detailPages = createHyperPages<MaasUsageRequest>(')
     // `(?!=)` 是必需的：`detailBusy` 里写的是 `===`，不带负向先行会永远红
     expect(codeOnly).not.toMatch(/detailPages\.(rows|hasMore|state)\.value\s*=(?!=)/)
   })
@@ -640,7 +655,7 @@ describe('TenantDashboardView：跨层契约', () => {
     expect(start, '没找到 fetchPage').toBeGreaterThan(-1)
     const body = codeOnly.slice(start, start + 500)
     expect(body).not.toMatch(/catch\s*\{/)
-    expect(body).toContain('getRequestLogs')
+    expect(body).toContain('getMaasUsageRequests')
   })
 
   it('容器只裁 compact 的三态（桌面那两个 .empty div 仍在本页）', () => {
@@ -689,11 +704,11 @@ describe('TenantDashboardView：跨层契约', () => {
     expect((codeOnly.match(/clearDetailRows\(\)/g) ?? []).length).toBeGreaterThanOrEqual(4)
   })
 
-  it('没有新增请求端点（仍走 api 层的 getRequestLogs / getMaasUsageSummary）', () => {
+  it('没有新增请求端点（仍走 api 层的 getMaasUsageRequests / getMaasUsageSummary）', () => {
     for (const banned of ['fetch(', 'axios', 'XMLHttpRequest']) {
       expect(codeOnly, `不应直接发起请求，却出现了 ${banned}`).not.toContain(banned)
     }
-    expect(codeOnly).toContain('getRequestLogs')
+    expect(codeOnly).toContain('getMaasUsageRequests')
     expect(codeOnly).toContain('getMaasUsageSummary')
   })
 

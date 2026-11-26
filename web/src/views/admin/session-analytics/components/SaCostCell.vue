@@ -26,10 +26,15 @@ const props = defineProps<{
   internalCost?: number | null
   /** 外部成本（积分）。 */
   externalCost?: number | null
+  terminalCost?: number | null
+  usageCredits?: number | null
 }>()
 
 const { t } = useI18n()
 
+const terminal = computed(() => props.terminalCost !== undefined)
+const terminalText = computed(() => usdCostText(props.terminalCost, t))
+const usageCreditsText = computed(() => creditsCostText(props.usageCredits, t))
 const externalPlaceholder = computed(() => externalCostIsPlaceholder(props.externalCost))
 
 /** 内部成本（美元）：缺值 ⇒ 纯占位符；否则带单位。 */
@@ -41,6 +46,16 @@ const externalText = computed(() => creditsCostText(props.externalCost, t))
 
 <template>
   <div class="sa-cost-cell" data-testid="sa-cost-cell">
+    <template v-if="terminal">
+      <div class="sa-cost-cell__row">
+        <span class="sa-cost-cell__label">{{ t('sessionAnalytics.metric.totalCost') }}</span>
+        <span class="sa-cost-cell__value">{{ terminalText }}</span>
+      </div>
+      <div class="sa-cost-cell__row">
+        <span class="sa-cost-cell__value">{{ usageCreditsText }}</span>
+      </div>
+    </template>
+    <template v-else>
     <div class="sa-cost-cell__row">
       <span class="sa-cost-cell__label">{{ t('sessionAnalytics.metric.internalCost') }}</span>
       <span class="sa-cost-cell__value">{{ internalText }}</span>
@@ -54,6 +69,7 @@ const externalText = computed(() => creditsCostText(props.externalCost, t))
         >{{ externalText }}</span
       >
     </div>
+    </template>
   </div>
 </template>
 

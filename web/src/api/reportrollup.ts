@@ -19,14 +19,18 @@ export interface ReportTotals {
   cache_read_tokens: number
   cache_write_tokens: number
   total_tokens: number
-  estimated_cost_cents: number
+  estimated_cost_cents: number | null
   currency: string
   credits_charged: number
-  internal_cost_cents?: number
+  internal_cost_cents?: number | null
   internal_currency?: string
+  usd_measured_requests?: number
+  usd_unmeasured_requests?: number
+  cache_measured_requests?: number
+  latency_measured_requests?: number
   cache_hit_ratio: number | null
-  latency_p50_ms: number
-  latency_p95_ms: number
+  latency_p50_ms: number | null
+  latency_p95_ms: number | null
 }
 
 export type Breakdown = Record<string, number>
@@ -142,7 +146,14 @@ export interface RangeReport {
   daily_persons?: DailyGroupRow[]
   snapshot_dates: string[]
   coverage: ReportCoverage
-  source: 'grain' | 'mixed' | 'legacy'
+  source: 'grain' | 'mixed' | 'legacy' | 'request_metrics'
+  projection?: {
+    from: string
+    through: string
+    timezone: string
+    updated_at: string | null
+    pending_since: string | null
+  }
 }
 
 export interface DimensionOption {
@@ -170,6 +181,7 @@ export interface DimensionOptions {
 
 /** 六维筛选值（零值 / undefined = 不过滤）。 */
 export interface ReportFilter {
+  traffic_scope?: 'business'
   provider_id?: number
   credential_id?: number
   api_key_id?: number
@@ -197,6 +209,7 @@ function rangeQs(q: ReportQuery): string {
   p.set('start', q.start)
   p.set('end', q.end)
   p.set('view', q.view)
+  if (q.traffic_scope) p.set('traffic_scope', q.traffic_scope)
   // detail 必须**总是**显式发。早先只在打开时发 detail=daily，关掉就不发这个
   // 参数——后端于是分不清「用户要汇总」和「调用方没指定」，导出的「汇总 ⇄ 按天
   // 明细」开关成了摆设（实测 detail=false / true 导出字节数完全相同）。
@@ -212,22 +225,22 @@ function rangeQs(q: ReportQuery): string {
 }
 
 export async function getReportSummary(q: ReportQuery): Promise<RangeReport> {
-  const res = await req<{ report: RangeReport }>('GET', `/api/admin/report-rollup/summary?${rangeQs(q)}`)
+  const res = await req<{ report: RangeReport }>('GET', `/api/admin/report-rollup/v2/summary?${rangeQs(q)}`)
   return res.report
 }
 
 export async function getReportDimensions(
-  q: Pick<ReportQuery, 'start' | 'end' | 'view'>,
+  q: Pick<ReportQuery, 'start' | 'end' | 'view' | 'traffic_scope'>,
 ): Promise<DimensionOptions> {
   const res = await req<{ dimensions: DimensionOptions }>(
     'GET',
-    `/api/admin/report-rollup/dimensions?${rangeQs({ ...q, view: q.view })}`,
+    `/api/admin/report-rollup/v2/dimensions?${rangeQs(q)}`,
   )
   return res.dimensions
 }
 
 export async function downloadReportExport(q: ReportQuery): Promise<void> {
-  const res = await fetch(`${BASE}/api/admin/report-rollup/export?${rangeQs(q)}`, {
+  const res = await fetch(`${BASE}/api/admin/report-rollup/v2/export?${rangeQs(q)}`, {
     headers: headers('GET'),
   })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
