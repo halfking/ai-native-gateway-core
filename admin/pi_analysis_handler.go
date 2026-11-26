@@ -294,6 +294,16 @@ func (h *PIAnalysisHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 	args := []interface{}{}
 	argPos := 1
 
+	// ★ 2026-11-26 决策 1：租户过滤 ——
+	//   super_admin 看全平台数据（监控用），tenant_admin 只看自己租户的数据（安全/隐私）。
+	//   input_text 包含用户提示词，跨租户可见属于数据泄漏。
+	tenantFilter := EffectiveTenantIDAll(r)
+	if tenantFilter != "" {
+		query += fmt.Sprintf(" AND tenant_id = $%d", argPos)
+		args = append(args, tenantFilter)
+		argPos++
+	}
+
 	if status != "" {
 		query += fmt.Sprintf(" AND status = $%d", argPos)
 		args = append(args, status)
@@ -358,32 +368,32 @@ func (h *PIAnalysisHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取总数
+	// 获取总数（同样需要租户过滤）
 	countQuery := `SELECT COUNT(*) FROM error_analysis_queue WHERE 1=1`
-	if status != "" {
-		countQuery += " AND status = $1"
-		var total int64
-		h.db.QueryRowContext(r.Context(), countQuery, status).Scan(&total)
+	countArgs := []interface{}{}
+	countPos := 1
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"errors": errors,
-			"total":  total,
-			"limit":  limit,
-			"offset": offset,
-		})
-	} else {
-		var total int64
-		h.db.QueryRowContext(r.Context(), countQuery).Scan(&total)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"errors": errors,
-			"total":  total,
-			"limit":  limit,
-			"offset": offset,
-		})
+	if tenantFilter != "" {
+		countQuery += fmt.Sprintf(" AND tenant_id = $%d", countPos)
+		countArgs = append(countArgs, tenantFilter)
+		countPos++
 	}
+
+	if status != "" {
+		countQuery += fmt.Sprintf(" AND status = $%d", countPos)
+		countArgs = append(countArgs, status)
+	}
+
+	var total int64
+	h.db.QueryRowContext(r.Context(), countQuery, countArgs...).Scan(&total)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"errors": errors,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 // GetResults 获取分析结果列表
@@ -405,6 +415,8 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ★ 2026-11-26 决策 1：租户过滤（与 GetQueue 同理）。
+	tenantFilter := EffectiveTenantIDAll(r)
 	query := `
 		SELECT 
 			r.id, r.analysis_id, r.queue_id,
@@ -413,11 +425,21 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 			q.error_type, q.tenant_id, r.created_at
 		FROM error_analysis_results r
 		JOIN error_analysis_queue q ON r.queue_id = q.id
-		ORDER BY r.created_at DESC
-		LIMIT $1 OFFSET $2
 	`
+	args := []interface{}{}
+	argPos := 1
 
-	rows, err := h.db.QueryContext(r.Context(), query, limit, offset)
+	if tenantFilter != "" {
+		query += fmt.Sprintf(" WHERE q.tenant_id = $%d", argPos)
+		args = append(args, tenantFilter)
+		argPos++
+	}
+
+	query += " ORDER BY r.created_at DESC"
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argPos, argPos+1)
+	args = append(args, limit, offset)
+
+	rows, err := h.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		writeInternalTextErr(w, "query error analysis results failed", err)
 		return
@@ -472,9 +494,19 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取总数
+	// 获取总数（同样需要租户过滤）
 	var total int64
-	h.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM error_analysis_results`).Scan(&total)
+	countQuery := `
+		SELECT COUNT(*) 
+		FROM error_analysis_results r
+		JOIN error_analysis_queue q ON r.queue_id = q.id
+	`
+	if tenantFilter != "" {
+		countQuery += " WHERE q.tenant_id = $1"
+		h.db.QueryRowContext(r.Context(), countQuery, tenantFilter).Scan(&total)
+	} else {
+		h.db.QueryRowContext(r.Context(), countQuery).Scan(&total)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -499,7 +531,10 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 //	llm_response_raw / auto_applied / applied_at / applied_by /
 //	applied_actions（迁移 979 的留痕列，缺席时为 null——
 //	迁移未上线的库上详情仍可读，只是没有留痕）。
+//
+// ★ 2026-11-26 决策 1：租户过滤 —— 结果详情同样需要租户校验。
 func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, queueID int64) {
+	tenantFilter := EffectiveTenantIDAll(r)
 	query := `
 		SELECT
 			r.id, r.analysis_id, r.queue_id,
@@ -523,6 +558,12 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		JOIN error_analysis_queue q ON r.queue_id = q.id
 		WHERE r.queue_id = $1
 	`
+	args := []interface{}{queueID}
+
+	if tenantFilter != "" {
+		query += " AND q.tenant_id = $2"
+		args = append(args, tenantFilter)
+	}
 
 	var result struct {
 		ID                    int64        `json:"id"`
@@ -571,7 +612,7 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		CompletedAt           PiNullString `json:"completed_at"`
 	}
 
-	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
+	err := h.db.QueryRowContext(r.Context(), query, args...).Scan(
 		&result.ID, &result.AnalysisID, &result.QueueID,
 		&result.RootCause, &result.ErrorCategory, &result.IsFalsePositive,
 		&result.ConfidenceScore, &result.SuggestedFix,
@@ -613,7 +654,10 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 }
 
 // getResultLegacy 是 applied_actions 列缺席（迁移 979 未应用）时的降级详情。
+//
+// ★ 2026-11-26 决策 1：租户过滤 —— 降级路径同样需要租户校验。
 func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Request, queueID int64) {
+	tenantFilter := EffectiveTenantIDAll(r)
 	query := `
 		SELECT
 			r.id, r.analysis_id, r.queue_id,
@@ -637,6 +681,12 @@ func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Reque
 		JOIN error_analysis_queue q ON r.queue_id = q.id
 		WHERE r.queue_id = $1
 	`
+	args := []interface{}{queueID}
+
+	if tenantFilter != "" {
+		query += " AND q.tenant_id = $2"
+		args = append(args, tenantFilter)
+	}
 
 	var result struct {
 		ID                    int64        `json:"id"`
@@ -684,7 +734,7 @@ func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Reque
 		CompletedAt           PiNullString `json:"completed_at"`
 	}
 
-	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
+	err := h.db.QueryRowContext(r.Context(), query, args...).Scan(
 		&result.ID, &result.AnalysisID, &result.QueueID,
 		&result.RootCause, &result.ErrorCategory, &result.IsFalsePositive,
 		&result.ConfidenceScore, &result.SuggestedFix,
@@ -725,7 +775,10 @@ func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Reque
 //	input_text / input_hash / 时间线（started_at / completed_at）。
 //	未分析的行（pending/failed）也能看详情 ⇒ 错误一进队列就可追因，
 //	不必等分析完成。
+//
+// ★ 2026-11-26 决策 1：租户过滤 —— 单项详情同样需要租户校验。
 func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request, queueID int64) {
+	tenantFilter := EffectiveTenantIDAll(r)
 	query := `
 		SELECT
 			id, error_type, error_hash, priority,
@@ -737,6 +790,12 @@ func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request,
 		FROM error_analysis_queue
 		WHERE id = $1
 	`
+	args := []interface{}{queueID}
+
+	if tenantFilter != "" {
+		query += " AND tenant_id = $2"
+		args = append(args, tenantFilter)
+	}
 
 	var item struct {
 		ID              int64        `json:"id"`
@@ -761,7 +820,7 @@ func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request,
 		CompletedAt     PiNullString `json:"completed_at"`
 	}
 
-	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
+	err := h.db.QueryRowContext(r.Context(), query, args...).Scan(
 		&item.ID, &item.ErrorType, &item.ErrorHash, &item.Priority,
 		&item.TenantID, &item.SessionID, &item.RequestID,
 		&item.InputText, &item.InputHash, &item.ErrorMessage, &item.ErrorDetails,
