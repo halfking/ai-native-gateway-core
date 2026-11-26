@@ -114,6 +114,61 @@ const newUser = ref({
 })
 const createUserSaving = ref(false)
 
+// ── 角色口径（与后端 admin/users.go 同源，2026-11-26 角色治理轮）──
+// super_admin 是平台级身份，**只允许落在 default 租户** ⇒ 本页（租户详情）
+// 面向任何非 default 租户时都只给「租户管理员 / 普通用户」两个选项。
+const ROLE_SUPER_ADMIN = 'super_admin'
+const ROLE_TENANT_ADMIN = 'tenant_admin'
+const ROLE_USER = 'user'
+const DEFAULT_TENANT_CODE = 'default'
+
+const roleOptions = computed(() =>
+  tenantCode.value === DEFAULT_TENANT_CODE
+    ? [ROLE_SUPER_ADMIN, ROLE_TENANT_ADMIN, ROLE_USER]
+    : [ROLE_TENANT_ADMIN, ROLE_USER],
+)
+
+function roleLabel(r: string) {
+  if (r === ROLE_SUPER_ADMIN) return t('tenants.detail.roleSuperAdmin')
+  if (r === ROLE_TENANT_ADMIN) return t('tenants.detail.roleTenantAdmin')
+  if (r === ROLE_USER) return t('tenants.detail.roleUser')
+  return r
+}
+
+// ── 变更角色（2026-11-26 角色治理轮）──────────────────────────────
+// 租户详情页里的账号也能就地改角色：live 上租户 chenb 下的 super_admin
+// 账号就是靠这条路收掉的（产品诉求：「用户管理」要能变更角色）。
+const showRoleDialog = ref(false)
+const roleTarget = ref<TenantUser | null>(null)
+const roleDraft = ref<string>(ROLE_TENANT_ADMIN)
+const roleSaving = ref(false)
+
+function openRoleDialog(u: TenantUser) {
+  roleTarget.value = u
+  roleDraft.value = u.role
+  showRoleDialog.value = true
+}
+
+async function submitRoleChange() {
+  const target = roleTarget.value
+  if (!target) return
+  if (roleDraft.value === target.role) {
+    showRoleDialog.value = false
+    return
+  }
+  roleSaving.value = true
+  error.value = ''
+  try {
+    await updateUser(target.id, { role: roleDraft.value })
+    showRoleDialog.value = false
+    await loadUsers()
+  } catch (e: unknown) {
+    error.value = surfaceError(e, { key: 'tenants.detail.changeRoleFailed' })
+  } finally {
+    roleSaving.value = false
+  }
+}
+
 function fmtTokensCompact(n?: number | null): string {
   const v = n ?? 0
   if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`
@@ -685,12 +740,15 @@ watch(() => route.params.tenantId, loadTenant)
               <td><strong>{{ u.username }}</strong></td>
               <td>{{ u.display_name || '-' }}</td>
               <td>{{ u.email || '-' }}</td>
-              <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ u.role }}</span></td>
+              <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ roleLabel(u.role) }}</span></td>
               <td><span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">{{ u.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}</span></td>
               <td class="mono">{{ fmtTime(u.last_login_at || '') }}</td>
               <td>
                 <button class="btn btn-ghost btn-sm" @click="toggleUserEnabled(u)">
                   {{ u.enabled ? $t('common.status.disabled') : $t('common.status.enabled') }}
+                </button>
+                <button class="btn btn-ghost btn-sm" @click="openRoleDialog(u)">
+                  {{ $t('tenants.detail.changeRoleBtn') }}
                 </button>
               </td>
             </tr>
@@ -1056,9 +1114,9 @@ watch(() => route.params.tenantId, loadTenant)
           <el-input v-model="newUser.email" type="email" :placeholder="$t('tenants.detail.emailPlaceholder')" />
         </el-form-item>
         <el-form-item :label="$t('tenants.detail.roleLabel')">
+          <!-- role options are tenant-scoped: no super_admin outside the default tenant -->
           <el-select v-model="newUser.role" style="width: 100%">
-            <el-option :label="$t('tenants.detail.roleTenantAdmin')" value="tenant_admin" />
-            <el-option :label="$t('tenants.detail.roleSuperAdmin')" value="super_admin" />
+            <el-option v-for="r in roleOptions" :key="r" :label="roleLabel(r)" :value="r" />
           </el-select>
         </el-form-item>
       </el-form>
@@ -1067,6 +1125,26 @@ watch(() => route.params.tenantId, loadTenant)
         <span class="dialog-footer">
           <el-button @click="cancelCreateUser">{{ $t('tenants.detail.cancel') }}</el-button>
           <el-button type="primary" @click="submitCreateUser" :loading="createUserSaving">{{ $t('tenants.detail.create') }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
+    <!-- Role Change Dialog（2026-11-26 角色治理轮） -->
+    <el-dialog v-model="showRoleDialog" :title="$t('tenants.detail.changeRoleTitle')" width="480px" style="max-height: 80vh; overflow-y: auto;">
+      <el-form :model="roleTarget ?? {}" label-width="100px">
+        <el-form-item :label="$t('tenants.detail.currentRoleLabel')">
+          <span>{{ roleTarget ? roleLabel(roleTarget.role) : '-' }}</span>
+        </el-form-item>
+        <el-form-item :label="$t('tenants.detail.roleLabel')">
+          <el-select v-model="roleDraft" style="width: 100%">
+            <el-option v-for="r in roleOptions" :key="r" :label="roleLabel(r)" :value="r" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div v-if="error" style="color: var(--danger); margin-bottom: 16px;">{{ error }}</div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showRoleDialog = false">{{ $t('common.cancel') }}</el-button>
+          <el-button type="primary" @click="submitRoleChange" :loading="roleSaving">{{ $t('common.save') }}</el-button>
         </span>
       </template>
     </el-dialog>

@@ -29,11 +29,13 @@ export default {
     enable: '有効化',
 
     resetPassword: 'Reset Password',
+    changeRole: 'ロール変更',
     delete: 'Delete',
   },
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',
+    user: '一般ユーザー',
   },
   mustChangePassword: {
     pending: 'Pending',
@@ -43,6 +45,12 @@ export default {
     disabled: 'Disabled',
   },
   modal: {
+    role: {
+      title: 'ロール変更: {name}',
+      current: '現在のロール',
+      label: '新しいロール',
+      hint: 'default 以外のテナントはテナント管理者または一般ユーザーのみ指定できます',
+    },
     create: {
       title: 'Create User',
       username: 'Username',
@@ -55,6 +63,7 @@ export default {
       email: 'Email',
       tenant: 'Tenant',
       role: 'Role',
+      roleHint: 'default 以外のテナントにはスーパー管理者を指定できません（テナント管理者または一般ユーザーのみ）',
       cancel: 'Cancel',
       submit: 'Create',
     },
@@ -82,6 +91,7 @@ export default {
     resetPasswordComplexity: 'パスワードが複雑さの要件を満たしていません',
     toggleFailed: 'ユーザーの状態の切り替えに失敗しました。再試行してください。',
     changePasswordFailed: 'パスワードを変更できませんでした。再試行してください。',
+    roleChangeFailed: 'ユーザーのロールを変更できませんでした。再試行してください。',
   },
   passwordMatch: {
     matched: '✓ Passwords match',

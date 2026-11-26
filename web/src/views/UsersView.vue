@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { sortByName } from '../utils/sortByName'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin, getUserUsageSummary } from '../api'
 import type { Tenant, UserUsageSummaryItem } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
@@ -30,6 +30,24 @@ const tenantAdmin = computed(() => isTenantAdmin())
 const canCreateUsers = computed(() => !readOnly.value)
 const canResetPasswords = computed(() => !readOnly.value || tenantAdmin.value)
 const canDeleteUsers = computed(() => !readOnly.value)
+// 变更角色与建号/删号同权：只给平台管理员（租户管理员是只读）。
+const canChangeRoles = computed(() => !readOnly.value)
+
+// ── 角色口径（与后端 admin/users.go 同源，2026-11-26 角色治理轮）──
+// ① 角色闭集：super_admin / tenant_admin / user（普通用户）。
+// ② super_admin 是**平台级**身份，只允许落在 default 租户 ⇒ 非 default 租户
+//    只能选 tenant_admin 或 user。
+// ★ 前端只是提示层，真正的闸门在后端（POST /api/users、PUT /api/users/:id）。
+const ROLE_SUPER_ADMIN = 'super_admin'
+const ROLE_TENANT_ADMIN = 'tenant_admin'
+const ROLE_USER = 'user'
+const DEFAULT_TENANT_CODE = 'default'
+
+function roleOptionsForTenant(tenantId: string): string[] {
+  return tenantId === DEFAULT_TENANT_CODE
+    ? [ROLE_SUPER_ADMIN, ROLE_TENANT_ADMIN, ROLE_USER]
+    : [ROLE_TENANT_ADMIN, ROLE_USER]
+}
 
 interface User {
   id: number
@@ -223,6 +241,51 @@ const form = ref({
   role: 'tenant_admin',
 })
 
+// 建号时的角色下拉：按**所选租户**收敛（非 default 租户不给「超级管理员」）。
+const createRoleOptions = computed(() => roleOptionsForTenant(form.value.tenant_id))
+// 切租户后若当前角色在新租户不可用 ⇒ 立刻回落，
+// 否则表单会带着一个后端必然拒绝的角色提交。
+watch(() => form.value.tenant_id, () => {
+  if (!createRoleOptions.value.includes(form.value.role)) {
+    form.value.role = ROLE_TENANT_ADMIN
+  }
+})
+
+// ── 变更角色（2026-11-26 角色治理轮）──────────────────────────────
+// 产品诉求：「用户管理」里能改账号角色；非 default 租户不得出现超级管理员。
+// 收掉 live 上租户 chenb 下那个 super_admin 账号也走这条路径。
+const showRoleModal = ref(false)
+const roleTarget = ref<User | null>(null)
+const roleDraft = ref<string>(ROLE_TENANT_ADMIN)
+const roleSaving = ref(false)
+const roleOptions = computed(() => roleOptionsForTenant(roleTarget.value?.tenant_id ?? DEFAULT_TENANT_CODE))
+
+function openRoleModal(u: User) {
+  roleTarget.value = u
+  roleDraft.value = u.role
+  showRoleModal.value = true
+}
+
+async function submitRoleChange() {
+  const target = roleTarget.value
+  if (!target) return
+  if (roleDraft.value === target.role) {
+    showRoleModal.value = false
+    return
+  }
+  roleSaving.value = true
+  error.value = ''
+  try {
+    await updateUser(target.id, { role: roleDraft.value })
+    showRoleModal.value = false
+    await load()
+  } catch (e: unknown) {
+    error.value = surfaceError(e, { key: 'users.error.roleChangeFailed' })
+  } finally {
+    roleSaving.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -311,7 +374,11 @@ async function handleResetPwd() {
 }
 
 function roleLabel(r: string) {
-  return r === 'super_admin' ? t('users.role.super_admin') : t('users.role.tenant_admin')
+  if (r === ROLE_SUPER_ADMIN) return t('users.role.super_admin')
+  if (r === ROLE_TENANT_ADMIN) return t('users.role.tenant_admin')
+  if (r === ROLE_USER) return t('users.role.user')
+  // 未知角色（如 channel）显示原值 —— 别把它谎称成「租户管理员」。
+  return r
 }
 
 function closeCreateModal() {
@@ -389,6 +456,7 @@ onMounted(() => { load(); loadTenants() })
         <option value="">{{ t('users.filter.allRoles', ) }}</option>
         <option value="tenant_admin">{{ t('users.role.tenant_admin') }}</option>
         <option value="super_admin">{{ t('users.role.super_admin') }}</option>
+        <option value="user">{{ t('users.role.user') }}</option>
       </select>
       <select v-model="filterStatus">
         <option value="">{{ t('users.filter.allStatus', ) }}</option>
@@ -455,6 +523,7 @@ onMounted(() => { load(); loadTenants() })
           </td>
           <td @click.stop>
             <button class="btn btn-ghost btn-sm" @click="openDetail(u)">{{ t('users.action.detail', $t('common.button.detail')) }}</button>
+            <button v-if="canChangeRoles" class="btn btn-ghost btn-sm" @click="openRoleModal(u)">{{ t('users.action.changeRole') }}</button>
             <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
             <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>
           </td>
@@ -526,14 +595,41 @@ onMounted(() => { load(); loadTenants() })
         </div>
         <div class="form-group">
           <label>{{ t('users.modal.create.role') }}</label>
+          <!-- 角色下拉按**所选租户**收敛：非 default 租户不给「超级管理员」
+               （平台级身份不属于业务租户），只给租户管理员 / 普通用户。 -->
           <select v-model="form.role">
-            <option value="tenant_admin">{{ t('users.role.tenant_admin') }}</option>
-            <option value="super_admin">{{ t('users.role.super_admin') }}</option>
+            <option v-for="r in createRoleOptions" :key="r" :value="r">{{ roleLabel(r) }}</option>
           </select>
+          <p v-if="form.tenant_id !== DEFAULT_TENANT_CODE" class="form-hint">{{ t('users.modal.create.roleHint') }}</p>
         </div>
         <div class="modal-actions">
           <button class="btn btn-primary" :disabled="!form.username || !createPasswordPolicy.valid || !passwordsMatch(form.password, createConfirmPwd)" @click="handleCreate">{{ t('users.modal.create.submit') }}</button>
           <button class="btn btn-ghost" @click="closeCreateModal">{{ t('users.modal.create.cancel') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Role Change Modal（2026-11-26 角色治理轮） -->
+    <div v-if="showRoleModal && roleTarget" class="modal-backdrop" @click.self="showRoleModal = false">
+      <div class="modal-card">
+        <h3>{{ t('users.modal.role.title', { name: roleTarget.username }) }}</h3>
+        <div class="form-group">
+          <label>{{ t('users.modal.role.current') }}</label>
+          <div class="current-role">
+            <span class="badge" :class="roleTarget.role === ROLE_SUPER_ADMIN ? 'badge-purple' : 'badge-blue'">{{ roleLabel(roleTarget.role) }}</span>
+            <span class="cell-sub">{{ roleTarget.tenant_id }}</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>{{ t('users.modal.role.label') }}</label>
+          <select v-model="roleDraft">
+            <option v-for="r in roleOptions" :key="r" :value="r">{{ roleLabel(r) }}</option>
+          </select>
+          <p v-if="roleTarget.tenant_id !== DEFAULT_TENANT_CODE" class="form-hint">{{ t('users.modal.role.hint') }}</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" :disabled="roleSaving || roleDraft === roleTarget.role" @click="submitRoleChange">{{ t('common.save') }}</button>
+          <button class="btn btn-ghost" @click="showRoleModal = false">{{ t('common.cancel') }}</button>
         </div>
       </div>
     </div>
@@ -600,6 +696,19 @@ onMounted(() => { load(); loadTenants() })
 }
 .modal-card h3 { margin: 0 0 16px; font-size: 16px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* 角色下拉的约束说明：说清「为什么这里没有超级管理员」。 */
+.form-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.current-role {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 /* 2026-07-07: 过滤器行，select 限制最大宽度避免全屏拉伸；
  * 2026-09-30 增加角色/状态/排序/搜索（统计 UI 优化轮）。 */

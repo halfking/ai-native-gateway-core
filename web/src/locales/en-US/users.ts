@@ -29,11 +29,13 @@ export default {
     enable: 'Enable',
 
     resetPassword: 'Reset Password',
+    changeRole: 'Change Role',
     delete: 'Delete',
   },
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',
+    user: 'Regular User',
   },
   mustChangePassword: {
     pending: 'Pending',
@@ -43,6 +45,12 @@ export default {
     disabled: 'Disabled',
   },
   modal: {
+    role: {
+      title: 'Change Role: {name}',
+      current: 'Current Role',
+      label: 'New Role',
+      hint: 'Non-default tenants can only have tenant admins or regular users',
+    },
     create: {
       title: 'Create User',
       username: 'Username',
@@ -55,6 +63,7 @@ export default {
       email: 'Email',
       tenant: 'Tenant',
       role: 'Role',
+      roleHint: 'Non-default tenants cannot have super admins — only tenant admins or regular users',
       cancel: 'Cancel',
       submit: 'Create',
     },
@@ -82,6 +91,7 @@ export default {
     resetPasswordComplexity: 'Password does not meet complexity requirements',
     toggleFailed: 'The user status could not be switched. Please retry.',
     changePasswordFailed: 'The password could not be changed. Please retry.',
+    roleChangeFailed: 'The user role could not be changed. Please retry.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
