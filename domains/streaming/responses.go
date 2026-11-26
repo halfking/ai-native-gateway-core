@@ -689,6 +689,9 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	}
 
 	candidates, policy, requestModality, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+	// 2026-11-26（充值事故轮）：需求驱动复探 —— 有人正在等这个模型 ⇒ 若它有
+	// 额度耗尽的节点，立刻探一次（不等 1 小时退避）。见 exhausted_probe.go。
+	h.chatHandler.notifyExhaustedNodes(r.Context(), clientModel, tenantID)
 	// SP-02: state machine — routing produced a final candidate set.
 	rt.Emit(state.EventRouted)
 	if candErr != nil {

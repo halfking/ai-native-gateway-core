@@ -1312,6 +1312,11 @@ type ChatHandler struct {
 	// historical bare 503, so a deployment that has not wired it loses the
 	// suggestion but nothing else.
 	altFinder *ModelAlternativesFinder
+	// exhaustedNodeProbeTrigger (2026-11-26 充值事故轮) 是**需求驱动复探**
+	// 的可选钩子：新请求命中「本模型的额度耗尽节点」⇒ 立即为这些节点发起
+	// 一次探活（不等余额探针的 1 小时退避）⇒ 探到恢复 ⇒ 模型立刻可用。
+	// nil ⇒ 完全惰性（行为与接线前逐字节相同）。见 exhausted_probe.go。
+	exhaustedNodeProbeTrigger exhaustedNodeProbeTrigger
 	// requestLogHook is an optional test sink.  When set, every
 	// _request_logs row the gateway emits is also passed to the hook
 	// function so unit tests can assert on the safety-net coverage.
@@ -4443,6 +4448,11 @@ func (h *ChatHandler) serveWithExecutor(
 		// SP-02: state machine — routing produced a final candidate set.
 		rt.Emit(state.EventRouted)
 	}
+
+	// 2026-11-26（充值事故轮）：**需求驱动复探** —— 新请求打到了这个模型上 ⇒
+	// 若它有额度耗尽的节点 ⇒ 立刻探一次（不等 1 小时退避）。
+	// 放在候选解析之后：解析成功（含零候选）才谈得上「节点被耗尽」这件事。
+	h.notifyExhaustedNodes(r.Context(), clientModel, tenantID)
 
 	// 2026-07-18: structured log of routing_resolve so journald can
 	// correlate req_id → chosen providers. The minmax-m3 incident
