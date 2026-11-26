@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -226,8 +225,23 @@ func (h *Handler) handleBatchMarkBillsPaid(w http.ResponseWriter, r *http.Reques
 		actionBy = "unknown"
 	}
 
+	// 转换为服务层期望的类型（去除 JSON 标签）
+	payments := make([]struct {
+		BillID             int64
+		PaymentDate        time.Time
+		PaymentVoucher     string
+		PaymentAmountCents int64
+	}, len(req.Bills))
+
+	for i, b := range req.Bills {
+		payments[i].BillID = b.BillID
+		payments[i].PaymentDate = b.PaymentDate
+		payments[i].PaymentVoucher = b.PaymentVoucher
+		payments[i].PaymentAmountCents = b.PaymentAmountCents
+	}
+
 	// 调用服务层批量处理
-	succeeded, failed, err := svc.BatchMarkBillsPaid(r.Context(), req.Bills, req.PaymentMethod, actionBy)
+	succeeded, failed, err := svc.BatchMarkBillsPaid(r.Context(), payments, req.PaymentMethod, actionBy)
 
 	if err != nil {
 		writeInternalErr(w, "batch operation failed", err)
