@@ -496,6 +496,77 @@ WHERE tenant_id='tenant-clamp' AND fact_request_id='clamp-healthy' AND source_fa
 		}
 	})
 
+	t.Run("concurrent_processors_partition_without_loss", func(t *testing.T) {
+		// ★ 2026-11-26 交接点名的「双槽并发」：蓝绿窗口里旧槽与新槽可能同时跑
+		//   投影器。锁是 SELECT ... FOR UPDATE SKIP LOCKED ⇒ 拿不到锁的一方必须
+		//   干净退出（0 处理、无错误），而不是阻塞或双写。桩测（sqlmock）只能钉
+		//   「锁行缺 ⇒ 跳过」，钉不出真 PG 的行锁互斥 ⇒ 本用例在真 PG 上跑两个
+		//   并发处理器吃同一批 pending ⇒ 判据：两臂合计恰好消化全部事实、
+		//   投影无重复行、水位单调推进。
+		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES
+ ('conc-1','conc-r1',1,'2026-11-26 01:00Z','tenant-conc','success',10,'llm'),
+ ('conc-2','conc-r2',1,'2026-11-26 01:01Z','tenant-conc','success',20,'llm'),
+ ('conc-3','conc-r3',1,'2026-11-26 01:02Z','tenant-conc','success',30,'llm'),
+ ('conc-4','conc-r4',1,'2026-11-26 01:03Z','tenant-conc','success',40,'llm');`)
+		const arms = 2
+		results := make(chan error, arms)
+		processedTotals := make(chan int, arms)
+		for range arms {
+			go func() {
+				// 独立连接池 ⇒ 两个真实并发的事务竞争同一把 SKIP LOCKED 键。
+				armPool, err := pgxpool.New(ctx, dsn)
+				if err != nil {
+					results <- err
+					return
+				}
+				defer armPool.Close()
+				armDB := stdlib.OpenDBFromPool(armPool)
+				defer armDB.Close()
+				armProcessor := NewProcessor(armDB)
+				total := 0
+				for range 10 {
+					n, err := armProcessor.ProcessBatch(ctx, 2)
+					if err != nil {
+						results <- err
+						return
+					}
+					total += n
+					if n == 0 {
+						break
+					}
+				}
+				processedTotals <- total
+				results <- nil
+			}()
+		}
+		var totalProcessed int
+		for range arms {
+			if err := <-results; err != nil {
+				t.Fatalf("concurrent processor arm failed: %v", err)
+			}
+		}
+		for range arms {
+			totalProcessed += <-processedTotals
+		}
+		if totalProcessed != 4 {
+			t.Fatalf("two concurrent arms processed %d facts, want exactly 4 (no double-count, no loss)", totalProcessed)
+		}
+		var rows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics
+WHERE tenant_id='tenant-conc' AND source_fact_id IS NOT NULL`).Scan(&rows); err != nil || rows != 4 {
+			t.Fatalf("concurrent projection produced %d rows, want 4: error=%v", rows, err)
+		}
+		var pending int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics_pending`).Scan(&pending); err != nil || pending != 0 {
+			t.Fatalf("pending queue not drained after concurrent run: %d error=%v", pending, err)
+		}
+		var complete bool
+		if err := pool.QueryRow(ctx, `SELECT backfill_complete FROM request_metrics_projection_state WHERE singleton`).Scan(&complete); err != nil || !complete {
+			t.Fatalf("watermark not complete after concurrent run: complete=%t error=%v", complete, err)
+		}
+	})
+
 	t.Run("late_arrival_and_revision_beyond_cursor", func(t *testing.T) {
 		// ★ 2026-11-26 交接点名的三个水位遗漏风险，逐条钉死：
 		// ① 晚到的旧事实（fact_id 低于已推进的历史游标）：
