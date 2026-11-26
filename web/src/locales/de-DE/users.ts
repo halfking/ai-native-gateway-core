@@ -29,11 +29,13 @@ export default {
     enable: 'Aktivieren',
 
     resetPassword: 'Reset Password',
+    changeRole: 'Rolle ändern',
     delete: 'Delete',
   },
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',
+    user: 'Normaler Benutzer',
   },
   mustChangePassword: {
     pending: 'Pending',
@@ -43,6 +45,12 @@ export default {
     disabled: 'Disabled',
   },
   modal: {
+    role: {
+      title: 'Rolle ändern: {name}',
+      current: 'Aktuelle Rolle',
+      label: 'Neue Rolle',
+      hint: 'Nicht-Standard-Mandanten können nur Mandantenadministratoren oder normale Benutzer haben',
+    },
     create: {
       title: 'Create User',
       username: 'Username',
@@ -55,6 +63,7 @@ export default {
       email: 'Email',
       tenant: 'Tenant',
       role: 'Role',
+      roleHint: 'Nicht-Standard-Mandanten dürfen keine Superadministratoren haben — nur Mandantenadministratoren oder normale Benutzer',
       cancel: 'Cancel',
       submit: 'Create',
     },
@@ -82,6 +91,7 @@ export default {
     resetPasswordComplexity: 'Das Passwort erfüllt die Komplexitätsanforderungen nicht',
     toggleFailed: 'Benutzerstatus konnte nicht umgeschaltet werden. Bitte erneut versuchen.',
     changePasswordFailed: 'Passwort konnte nicht geändert werden. Bitte erneut versuchen.',
+    roleChangeFailed: 'Die Benutzerrolle konnte nicht geändert werden. Bitte erneut versuchen.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',

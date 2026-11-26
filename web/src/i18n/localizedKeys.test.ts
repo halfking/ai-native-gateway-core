@@ -72,6 +72,88 @@ const MUST_BE_LOCALIZED: Registered[] = [
     added: '2026-10-21',
     note: '节点详情抽屉「非 default 租户」只读提示——2026-10-20 轮漏了它仍是硬编码中文',
   },
+  // ── 2026-11-26 角色治理轮（用户管理「变更角色」＋ 非 default 租户角色闭集）──
+  {
+    module: 'users',
+    path: 'role.user',
+    full: 'users.role.user',
+    added: '2026-11-26',
+    note: '普通用户（闭集第三档）——此前角色闭集只有两档，普通用户无处显示',
+  },
+  {
+    module: 'users',
+    path: 'action.changeRole',
+    full: 'users.action.changeRole',
+    added: '2026-11-26',
+  },
+  {
+    module: 'users',
+    path: 'modal.role.title',
+    full: 'users.modal.role.title',
+    added: '2026-11-26',
+    note: '变更角色弹窗标题（带 {name} 占位）',
+  },
+  {
+    module: 'users',
+    path: 'modal.role.current',
+    full: 'users.modal.role.current',
+    added: '2026-11-26',
+  },
+  {
+    module: 'users',
+    path: 'modal.role.label',
+    full: 'users.modal.role.label',
+    added: '2026-11-26',
+  },
+  {
+    module: 'users',
+    path: 'modal.role.hint',
+    full: 'users.modal.role.hint',
+    added: '2026-11-26',
+    note: '「非 default 租户不得是超级管理员」的可见说明',
+  },
+  {
+    module: 'users',
+    path: 'modal.create.roleHint',
+    full: 'users.modal.create.roleHint',
+    added: '2026-11-26',
+  },
+  {
+    module: 'users',
+    path: 'error.roleChangeFailed',
+    full: 'users.error.roleChangeFailed',
+    added: '2026-11-26',
+  },
+  {
+    module: 'tenants',
+    path: 'detail.roleUser',
+    full: 'tenants.detail.roleUser',
+    added: '2026-11-26',
+  },
+  {
+    module: 'tenants',
+    path: 'detail.changeRoleBtn',
+    full: 'tenants.detail.changeRoleBtn',
+    added: '2026-11-26',
+  },
+  {
+    module: 'tenants',
+    path: 'detail.changeRoleTitle',
+    full: 'tenants.detail.changeRoleTitle',
+    added: '2026-11-26',
+  },
+  {
+    module: 'tenants',
+    path: 'detail.currentRoleLabel',
+    full: 'tenants.detail.currentRoleLabel',
+    added: '2026-11-26',
+  },
+  {
+    module: 'tenants',
+    path: 'detail.changeRoleFailed',
+    full: 'tenants.detail.changeRoleFailed',
+    added: '2026-11-26',
+  },
 ]
 
 // ── locale 读取（与 parity.test.ts 同法：vm 跑 CommonJS 化的 .ts）─────────

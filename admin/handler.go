@@ -91,6 +91,18 @@ type teamGuardDB interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
+// usersDB 是**用户管理写路径**（建号 / 改号 / 删号 / 重置密码）的读写查询面。
+// 刻意保持窄接口（QueryRow + Query + Exec）：db 字段是具体 *pgxpool.Pool，
+// 单测里注入不了 pgxmock，而「非 default 租户不得拥有 super_admin」这条
+// **安全判据**（建号与变更角色两条写路径）必须能被单测钉住 ⇒ 按
+// controlledBodyDB / loginDB / teamGuardDB 的同款范式开一个窄口。
+// nil ⇒ 用 h.db（生产路径零变化）。
+type usersDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 type Handler struct {
 	db       *pgxpool.Pool
 	registry *authplugin.Registry // Phase 2: plugin registry for auth/user/tenant operations
@@ -102,6 +114,9 @@ type Handler struct {
 	// teamGuardDB 是「api key 挂团队」归属校验的窄注入面（★ 2026-11-23 12h
 	// 修订审计轮 ★）：nil ⇒ h.db。作用见 teamGuardDB 接口注释。
 	teamGuardDB teamGuardDB
+	// usersDB 是**用户管理写路径**的窄注入面（2026-11-26 角色治理轮）：nil ⇒ h.db。
+	// 作用：让「非 default 租户不得拥有 super_admin」这条判据能在单测里被钉住。
+	usersDB usersDB
 	// keyCreateDB 是 createKey 的落库查询面（★ 2026-11-23 211 建 key 全量 500 回归
 	// 根修 ★）：nil ⇒ h.db（keyCreateQuerier）。db 字段是具体 *pgxpool.Pool，单测里
 	// 注入不了 pgxmock ⇒ 此前建 key 的测试都停在 DB 面之前 ⇒ 「落库语句引用了未应用
