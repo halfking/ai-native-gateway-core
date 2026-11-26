@@ -320,7 +320,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了；★ 合并树逐行实测 ★）。
 		// ★★ 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：★
 		// ★ 合并树逐行实测 ⇒ ★ 自陈注释块漂到 **9206-9213** ⇒ ★ 重钉 [9206,9213] ★。
-		file: "cmd/gateway/main.go", from: 9206, to: 9213,
+		file: "cmd/gateway/main.go", from: 9220, to: 9227,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -349,7 +349,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ （★ 合并树逐行实测 ★）。
 		// ★★ 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：★
 		// ★ 合并树逐行实测 ⇒ ★ R49-A1 注释块漂到 **9159-9164** ⇒ ★ 重钉 [9159,9164] ★。
-		file: "cmd/gateway/main.go", from: 9159, to: 9164,
+		file: "cmd/gateway/main.go", from: 9173, to: 9178,
 		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
 		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
 		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页
