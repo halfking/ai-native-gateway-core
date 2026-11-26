@@ -129,7 +129,7 @@ func TestNoCandidateCause_FailureDetailCode_AllFaces(t *testing.T) {
 		if w.Code != http.StatusTooManyRequests {
 			t.Errorf("status = %d, want 429（客户端语义不变）\nbody: %s", w.Code, w.Body.String())
 		}
-		if !strings.Contains(w.Body.String(), "upstream account quota or balance exhausted") {
+		if !strings.Contains(w.Body.String(), "upstream provider account quota or balance exhausted") {
 			t.Errorf("客户端文案漂移：%s", w.Body.String())
 		}
 		assertAttributed(t, entries)
