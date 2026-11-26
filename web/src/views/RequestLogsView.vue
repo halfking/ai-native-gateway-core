@@ -108,7 +108,9 @@ const summaryDrawerOpen = ref(false)
 // 2026-11-21 统计口径对齐轮：包含探测开关（与 board 的 include_probes 同语义、
 // 同命名、同持久化偏好形状）。
 //   默认关 = 业务口径（不含探测）== 内部对账 == board 缺省英雄区；
-//   开启 = 业务 ∪ 探测臂 == usage_facts 全量 == 供应商对账 == board「含探测」。
+//   开启 = 业务 ∪ 探测臂（INNER JOIN 有 fact 的探测行）⊂ usage_facts 全量。
+// 2026-11-26 L89：实测「含探测」少于 usage_facts 全量 6,282 条 / −3.3%，
+//   根因探测臂 INNER JOIN 只纳入有 fact 的行；完整探测请求见供应商对账。
 // 持久化偏好 `llmgw_logs_probe_scope`（board 用 `board-probe-scope`，键名跟随
 // 各页既有约定，不共享一个值——两页口径可独立切换）。
 const LOGS_PROBE_SCOPE_KEY = 'llmgw_logs_probe_scope'
@@ -1766,9 +1768,9 @@ onMounted(async () => {
         </span>
         <span style="flex:1"></span>
         <!-- 2026-11-21 统计口径对齐轮：包含探测开关。默认业务口径（不含探测，
-             == 内部对账）；开启后行集 = 业务 ∪ 探测臂（== 供应商对账，与
-             board 英雄区「含探测」同一口径）。徽标在折叠态也可见 ⇒ 口径披露
-             不依赖展开筛选区。 -->
+             == 内部对账）；开启后行集 = 业务 ∪ 探测臂（INNER JOIN 有 fact 的探测行，
+             ⊂ 供应商对账全量；实测少 6,282 条 / −3.3%）。徽标在折叠态也可见 ⇒
+             口径披露不依赖展开筛选区。 -->
         <label
           class="logs-probe-scope"
           data-testid="logs-probe-scope"
