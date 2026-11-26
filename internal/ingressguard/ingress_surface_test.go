@@ -273,6 +273,23 @@ var registry = []surface{
 		RateLimit:   gateOwn,
 	},
 	{
+		// ★ 2026-11-26 语音流式轮（并行车道）补登：/v1/audio/converse（级联语音会话）。
+		// 它自己的 ServeHTTP 里两道闸都没有，但它把数据面鉴权【委派】给 audio service：
+		// audio_converse.go:188 h.cs.svc.authenticate(w, r, requestID) ⇒ 而
+		// AudioService.authenticate（domains/streaming/audio_service.go:1354）内先后调
+		// checkGatewayRateLimit（:1376）与 keyVerifier.CheckBudget（:1385）⇒
+		// ⇒ ⇒ 两道闸都在这条委派路径上（★ 端点自身文件里锚点为 0 ⇒ 与 delegated
+		//   的「锚点恰好 0 次」判据一致 ★★）。
+		// ★ 端点自己的注释也写着「数据面鉴权与 /v1/audio/* 同口径（含 RPM 与租户预算闸）」。
+		Plane:          planeInference,
+		Routes:         []string{"/v1/audio/converse"},
+		HandlerVars:    []string{"audioConverseHandler"},
+		File:           "../../domains/streaming/audio_converse.go",
+		Budget:         gateDelegated,
+		BudgetDelegate: "audio_converse.go:188 h.cs.svc.authenticate(w, r, requestID) → AudioService.authenticate（domains/streaming/audio_service.go:1354）⇒ 其内 checkGatewayRateLimit（:1376）+ keyVerifier.CheckBudget（:1385）",
+		RateLimit:      gateDelegated,
+	},
+	{
 		// 2026-10-08 Phase C（17cba14ee）补登：视频生成骨架。它自己没有闸，
 		// 但 ServeHTTP 里构造 img := &ImagesGenerationsHandler{keyVerifier,
 		// rateLimiter} 后走 img.authenticate（videos_generations.go:73）
