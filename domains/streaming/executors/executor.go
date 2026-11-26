@@ -2958,18 +2958,23 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 	//      write must never SHORTEN the probe ladder's future schedule.
 	//   2. cf ≥ sustained-failure threshold (same settings key as the bg
 	//      sustained tier probe.sustained_failure_attempt_threshold,
-	//      default 21) escalates the fresh-failure arm 5min → 1h,
-	//      matching the bg sustained_failure_recheck philosophy
+	//      default 15 since 2026-11-26) escalates the fresh-failure arm
+	//      5min → 1h, matching the bg sustained_failure_recheck philosophy
 	//      (probe_recovery_policy.go): proven-permanent pairs stop
 	//      burning a real request every window expiry.
 	// Recovery is unaffected: the bg node-probe worker owns the long-term
 	// ladder (a successful probe parks the row 30 days); this GREATEST
 	// only preserves or extends, it never schedules a probe later than
 	// the ladder itself would.
+	//
+	// ★ 2026-11-26：阈值读取点提到 settings.ProbeSustainedFailureAttemptThreshold
+	//   —— 本包**不能** import bg（bg → domains/streaming → bg 成环，见
+	//   bg/active_probe_emitter.go 的注释）⇒ ⇒ 读取点放在 settings 这一层，
+	//   两边共用同一个 getter ⇒ ⇒ 默认值不会分叉（21 vs 15 那类漂移）。
 	mnfCoolWindow := 5 * time.Minute
-	sustainedAt := settings.GetPlatformInt("probe.sustained_failure_attempt_threshold", 21)
+	sustainedAt := settings.ProbeSustainedFailureAttemptThreshold()
 	if sustainedAt < 1 {
-		sustainedAt = 21
+		sustainedAt = 15
 	}
 	_, mnfErr := e.DB.Pool().Exec(ctx, recordModelNotFoundStateUpsertSQL(),
 		credentialID, rawModel, mnfCoolWindow.String(), errorCode, sustainedAt)

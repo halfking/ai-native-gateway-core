@@ -30,6 +30,20 @@ import (
 type featuredSet struct {
 	static map[string]struct{} // routing_policy.featured_models (raw + standardized)
 	usage  map[string]struct{} // top-N by request volume
+	// recent = models that real (non-probe) business traffic called inside
+	// the automatic-probe scope window (7 days, bg/probe_model_scope.go).
+	//
+	// ★ nil means "not available" — NOT "empty". The distinction matters:
+	// an empty-but-valid set means "no model has recent business traffic"
+	// (⇒ scope gate can answer), while nil means "the refresh segment never
+	// succeeded" (⇒ callers must fail open, not treat it as "unused").
+	//
+	// ★ Why this set lives here: the scope gate needs a 7-day usage answer
+	// per model, but the same answer costs 8.79s per model as a live query
+	// (measured 2026-11-26, production). Caching the whole model list and
+	// answering in memory turns the gate into an O(1) lookup, and reusing
+	// this refresh loop keeps one source, one connection and one goroutine.
+	recent map[string]struct{}
 }
 
 func (s *featuredSet) has(model string) bool {
@@ -251,9 +265,51 @@ func (m *ModelTier) refresh(ctx context.Context) {
 
 	// Merge usage into static so callers can check one map if they prefer; keep
 	// them separate here for observability (StaticCount/UsageCount).
+	//
+	// ★ 2026-11-26（探测工作模式修正轮）：第三段 —— 7 天业务用量模型集合。
+	//
+	// 这道查询**只用于填缓存**：自动探测作用域门每轮探测都会被调（每个候选
+	// 对一次），逐模型 EXISTS 在同一窗口下实测 8.79s/次 ⇒ ⇒ 改成一次
+	// DISTINCT 取回全量清单（★ **瘦源**实测 0.75–0.91s/次，★ 摊薄到 10 分钟
+	// 一次）⇒ ⇒ 门判定退化成内存查表。
+	//
+	// ★ 口径在 probe_model_scope.go 的 automaticProbeRecentUsageModelsSQL
+	//   （单一出处：窗口、探针排除谓词、三个模型名列全在那里）。
+	//
+	// ★ 失败处理沿用本文件既有纪律（R67-B）：任一段失败 ⇒ **保旧集**，
+	//   不做全量替换 ⇒ ⇒缓存不会因为一次抖动变成空集 ⇒ ⇒ 作用域门不会
+	//   因为一次刷新失败就把所有模型判成「近期无业务用量」。
+	fs.recent = map[string]struct{}{}
+	if rows, err := m.db.Query(ctx, automaticProbeRecentUsageModelsSQL()); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var raw, outbound, canonical string
+			if err := rows.Scan(&raw, &outbound, &canonical); err != nil {
+				dbrows.SkipOrFail("bg.ModelTier.refresh/recentUsage", err)
+				continue
+			}
+			// 三个模型名列全部进集合（瘦源口径，见
+			// probe_model_scope.go 的 automaticProbeRecentUsageModelsSQL）。
+			for _, name := range []string{raw, outbound, canonical} {
+				if k := normalizeModelKey(name); k != "" {
+					fs.recent[k] = struct{}{}
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("model_tier: recent-usage row iteration aborted; keeping previous featured set",
+				"error", err)
+			return
+		}
+	} else {
+		slog.Warn("model_tier: load recent-usage set failed; keeping previous featured set",
+			"error", err)
+		return
+	}
+
 	m.cur.Store(fs)
 	slog.Info("model_tier: featured set refreshed",
-		"static", len(fs.static), "usage", len(fs.usage))
+		"static", len(fs.static), "usage", len(fs.usage), "recent", len(fs.recent))
 }
 
 // IsFeaturedModel reports whether the model is "常用" (static featured ∪ usage).
@@ -331,6 +387,47 @@ func globalIsFeaturedModel(rawModel, canonical string) bool {
 		return m.IsFeaturedModel(rawModel, canonical)
 	}
 	return false
+}
+
+// IsRecentlyUsedModel reports whether real (non-probe) business traffic
+// called rawModel inside the automatic-probe scope window.
+//
+// The second return value reports whether the answer is *available*:
+// false ⇒ the snapshot has no usable recent-usage set yet (tier not loaded,
+// or the refresh segment never succeeded) ⇒ callers must treat it as
+// "cannot judge" and fail open, NOT as "not used".
+func (m *ModelTier) IsRecentlyUsedModel(rawModel string) (used, available bool) {
+	if m == nil {
+		return false, false
+	}
+	fs := m.cur.Load()
+	if fs == nil || fs.recent == nil {
+		return false, false
+	}
+	key := normalizeModelKey(rawModel)
+	if key == "" {
+		return false, true
+	}
+	_, ok := fs.recent[key]
+	return ok, true
+}
+
+// globalIsRecentlyUsedModel is the nil-safe global lookup used by the
+// automatic-probe scope gate.
+func globalIsRecentlyUsedModel(rawModel string) (used, available bool) {
+	if m := globalModelTier.Load(); m != nil {
+		return m.IsRecentlyUsedModel(rawModel)
+	}
+	return false, false
+}
+
+// RecentUsageCount is a small diagnostic helper (observability parity with
+// StaticCount / UsageCount).
+func (m *ModelTier) RecentUsageCount() int {
+	if fs := m.cur.Load(); fs != nil {
+		return len(fs.recent)
+	}
+	return 0
 }
 
 // FeaturedQueuePriority returns the Priority to use when enqueuing a probe for a

@@ -31,7 +31,11 @@ func resolve(ctx context.Context, db pgxmock.PgxPoolIface, credID int) (string, 
 }
 
 // TestData_RecoveryBackoffSpecRegistered 钉恢复 SLA 旋钮的登记面：默认 300s、
-// 可调范围 60..21600（21600 = 纯配置回退到旧长尾 5m→1h→2h→6h 的档位）。
+// 可调范围 60..3600。
+//
+// ★ 2026-11-26（探测回退周期上限轮）：上界由 21600（6h）压到 3600（1h）——
+//   通用回退梯的末档已压到 1h ⇒ 本键开到 1h 以上不再产生任何效果 ⇒⇒ 上界
+//   随之收紧，避免「旋钮可调但无效」的脱节口径。
 func TestData_RecoveryBackoffSpecRegistered(t *testing.T) {
 	var found *settings.Spec
 	for _, s := range settings.ProbeSpecs() {
@@ -49,8 +53,8 @@ func TestData_RecoveryBackoffSpecRegistered(t *testing.T) {
 	if found.Min == nil || *found.Min != 60 {
 		t.Errorf("Min = %v, want 60", found.Min)
 	}
-	if found.Max == nil || *found.Max != 21600 {
-		t.Errorf("Max = %v, want 21600（纯配置回退档）", found.Max)
+	if found.Max == nil || *found.Max != 3600 {
+		t.Errorf("Max = %v, want 3600（探测回退上限 1h）", found.Max)
 	}
 }
 

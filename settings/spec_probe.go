@@ -94,13 +94,17 @@ func ProbeSpecs() []*Spec {
 			Scope:           ScopePlatform,
 			Category:        CategoryProbe,
 			Min:             floatPtr(300),
-			Max:             floatPtr(86400),
-			Default:         7200,
-			Description:     "探测退避最大秒数",
-			DescriptionLong: "指数退避的上限（秒），重试间隔不会超过此值。",
-			Unit:            "秒",
-			DangerLevel:     Safe,
-			HotReload:       true,
+			// ★2026-11-26（探测回退周期上限轮）：上界压到 3600（1h）。
+			//  指数退避是**探测重试梯**之一 ⇒ 「探测回退最多不超过 1 小时」
+			//   要求它在配置面也无法被调到 1h 以上（否则上界只是默认值口径，
+			//   旋钮一转就破口）。
+			Max:         floatPtr(3600),
+			Default:     3600,
+			Description: "探测退避最大秒数",
+			DescriptionLong: "指数退避的上限（秒），重试间隔不会超过此值。★ 2026-11-26 起上限与默认值均为 3600（1h）：探测回退周期的总口径是「逐层回退、最多不超过 1 小时」，本键是其中一条指数梯，与通用梯（bg/probe_backoff.go 的 NodeProbeBackoffChain，末档 1h）互相独立、同时受同一上限约束。",
+			Unit:        "秒",
+			DangerLevel: Safe,
+			HotReload:   true,
 		},
 		{
 			Key:             "probe.backoff_multiplier",
@@ -210,17 +214,20 @@ func ProbeSpecs() []*Spec {
 			Scope:    ScopePlatform,
 			Category: CategoryProbe,
 			Min:      floatPtr(60),
-			// ★ 上界取 21600（6h）＝ 2026-09-25 P0-2 长尾的最大一级
-			//   ⇒ ⇒ 把本旋钮调到 21600 就能**纯配置**回到旧口径（见下 DescriptionLong）。
-			Max:         floatPtr(21600),
+			// ★2026-11-26（探测回退周期上限轮）：上界从 21600（6h）压到 3600（1h）。
+			//  本键是网络/瞬时类长尾的**上限旋钮**；通用回退梯的末档已压到 1h
+			//  ⇒ ⇒ 本键调到 1h 以上**不再有任何效果**（梯子先封顶）
+			//  ⇒ ⇒ 继续允许 21600 会让「旋钮可调区间」与「实际效果」脱节
+			//  ⇒ ⇒ 上界同步压到 3600。
+			Max:         floatPtr(3600),
 			Default:     300,
 			Description: "可恢复探测退避上限（秒）",
-			DescriptionLong: "瞬时/网络/5xx 等非永久失败的自动探测重试间隔**上限**（默认 300=5 分钟）。长尾仍是渐进的 5m→1h→2h→6h，但每一级都被削到本上限 ⇒ 默认下恒为 5 分钟，以便供应商恢复后约 5 分钟内被重新探测到。永久类（404/协议/配额固定节奏）不受此上限约束。" +
-				" ★ ★ 回退路径（纯配置、不用改代码）：★ 本旋钮调到 21600（6h）⇒ 长尾恢复成 2026-09-25 P0-2 的原梯 5m→1h→2h→6h；★ 调到 60 ⇒ 退化成短梯封顶。★ 所以这次口径变更是**可逆的**。" +
+			DescriptionLong: "瞬时/网络/5xx 等非永久失败的自动探测重试间隔**上限**（默认 300=5 分钟）。长尾仍是渐进的，但每一级都被削到本上限 ⇒ 默认下恒为 5 分钟，以便供应商恢复后约 5 分钟内被重新探测到。永久类（404/协议/配额固定节奏）不受此上限约束。" +
+				" ★ ★ 2026-11-26 口径变更：★通用回退梯（bg/probe_backoff.go 的 NodeProbeBackoffChain）末档已由 6h 压到 **1h** ⇒ ⇒ 本键调到 3600 以上**不再产生任何效果**（通用梯先封顶）⇒ ⇒ 上界随之从 21600 压到 3600，避免「旋钮可调但无效」的脱节口径。★ 2026-09-25 P0-2 的 5m→1h→2h→6h 原长尾**不再能纯配置回退**（要恢复需改通用梯本身）。★ 调到 60仍是退化成短梯封顶。" +
 				" ★ 代价（必须一起看）：★ 2026-09-25 P0-2 实测 60s 档滞留 45 对（connection_error/503/timeout/500），长尾化落地后 node_probe_runs ~5,000/h→~1,610/h。" +
 				" ★ 本旋钮把长尾封顶从 6h 改到默认 5m ⇒ ★ 对【持续故障的对】稳态频率由 1 次/6h 变 1 次/5m（★ 72×）⇒ 以那 45 对计 ≈ +530 次/h（★ 约合 1,610/h 基线的 +33%）。" +
 				" ★ 另一项同轮成本（2026-11-06 审计 P-8 补记）：recoveringSweeper 扫描周期由 30m 收紧到 5m ⇒ 持续故障对的最坏验证探测量上限由 480/day 升至 2,880/day（6×）；两项叠加请以 dashboard 的 node_probe_runs 频率实测为准。" +
-				" ★ 换来的好处：供应商恢复后 ≤5 分钟内被复检（原先最长 6h）。★ 成本敏感的部署请把本旋钮调到 3600（1h）——恢复发现慢 6 倍，探测量回到 P0-2 之后的水平。",
+				" ★ 换来的好处：供应商恢复后 ≤5 分钟内被复检。",
 			Unit:        "秒",
 			DangerLevel: Safe,
 			HotReload:   true,
@@ -231,11 +238,11 @@ func ProbeSpecs() []*Spec {
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
 			Category:        CategoryProbe,
-			Min:             floatPtr(7), // 一代队列任务的最深梯级（nodeProbeMaxAttempts）
+			Min:             floatPtr(5), // 一代队列任务的最深梯级（nodeProbeMaxAttempts，2026-11-26 起为 5）
 			Max:             floatPtr(1000),
-			Default:         21, // 3 代完整梯走完仍零成功 ⇒ 判持续失败
+			Default:         15, // 3 代完整梯走完仍零成功 ⇒ 判持续失败（3 × 5 档）
 			Description:     "持续失败升级的尝试阈值",
-			DescriptionLong: "node-probe 失败的 attempt 是跨代持续的（=node_probe_state.consecutive_failures+1，2026-09-26 P0-2）。attempt ≥ 本阈值且梯级本会被 probe.recovery_max_backoff_seconds 削平时，复检间隔升级到 probe.sustained_failure_recheck_seconds（默认 1h）而不是恒 5 分钟——「新失败 5 分钟内复检」的恢复 SLA 保留，只在**持续失败**（默认 21 次 ≈ 一小时级零成功）时放慢盲探。恢复感知不降级：配额/可用性恢复事件仍即时回拉（RearmCredentialFailures），业务成功仍立即停放。7=最早生效（第一代任务末段）。",
+			DescriptionLong: "node-probe 失败的 attempt 是跨代持续的（=node_probe_state.consecutive_failures+1，2026-09-26 P0-2）。attempt ≥ 本阈值且梯级本会被 probe.recovery_max_backoff_seconds 削平时，复检间隔升级到 probe.sustained_failure_recheck_seconds（默认 1h）而不是恒 5 分钟——「新失败 5 分钟内复检」的恢复 SLA 保留，只在**持续失败**时放慢盲探。恢复感知不降级：配额/可用性恢复事件仍即时回拉（RearmCredentialFailures），业务成功仍立即停放。★ 2026-11-26：通用回退梯末两级（2h/6h）被移除 ⇒ 一代任务的最深梯级由 7 变 5 ⇒ 本键下限随之 7→5、默认值由 21（3×7）改为 15（3×5）⇒ 「三代完整梯」这条口径保持不变。5=最早生效（第一代任务末段）。",
 			Unit:            "次",
 			DangerLevel:     Safe,
 			HotReload:       true,
@@ -253,7 +260,8 @@ func ProbeSpecs() []*Spec {
 				"★ 实测背景（2026-11-20，211）：apiclaude 凭据 56 对 claude-sonnet-5-5 连回 403 INSUFFICIENT_BALANCE，通用梯子对着一个余额已耗尽的节点每轮注定失败 ⇒ 20 个模型对各连败 175~489 次、每 3 小时一轮空打。" +
 				"★ 绑定面的冷却时长与探针自己的下一跳**取同一个数**（bg/probe_recovery_policy.go quotaVerdict.horizon）⇒ 绑定面不再写「5 分钟后复检」而探针 3 小时后才动的假账。" +
 				"★ 恢复感知不降级：凭据级余额复检探针（bg/balance_quota_probe.go）发现充值 ⇒ RearmCredentialFailures 立即回拉本对的失败行 ⇒ 泵 30s 内接管验证。" +
-				"★ 调小=更频繁复检（更贵、余额耗尽时是注定失败的请求）；调大=更省但充值后回拉更依赖事件。周期族（KindQuotaPeriodic）不受本键影响——它钉在上游给出的重置点+60s。",
+				"★ 调小=更频繁复检（更贵、余额耗尽时是注定失败的请求）；调大=更省但充值后回拉更依赖事件。周期族（KindQuotaPeriodic）不受本键影响——它钉在上游给出的重置点+60s。" +
+				"★ ★ 2026-11-26 登记（诚实边界）：本键是**配额族的固定重查节奏**，**不是**逐层回退梯 ⇒ ⇒ 「探测回退周期最多不超过 1 小时」的口径覆盖的是通用梯与指数梯（末档均 1h），**不覆盖**本键（默认 6h）。★ 理由：调小本键会让「余额已耗尽」的绑定以更密频率去打注定失败的请求（2026-11-20 实测：56 对连败 175~489 次、每3 小时一轮空打）⇒ 与本轮「压探测成本」的目标相反。★ 若 owner 要求全口径 ≤1h，把本键调到 3600 即可（纯配置，无需改代码）。",
 			Unit:        "秒",
 			DangerLevel: Safe,
 			HotReload:   true,
@@ -264,10 +272,10 @@ func ProbeSpecs() []*Spec {
 			Scope:           ScopePlatform,
 			Category:        CategoryProbe,
 			Min:             floatPtr(300), // 不得低于恢复 SLA 下限
-			Max:             floatPtr(86400),
+			Max:             floatPtr(3600),
 			Default:         3600,
 			Description:     "持续失败对的复检间隔（秒）",
-			DescriptionLong: "attempt 达到 probe.sustained_failure_attempt_threshold 后，可恢复类失败的下次自动复检间隔（默认 3600=1h；绑定冷却 unavailableBindingHorizon 同步升级）。实测背景（2026-11-07，211）：SLA 封顶把持续故障对钉在 ~5 分钟一探 ⇒ 单对 ~480 次/天、consecutive_failures 累积至 ~1000 仍不停（spec 里 probe.recovery_max_backoff_seconds 已登记该 72× 成本）。调大=更省但恢复发现更慢；调到 300=回到恒 5 分钟口径（等效关闭升级）——★ 注意该等价只在 probe.recovery_max_backoff_seconds=300（默认）时成立：若把恢复 SLA 调大，本键的有效值会被 SLA 下限托起（bg/probe_recovery_policy.go 的 sustainedFailureRecheck 以 SLA 为下限）⇒ 「300=关闭升级」的说法不适用。",
+			DescriptionLong: "attempt 达到 probe.sustained_failure_attempt_threshold 后，可恢复类失败的下次自动复检间隔（默认 3600=1h；绑定冷却 unavailableBindingHorizon 同步升级）。实测背景（2026-11-07，211）：SLA 封顶把持续故障对钉在 ~5 分钟一探 ⇒ 单对 ~480 次/天、consecutive_failures 累积至 ~1000 仍不停（spec 里 probe.recovery_max_backoff_seconds 已登记该 72× 成本）。调大=更省但恢复发现更慢；调到 300=回到恒 5 分钟口径（等效关闭升级）——★ 注意该等价只在 probe.recovery_max_backoff_seconds=300（默认）时成立：若把恢复 SLA 调大，本键的有效值会被 SLA 下限托起（bg/probe_recovery_policy.go 的 sustainedFailureRecheck 以 SLA 为下限）⇒ 「300=关闭升级」的说法不适用。★ 2026-11-26：本键同时是回退梯的**持续失败档封顶**（bg/probe_recovery_policy.go 的 capRecoverBackoffForAttempt）⇒ 为兑现「探测回退周期最多不超过 1 小时」，上界由 86400 压到 3600 ⇒ 本键**调不到** 1h 以上（默认 3600 本身即 1h）。",
 			Unit:            "秒",
 			DangerLevel:     Safe,
 			HotReload:       true,
@@ -356,15 +364,47 @@ func ProbeSpecs() []*Spec {
 			DangerLevel:     Safe,
 			HotReload:       true,
 		},
+
+		// ── 自动探测作用域（2026-11-26 探测工作模式修正轮） ────────────────
+		{
+			Key:             "probe.full_model_probe",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Default:         false,
+			Description:     "模型全量探测",
+			DescriptionLong: "自动探测的**模型全集**开关。false（默认）⇒ 只探测「近 7 天被客户端正常调用过」的模型 + 运维静态精选清单（routing_policy.featured_models 等）里的模型；「不知状态」（既没被精选、近期也没有真实业务用量）的模型一律不自动探测，需要时手工探。true ⇒ 连「不知状态」的模型也纳入自动探测（回到 2026-11-26 之前的行为）。" +
+				"★ 「被客户端正常调用」的判定口径（bg/probe_model_scope.go）：统计会话族（session_turns ∪ session_turns_hot）近 7 天的**业务**流量，并**排除探测自身流量**（origin_stage='business' AND task_type<>'probe_triggered' AND origin_actor 不在探针 actor 词表）⇒ ⇒ 探测不会把自己的流量算成「使用」，模型不会因为被反复探测而永久留在范围内。" +
+				"★ ★ 诚实登记：本键为 true 时**不能**突破「图形类/视频类默认不探测」那道门（见 probe.multimodal_auto_probe）—— 两个开关是**正交**的：full_model_probe 管「模型全集的宽窄」，multimodal_auto_probe 管「媒体生成这一类是否参与」。★ 本键为 false 时静态精选清单仍被豁免（运维显式策展的白名单），这是对「只探测 7 天内被正常调用的模型」的一处**有意偏离**，登记在此供 owner 复议。",
+			Unit:            "",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
+		{
+			Key:             "probe.multimodal_auto_probe",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Default:         false,
+			Description:     "多模态（图形/视频类）模型自动探测",
+			DescriptionLong: "false（默认）⇒ **图形类、视频类模型不参与自动探测**（识别器：bg/probe_multimodal_model.go，按生产库真实模型清单整词匹配，并豁免 nvidia/ai-synthetic-video-detector 这类「名字带 video 但实为分类器」的模型）。true ⇒ 这些模型照常按作用域门参与自动探测。★ 理由：媒体生成模型的单次探测成本远高于文本探针（一次真实出图/出片），而自动探测是**周期性**发生的 ⇒ 成本不可忽略（2026-11-26 实测：gpt-image 家族的请求100% 是网关自己的探针流量，业务流量 0 条）。" +
+				"★ ★ 诚实登记：本键为 false 时，图形/视频类模型的**凭据恢复状态不再被自动更正**（上游恢复后，绑定仍可能停在 unavailable）⇒ ⇒ 需要时置本键为 true，或由运维手工触发探测。★ 本键**不影响**手工探测（admin 手工探测从不过作用域门）。",
+			Unit:            "",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
 	}
 }
 
 // ── P0-2 accessors ───────────────────────────────────────────────────────
 
 // ProbeNetworkChainLongTail returns whether the network-class short backoff
-// ladder long-tails into the generic ladder (5m→1h→2h→6h) after the 4 short
-// steps (5s/15s/30s/60s) instead of capping at 60s forever. ProbeBackoffForKind
+// ladder long-tails into the generic ladder after the 4 short steps
+// (5s/15s/30s/60s) instead of capping at 60s forever. ProbeBackoffForKind
 // reads this on every call so the kill-switch is hot-reloadable.
+//
+// ★ 2026-11-26（探测回退周期上限轮）：长尾档位随通用梯末档由 6h 压到 **1h**
+// 而变化 —— 通用梯现为 5s→30s→60s→5m→1h ⇒ 网络长尾取通用梯的 [5m,1h] 尾段。
 func ProbeNetworkChainLongTail() bool {
 	return GetPlatformBool("probe.network_chain_long_tail", true)
 }
@@ -377,4 +417,45 @@ func ProbeNetworkChainLongTail() bool {
 // storm without restarting.
 func ProbeRequestFailureMinGapSeconds() int {
 	return GetPlatformInt("probe.request_failure_min_gap_seconds", 60)
+}
+
+// ── 探测作用域访问器（2026-11-26 探测工作模式修正轮） ─────────────────────
+
+// ProbeFullModelProbe returns whether automatic probing covers models with
+// unknown status (no static featured entry AND no recent business usage).
+//
+// false (default) ⇒ the automatic-probe scope is limited to models that real
+// business traffic called within the last 7 days, plus the operator-curated
+// featured list. true ⇒ every model is a candidate again.
+//
+// Read on every scope decision so the switch is hot-reloadable.
+func ProbeFullModelProbe() bool {
+	return GetPlatformBool("probe.full_model_probe", false)
+}
+
+// ProbeMultimodalAutoProbe returns whether graphics-generation and
+// video-generation models take part in automatic probing.
+//
+// false (default) ⇒ they are skipped (their per-probe cost is orders of
+// magnitude above a text probe). true ⇒ they follow the normal scope gate.
+//
+// Read on every scope decision so the switch is hot-reloadable.
+func ProbeMultimodalAutoProbe() bool {
+	return GetPlatformBool("probe.multimodal_auto_probe", false)
+}
+
+// ProbeSustainedFailureAttemptThreshold returns the cross-generation attempt
+// count at which the recovery SLA stops compressing the probe ladder.
+//
+// ★ 单源存在这里的理由（2026-11-26）：这个阈值有两个读者 ——
+// bg/probe_recovery_policy.go 的 capRecoverBackoffForAttempt，以及
+//   domains/streaming/executors/executor.go 的 recordModelNotFound ——
+//   而**后者不能 import bg**（bg → domains/streaming → bg 会成环，
+//   见 bg/active_probe_emitter.go 的注释）⇒ ⇒ 把读取点提到 settings，
+//   两边共用同一个 getter ⇒ ⇒ 两边的默认值不会分叉。
+//
+// ★ 2026-11-26：默认值 21 → **15**（通用回退梯末两级移除 ⇒ 一代任务
+//   最深梯级 7 → 5 ⇒ 「三代完整梯」= 3 × 5 = 15，与原先 3 × 7 = 21 同义）。
+func ProbeSustainedFailureAttemptThreshold() int {
+	return GetPlatformInt("probe.sustained_failure_attempt_threshold", 15)
 }

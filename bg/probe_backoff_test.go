@@ -111,8 +111,8 @@ func TestDefaultBackoff_NonZero(t *testing.T) {
 	if DefaultBackoff.BaseDelay != 5*time.Minute {
 		t.Errorf("DefaultBackoff.BaseDelay = %v, want 5m", DefaultBackoff.BaseDelay)
 	}
-	if DefaultBackoff.MaxDelay != 2*time.Hour {
-		t.Errorf("DefaultBackoff.MaxDelay = %v, want 2h", DefaultBackoff.MaxDelay)
+	if DefaultBackoff.MaxDelay != 1*time.Hour {
+		t.Errorf("DefaultBackoff.MaxDelay = %v, want 1h (2026-11-26: probe backoff ceiling is 1 hour)", DefaultBackoff.MaxDelay)
 	}
 }
 

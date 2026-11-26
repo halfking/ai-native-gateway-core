@@ -1500,3 +1500,60 @@ CASE
        AND TRIM(COALESCE(rl.error_kind, '')) = ''                 THEN 'non_terminal'
   ELSE 'genuine_loss'
 END`
+
+// SessionFamilyTurnsModelNamesSourceSQL renders a **lean** two-arm session
+// family source (hot ∪ parent) that exposes ONLY the model-name columns plus
+// the three columns the probe-traffic exclusion predicate needs.
+//
+// ★★ 为什么要有这个瘦源（2026-11-26 真库实测，154 生产库）：
+//
+//	全投影源（SessionFamilyTurnsSourceLowerBoundSQL / …HotSourceSQL）渲染
+//	**118 列**并带 `LEFT JOIN session_turn_details` ⇒ ⇒ 同一个 7 天窗口：
+//
+//	  全投影 + details 连接 = **34.33 秒**（711 万次 details索引点查）
+//	  瘦源（不连 details）   = **0.57 秒**
+//
+//	⇒ 60 倍差距的成因**只有一个**：details 左连接（探针排除谓词要的
+//	origin_stage / task_type / origin_actor 全在 turns 表上，根本不需要
+//	details）。⇒ ⇒ 缓存填充这类「只需要模型名」的读点必须走瘦源。
+//
+// ★ 列口径（为什么是这三列）：
+//
+//   - outbound_model  ← t.model        ——真正发往上游的模型（探针目标的
+//     形态最接近它：探针打的是 provider 侧 raw 名）。
+//   - canonical_model ← t.canonical_model —— canonical 别名。
+//   - raw_model_name  ← t.raw_model_name —— 客户端侧请求名。
+//
+// ★ 为什么**不含** client_model（它只在 details 表上）：生产库抽样 5,000 行
+//
+//	实测，`t.raw_model_name` 与 `d.client_model` 仅 **95 行（1.9%）**不同
+//	⇒ ⇒ raw_model_name 是 client_model 的等价替身 ⇒ ⇒ 为1.9% 的名字
+//	覆盖率去付 60 倍的查询代价不划算。★ 诚实登记：本源比全投影源少一个
+//	模型名列（client_model）。
+//
+// ★ 探针排除谓词仍可用：origin_stage / task_type / origin_actor 三列都在
+//
+//	turns 表上，且谓词自带 COALESCE（投影里同样是 COALESCE 形态）⇒ ⇒ 谓词
+//	在瘦源上与在全投影源上**逐字等价**。
+//
+// ★ 参数：pdFrom 是拼进两臂的分区键下界 SQL 片段（与调用方的 ts 谓词同源
+//
+//	⇒ 不丢行；见 SessionFamilyTurnsSourceLowerBoundSQL 的证明）。
+//	空串 ⇒ 不加分区裁剪（宁可多扫也不要拼出坏 SQL）。
+func SessionFamilyTurnsModelNamesSourceSQL(pdFrom string) string {
+	cols := "t.raw_model_name AS raw_model_name, " +
+		"t.model AS outbound_model, " +
+		"t.canonical_model AS canonical_model, " +
+		"t.origin_stage AS origin_stage, " +
+		"t.task_type AS task_type, " +
+		"t.origin_actor AS origin_actor, " +
+		"t.ts AS ts"
+	win := ""
+	if strings.TrimSpace(pdFrom) != "" {
+		win = " WHERE t.partition_date >= " + pdFrom
+	}
+	return "(SELECT " + cols +
+		" FROM public.session_turns_hot t" + win +
+		" UNION ALL SELECT " + cols +
+		" FROM public.session_turns t" + win + ")"
+}

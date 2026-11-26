@@ -76,9 +76,19 @@ func withP02Backoff(t *testing.T, backoffSeconds int) {
 	settings.Global = registry
 }
 
+// TestNetworkChain_BackoffKnobRestoresP02Ladder pins how far the
+// recovery-SLA knob can still push the network long tail.
+//
+// ★ 2026-11-26（探测回退周期上限轮）：通用回退梯的末两级（2h / 6h）被
+//   移除 ⇒ 通用梯现为 [5s,30s,60s,5m,1h] ⇒ 网络长尾尾段由
+//   [5m,1h,2h,6h] 变成 [5m,1h]。
+//   ⇒ ⇒ **本旋钮再也回不到 P0-2 的 5m→1h→2h→6h 原梯**：通用梯先封顶
+//   在 1h，旋钮开到 1h 以上也不再有效果（2026-09-25 那条「纯配置可回退」
+//   的性质随之作废，已在 settings/spec_probe.go 的自述里同步改掉）。
+//   ⇒ 这条门现在钉的是**新的天花板**：旋钮开到 3600 ⇒ 长尾 = 5m→1h→1h…
 func TestNetworkChain_BackoffKnobRestoresP02Ladder(t *testing.T) {
-	// ① 旋钮开到 21600（6h）⇒ 长尾逐字回到 P0-2 原梯 5m→1h→2h→6h
-	withP02Backoff(t, 21600)
+	// ① 旋钮开到 3600（1h，本键的上界）⇒ 长尾走到通用梯的末档 1h
+	withP02Backoff(t, 3600)
 	cases := []struct {
 		attempt int
 		want    time.Duration
@@ -86,15 +96,15 @@ func TestNetworkChain_BackoffKnobRestoresP02Ladder(t *testing.T) {
 		{4, 60 * time.Second},
 		{5, 5 * time.Minute},
 		{6, time.Hour},
-		{7, 2 * time.Hour},
-		{8, 6 * time.Hour},
-		{9, 6 * time.Hour},
-		{50, 6 * time.Hour},
+		{7, time.Hour},
+		{8, time.Hour},
+		{9, time.Hour},
+		{50, time.Hour},
 	}
 	for _, c := range cases {
 		got := networkProbeBackoff(c.attempt)
 		if got != c.want {
-			t.Fatalf("networkProbeBackoff(%d) = %v, want %v (★ 旋钮开到 21600 ⇒ 必须回到 P0-2 原梯)",
+			t.Fatalf("networkProbeBackoff(%d) = %v, want %v (★ 旋钮开到 3600 ⇒ 长尾封顶在通用梯末档 1h)",
 				c.attempt, got, c.want)
 		}
 	}
@@ -174,9 +184,10 @@ func TestNetworkChain_LongTailSink(t *testing.T) {
 			}
 		}
 	}
-	// 通用梯不受长尾化影响（auth 类沿 7 步梯沉底，是 2026-09-25 复审确认的现行行为）。
-	if got := ProbeBackoffForKind("", 7); got != 6*time.Hour {
-		t.Fatalf("generic ladder attempt 7 = %v, want 6h (must be unchanged)", got)
+	// 通用梯不受长尾化影响，但受**回退上限**约束（2026-11-26：通用梯末档
+	// 由 6h 压到 1h ⇒ attempt ≥ 5 一律停在 1h）。
+	if got := ProbeBackoffForKind("", 7); got != 1*time.Hour {
+		t.Fatalf("generic ladder attempt 7 = %v, want 1h (2026-11-26 backoff ceiling)", got)
 	}
 
 	// 开关关闭 = 旧短梯行为（60s 永续），供回滚。

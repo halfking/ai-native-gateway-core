@@ -30,7 +30,18 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 164 处（v1 0 文件/0 处、canonical 66/134、unresolved 15/30、v1arm 0/0）
+//	全仓拼接点 166 处（v1 0 文件/0 处、canonical 66/136、unresolved 15/30、v1arm 0/0）
+//
+//	（2026-11-26 刷新：164 → 166（canonical 65 → 66 文件 / 134 → 136 处）。
+//	  ★ 唯一增量 = 并行车 2026-11-26 12:0x 的 PI 分析取证轮新增
+//	    admin/pi_analysis_evidence.go（2 处 `FROM ` + logsSourceFromSQL() + ` rl`）
+//	    ⇒ 已补登记判定（读源码定级：两臂都是会话族 ⇒ canonical）。
+//	  ★ **方向判据**：三个桶**没有一个变小** ⇒ 不是「扫描范围被改小 / 解析失败被吞」
+//	    ⇒ 方向 = 变大 =「把看不见变成看得见」⇒ 按门规改数字即可。
+//	  ★ 该 +2 **与本轮我方改动无关**：已用 origin/main 原树对拍坐实（同一组数字
+//	    在上游树上逐字复现）⇒ ⇒ 属「代上游收口」。
+//	  ⚠ 顺带订正：本行的 canonical 文件数此前写着 66、而下面的 documentedSnapshot
+//	    写着 65 —— **注释与快照两处各走各的**（事实源漂移家族）⇒ 本轮一并对齐。）
 //
 //	（2026-11-18 刷新：161 → 164（unresolved 14 → 15 文件 / 27 → 30 处；
 //	  canonical 66/134 与两个 v1 桶**逐字未动**）。
@@ -457,6 +468,20 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"**默认臂读 `request_logs_bodies_with_current_month`**（890 已删的 v1-only 视图）。",
 		Consequence: "★ 默认臂 42P01（视图已被 890 删除）⇒ 查询**直接报错**。" +
 			"（退役前那版写的是「降级的是正文两列、不是行数」，那是「表还在但被清空」时代的形态。）",
+	},
+	// 2026-11-26（探测工作模式修正轮 · 代上游收口）：并行车 2026-11-26 12:0x
+	// 的 PI 分析取证轮新增本文件 ⇒ 工具报出 2 处拼接点、而清单里没有判定
+	// ⇒ ⇒ 「清单覆盖」门与「三桶快照」门同时红 ⇒ 本轮补登记（**读源码定级**，
+	// 不是抄工具输出）。
+	"admin/pi_analysis_evidence.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "2 处（369/493 行）：`FROM ` + logsSourceFromSQL() + ` rl`。" +
+			"★ logsSourceFromSQL（admin/logs_turns_source.go:115）两臂：开关开 ⇒ " +
+			"`db.SessionFamilyTurnsSourceSQL() + \" rl\"`（会话族两臂原生读面）；" +
+			"开关关 ⇒ `\"request_logs_with_current_month rl\"`（890 之后的 canonical 视图）。",
+		Consequence: "与 v1 无关（两臂都是会话族：原生臂或 canonical 视图）。" +
+			"★ 退役后形态：v1 族 `_request_logs*` 整体退役（890）⇒ ⇒ 两个臂都不读 v1 ⇒ 退役对本文件**无影响**。" +
+			"★ 本文件其余读点（candidate_failure_logs_hot / error_playbook_entries）是**字面量**读，不在本工具口径内。",
 	},
 	"admin/session_sanitize_matches.go": {
 		Verdict: verdictCanonicalOnly,
@@ -1708,7 +1733,18 @@ var documentedSnapshot = bucketSnapshot{
 	//   ⇒ 方向 = **变大** =「把看不见变成看得见」⇒ 按本文件自己的规则改数字即可。
 	//   ★ 三处新增拼接点拼进去的都是**探针状态表**（v_node_probe_state_compat /
 	//   model_probe_state）⇒ 无 v1 读方，退役清单不受影响。
-	TotalSites: 164,
+	// 2026-11-26（探测工作模式修正轮 · 代上游收口）：164 → 166。
+	// ★ 唯一增量 = 并行车 2026-11-26 12:0x 的 PI 分析取证轮新增
+	//   admin/pi_analysis_evidence.go（**2 处**拼接点：`FROM ` +
+	//   logsSourceFromSQL() + ` rl`，369/493 行）⇒ ⇒ canonical 文件 65 → 66、
+	//   canonical 处数 134 → 136、总处数 164 → 166。
+	// ★ **方向判据**：三个桶**没有一个变小** ⇒ 不是「扫描范围被改小 /
+	//   解析失败被吞」⇒ 方向 = 变大 =「把看不见变成看得见」⇒ 按门规改数字。
+	// ★ 与本轮**我方**改动无关（已用 origin/main 原树对拍坐实：同一组数字
+	//   在上游树上逐字复现 ⇒ ⇒ 这 +2 全是上游引入的）。
+	// ★ 我方本轮对 db/request_logs_view_schema.go 追加了一个瘦源 helper
+	//   ⇒ **该文件的处数未变**（原树对拍即证明）。
+	TotalSites: 166,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1728,8 +1764,8 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmSites: 0,
 	// 两个信用桶回填入口改读过账流水，移除两个间接日志读点。
 	// 已提交的会话探测三臂源包含两个间接读点，补登一个文件。
-	CanonFiles: 65,
-	CanonSites: 134,
+	CanonFiles: 66,
+	CanonSites: 136,
 	UnresFiles: 15,
 	UnresSites: 30,
 }

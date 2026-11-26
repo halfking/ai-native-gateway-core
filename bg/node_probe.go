@@ -91,7 +91,14 @@ import (
 
 const (
 	// nodeProbeMaxAttempts matches the length of NodeProbeBackoffChain.
-	nodeProbeMaxAttempts = 7
+	//
+	// ★ 2026-11-26（探测回退周期上限轮）：7 → 5。通用回退梯的末两级
+	//   （2h / 6h）被移除 ⇒ 链长 7 → 5 ⇒ 本常量必须同步（它与链长是
+	//   绑定关系：一条队列任务的 attempt 上限 = 通用梯的档数）。
+	//   ⇒ 一代任务走完 5 档（5s→30s→60s→5m→1h）后交棒给
+	//   probe.sustained_failure_recheck_seconds（默认 1h）⇒ ⇒ 持续失败
+	//   的对，下一次自动探测**最多等 1 小时**。
+	nodeProbeMaxAttempts = 5
 
 	// 30s is a safety-net scan; Submit also wakes the worker immediately.
 	nodeProbeTickInterval = 30 * time.Second
@@ -978,7 +985,7 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	// ID; ON CONFLICT DO NOTHING preserves any in-flight backoff (no collapse).
 	// next_run_at = now+5s mirrors the legacy "first retry in 5s" arming; the
 	// queue worker's completeFailure advances the 7-step chain on subsequent
-	// failures. MaxAttempts caps the chain at nodeProbeMaxAttempts (7).
+	// failures. MaxAttempts caps the chain at nodeProbeMaxAttempts (5).
 	if w.probeQueue != nil {
 		w.submitViaQueue(credID, model, tenantID, parentReqID)
 		return
@@ -2773,7 +2780,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	}
 	attempt := state.ConsecutiveFailures + 1
 	// 2026-07-15 P0 fix: previously the worker paused the row forever
-	// after nodeProbeMaxAttempts (7) consecutive failures, with no
+	// after nodeProbeMaxAttempts (5) consecutive failures, with no
 	// way to unpause except a manual UPDATE. That meant a cred that
 	// genuinely recovered (e.g. upstream transient) stayed hidden
 	// from the router for hours/days, contributing to the

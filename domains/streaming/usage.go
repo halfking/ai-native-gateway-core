@@ -504,12 +504,13 @@ func calcCostWithConvention(input CostInput, conv CacheTokenConvention) *float64
 	// 改动已记账的金额，属于运营决定，不在这里悄悄改。
 	// 这一行只保证「不再产出负数」，并留下唯一可定位的信号。
 	if total < 0 {
-		// ★ 把**假定**的口径写进日志。2026-10-06 实测：
-		//   `Convention` 已铺到 CostPriceInput，但生产侧**没有任何调用方设置它**
+		// ★ 把**假定**的口径写进日志。2026-10-06 实测首次发现：
+		//   `Convention` 已铺到 CostPriceInput，但当时生产侧**没有任何调用方设置它**
 		//   （handler.go 的 AssignRequestCost 调用不传）⇒ 永远是零值。
+		//   【2026-11-26 更新】：handler.go:8060 已修复，现在通过
+		//   CacheTokenConventionForProtocol(result.Candidate.Protocol) 传入正确的口径。
+		//   但如果协议识别失败或价格配置错误，仍可能出现负值，所以保留此守卫。
 		//   这一点必须出现在日志里，否则读日志的人会以为「已经按协议归一化过了」。
-		//   `conv.String()` 在此之前只有判据在用（生产零调用者）⇒ 它是死代码，
-		//   补上这个调用既是让日志说话，也是让这条路径真的活起来。
 		slog.Warn("cost computation negative — token 口径与本公式的假定不一致，"+
 			"本次不记成本（按「算不出来」处理，不按免费处理）",
 			"prompt_tokens", promptCount,
@@ -576,7 +577,24 @@ func AssignRequestCost(in CostPriceInput) (costUSD, costDisplay *float64, costCu
 		currency = in.Currency
 	}
 	currencyCopy := currency
-	usd := math.Round((*native/CNYToUSDFX)*1e8) / 1e8
+	
+	// 使用新的多币种转换函数
+	usdValue, err := settings.ConvertToUSD(*native, currency)
+	if err != nil {
+		// Fallback: 如果币种不支持，尝试使用旧的CNY逻辑（向后兼容）
+		if strings.EqualFold(currency, "CNY") {
+			usdValue = *native / CNYToUSDFX
+		} else {
+			// 记录警告但不阻塞成本记录
+			slog.Warn("currency conversion failed, cost_usd will be nil",
+				"currency", currency,
+				"error", err,
+				"supported_currencies", settings.SupportedCurrencies())
+			return nil, display, &currencyCopy
+		}
+	}
+	
+	usd := math.Round(usdValue*1e8) / 1e8
 	return &usd, display, &currencyCopy
 }
 
