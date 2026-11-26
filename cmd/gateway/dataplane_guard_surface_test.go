@@ -92,6 +92,7 @@ var routeLedger = map[string]struct {
 	"audioSpeechHandler":              {classRegisteredGap, "TTS 文本入音频出，输入侧未挂＝登记另案"},
 	"audioMCPHandler":                 {classRegisteredGap, "音频 MCP 工具面，登记另案"},
 	"audioTransformHandler":           {classRegisteredGap, "音频 refine/analyze 面，登记另案"},
+	"audioConverseHandler":            {classRegisteredGap, "级联语音会话面（音频入出），输入侧未挂＝登记另案（★ 与兄弟 audio 端点同处置：★ §704 轮音频族统一登记）"},
 }
 
 // muxRoute 是一条从 main.go 注册面扫出的路由。
