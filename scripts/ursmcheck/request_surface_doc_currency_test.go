@@ -256,9 +256,10 @@ type docEvidence struct {
 //	（⇒ 链体 9215-9234）＋ ★ 本车道探针第四处修正在**探针 worker 接线处**
 //	加了两个调用点（各 2 行；⇒ 链体 9210-9229）⇒ ★ 两笔**在合并树内叠加**
 //	⇒ ★ 本次最终值（★ 合并树逐锚点实测、★ 不是按位移量推算 ★）：
-//	main.go 链体 9204-9223（Recovery :9204、Auth :9220、SecurityHeaders :9223；
-//	★ 2026-11-26 合并轮：codex/211-statistics-v2-release 20 笔并入后第三十次重钉）、
-//	Logging 注释 9206-9213、maintain 注释 9159-9164；
+//	main.go 链体 9217-9237（NewBuilder :9217、Recovery :9218、Auth :9234、
+//	SecurityHeaders :9237；★ 2026-11-26 第二十八次重钉：上游 audio 会话端点提交
+//	4f5b0be72c 在链前净增 14 行 ⇒ 合并树逐锚点实测）、
+//	Logging 注释 9220-9227、maintain 注释 9173-9178；
 //	main_pipeline.go 启动日志 :1523、D09 合成/写回窗口 1030-1040（合成点 :1035）
 //	（★ 本轮 main_pipeline.go **无漂移** ⇒ 两处锚点沿用上一轮值 ★）。
 var requestSurfaceDocEvidence = []docEvidence{
@@ -285,7 +286,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 本车道 20 笔与上游 76 笔在同一合并树叠加 ⇒ ★ 逐锚点实测合并树：
 		// ★ Recovery **9204**、Auth **9220**、SecurityHeaders **9223**
 		// ★ ⇒ ★ 本门按现状重钉为 [9204,9223] ★。
-		file: "cmd/gateway/main.go", from: 9204, to: 9223,
+		file: "cmd/gateway/main.go", from: 9217, to: 9237,
 		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
 		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
 		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
@@ -320,7 +321,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了；★ 合并树逐行实测 ★）。
 		// ★★ 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：★
 		// ★ 合并树逐行实测 ⇒ ★ 自陈注释块漂到 **9206-9213** ⇒ ★ 重钉 [9206,9213] ★。
-		file: "cmd/gateway/main.go", from: 9206, to: 9213,
+		file: "cmd/gateway/main.go", from: 9220, to: 9227,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -349,7 +350,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ （★ 合并树逐行实测 ★）。
 		// ★★ 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：★
 		// ★ 合并树逐行实测 ⇒ ★ R49-A1 注释块漂到 **9159-9164** ⇒ ★ 重钉 [9159,9164] ★。
-		file: "cmd/gateway/main.go", from: 9159, to: 9164,
+		file: "cmd/gateway/main.go", from: 9173, to: 9178,
 		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
 		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
 		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页
