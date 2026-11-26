@@ -600,9 +600,18 @@ if [[ -n "$verify_line" && -n "$switch_line" && "$verify_line" -lt "$switch_line
 else
   bad "网页面验收不在切流之前（验收=${verify_line:-无} 切流=${switch_line:-无}）"
 fi
+watermark_line="$(grep -nF 'scripts/ops/wait-request-metrics-ready.py' "$SCRIPT" | cut -d: -f1)"
+v2_line="$(grep -nF 'scripts/ops/check-reconciliation-v2.py' "$SCRIPT" | cut -d: -f1)"
+if [[ -n "$watermark_line" && -n "$v2_line" && -n "$switch_line" &&
+      "$watermark_line" -lt "$v2_line" && "$v2_line" -lt "$switch_line" ]]; then
+  ok "V2 日对账验收在候选投影就绪之后、切流之前"
+else
+  bad "V2 日对账验收顺序错误（投影=${watermark_line:-无} V2=${v2_line:-无} 切流=${switch_line:-无}）"
+fi
 # 失败点必须走 dd_fail（= abort + 退出），不是裸 die
 for anchor in \
   'dd_fail "候选槽容器启动失败' \
+  'dd_fail "候选槽 V2 日对账验收失败' \
   'dd_fail "切流失败' \
   'dd_fail "公网入口验收失败' \
   'dd_fail "网页面验收失败'; do

@@ -319,17 +319,8 @@ run_maestro() {
     return 1
   fi
   
-  # 生成临时 env 文件
-  local env_file="/tmp/gate-maestro-env-$$.yaml"
-  cat > "$env_file" <<EOF
-appId: ai.native.llm-gateway
-env:
-  BASE_URL: "$GATE_BASE_URL"
-  ADMIN_USER: "$GATE_ADMIN_USER"
-  ADMIN_PASSWORD: "$GATE_ADMIN_PASSWORD"
-EOF
-  
-  local failed=0
+  local failed=0 log_dir
+  log_dir="$(mktemp -d "${TMPDIR:-/tmp}/gate-maestro.XXXXXX")" || return 1
   for flow in $GATE_MAESTRO_FLOWS; do
     local flow_glob="maestro/flows/${flow}-*.yaml"
     # ★ 用 compgen -G（bash ≥4 内建）判存在并取回匹配列表 ⇒ 不再依赖 `ls`，
@@ -349,22 +340,22 @@ EOF
     fi
 
     log "  运行 flow $flow..."
-    local log_file="/tmp/gate-maestro-flow-${flow}.log"
+    local log_file="${log_dir}/flow-${flow}.log"
 
     # 使用超时防止挂起（★ 可移植实现，见 run_with_timeout）
-    if run_with_timeout "${GATE_MAESTRO_TIMEOUT}" maestro test \
-      --env "$env_file" \
+    # Maestro 的 --env 接收 KEY=VALUE。复用 Web runner 解析动态路由并配置视口。
+    if BASE_URL="$GATE_BASE_URL" LLM_GATEWAY_ADMIN_USER="$GATE_ADMIN_USER" \
+      LLM_GATEWAY_ADMIN_PASSWORD="$GATE_ADMIN_PASSWORD" \
+      MAESTRO_REPORT_ROOT="${log_dir}/reports" \
+      run_with_timeout "${GATE_MAESTRO_TIMEOUT}" bash maestro/run-local.sh \
       $flow_files \
       > "$log_file" 2>&1; then
       ok "  flow $flow 通过"
     else
       err "  flow $flow 失败（日志：${log_file}）"
-      tail -20 "$log_file" >&2
       failed=1
     fi
   done
-  
-  rm -f "$env_file"
   
   if [[ $failed -eq 1 ]]; then
     err "G2: Maestro 回归失败"

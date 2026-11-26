@@ -332,7 +332,7 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "end_user_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户维度的会话数/活跃用户/30 天成本聚合（COUNT(DISTINCT identity_hash) / COUNT(DISTINCT end_user_id) / SUM(cost_usd)）；★ 本读点引用 cost_usd / customer_id / end_user_id / identity_hash / ts 五列，★ 按 db 权威投影文本（dbpkg.CanonicalSessionOnlyProjectionForTest()）实测五列**全部**是 t.* 底表直映（base）⇒ ⇒ 底表两臂窄投影可等价供给 ⇒ 不需要 details 腿、也不读任何恒 NULL 的 v1 遗留列"},
 			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "渠道下全部客户的汇总（CTE 取该渠道的客户，再按 customer_id 聚合会话数与成本）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
-			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户最近会话列表（DISTINCT ON (identity_hash) + MAX(ts) + COUNT(*) + SUM(cost_usd)）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户最近会话列表（GROUP BY identity_hash + MAX(ts) + COUNT(*) + SUM(cost_usd)）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
 		},
 	},
 	"admin/auto_title_generator.go": {

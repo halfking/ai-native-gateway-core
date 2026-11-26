@@ -585,7 +585,7 @@ if [[ -n "$VIA" ]]; then
             DD_PG_DB DD_PG_USER DD_PG_CONTAINER DD_PG_IMAGE DD_PGCOLUMNAR_VER \
             DD_REDIS_CONTAINER DD_REDIS_IMAGE DD_REDIS_DB_START DD_REDIS_DB_END \
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
-            DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
+            DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER \
             DD_SKIP_LOGIN_SMOKE DD_REQUIRE_REQUEST_METRICS DD_REQUEST_METRICS_WAIT_SECS LLM_GATEWAY_HARD_BLOCK_RULES \
             LLM_GATEWAY_PROBE_LANE_PHYSICAL LLM_GATEWAY_INGRESS_MAX_CONCURRENT \
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
@@ -826,6 +826,7 @@ if [[ -n "$VIA" ]]; then
       \( -name .git -o -name node_modules -o -name .build-local \
          -o -name .codegraph -o -name codegraph -o -name .audit-validation \
          -o -path ./logs -o -path ./run -o -path ./bin -o -path ./gateway \
+         -o -path ./maestro/reports \
          -o -path ./llm-gateway -o -path ./gateway-v2 -o -path ./quality-monitor \
          -o -path ./llm-gateway-go.linux.amd64 \
          -o -name '*.log' -o -name '.env' -o -name '.env.*' \
@@ -884,7 +885,8 @@ if [[ -n "$VIA" ]]; then
   if [[ -z "${DD_BUILD_SHA:-}" ]]; then
     die "部署机侧取不到构建提交号（DD_REPO_ROOT=$DD_REPO_ROOT 无 .git 或 git rev-parse 失败）⇒ 转发给目标机的号会是空 ⇒ 目标机将因 /version 身份不明而拒绝部署。两条出路：① 换一个带 .git 的部署树（LLM_GATEWAY_ROOT 指向它）；② 显式 export DD_BUILD_SHA=<8位提交号> 后重跑（运维声明的身份，不会追加 -dirty）。"
   fi
-  ssh "$VIA" "cd '$DD_REMOTE_ROOT' && DD_BUILD_SHA='${DD_BUILD_SHA}'${_dd_fwd} LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-seamless-docker.sh ${_dd_args}"
+  # Read the candidate login password from the encrypted SSH stream, not the process command line.
+  printf '%s\0' "${DD_ADMIN_PASSWORD:-}" | ssh -T "$VIA" "cd '$DD_REMOTE_ROOT' && IFS= read -r -d '' DD_ADMIN_PASSWORD && DD_ADMIN_PASSWORD=\"\$DD_ADMIN_PASSWORD\" DD_BUILD_SHA='${DD_BUILD_SHA}'${_dd_fwd} LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY='${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}' PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS:-}' bash scripts/deploy-seamless-docker.sh ${_dd_args}"
   _dd_rc=$?
   # 只有远端真的跑完了，才置完成标记（fail-closed 的另一半）。
   if [[ $_dd_rc -eq 0 ]]; then
@@ -3436,6 +3438,19 @@ if [[ "${DD_REQUIRE_REQUEST_METRICS:-0}" == "1" ]]; then
   fi
 fi
 
+dd_admin_login_body() {
+  local user="${DD_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
+  local pass="${DD_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-}}"
+  [[ -n "$pass" ]] || return 1
+  printf '%s\n%s' "$user" "$pass" | python3 -c 'import json,sys; u,p=sys.stdin.read().split("\n",1); print(json.dumps({"username":u,"password":p}))'
+}
+
+if [[ "$DD_TARGET" == "211" ]]; then
+  if ! dd_admin_login_body | python3 "$DD_REPO_ROOT/scripts/ops/check-reconciliation-v2.py" "$DD_CANDIDATE_PORT"; then
+    dd_fail "候选槽 V2 日对账验收失败"
+  fi
+fi
+
 # 版本戳与前端：部署成功后必须能读到本次构建痕迹（有 DD_BUILD_SHA 时）
 if ver_body="$(curl -fsS "http://127.0.0.1:${DD_CANDIDATE_PORT}/version" 2>/dev/null || true)"; then
   log "version: $(printf '%s' "$ver_body" | python3 -c 'import sys,json
@@ -3713,7 +3728,7 @@ dd_smoke_admin_login() {
   # ★ 响应体落在【私有】临时文件（★ /tmp 下的固定名文件是全局可读的 ⇒ 里面装着 access_token）。
   resp="$(mktemp "${TMPDIR:-/tmp}/dd-login.XXXXXX.json")"
   # ★ 请求体走 stdin：★ 口令既不进 python 的 argv，也不进 curl 的 argv。
-  body="$(printf '%s\n%s' "$user" "$pass" | python3 -c 'import json,sys; u,p=sys.stdin.read().split("\n",1); print(json.dumps({"username":u,"password":p}))')"
+  body="$(dd_admin_login_body)"
   code="$(printf '%s' "$body" | curl -sS -o "$resp" -w '%{http_code}' -X POST "$url" \
     -H 'Content-Type: application/json' --data-binary @- || echo 000)"
   if [[ "$code" != "200" ]]; then

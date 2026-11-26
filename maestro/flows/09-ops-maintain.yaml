@@ -48,7 +48,7 @@ url: ${BASE_URL}
     #        「运维平台暂时不可用」
     #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate
     #   ⇒ 2026-11-22 修复：/customer/update-activate 已重构为「License 管理」
-    visible: 'License 管理|更新与激活|运维平台暂时不可用'
+    visible: '故障管理|License 管理|更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
     text: '运维平台暂时不可用|503 · 运维平台不可用|License 管理|更新与激活'
@@ -71,7 +71,7 @@ url: ${BASE_URL}
     #        「运维平台暂时不可用」
     #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate
     #   ⇒ 2026-11-22 修复：/customer/update-activate 已重构为「License 管理」
-    visible: 'License 管理|更新与激活|运维平台暂时不可用'
+    visible: '自动升级 / 灰度|License 管理|更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
     text: '运维平台暂时不可用|503 · 运维平台不可用|License 管理|更新与激活'
@@ -94,7 +94,7 @@ url: ${BASE_URL}
     #        「运维平台暂时不可用」
     #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate
     #   ⇒ 2026-11-22 修复：/customer/update-activate 已重构为「License 管理」
-    visible: 'License 管理|更新与激活|运维平台暂时不可用'
+    visible: '运维中心|License 管理|更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
     text: '运维平台暂时不可用|503 · 运维平台不可用|License 管理|更新与激活'
@@ -117,7 +117,7 @@ url: ${BASE_URL}
     #        「运维平台暂时不可用」
     #     ③ 守卫的 /ops/* 改写规则生效 ⇒ /customer/update-activate
     #   ⇒ 2026-11-22 修复：/customer/update-activate 已重构为「License 管理」
-    visible: 'License 管理|更新与激活|运维平台暂时不可用'
+    visible: '已接线模块|License 管理|更新与激活|运维平台暂时不可用'
     timeout: 20000
 - assertVisible:
     text: '运维平台暂时不可用|503 · 运维平台不可用|License 管理|更新与激活'
