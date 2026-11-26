@@ -48,6 +48,31 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 		},
 	},
 	// ── 存量缺口（待 owner：投递迁移，或改代码）─────────────────────────────────
+	"admin/channels.go": {
+		"customers": {
+			Since: "2026-11-26",
+			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：本文件的渠道/客户读端 SQL 读 customers 表，" +
+				"而定义它的 sql/migrations/startup/492_channels_customers.sql **不在两条投递通道里**（仓内 grep 无任何通道点名它）" +
+				"⇒ ★ 实测（2026-11-26，211 生产库 acc-pg17/llm_gateway）：表不存在 ⇒ ⇒ 这些端点在部署后会报 **42P01（表不存在）**。" +
+				"★ 出路：把 492 搬进投递通道并登记（这是 schema 交付决策，owner 决定），或读端改读已有形状。" +
+				"★ **该修法属 W4.3 车道的产品口径，本车道只登记不代决策**。" +
+				"★ 处置：本条登记不阻断部署（scripts/deploy-test-gate.sh 的包清单不含 scripts/ursmcheck ⇒ 交付门不在部署闸门内；" +
+				"且 211 本轮部署已实测通过）。" +
+				"★ 补充证据（2026-11-26 审计轮、154 生产库只读实测）：public.schema_migrations 无 492 行、public.customers 不存在 ⇒ 部署与新装都不会建出该表；★ 且 internal/sqlguard 的两道投递通道覆盖门只断言最大编号附近的近邻窗口（当前最大号 999）⇒ 492 远在窗口外 ⇒ 门根本没看它 ⇒「拿旧编号当新迁移的编号」会绕过门。★ 本轮读点侧已把 request_logs 改指 canonical 视图（created_at → ts），但 customers/channel_users 的投递面仍缺 ⇒ 本条登记保留。",
+			// ★ 空串 = **整表**登记：本文件有 4 处是整表引用（SELECT 1 FROM customers /
+			//   SELECT id FROM customers / FROM customers），不带列名 ⇒ 逐列登记匹配不上
+			//   ⇒ 台账按「文件⇒表⇒列」匹配（knownEntry），整表引用需要空串这一项。
+			Cols: []string{"", "channel_id", "code", "created_at", "enabled", "id", "name"},
+		},
+		"channel_users": {
+			Since: "2026-11-26",
+			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：同 492_channels_customers.sql 建出的渠道-用户关联表，" +
+				"同样不在投递通道里 ⇒ 部署后读端 42P01。出路与 customers 同条：把 492 搬进投递通道并登记，或读端改读已有形状。" +
+				"★ 本车道只登记不代决策。" +
+				"★ 补充证据（2026-11-26 审计轮、154 生产库只读实测）：public.channel_users 不存在 ⇒ 部署与新装都不会建出该表 ⇒ admin/channels.go 的权限判定端点恒 42703。",
+			Cols: []string{"", "channel_id", "user_id"},
+		},
+	},
 	"bg/systemmonitor/audit.go": {
 		"system_probe_runs": {
 			Since: "2026-11-26",
@@ -84,31 +109,6 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 			Reason: "存量缺口：同上一条（389_tenant_ops_scope.sql 未投递，新装基线的 releases 没有 tenant_id）⇒ 空库实测 42703；" +
 				"updateCheck 已在 cmd/gateway/main.go 接线（GET /api/tenant/autoupdate/check）。出路同上。",
 			Cols: []string{"tenant_id"},
-		},
-	},
-	// ── 上游 W4.3 新特性的投递面缺口（2026-11-26 审计轮登记，待 owner）────────
-	"admin/channels.go": {
-		"channel_users": {
-			Since: "2026-11-26",
-			Reason: "★ 上游 W4.3（07101e72c3）的投递面缺口：★ 它的启动迁移 " +
-				"sql/migrations/startup/492_channels_customers.sql 【不在任何投递通道里】" +
-				"（★ 211 通道 scripts/apply-db-revision-sequence.sh 的 files=() 无、★ 安装器清单 " +
-				"sql/schema/installed_startup_migrations.tsv 无、★ installer/cmd/llm-gw-installer/embeddata/startup 无、★ " +
-				"installer/migrations 无 ★）⇒ ★⇒⇒ 部署与新装都不会建出这张表 ⇒ ★ 本文件对它的引用在真库上恒 42703。" +
-				"★ 2026-11-26 只读实测：154 生产库 public.schema_migrations 无 '492' 行、public.channel_users 不存在。" +
-				"★★ 而【两道投递通道覆盖门都没拦住它】：★ 它们只断言【最大编号附近的近邻窗口】（★ 当前最大号 999）" +
-				"⇒ ★ 492 远在窗口外 ⇒ ★★ 门根本没看它（★ 这就是「拿旧编号当新迁移的编号」会绕过门的原因 ★★）。" +
-				"★★ 出路：① 把 492 搬进四条投递通道并登记（★ 属 schema 变更、★ owner 决定 ★★）；" +
-				"② 或本文件不再引用这张表（★ 则删掉本条登记 ★★）。" +
-				"★ 本轮不代做：★ 迁移动作＝生产语义变更、★ 需 owner 明确 ★★。",
-			Cols: []string{"", "channel_id", "user_id"},
-		},
-		"customers": {
-			Since: "2026-11-26",
-			Reason: "★ 同上：★ 上游 W4.3 的 492_channels_customers.sql 不在任何投递通道里 ⇒ ★ 部署与新装都不会建出这张表 " +
-				"⇒ ★ 本文件对它的引用在真库上恒 42703（★ 2026-11-26 只读实测：154 生产库 public.customers 不存在 ★）。" +
-				"★★ 出路与判据同 admin/channels.go → channel_users 那一条：★ ① 搬进投递通道（owner 决定）或 ② 改代码不再引用 ★★。",
-			Cols: []string{"", "channel_id", "code", "created_at", "enabled", "id", "name"},
 		},
 	},
 }
