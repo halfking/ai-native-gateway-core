@@ -260,6 +260,10 @@ type docEvidence struct {
 //	★ 2026-11-26 审计轮：并行车道的音频端点笔（/v1/audio/converse）在 main.go
 //	链体之前净增 **14 行** ⇒ ★ 本次重钉（★ 逐锚点实测合并树、★ 不是按位移量推算 ★））、
 //	Logging 注释 9220-9227、maintain 注释 9173-9178；
+//	★★ **第二十七次重钉（2026-11-26 第 32 轮）**：★ 上游计费 P0 批次又在链体之前
+//	净增 **16 行** ⇒ ★ 合并树逐锚点实测（★ 不是按位移量推算 ★）：Recovery **:9234**、
+//	Auth **:9250**、SecurityHeaders **:9253** ⇒ 链体 **9233-9253**；
+//	Logging 注释 **9236-9243**、maintain 注释 **9189-9194**（★ 上面一行保留上一轮值作历史 ★）。
 //	main_pipeline.go 启动日志 :1523、D09 合成/写回窗口 1030-1040（合成点 :1035）
 //	（★ 本轮 main_pipeline.go **无漂移** ⇒ 两处锚点沿用上一轮值 ★）。
 var requestSurfaceDocEvidence = []docEvidence{
@@ -294,7 +298,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★（feat(audio): 级联语音会话端点 /v1/audio/converse）在 `func main()` 里
 		// ★ 插入了 14 行 ⇒ ★ ⇒ 我方只改对拍表与文档引用、★ 不动上游代码
 		// ★（★ 与历次同款处置 ★★）。
-		file: "cmd/gateway/main.go", from: 9217, to: 9237,
+		file: "cmd/gateway/main.go", from: 9233, to: 9253,
 		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
 		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
 		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
@@ -332,7 +336,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-26 审计轮重钉：★ 同上一条（★ 音频端点笔 +14 行 ★）⇒ ★
 		// ★ 合并树逐行实测 ⇒ ★ 自陈注释块漂到 **9220-9227** ⇒ ★ 重钉 [9220,9227] ★
 		// ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了 ★★）。
-		file: "cmd/gateway/main.go", from: 9220, to: 9227,
+		file: "cmd/gateway/main.go", from: 9236, to: 9243,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -364,7 +368,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-26 审计轮重钉：★ 同上（★ 音频端点笔 +14 行 ★）⇒ ★ 合并树逐行实测
 		// ★ ⇒ ★ R49-A1 注释块漂到 **9173-9178** ⇒ ★ 重钉 [9173,9178] ★
 		// ★（★ 仍是那 6 行注释块、★ 语义锚与判据不变 ★★）。
-		file: "cmd/gateway/main.go", from: 9173, to: 9178,
+		file: "cmd/gateway/main.go", from: 9189, to: 9194,
 		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
 		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
 		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页
