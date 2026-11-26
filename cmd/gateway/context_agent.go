@@ -50,6 +50,10 @@ const (
 	envContextAgentEnabled   = "LLM_GATEWAY_CONTEXT_AGENT_ENABLED"
 	envContextAgentRecordDir = "LLM_GATEWAY_CONTEXT_AGENT_RECORD_DIR"
 	envContextAgentLoopback  = "LLM_GATEWAY_CONTEXT_AGENT_LOOPBACK_URL"
+	// envContextAgentAgentContext 是 L2 升级通道开关（P1-2）：开启后 L2
+	// 召回走 memora /api/v2/agent-context 分层面（含 project ACL 判定），
+	// 失败降级单条检索。
+	envContextAgentAgentContext = "LLM_GATEWAY_CONTEXT_AGENT_AGENT_CONTEXT"
 	// envContextAgentModelKey 是**模型面凭据**（sk-* 明文，不含 "Bearer "）。
 	//
 	// ★ 为什么必须有：/resolve 挂在管理令牌中间件后面 ⇒ 请求里的
@@ -149,10 +153,31 @@ func registerContextAgent(mux *http.ServeMux, logger *slog.Logger, deps contextA
 	}
 
 	// ── L2 长期记忆层：Memora（语义召回，非按步寻址）──
+	var memoraFallback contextagent.LongTermLoader
 	if deps.Memory != nil && !deps.Memory.Disabled() {
-		agent.LongTerm = contextagent.NewMemoraLongTermLoader(deps.Memory)
+		memoraFallback = contextagent.NewMemoraLongTermLoader(deps.Memory)
+		agent.LongTerm = memoraFallback
 	} else {
 		logger.Info("context agent: memora unavailable, L2 long-term layer disabled")
+	}
+
+	// ── L2 升级通道：memora agent-context 分层面（P1-2，可选）──
+	// LLM_GATEWAY_CONTEXT_AGENT_AGENT_CONTEXT=1 且 v2 JWT 凭据齐备时，L2
+	// 召回走 POST /api/v2/agent-context（分层 L1/L2/L3 一次拿全，project
+	// ACL 由 memora 侧判定）；失败降级回上面的单条检索。未配置保持现状。
+	if envBoolStrict(envContextAgentAgentContext) {
+		memoraBase := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
+		projectID := os.Getenv("LLM_GATEWAY_MEMORA_PROJECT_ID")
+		if memoraBase == "" || projectID == "" {
+			logger.Warn("context agent: agent-context upgrade requested but LLM_GATEWAY_MEMORA_BASE_URL/LLM_GATEWAY_MEMORA_PROJECT_ID missing, using plain memora search")
+		} else if v2Client, err := newMemoraV2Client(memoraBase, projectID); err != nil {
+			logger.Warn("context agent: agent-context upgrade channel unavailable (missing v2 JWT config), using plain memora search", "error", err)
+		} else if loader := contextagent.NewAgentContextLongTermLoader(v2Client, memoraFallback, projectID); loader != nil {
+			agent.LongTerm = loader
+			logger.Info("context agent: L2 long-term layer upgraded to memora agent-context (project=" + projectID + ")")
+		} else {
+			logger.Warn("context agent: agent-context loader not constructible, using plain memora search")
+		}
 	}
 
 	// ── 可还原记录（可选）──
