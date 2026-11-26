@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一周审计 r3 总结（2026-11-27）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f4f6f9; color: #1f2937; padding: 32px; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .sub { color: #6b7280; margin-bottom: 28px; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card .num { font-size: 32px; font-weight: 700; }
+  .card .lbl { color: #6b7280; font-size: 13px; margin-top: 4px; }
+  .green { color: #059669; } .red { color: #dc2626; } .amber { color: #d97706; } .blue { color: #2563eb; }
+  h2 { font-size: 18px; margin: 26px 0 12px; border-left: 4px solid #2563eb; padding-left: 10px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; font-size: 13.5px; }
+  th { background: #1e3a5f; color: #fff; padding: 10px 12px; text-align: left; }
+  td { padding: 9px 12px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .tag-ok { background: #d1fae5; color: #065f46; }
+  .tag-part { background: #fef3c7; color: #92400e; }
+  .tag-owner { background: #e0e7ff; color: #3730a3; }
+  .bars { display: flex; align-items: flex-end; gap: 18px; height: 180px; padding: 12px 8px 0; }
+  .bar-item { display: flex; flex-direction: column; align-items: center; flex: 1; }
+  .bar { width: 46px; border-radius: 6px 6px 0 0; }
+  .bar-label { margin-top: 8px; font-size: 12px; color: #374151; text-align: center; }
+  .bar-num { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  ul { padding-left: 20px; line-height: 1.75; font-size: 13.5px; }
+  .note { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px 16px; font-size: 13px; margin-top: 12px; }
+  code { background: #eef2f7; padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+
+<h1>一周审计 r3 — 修正任务审计与完善总结</h1>
+<div class="sub">2026-11-27 00:2x–01:2x · 仓库 llm-gateway-go-cursor · 分支 feature/routing-v2-user-filter → main（双远端 b6146626d3）· 零部署 / 零生产写 / 零 schema 在役变更</div>
+
+<div class="grid">
+  <div class="card"><div class="num green">8</div><div class="lbl">测试红类修复（全部先在纯 origin/main 复现归因）</div></div>
+  <div class="card"><div class="num green">5</div><div class="lbl">投递缺口收口（633 迁移四处通道全登记）</div></div>
+  <div class="card"><div class="num blue">5</div><div class="lbl">本地分支删除（4 全合并 + 1 被取代）</div></div>
+  <div class="card"><div class="num blue">6</div><div class="lbl">worktree 处置（2 活跃保留）</div></div>
+  <div class="card"><div class="num amber">3</div><div class="lbl">远端修复分支全收割（5 笔 cherry-pick）</div></div>
+  <div class="card"><div class="num blue">11</div><div class="lbl">失效豁免删除（棘轮只收窄）</div></div>
+</div>
+
+<h2>一、目标完成矩阵</h2>
+<table>
+<tr><th>#</th><th>目标</th><th>结果</th><th>状态</th></tr>
+<tr><td>①</td><td>拉取 main 合并 + 编译测试修正</td><td>合并 e030ebe5f8 + 后续 3 笔；go build / go vet 全绿；抓出 8 类红全修</td><td><span class="tag tag-ok">完成</span></td></tr>
+<tr><td>②</td><td>不活跃分支审计（≥1h 未合并）</td><td>本地 5 删；远端 rm-turns-leg-savepoint（3 笔）与 211-statistics-v2-release（1 笔）内容全数收割</td><td><span class="tag tag-ok">完成</span></td></tr>
+<tr><td>③</td><td>worktree 审计（≥2h 无活跃）</td><td>6 处置（rolegov 有效资产先合入后删：契约门 10/10 + 导航竞态修复 + retry 加固）；丢弃硬编码口令脚本；2 个活跃保留；孪生仓 llm-gateway-go 活跃不动</td><td><span class="tag tag-ok">完成</span></td></tr>
+<tr><td>④</td><td>docs 一周文档整理</td><td>P2 六份渐进快照合并为版本化交接（-1566 行）；P0-3 八份沿用 r2 索引口径；12小时系列 122 份含 verify.sh § 引用，移动即断链 ⇒ 保持原位</td><td><span class="tag tag-part">部分</span></td></tr>
+<tr><td>⑤</td><td>git 提交总结 → 更新审核目标</td><td>r3 目标文档 docs/audit/2026-11-27-weekly-audit-r3-goals.md（r2 五条遗留逐条回访判定）</td><td><span class="tag tag-ok">完成</span></td></tr>
+<tr><td>⑥</td><td>按目标批判审计 + 修正 + 推送</td><td>633 投递缺口（P0）收口 + 5 类基线红修复 + 双远端推送回读一致（b6146626d3）</td><td><span class="tag tag-ok">完成</span></td></tr>
+<tr><td>⑨</td><td>子项目逐一检查</td><td>5 仓审计：salesdecorate / client 干净（r2 删除未复活）；go 孪生仓活跃（casdoor 热切换在途）不动；gw-base2 prunable 已 prune</td><td><span class="tag tag-ok">完成</span></td></tr>
+</table>
+
+<h2>二、本周提交类型分布（窗口 2026-11-20 起，no-merges ≈ 981）</h2>
+<div class="card">
+<div class="bars">
+  <div class="bar-item"><div class="bar-num blue">433</div><div class="bar" style="height:150px;background:#2563eb"></div><div class="bar-label">docs</div></div>
+  <div class="bar-item"><div class="bar-num green">327</div><div class="bar" style="height:113px;background:#059669"></div><div class="bar-label">fix</div></div>
+  <div class="bar-item"><div class="bar-num amber">115</div><div class="bar" style="height:40px;background:#d97706"></div><div class="bar-label">feat</div></div>
+  <div class="bar-item"><div class="bar-num">61</div><div class="bar" style="height:21px;background:#6b7280"></div><div class="bar-label">test</div></div>
+  <div class="bar-item"><div class="bar-num">15</div><div class="bar" style="height:8px;background:#9ca3af"></div><div class="bar-label">chore</div></div>
+  <div class="bar-item"><div class="bar-num">6</div><div class="bar" style="height:6px;background:#c9ced6"></div><div class="bar-label">refactor</div></div>
+  <div class="bar-item"><div class="bar-num">3</div><div class="bar" style="height:4px;background:#e5e7eb"></div><div class="bar-label">perf</div></div>
+</div>
+</div>
+
+<h2>三、本轮修复的 8 类红（根因 → 修法）</h2>
+<table>
+<tr><th>类</th><th>门/测试</th><th>根因</th><th>修法</th></tr>
+<tr><td>1</td><td>streaming ×4 测试</td><td><code>69aec60492</code> 改 quota 文案没改测试（origin/main 自带红）</td><td>断言对齐已交付契约（10b6d049ce）</td></tr>
+<tr><td>2</td><td>canonical 读点登记簿</td><td>my_endpoints.go SQL 修正后不再读 canonical 视图，登记陈旧</td><td>按 rot 规则删条目</td></tr>
+<tr><td>3</td><td>★投递缺口（P0）</td><td>迁移 633 在 <code>startup/up/</code>（389 同款：目录无通道消费）⇒ quota.go 恒 42P01</td><td>搬 canonical + 事务/锁守卫 + 自登记 + files=()/TSV/embeddata/installer 四点登记</td></tr>
+<tr><td>4</td><td>partguard</td><td>教学示例文件 3 处 sessions 父表写未登记</td><td>白名单登记（先例 233c14a2bc 口径，零路由不删文件）</td></tr>
+<tr><td>5</td><td>modelattribution</td><td>performance.go 模型链不折叠 <code>&lt;unknown&gt;</code> 占位符</td><td>canonical NULLIF(NULLIF(TRIM)) 形态</td></tr>
+<tr><td>6</td><td>dbx jsonb 静态扫</td><td>errorplaybook 3 处 []byte 直传 jsonb（22P02 风险）</td><td>string(...) + ::text::jsonb（publisher.go 先例）</td></tr>
+<tr><td>7</td><td>rowsguard</td><td>billing_retry_queue 行循环无 rows.Err() 终检</td><td>补终检（半截批次按全量处理的静默吞错）</td></tr>
+<tr><td>8</td><td>routemount</td><td>registerBillPaymentRoutes 零调用点 ⇒ 5 条路由生产 404</td><td>接入 registerMaasBillingRoutes</td></tr>
+</table>
+
+<h2>四、结论 / 根因</h2>
+<ul>
+  <li><b>结论</b>：一周审计目标主体完成 —— 基线红清零（G5）、分支/worktree 卫生（G2/G3 收口）、633 投递缺口收口（G1 本轮部分）、远端修复分支全收割；main 已合并本分支 24 笔增量并推双远端（b6146626d3，ls-remote 回读三方逐字一致）。</li>
+  <li><b>根因模式 ①</b>：8 类红中 6 类是「并行车道改了 A 面、没跟 B 面」（文案↔测试、SQL↔登记簿、路由注册↔接线、行循环↔终检）——<b>一次全量门跑 + 纯基线复现归因</b>是唯一可靠的抓法。</li>
+  <li><b>根因模式 ②</b>：633 投递缺口复刻 389 先例——「文件放在 <code>startup/up/</code> 目录」≠「会被执行」，投递是点名制；修法照抄 999b/c/d 已验证路径（canonical + 事务包裹 + 自登记 + 四点登记）。</li>
+  <li><b>根因模式 ③</b>：worktree 未提交变更里混着真资产（契约门）与危险物（硬编码口令）——逐文件审计后分流，不能整树丢弃或整树提交。</li>
+</ul>
+
+<h2>五、改动文件与关键行为</h2>
+<div class="two-col">
+<div class="card">
+<b>schema 投递（5 文件）</b>
+<ul>
+  <li><code>sql/migrations/startup/633_tenant_attachment_quotas.sql</code>（+down）：canonical 化、事务+锁守卫+自登记</li>
+  <li><code>scripts/apply-db-revision-sequence.sh</code>：files=() 补条目</li>
+  <li><code>sql/schema/installed_startup_migrations.tsv</code>：411 行</li>
+  <li><code>installer/.../embeddata/startup/</code> + <code>installer/migrations/633_*/</code>：副本</li>
+</ul>
+</div>
+<div class="card">
+<b>产品代码红修复（6 文件）</b>
+<ul>
+  <li><code>admin/dashboardapi/performance.go</code>：模型链折叠占位符</li>
+  <li><code>domains/errorplaybook/store.go</code>：jsonb 3 处形态</li>
+  <li><code>maas/billing_retry_queue.go</code>：rows.Err 终检</li>
+  <li><code>admin/maas_bills_handlers.go</code>：5 条账单路由接线</li>
+  <li><code>admin/dashboardapi/session_projected.go</code>（cherry-pick）：SAVEPOINT 隔离软失败腿</li>
+  <li><code>installer/*</code>（cherry-pick abc372a371）：离线升级定位 citus 容器</li>
+</ul>
+</div>
+<div class="card">
+<b>测试/门禁（6 文件）</b>
+<ul>
+  <li><code>domains/streaming/*_test.go</code> ×2：断言对齐</li>
+  <li><code>admin/canonical_read_points_registry_test.go</code>：删陈旧条目</li>
+  <li><code>internal/partguard/guard_test.go</code>：白名单 +1</li>
+  <li><code>scripts/deploygate/baseline_red_exemptions.tsv</code>：-11 豁免</li>
+</ul>
+</div>
+<div class="card">
+<b>测试资产/文档（8 文件）</b>
+<ul>
+  <li><code>maestro/flows/_shared/login.yaml</code>：retry 只包等待步</li>
+  <li><code>maestro/tools/assert-users-role-options.mjs</code>：Page.navigate + loadEventFired</li>
+  <li><code>scripts/checks/maestro-users-role-gate.sh</code>：离线契约门（10/10）</li>
+  <li><code>verify.sh</code>：门接线</li>
+  <li>docs：P2 六合一版本化 + r3 审计目标 + savepoint 证据文档</li>
+</ul>
+</div>
+</div>
+
+<h2>六、测试命令与结果</h2>
+<table>
+<tr><th>命令</th><th>结果</th></tr>
+<tr><td><code>go build ./... && go vet ./...</code></td><td>✓ 全绿</td></tr>
+<tr><td><code>go test ./admin/ ./domains/streaming/ -count=1</code></td><td>✓ ok 93.5s / ok 110–122s</td></tr>
+<tr><td><code>go test ./internal/... -count=1</code></td><td>✓ 全绿（含 sqlguard/schemadelivery/partguard/dbx/rowsguard/routemount/modelattribution/metricsstore）</td></tr>
+<tr><td><code>go test ./internal/dbx/ -run TestJSONBParamScanBGAndDomainsClean</code></td><td>✓ violations: 3 → 0</td></tr>
+<tr><td><code>go test ./scripts/deploygate/</code></td><td>✓（豁免台账 -11 后）</td></tr>
+<tr><td><code>bash scripts/checks/maestro-users-role-gate.sh</code></td><td>✓ pass=10 fail=0</td></tr>
+<tr><td><code>cd installer && go build ./... && go test ./internal/upgrader/</code></td><td>✓（cherry-pick abc 后）</td></tr>
+<tr><td><code>npx vitest run KxDateRangePicker.datetime-default-time.test.ts RequestLogsView.window.contract.spec.ts</code></td><td>✓ 11 passed（合并 datetime-fix 后）</td></tr>
+<tr><td><code>git ls-remote</code>（origin + github）</td><td>✓ 双远端 = 本地 = <code>b6146626d3</code> 逐字一致</td></tr>
+</table>
+
+<h2>七、遗留风险</h2>
+<ul>
+  <li><b>owner 待裁决（生产 schema）</b>：492 与 1000-1002 仍不在投递通道（known_undelivered 登记在案、门自动 stale 检查）——追平部署前必须先闭合。</li>
+  <li><b>2 个活跃 worktree 在途</b>：gw-datetimefix（default-time 组件层收尾）与 gw-usage-total（合计行推进）——活跃窗口内不代提。</li>
+  <li><b>远端 2 个已收割分支未删</b>（rm-turns-leg-savepoint / 211-statistics-v2-release）：远端操作待 owner 确认。</li>
+  <li><b>孪生仓 llm-gateway-go</b>：casdoor 热切换在途（01:07 仍有写入），本轮不动。</li>
+  <li><b>docs 深层重复</b>：P0-3 八份（索引已建）与 12小时系列 122 份未物理合并——含 verify.sh 历史 § 引用，移动即断链；物理归档需单独一轮引用重写。</li>
+  <li><b>零部署</b>：本轮全部为仓内资产；线上 211 仍 <code>f43735ee</code>（build 3303），是否追平属 owner。</li>
+</ul>
+
+<div class="note">诚实边界：本报告所有「红」均先在纯 origin/main worktree 复现后再修（归因可复核）；rolegov worktree 的 UI-登录回退与硬编码口令脚本被有意丢弃（违背 L137 CDP 根因 + 凭据入库风险）；真机部署与生产验证未执行（零生产写边界）。</div>
+
+</body>
+</html>
