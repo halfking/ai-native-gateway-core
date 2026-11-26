@@ -1883,6 +1883,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// 970：按模型跨平台现价（运营定价参考，对齐 salesdecorate Compare）。
 		mux.HandleFunc("GET /api/admin/market/model-platforms", h.superAdmin(h.handleMarketModelPlatforms))
 
+		// 2026-11-26 P0-2：账单支付管理端点（billing system admin API）
+		// 财务敏感操作，仅 super_admin 可访问
+		mux.HandleFunc("POST /api/admin/bills/{id}/mark-paid", h.superAdmin(h.handleMarkBillPaid))
+		mux.HandleFunc("POST /api/admin/bills/{id}/void", h.superAdmin(h.handleVoidBill))
+		mux.HandleFunc("POST /api/admin/bills/batch-mark-paid", h.superAdmin(h.handleBatchMarkBillsPaid))
+		mux.HandleFunc("GET /api/admin/bills", h.superAdmin(h.handleListBills))
+		mux.HandleFunc("GET /api/admin/bills/{id}", h.superAdmin(h.handleGetBillDetails))
+
 		// 2026-11-05 W1：报价系统 MVP admin 面（supply/demand/quotes，
 		// 角色闸在应用层 —— 自营内部运营表，无 RLS，见 sales 包头注释）。
 		h.registerSalesRoutes(mux)

@@ -104,6 +104,7 @@ function onView(value: string | number | boolean | undefined) {
     <el-button
       v-if="view === 'provider'"
       data-testid="reconciliation-business-scope"
+      :type="filters.traffic_scope === 'business' ? 'primary' : undefined"
       :aria-pressed="filters.traffic_scope === 'business'"
       @click="emit('patch', { traffic_scope: filters.traffic_scope === 'business' ? undefined : 'business' })"
     >{{ t('sessions.stats.attribution.businessOnly') }}</el-button>

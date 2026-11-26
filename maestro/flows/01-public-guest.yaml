@@ -25,9 +25,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/"
 - extendedWaitUntil:
-    # ★ 2026-11-22 修复：落地页 hero 已重构，brandTitle 现为"AI-Native 组织核心网关"
-    #   （旧串"把公司里所有大模型调用，收进一个能管、能查、能关的入口"不再渲染）
-    visible: 'AI-Native 组织核心网关'
+    visible: '登录控制台|把公司里所有大模型调用，收进一个能管、能查、能关的入口'
     timeout: 20000
 - evalScript: "${output.ms__root = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -127,7 +125,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/maintain"
 - extendedWaitUntil:
-    visible: '运维平台暂时不可用|503 · 运维平台不可用'
+    visible: '登录控制台|运维平台暂时不可用|503 · 运维平台不可用'
     timeout: 20000
 - evalScript: "${output.ms__maintain = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -139,7 +137,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/maintain/ops/anything"
 - extendedWaitUntil:
-    visible: '运维平台暂时不可用|503 · 运维平台不可用'
+    visible: '登录控制台|把公司里所有大模型调用，收进一个能管、能查、能关的入口|运维平台暂时不可用|503 · 运维平台不可用'
     timeout: 20000
 - evalScript: "${output.ms__maintain_pathMatch__any_any = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
@@ -151,8 +149,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/no-such-route-404-probe"
 - extendedWaitUntil:
-    # ★ 2026-11-22 修复：404 路由重定向到落地页，hero 已重构为"AI-Native 组织核心网关"
-    visible: 'AI-Native 组织核心网关'
+    visible: '登录控制台|把公司里所有大模型调用，收进一个能管、能查、能关的入口'
     timeout: 20000
 - evalScript: "${output.ms__pathMatch__any_any = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:

@@ -33,6 +33,33 @@ export function usageTrendSeriesTotal(s: UsageTrendModelSeries, metric: UsageTre
   }
 }
 
+/** usageTrendTotals 的返回形状：四指标的全窗口总额（字段名与序列的 total_* 对应）。 */
+export interface UsageTrendTotals {
+  requests: number
+  tokens: number
+  credits: number
+  cost_usd: number
+}
+
+/**
+ * 全窗口总额（2026-11-26 总额展示轮）：对后端 trend-series 的每条序列逐行求和。
+ *
+ * ★ 为什么「逐行求和」就是真总额：后端 foldUsageTrendRows 把 top-N 之外的模型
+ *   折进 '__others__'（垫底序列、保留全部指标），模型多选时不折叠 ⇒
+ *   series 的行集合对当前过滤条件是**闭合**的 ⇒ 逐行求和 = 该时间窗 + 过滤条件
+ *   的全量总额。与「当前指标占比」列的分母（组件内 metricTotal）同源同值。
+ */
+export function usageTrendTotals(series: UsageTrendModelSeries[] | null | undefined): UsageTrendTotals {
+  const out: UsageTrendTotals = { requests: 0, tokens: 0, credits: 0, cost_usd: 0 }
+  for (const s of series ?? []) {
+    out.requests += s.total_requests
+    out.tokens += s.total_tokens
+    out.credits += s.total_credits
+    out.cost_usd += s.total_cost_usd
+  }
+  return out
+}
+
 /** 桶标签：<60m 粒度带分钟（M/D HH:mm），≥60m 只到小时（M/D HH:00）。 */
 export function formatUsageTrendBucketLabel(bucket: string, bucketMinutes: number): string {
   const d = new Date(bucket)

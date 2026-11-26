@@ -332,7 +332,7 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "end_user_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户维度的会话数/活跃用户/30 天成本聚合（COUNT(DISTINCT identity_hash) / COUNT(DISTINCT end_user_id) / SUM(cost_usd)）；★ 本读点引用 cost_usd / customer_id / end_user_id / identity_hash / ts 五列，★ 按 db 权威投影文本（dbpkg.CanonicalSessionOnlyProjectionForTest()）实测五列**全部**是 t.* 底表直映（base）⇒ ⇒ 底表两臂窄投影可等价供给 ⇒ 不需要 details 腿、也不读任何恒 NULL 的 v1 遗留列"},
 			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "渠道下全部客户的汇总（CTE 取该渠道的客户，再按 customer_id 聚合会话数与成本）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
-			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户最近会话列表（DISTINCT ON (identity_hash) + MAX(ts) + COUNT(*) + SUM(cost_usd)）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户最近会话列表（GROUP BY identity_hash + MAX(ts) + COUNT(*) + SUM(cost_usd)）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
 		},
 	},
 	"admin/auto_title_generator.go": {
@@ -1063,9 +1063,10 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	"domains/attachments/handler.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "附件正文读取（attachments 列走 details 腿）",
+		Note:  "附件正文读取（attachments 列走 details 腿）＋ 附件属主校验（2026-11-26 附件租户隔离轮新增 verifyAttachmentOwnership：按 tenant_id + attachments JSONB 包含谓词点查 ⇒ 与第一条同形状，attachments 列仍走 details 腿）",
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"attachments:detail", "request_id:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "附件正文读取（attachments 列走 details 腿）；本读点读 attachments:detail,request_id:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"attachments:detail", "tenant_id:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "附件属主校验（verifyAttachmentOwnership）：SELECT EXISTS(… WHERE tenant_id=$1 AND attachments @> $2::jsonb) ⇒ 读 tenant_id:base 与 attachments:detail ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN；按租户点查、无 ts 谓词（租户隔离校验、有界单请求）"},
 		},
 	},
 	"domains/promptinjection/error_discovery.go": {

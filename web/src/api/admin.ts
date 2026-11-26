@@ -657,8 +657,8 @@ export function getTenantStats(code: string, days?: number) {
 }
 
 // ── 2026-09-30 统计 UI 优化轮：/users 用户级用量统计 ────────────────
-// 读面 usage_facts × api_keys.owner_user（与对账快照同源），详见
-// admin/user_usage_stats.go 头注。
+// 读面 request_metrics 投影（2026-11 统计 V2 轮起，v1 usage_facts 口径已退役），
+// 详见 admin/user_usage_stats_v2.go。
 
 export interface UserUsageSummaryItem {
   username: string

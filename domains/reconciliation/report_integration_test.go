@@ -46,6 +46,11 @@ func TestRequestReconciliationPostgres(t *testing.T) {
 		}
 	}
 	exec(reportFixtureDDL)
+	settingsMigration, err := os.ReadFile("../../sql/migrations/startup/022_settings_kv.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(string(settingsMigration))
 	exec(legacyUsageFixtureRows)
 	migration, err := os.ReadFile("../../sql/migrations/startup/982_provider_call_attempts.sql")
 	if err != nil {

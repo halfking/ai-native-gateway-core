@@ -6,6 +6,7 @@ import {
   pivotUsageTrendSeries,
   usageTrendMetricLabelKey,
   usageTrendPointValue,
+  usageTrendTotals,
 } from './usageTrend'
 import type { UsageTrendModelSeries } from '../api/usage'
 
@@ -79,6 +80,30 @@ describe('pivotUsageTrendSeries', () => {
   it('renders hour-granularity labels without minutes', () => {
     const pivot = pivotUsageTrendSeries(series, 'requests', 60)
     expect(pivot.labels[0]).toMatch(/^\d+\/\d+ \d{2}:00$/)
+  })
+})
+
+describe('usageTrendTotals', () => {
+  it('sums all four metrics across series (row set is closed incl. __others__)', () => {
+    const totals = usageTrendTotals(series)
+    expect(totals).toEqual({ requests: 15, tokens: 150, credits: 30, cost_usd: 0.75 })
+  })
+
+  it('includes the __others__ folded series (sum = grand total, not top-N total)', () => {
+    // 后端折叠后 '__others__' 也是一条普通序列 ⇒ 逐行求和必须把它算进去。
+    const withOthers: UsageTrendModelSeries[] = [
+      ...series,
+      { model: '__others__', total_requests: 2, total_tokens: 20, total_credits: 4, total_cost_usd: 0.1, points: [] },
+    ]
+    const totals = usageTrendTotals(withOthers)
+    expect(totals.requests).toBe(17)
+    expect(totals.cost_usd).toBeCloseTo(0.85)
+  })
+
+  it('handles null/undefined/empty input', () => {
+    expect(usageTrendTotals(null)).toEqual({ requests: 0, tokens: 0, credits: 0, cost_usd: 0 })
+    expect(usageTrendTotals(undefined)).toEqual({ requests: 0, tokens: 0, credits: 0, cost_usd: 0 })
+    expect(usageTrendTotals([])).toEqual({ requests: 0, tokens: 0, credits: 0, cost_usd: 0 })
   })
 })
 

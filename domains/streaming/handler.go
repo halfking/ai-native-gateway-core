@@ -2904,6 +2904,30 @@ func (h *ChatHandler) enforceTenantMonthlyBudget(ctx context.Context, w http.Res
 	return applyTenantMonthlyBudgetGate(ctx, w, h.maasSvc, keyInfo, requestID, onReject, envelope)
 }
 
+// returnBillingError writes a 402 Payment Required response with balance details
+// for billing precheck rejections (P0-1, 2026-11-26).
+func (h *ChatHandler) returnBillingError(w http.ResponseWriter, r *http.Request, decision *maas.BillingDecision) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusPaymentRequired)
+
+	response := map[string]interface{}{
+		"error": map[string]interface{}{
+			"type":    "insufficient_balance",
+			"message": "Insufficient balance. Please top up your account to continue using the service.",
+			"code":    "billing_insufficient_balance",
+			"details": map[string]interface{}{
+				"current_balance":  decision.BalanceBefore,
+				"credit_limit":     decision.CreditLimit,
+				"available_credit": decision.AvailableCredit,
+				"estimated_cost":   decision.EstimatedCost,
+				"policy":           decision.Policy,
+			},
+		},
+	}
+
+	_ = json.NewEncoder(w).Encode(response)
+}
+
 // enrichAuthenticatedRequestWAL updates the existing provisional request row
 // with the authenticated tenant before early budget/rate gates can terminate
 // the request. Provisional=true tells the UPSERT to retain the server-created
@@ -3461,6 +3485,46 @@ func (h *ChatHandler) serveWithExecutor(
 	logCtx.SetClientModel(clientModel)
 	if clientModel != autoRequestMagic {
 		resolveRequestJourney(r, tenant(keyInfo), clientModel, clientModel)
+	}
+
+	// ── P0-1: Billing balance pre-check (2026-11-26) ────────────────────
+	// Pre-check tenant balance before starting the stream to prevent streaming
+	// requests that will fail due to insufficient balance. This runs after
+	// authentication and model parsing, but before any streaming starts.
+	if h.maasSvc != nil && h.maasSvc.Enabled() && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
+		// 1. Estimate request cost
+		estimatedCost := h.EstimateRequestCostCredits(r, clientModel)
+
+		// 2. Pre-check balance
+		decision, err := h.maasSvc.PreCheckBalance(r.Context(), keyInfo.TenantID, estimatedCost)
+
+		if err != nil {
+			// fail-open: query failed, allow request to continue (log warning)
+			slog.Error("billing precheck query failed, allowing request (fail-open)",
+				"request_id", requestID,
+				"tenant_id", keyInfo.TenantID,
+				"error", err)
+		} else if !decision.Allow {
+			// Block request due to insufficient balance
+			slog.Warn("billing precheck rejected request",
+				"request_id", requestID,
+				"tenant_id", keyInfo.TenantID,
+				"reason", decision.Reason,
+				"balance", decision.BalanceBefore,
+				"credit_limit", decision.CreditLimit,
+				"estimated_cost", estimatedCost)
+
+			captureAndEmitFailure("billing_insufficient_balance", decision.Reason, nil, nil, http.StatusPaymentRequired)
+			h.returnBillingError(w, r, decision)
+			return // ⚠️ Block request
+		} else if decision.Policy == "warn" {
+			// Warn but allow
+			slog.Warn("billing precheck passed with warning",
+				"request_id", requestID,
+				"tenant_id", keyInfo.TenantID,
+				"reason", decision.Reason,
+				"balance", decision.BalanceBefore)
+		}
 	}
 
 	// ========== Message Field Validation (2026-07-26) ==========
@@ -8126,25 +8190,54 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			if canonical == "" {
 				canonical = evt.ClientModel
 			}
-			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			// Wave 3 B1: resolve the peak/off-peak multiplier once from the
-			// request start time (eventAt, falling back to now), charge with
-			// it, and stamp the SAME value into the telemetry rows so the
-			// charge and the audit trail cannot disagree.
+			
+			// P0-3 方案C（2026-11-26）：分离"计算积分"和"扣减钱包"
+			// 
+			// 旧逻辑：ChargeRequestMultimodalWithMultiplier 在事务中同时完成：
+			//   1. 写入 credit_ledger
+			//   2. 更新 wallet 余额
+			//   3. 返回 charged 积分
+			// 
+			// 新逻辑：
+			//   1. 【同步】计算积分（快速，内存操作）→ 写入 reqLog.CreditsCharged
+			//   2. 【同步】telemetry 写入（cost_usd 和 credits_charged 在同一次写入）
+			//   3. 【异步】扣减钱包（goroutine，失败写入补扣费队列）
+			// 
+			// 好处：
+			//   - cost_usd 和 credits_charged 强一致性（同一代码路径）
+			//   - 钱包扣减失败不影响请求完成
+			//   - 性能更好（计算积分 ~1ms，不等待 DB 事务）
+			
+			calcCtx, calcCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			chargeStart := eventAt
-			multiplier := h.maasSvc.ResolveCurrentMultiplier(chargeCtx, chargeStart)
-			charged, stampedMultiplier, err := h.maasSvc.ChargeRequestMultimodalWithMultiplier(chargeCtx, keyInfo.TenantID, keyOwner, evt.RequestID, canonical, maas.TokenUsage{
-				PromptTokens:     pt,
-				CompletionTokens: ct,
-				CacheReadTokens:  crt,
-				CacheWriteTokens: cwt,
-			}, multiplier)
-			chargeCancel()
-			if err == nil && charged > 0 {
-				reqLog.CreditsCharged = &charged
-				reqLog.RateMultiplier = &stampedMultiplier
-			} else if err != nil {
-				slog.Warn("maas charge failed", "request_id", evt.RequestID, "tenant_id", keyInfo.TenantID, "error", err)
+			multiplier := h.maasSvc.ResolveCurrentMultiplier(calcCtx, chargeStart)
+			
+			// 步骤1：同步计算积分（不扣减钱包）
+			result, err := h.maasSvc.CalculateCredits(calcCtx, maas.CalculateCreditsInput{
+				TenantID:      keyInfo.TenantID,
+				CanonicalName: canonical,
+				Usage: maas.TokenUsage{
+					PromptTokens:     pt,
+					CompletionTokens: ct,
+					CacheReadTokens:  crt,
+					CacheWriteTokens: cwt,
+				},
+				RateMultiplier: multiplier,
+			})
+			calcCancel()
+			
+			if err != nil {
+				slog.Warn("maas calculate credits failed",
+					"request_id", evt.RequestID,
+					"tenant_id", keyInfo.TenantID,
+					"error", err)
+			} else if result != nil && result.Credits > 0 {
+				// 步骤2：写入 telemetry（与 cost_usd 在同一次写入）
+				reqLog.CreditsCharged = &result.Credits
+				reqLog.RateMultiplier = &result.RateMultiplier
+				
+				// 步骤3：异步扣减钱包（不阻塞主流程）
+				go h.deductCreditsAsync(context.Background(), keyInfo.TenantID, keyOwner, evt.RequestID, result.Credits)
 			}
 		}
 	}
@@ -11773,4 +11866,61 @@ func isClientInterruptError(err error) bool {
 	return strings.HasPrefix(msg, "stream_interrupted: client_cancel") ||
 		strings.HasPrefix(msg, "stream_interrupted: client_disconnected") ||
 		strings.HasPrefix(msg, "stream_interrupted: client_write_failed")
+}
+
+// deductCreditsAsync 异步扣减钱包余额（P0-3方案C，2026-11-26）
+//
+// 此方法在请求完成后异步调用，从钱包中扣减积分。
+// 如果扣减失败，会记录错误日志（未来可扩展为写入补扣费队列）。
+//
+// 设计要点：
+//   - 异步执行：不阻塞主流程（telemetry已写入）
+//   - 失败容忍：扣减失败不影响请求完成
+//   - 幂等性：由DeductCredits保证（请求级别锁）
+//
+// 参数：
+//   - ctx: 独立上下文（不继承请求上下文，避免超时传播）
+//   - tenantID: 租户ID
+//   - ownerUser: 请求归属用户
+//   - requestID: 请求ID（用于幂等性）
+//   - credits: 要扣减的积分数
+func (h *ChatHandler) deductCreditsAsync(ctx context.Context, tenantID, ownerUser, requestID string, credits int64) {
+	if h.maasSvc == nil || credits <= 0 {
+		return
+	}
+
+	// 设置超时：钱包扣减最多等待5秒
+	deductCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// 调用专用的扣减方法（只扣减钱包，不重新计算积分）
+	deducted, err := h.maasSvc.DeductCredits(
+		deductCtx,
+		tenantID,
+		ownerUser,
+		requestID,
+		credits,
+	)
+
+	if err != nil {
+		slog.Error("async credit deduction failed",
+			"request_id", requestID,
+			"tenant_id", tenantID,
+			"credits", credits,
+			"error", err)
+
+		// P0-3阶段2: 写入补扣费队列（失败自动重试）
+		enqueueErr := h.maasSvc.EnqueueCreditDeduction(ctx, tenantID, ownerUser, requestID, credits, err.Error())
+		if enqueueErr != nil {
+			slog.Error("failed to enqueue credit deduction for retry",
+				"request_id", requestID,
+				"tenant_id", tenantID,
+				"error", enqueueErr)
+		}
+	} else if deducted > 0 {
+		slog.Debug("credits deducted successfully",
+			"request_id", requestID,
+			"tenant_id", tenantID,
+			"credits", deducted)
+	}
 }

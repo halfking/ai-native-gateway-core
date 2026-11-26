@@ -75,6 +75,26 @@ func HandleProjectedSessionDashboard(w http.ResponseWriter, r *http.Request, db 
 		writeErrorJSON(w, http.StatusServiceUnavailable, ErrCodeDataNotReady, "request_metrics projection is building", "")
 		return
 	}
+	// Turns 对拍腿（2026-11-26 接线轮）：必须在 tx.Commit **之前**跑——
+	// pgx 事务提交后连接即归还，再查会报 "tx is closed"。
+	// 与投影主查询同一事务 ⇒ 同一 RLS scope（set_config 已在本 tx 上执行）
+	// ⇒ 平台 bypass / 租户收窄 / owner 收窄三种 scope 下对拍的都是同一宇宙。
+	// 窗口用 [query.Start, query.End)（与投影主查询 $1/$2 同界）⇒ rolling 与
+	// 日历两种模式下对拍的都是「页面展示的那个窗口」。
+	// 跨检查 SUM(request_count)（summaries 侧投影）↔ 业务轮次行数（会话族
+	// turns 源），判据与遗留端点逐语义一致（evaluateTurnsAlignment）。
+	// soft-fail：这条腿失败不拖垮面板（KPI 仍可用），但前端会看到
+	// turns_alignment 键缺席 —— 缺席比假绿「对齐」更诚实（与遗留端点同姿态，
+	// 见 SessionOverviewHandler 的 turns 对拍 errgroup 腿）。
+	// 注意 data 的生命周期：cost_stats 的解码在 Commit 之后，所以这里只取
+	// turns 计数，alignment 的合成放在解码后（下方）。
+	var turnsCount int64
+	var turnsCountOK bool
+	if section == metrics.SessionDashboardOverview {
+		if n, err := queryBusinessTurnsCountWindowed(ctx, tx, query.Start, query.End, tenant); err == nil {
+			turnsCount, turnsCountOK = n, true
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		writeProjectedSessionError(ctx, w, http.StatusInternalServerError, ErrCodeDatabaseError, "session statistics unavailable", err)
 		return
@@ -99,6 +119,22 @@ func HandleProjectedSessionDashboard(w http.ResponseWriter, r *http.Request, db 
 	data["period"] = map[string]any{"start": query.Start.UTC(), "end": query.End.UTC(), "days": days}
 	data["generated_at"] = now
 	data["updated_at"], data["pending_since"] = result.UpdatedAt, result.PendingSince
+	// Turns 对拍键：只有 overview 段且轮次腿成功时才注入。键形状与遗留端点
+	// SessionOverviewResponse.TurnsAlignment 逐字一致（summary_requests /
+	// turns_count / abs_delta / degraded / threshold_pct），前端
+	// SessionStatsPanel.vue 的横幅消费同一组键 ⇒ v2 页面横幅不再静默失效。
+	// summaries 侧取数：cost_stats.total_requests 即投影负载里的
+	// measures.requests（json.Number，UseNumber 解码），不需要回库再查。
+	if turnsCountOK {
+		if costStats, ok := data["cost_stats"].(map[string]any); ok {
+			if total, ok := costStats["total_requests"].(json.Number); ok {
+				if summaryRequests, err := total.Int64(); err == nil {
+					a := evaluateTurnsAlignment(summaryRequests, turnsCount)
+					data["turns_alignment"] = a
+				}
+			}
+		}
+	}
 	metadata := &Metadata{GeneratedAt: now, TookMs: time.Since(now).Milliseconds()}
 	if section == metrics.SessionDashboardActive {
 		total, ok := data["total_active"].(json.Number)

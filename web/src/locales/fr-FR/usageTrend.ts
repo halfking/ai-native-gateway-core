@@ -13,6 +13,7 @@ export default {
   filterAll: 'Tous',
   filterProviderKeyFailed: "Échec du chargement des options de filtre fournisseur / clé. Une liste vide ne signifie pas qu'il n'y en a aucune",
   filterTenantFailed: 'Échec du chargement des options de filtre des tenants',
+  totalRow: 'Total général',
   shareByMetric: 'Part (métrique)',
   sourceDetail: 'Détail des requêtes',
   // 2026-10-02 multi-sélection / tout effacer / actualisation auto
