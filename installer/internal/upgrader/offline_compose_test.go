@@ -26,13 +26,18 @@ func TestApplyOfflinePackageSwitchesComposeImageAndRestoresOnFailure(t *testing.
 	const docker = `#!/bin/sh
 set -eu
 case "$1 $2" in
-  'inspect --format') cat "$OFFLINE_TEST_DIR/running" ;;
+  'inspect --format') test "$4" = fixture-gateway-id; cat "$OFFLINE_TEST_DIR/running" ;;
   'load -i') test -s "$3" ;;
   'image inspect') test "$5" = 'example.invalid/gateway:new'; echo "$OFFLINE_TEST_NEW_IMAGE" ;;
   'image tag') printf '%s\n' "$3" > "$OFFLINE_TEST_DIR/tag_${4#*:}" ;;
   'compose -p')
-    test "$3" = llm-gateway-go
-    shift 5
+    test "$3" = fixture-211-project
+    test "$4 $5" = "--env-file $OFFLINE_TEST_DIR/.env"
+    shift 7
+    case "$*" in
+      'ps --status running -q llm-gateway-go') echo fixture-gateway-id; exit 0 ;;
+      'ps --status running -q citus') echo fixture-citus-id; exit 0 ;;
+    esac
     test "$*" = 'up -d --no-deps --pull never --force-recreate --wait --wait-timeout 120 llm-gateway-go'
     printf '%s\n' "$APP_IMAGE_TAG" >> "$OFFLINE_TEST_DIR/switches"
     cat "$OFFLINE_TEST_DIR/tag_$APP_IMAGE_TAG" > "$OFFLINE_TEST_DIR/running"
@@ -60,12 +65,17 @@ esac
 			t.Setenv("OFFLINE_TEST_DIR", dir)
 			t.Setenv("OFFLINE_TEST_FAIL_HEALTH", fmt.Sprint(fail))
 			t.Setenv("OFFLINE_TEST_NEW_IMAGE", offlineTestNewImage)
+			t.Setenv("COMPOSE_PROJECT_NAME", "fixture-211-project")
 			t.Setenv("APP_IMAGE_TAG", "ambient-tag")
 			archive, migrations := writeOfflineComposeTestArchive(t, dir)
 			a := NewOfflineApplier(dir, filepath.Join(dir, "backups"), filepath.Join(dir, "compose.yml"), "fixture")
 			calls := 0
 			a.UpgradeStartup = func(sqlDir string, files []string) error {
 				calls++
+				citusID, err := a.ComposeServiceContainer(t.Context(), "citus")
+				if err != nil || citusID != "fixture-citus-id" {
+					t.Fatalf("Compose database = %q, %v", citusID, err)
+				}
 				if !slices.Equal(files, migrations) {
 					t.Fatalf("migration order = %v, want %v", files, migrations)
 				}
@@ -76,7 +86,7 @@ esac
 				}
 				return nil
 			}
-			if err := a.ApplyOfflinePackage(archive, dir); (err != nil) != fail || fail && !strings.Contains(err.Error(), "recreate Compose gateway") {
+			if err := a.ApplyOfflinePackage(archive, dir); (err != nil) != fail || fail && !strings.Contains(err.Error(), "docker compose up") {
 				t.Fatalf("ApplyOfflinePackage error = %v, health failure = %t", err, fail)
 			}
 			if calls != 1 {

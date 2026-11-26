@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,7 +76,11 @@ func runUpgradeAction(action, masterURL, channel string, offline bool, offlinePa
 
 			applier := upgrader.NewOfflineApplier(dataDir, backupDir, composeFile, containerName)
 			applier.UpgradeStartup = func(sqlDir string, files []string) error {
-				runner := dbinit.NewRunner(containerName, "kxuser", "llm_gateway", sqlDir)
+				citusID, err := applier.ComposeServiceContainer(context.Background(), "citus")
+				if err != nil {
+					return err
+				}
+				runner := dbinit.NewRunner(citusID, "kxuser", "llm_gateway", sqlDir)
 				runner.StartupFiles = files
 				return runner.UpgradeSchema(func(message string) { fmt.Println(message) })
 			}
