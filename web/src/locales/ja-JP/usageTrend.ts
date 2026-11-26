@@ -13,6 +13,7 @@ export default {
   filterAll: 'すべて',
   filterProviderKeyFailed: "プロバイダー/Key の絞り込み候補の取得に失敗しました。空は「該当なし」を意味しません",
   filterTenantFailed: 'テナントの絞り込み候補の取得に失敗しました',
+  totalRow: '合計',
   shareByMetric: '指標シェア',
   sourceDetail: 'リクエスト明細',
   // 2026-10-02 複数選択/全消去/自動更新

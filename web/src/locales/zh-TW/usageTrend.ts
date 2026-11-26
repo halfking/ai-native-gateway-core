@@ -13,6 +13,7 @@ export default {
   filterAll: '全部',
   filterProviderKeyFailed: "供應商/Key 篩選選項載入失敗，下拉為空不代表沒有",
   filterTenantFailed: '租戶篩選選項載入失敗',
+  totalRow: '合計',
   shareByMetric: '當前指標佔比',
   sourceDetail: '請求明細',
   // 2026-10-02 多選/清除全部/自動重新整理

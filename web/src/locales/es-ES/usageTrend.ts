@@ -13,6 +13,7 @@ export default {
   filterAll: 'Todos',
   filterProviderKeyFailed: "No se pudieron cargar las opciones de filtro de proveedor/clave: una lista vacía no significa que no haya ninguna",
   filterTenantFailed: 'No se pudieron cargar las opciones de filtro de inquilinos',
+  totalRow: 'Total general',
   shareByMetric: 'Cuota (métrica)',
   sourceDetail: 'Detalle de solicitudes',
   // 2026-10-02 multiselección / borrar todo / actualización automática
