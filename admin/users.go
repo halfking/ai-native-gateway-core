@@ -48,6 +48,80 @@ type updateUserRequest struct {
 	Password    *string `json:"password"`
 }
 
+// ── 角色口径（2026-11-26 角色治理轮）────────────────────────────────
+//
+// 平台角色闭集（管理端可指派）：
+//
+//	RoleSuperAdmin  平台超级管理员 —— **只属于 default 租户**
+//	RoleTenantAdmin 租户管理员     —— 只管本租户
+//	RoleUser        普通用户       —— 只用密钥调网关，不进管理台
+//
+// ★ 不变量：**非 default 租户内不得存在 super_admin**。
+//   理由：super_admin 是**平台级**身份（能看全部租户、能改全局配置），
+//   把它挂在某个业务租户下 = 该租户拿到了平台权限 ⇒ 租户边界失效。
+//   ⇒ 判据只在这里一份（roleAllowedInTenant），创建与变更角色两条写路径同源调用。
+//   ⇒ 前端下拉只是提示层，真正的闸门在服务端（前端可被绕过）。
+//
+// ★ 口径来源：live 211 实测（2026-11-26）租户 chenb 下存在 super_admin 账号，
+//   且 POST /api/users 对任意租户都接受 role=super_admin ⇒ 本轮收口。
+const (
+	RoleSuperAdmin  = "super_admin"
+	RoleTenantAdmin = "tenant_admin"
+	RoleUser        = "user"
+)
+
+// DefaultTenantCode 是唯一允许拥有 super_admin 的租户。
+const DefaultTenantCode = "default"
+
+// assignableRoles 是管理端可指派的角色闭集（闭集之外的字符串一律拒）。
+var assignableRoles = map[string]bool{
+	RoleSuperAdmin:  true,
+	RoleTenantAdmin: true,
+	RoleUser:        true,
+}
+
+// roleAllowedInTenant 判「角色能否落在这个租户」。
+// 两条规则：① 角色在闭集内；② super_admin 只能落在 default 租户。
+func roleAllowedInTenant(role, tenantID string) bool {
+	if !assignableRoles[role] {
+		return false
+	}
+	if role == RoleSuperAdmin && tenantID != DefaultTenantCode {
+		return false
+	}
+	return true
+}
+
+// roleOptionsForTenant 返回某租户可用的角色闭集（前端下拉同源口径）。
+func roleOptionsForTenant(tenantID string) []string {
+	if tenantID == DefaultTenantCode {
+		return []string{RoleSuperAdmin, RoleTenantAdmin, RoleUser}
+	}
+	return []string{RoleTenantAdmin, RoleUser}
+}
+
+// ValidateAssignableRole 校验「角色能否落在这个租户」，越界时返回可回给调用方的文案。
+//
+// ★ 这一份是**唯一口径**：admin 内部两条写路径（createUser / updateUser）与
+//   pkg/authplugin/native 共用它 ⇒ 不会因为多一条入口就漏掉规则。
+func ValidateAssignableRole(role, tenantID string) error {
+	if !assignableRoles[role] {
+		return fmt.Errorf("role must be one of: super_admin, tenant_admin, user")
+	}
+	if role == RoleSuperAdmin && tenantID != DefaultTenantCode {
+		return fmt.Errorf("super_admin role is only allowed in the default tenant")
+	}
+	return nil
+}
+
+// userDB 返回用户管理写路径的查询面（窄注入面；nil ⇒ 生产 h.db）。
+func (h *Handler) userDB() usersDB {
+	if h.usersDB != nil {
+		return h.usersDB
+	}
+	return h.db
+}
+
 // writeAuditLog inserts a row into routing_audit_log using r's AuthContext (best-effort, async).
 func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details any) {
 	auth := GetAuthContext(r)
@@ -330,7 +404,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 		args = append(args, GetTenantID(r))
 	}
 	query += ` ORDER BY id`
-	rows, err := h.db.Query(ctx, query, args...)
+	rows, err := h.userDB().Query(ctx, query, args...)
 	if err != nil {
 		writeInternalErr(w, "query failed", err)
 		return
@@ -374,7 +448,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.TenantID == "" {
-		req.TenantID = "default"
+		req.TenantID = DefaultTenantCode
 	}
 	// tenant_admin can only create users in their own tenant, and only with role tenant_admin
 	if IsTenantAdmin(r) {
@@ -382,7 +456,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "tenant_admin can only create users in own tenant")
 			return
 		}
-		if req.Role == "super_admin" {
+		if req.Role == RoleSuperAdmin {
 			writeError(w, http.StatusForbidden, "tenant_admin cannot create super_admin users")
 			return
 		}
@@ -390,7 +464,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	// Verify tenant exists and is not disabled
 	ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
 	var tenantStatus string
-	err := h.db.QueryRow(ctxCheck, `SELECT status FROM tenants WHERE code = $1`, req.TenantID).Scan(&tenantStatus)
+	err := h.userDB().QueryRow(ctxCheck, `SELECT status FROM tenants WHERE code = $1`, req.TenantID).Scan(&tenantStatus)
 	cancelCheck()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "tenant does not exist: "+req.TenantID)
@@ -401,10 +475,13 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Role == "" {
-		req.Role = "tenant_admin"
+		req.Role = RoleTenantAdmin
 	}
-	if req.Role != "super_admin" && req.Role != "tenant_admin" {
-		writeError(w, http.StatusBadRequest, "role must be super_admin or tenant_admin")
+	// ★ 角色闭集 + 租户不变量（唯一口径）：普通用户（user）是合法角色；
+	//   super_admin 只允许落在 default 租户 ⇒ 非 default 租户只能建
+	//   tenant_admin 或 user。
+	if err := ValidateAssignableRole(req.Role, req.TenantID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -415,7 +492,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	var u userInfo
-	err = h.db.QueryRow(ctx, `
+	err = h.userDB().QueryRow(ctx, `
 		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, must_change_password)
 		VALUES ($1, $2, $3, $4, $5, $6, TRUE)
 		RETURNING id, tenant_id, username, display_name, email, role, enabled, must_change_password, created_at
@@ -443,24 +520,44 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// tenant_admin can only update users in their own tenant
-	if IsTenantAdmin(r) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-		var userTenant string
-		err := h.db.QueryRow(ctx, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
-		cancel()
+	// 目标用户的租户与当前角色：租户边界判定、角色不变量、审计「旧角色→新角色」
+	// 三处都要用 ⇒ 只查一次（变更角色时必查；tenant_admin 操作时必查）。
+	var targetTenant, targetRole string
+	if req.Role != nil || IsTenantAdmin(r) {
+		ctxLookup, cancelLookup := context.WithTimeout(r.Context(), 3*time.Second)
+		err := h.userDB().QueryRow(ctxLookup, `SELECT tenant_id, role FROM users WHERE id = $1`, id).Scan(&targetTenant, &targetRole)
+		cancelLookup()
 		if err != nil {
 			writeLookupErr(w, "user not found", err)
 			return
 		}
-		if userTenant != GetTenantID(r) {
-			writeError(w, http.StatusForbidden, "tenant_admin can only update users in own tenant")
-			return
-		}
-		// tenant_admin cannot promote users to super_admin
-		if req.Role != nil && *req.Role == "super_admin" {
+	}
+	// tenant_admin can only update users in their own tenant
+	if IsTenantAdmin(r) && targetTenant != GetTenantID(r) {
+		writeError(w, http.StatusForbidden, "tenant_admin can only update users in own tenant")
+		return
+	}
+	if req.Role != nil {
+		// ② tenant_admin 永远不能授予 super_admin（与租户无关）。
+		if *req.Role == RoleSuperAdmin && IsTenantAdmin(r) {
 			writeError(w, http.StatusForbidden, "tenant_admin cannot set super_admin role")
 			return
+		}
+		// ① 角色闭集 + ③ 租户不变量（与 createUser 同一份口径）。
+		if err := ValidateAssignableRole(*req.Role, targetTenant); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// ④ 不能把最后一个（启用的）平台超管降级 ⇒ 等于关掉管理台唯一入口。
+		if targetRole == RoleSuperAdmin && *req.Role != RoleSuperAdmin {
+			ctxOthers, cancelOthers := context.WithTimeout(r.Context(), 3*time.Second)
+			var others int
+			err := h.userDB().QueryRow(ctxOthers, `SELECT count(*) FROM users WHERE role = $1 AND enabled AND id <> $2`, RoleSuperAdmin, id).Scan(&others)
+			cancelOthers()
+			if err == nil && others == 0 {
+				writeError(w, http.StatusConflict, "cannot demote the last super_admin")
+				return
+			}
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -479,10 +576,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		argIdx++
 	}
 	if req.Role != nil {
-		if *req.Role != "super_admin" && *req.Role != "tenant_admin" {
-			writeError(w, http.StatusBadRequest, "role must be super_admin or tenant_admin")
-			return
-		}
+		// 角色值本身已在上面校验过（闭集 + 租户不变量 + 最后一个超管保护）。
 		sets = append(sets, "role = $"+strconv.Itoa(argIdx))
 		args = append(args, *req.Role)
 		argIdx++
@@ -519,7 +613,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id = $" + strconv.Itoa(argIdx) +
 		" RETURNING id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at"
 	var u userInfo
-	err := h.db.QueryRow(ctx, query, args...).Scan(
+	err := h.userDB().QueryRow(ctx, query, args...).Scan(
 		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt,
 	)
 	if err != nil {
@@ -536,7 +630,12 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		}
 	}
 	if req.Role != nil {
-		auditDetail += fmt.Sprintf(" role=%s", *req.Role)
+		// 角色变更记「旧→新」，否则审计里只看到新值 ⇒ 看不出是谁被降级。
+		if targetRole != "" {
+			auditDetail += fmt.Sprintf(" role=%s->%s", targetRole, *req.Role)
+		} else {
+			auditDetail += fmt.Sprintf(" role=%s", *req.Role)
+		}
 	}
 	if req.Password != nil {
 		auditDetail += " password_changed=true"
@@ -550,7 +649,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 	if IsTenantAdmin(r) {
 		ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
 		var userTenant string
-		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
+		err := h.userDB().QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancelCheck()
 		if err != nil {
 			writeLookupErr(w, "user not found", err)
@@ -563,7 +662,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tag, err := h.db.Exec(ctx, "DELETE FROM users WHERE id = $1", id)
+	tag, err := h.userDB().Exec(ctx, "DELETE FROM users WHERE id = $1", id)
 	if err != nil {
 		writeInternalErr(w, "delete failed", err)
 		return
@@ -581,7 +680,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 	if IsTenantAdmin(r) {
 		ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
 		var userTenant string
-		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
+		err := h.userDB().QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
 		cancelCheck()
 		if err != nil {
 			writeLookupErr(w, "user not found", err)
@@ -614,7 +713,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tag, err := h.db.Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = now() WHERE id = $2`, string(hash), id)
+	tag, err := h.userDB().Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = now() WHERE id = $2`, string(hash), id)
 	if err != nil {
 		writeInternalErr(w, "update failed", err)
 		return

@@ -158,7 +158,120 @@
     </table>
   </div>
 
-  <footer>生成于 2026-11-26 · 批判式审计轮（V2 统计面合并）· 全部读数现跑取自 HEAD c5cb70f7fc/b56206bc83</footer>
+  <h2>⑥ 收口补记（2026-11-26 12:1x–12:5x，本轮续跑）</h2>
+  <div class="card">
+    <h3>⑥.1 154 的 973 投影 backfill：不是停摆，是正常推进 → 12:35:00 完成并验收</h3>
+    <ul>
+      <li><b>位移实测</b>：游标 <code>1,751,934 → 1,910,951</code>（608 秒，<b>+159,017 facts ≈ 261 条/秒</b>），
+          <code>updated_at</code> 同步推进 ⇒ 投影器<b>在跑</b>；<code>request_metrics_pending</code> = 0。</li>
+      <li><b>「完成」的判据来自代码</b>：<code>internal/metricsstore/processor.go:187</code>
+          —— 只有当游标之后剩余 fact 少于批大小（默认 1000）时才置 <code>backfill_complete=true</code>
+          ⇒ 本轮记录时剩余 <b>125,385</b> 条 ⇒ <code>false</code> 是<b>正确读数</b>，不是缺陷。</li>
+      <li><b>行为读数（12:26，进行中）</b>：<code>/api/admin/stats/v2/summary?days=1</code> → 200，
+          <code>ready=false, items=[]</code> ⇒ backfill 期间<b>如实报 not-ready、不假绿</b>。</li>
+      <li><b>★ 终点（12:35:00，60 秒轮询至转真）</b>：<code>/readyz/request-metrics</code> →
+          <code>backfill_complete=true</code>；<b>行为验收</b>：<code>/api/admin/stats/v2/summary?days=1</code> → 200，
+          <code>ready=true</code>、<code>items</code> <b>非空（1 条）</b>，
+          实测 <code>total_requests=4,955</code> / <code>unique_models=31</code> /
+          <code>total_tokens=4,958,887</code> / <code>success_rate=0.7251</code>
+          ⇒ <b>154 的 V2 统计面已真实供数</b> ⇒ 交接单第 ① 件事闭环。</li>
+    </ul>
+    <h3>⑥.2 三台版本矩阵（rev-list 逐台实测，三台均为 origin/main 祖先、无分叉）</h3>
+    <table>
+      <tr><th>机器</th><th>角色</th><th>在役版本</th><th>落后 origin/main</th><th>健康度</th></tr>
+      <tr><td>211</td><td>集成</td><td>3289-a88cee62</td><td><b>4 笔</b></td><td>readyz 200</td></tr>
+      <tr><td>245</td><td>预发</td><td>3178-6bbc51f5</td><td><b>24 笔</b></td><td>readyz 200（0.217s）</td></tr>
+      <tr><td>154</td><td>生产</td><td>3177-b56206bc</td><td><b>26 笔</b></td><td>readyz 200</td></tr>
+    </table>
+    <ul>
+      <li>落后的 4 笔＝<b>上游新特性</b>（W4.3 渠道商层级表 / PI 分析租户过滤 / L125 轮块），
+          <b>尚未在任何一台验证过</b>；是否追平属 <b>owner 决策</b>，本轮<b>只登记事实、不代做部署</b>。</li>
+    </ul>
+    <h3>⑥.3 245 的 IO 风暴：根因＝<b>自反馈死循环</b>（非网关引起）</h3>
+    <ul>
+      <li><b>调度源</b>：<code>/etc/cron.d/disk-check</code> ⇒ <code>17 * * * *</code> <b>每小时</b>拉起
+          <code>disk-check.sh</code>；脚本内 <code>find /var/log/llm-gateway-go -mtime +30</code>
+          <b>全树无边界递归</b>（无 maxdepth / 无 xdev / 无超时）。</li>
+      <li><b>重叠堆积</b>：实测同时存在两个 find（<b>1h01m</b> 与 <b>1m13s</b>）⇒ 每小时新增一个、每个跑 1 小时+。</li>
+      <li><b>死锁环</b>：磁盘 <b>76% &lt; 阈值 80%</b> ⇒ 只写 pending <b>永不删除</b> ⇒ 目录只增不减
+          ⇒ find 越来越慢 ⇒ IO 永久高压 ⇒ <b>回到起点</b>。</li>
+      <li><b>旁证</b>：连 <code>du -sh /var/log/llm-gateway-go</code> 都 25s 未返回（主动中止）；
+          swap 1024MB 用掉 1000.8MB；<code>%iowait</code> 61.5%→71.2%；<code>vda %util</code> 95.2%。</li>
+      <li><b>在役服务未受影响</b>（readyz 200 / 0.217s）⇒ 风暴不是网关引起。</li>
+      <li><b>待批补丁</b>（flock 防重叠 ＋ <code>timeout 120</code>/<code>-xdev</code> 有界 find ＋
+          归档清理脱离磁盘阈值 ＋ cron 改 3 小时一次）已写成 diff，<b>本轮未落机器</b>，等 owner 明确。</li>
+    </ul>
+    <h3>⑥.4 并上游 ＋ 三方 L129 撞号解算</h3>
+    <ul>
+      <li>上游带入 <code>07101e72c3</code>（W4.3 渠道商后端）、<code>66db5c5577</code>（PI 分析租户过滤）、
+          <code>6461f83035</code>（L125 轮块）、<code>5a94acb7ca</code>（上游合并笔）。</li>
+      <li><b>★ 解算时发现：不是两方撞号，是【三方撞号】</b> —— 我侧未推的 L129、上游的 L129，
+          以及上游<b>自己把 02:5x 那块误标成 L129</b>（其自述「按 R5 门改号 L125」）
+          ⇒ <b>上游 origin/main 自身违反 R5</b>。</li>
+      <li><b>解算</b>：上游 L129 保留；误标那块恢复 <b>L125</b>；我侧未推的 L129 改号 <b>L130</b>
+          ⇒ 主档 45 段头、零撞号、零残留标记、顺序 L130→L129→…→L123 递减；<code>TestAgentsMd*</code> 全绿。</li>
+      <li><b>连带代上游收口</b>：上游新增路由 ⇒ 快照漂移（生成器 777 vs 快照 773）
+          ⇒ 用仓内生成器 <code>--update-snapshot</code> <b>重生成 + 同步头</b>（数据行数 773→777、权限 0644 保持）
+          ⇒ <code>TestAdminRoutes*</code> 全族 ok ⇒ <b>不手改快照</b>。</li>
+    </ul>
+    <h3>⑥.5 上游 W4.3 引入的<b>投递面缺口</b>（★ 本轮最重的一条：★ 特性一上线即 42703 ★）</h3>
+    <ul>
+      <li><b>触发</b>：并上游后全量 <code>ursmcheck</code> 首遍<b>红 6 条</b> ⇒ 逐条归因 ⇒
+          <b>6 条全部指向上游新特性</b> <code>07101e72c3</code>（W4.3 渠道商/客户视角后端核心）。</li>
+      <li><b>红①~③</b>（三本派生台账各差 1 行，缺 <code>idx_customers_channel</code>）
+          ⇒ <b>官方生成器</b>重算（<code>expect</code> → <code>reconcile --columns</code> → <code>reachability</code>，
+          ★ 顺序有讲究 ★）⇒ 三本各 <b>987</b> 行；★ 位移就是新增那 1 行 ⇒ <b>无口径漂移</b>。</li>
+      <li><b>红④</b> 路由快照（777 vs 773）⇒ <code>--update-snapshot</code> 重生成 + 同步头；
+          <b>红⑤</b> POST 面台账（773 vs 777）⇒ 补进 4 条 W4.3 读端点。</li>
+      <li><b>红⑥ ★ 最重 ★</b>：上游 W4.3 的启动迁移
+          <code>sql/migrations/startup/492_channels_customers.sql</code>
+          <b>不在任何投递通道里</b>（211 <code>files=()</code> / 安装器清单 / embeddata / installer/migrations
+          —— 四处逐条实测全无）⇒ 部署与新装都不建 <code>channels</code> / <code>customers</code> /
+          <code>channel_users</code> ⇒ <code>admin/channels.go</code> 的引用<b>恒 42703</b>。</li>
+      <li><b>真库实测（154 生产，只读）</b>：<code>schema_migrations</code> 无 '492' 行、
+          三张表 <code>to_regclass</code> 全 NULL。</li>
+      <li><b>★ 两道本该拦住它的门都没拦住</b>：投递通道覆盖门<b>只断言最大编号附近的近邻窗口</b>
+          （当前最大号 999）⇒ <b>492 远在窗口外 ⇒ 门根本没看它</b>
+          ⇒ <b>「拿旧编号当新迁移的编号」会绕过投递通道覆盖门</b>。</li>
+      <li><b>第二处真缺陷（列级）</b>：代码查 <code>rl.created_at</code>，而已投递基线
+          <code>public.request_logs</code> <b>只有 <code>ts</code> 列</b>、<code>created_at</code> 只由未投递的
+          <code>000_base_tables.sql</code> 定义；★ 真库上 <code>public.request_logs</code> 不是表、只有视图
+          <code>request_logs_with_current_month</code>（154 实测：有 <code>ts</code> 与 <code>customer_id</code>、
+          <b>无 <code>created_at</code></b>）⇒ 那些查询恒 42703。</li>
+      <li><b>一处差点误报的</b>：<code>channel_customers</code> 是 <b>CTE</b>、不是表 ⇒ <b>不存在表名缺陷</b>。</li>
+      <li><b>★ 第四处真缺陷（admin 包门里才暴露）</b>：W4.3 的查询读的是
+          <b>已被迁移 890 物理删除的 v1 底表 <code>public.request_logs</code></b> ⇒ 运行时 <b>42P01</b>
+          （★ 154 生产库<b>没有</b>这张表、只有视图 <code>request_logs_with_current_month</code> ★★）
+          ⇒ 门 <code>TestRetiredV1ReferencesAreAllAccountedFor</code>（★ 例外台账基线 0、<b>只许缩小</b> ★）判红。
+          ⇒ <b>本轮修法（零产品语义变更）</b>：三处读点改指 <b>890 之后仍存在的 canonical 视图</b>
+          <code>request_logs_with_current_month</code>（★ 数据源实测 <code>FROM session_turns ∪ session_turns_hot</code> ★），
+          时间列 <code>created_at</code> → <code>ts</code>（★ 视图列集实测齐备、<b>无 <code>created_at</code></b> ★）；
+          ★ 改完 ⇒ 投递门那条登记不再被命中 ⇒ 按「防免死金牌」纪律<b>同步删掉</b>。</li>
+      <li><b>本轮做</b>：三本台账重算 ＋ 快照重生成 ＋ POST 台账补 4 条 ＋
+          <b>给新迁移 492 加事务包裹与 <code>schema_migrations</code> 自登记</b>
+          （★ 该迁移从未被任何环境应用过 ⇒ <b>零已应用字节变更</b> ★）
+          ＋ <b>把三处 v1 底表读点改指 canonical 视图</b>（★ 只改读点与列名 ★）
+          ＋ <b>把新读点登记进 canonical 读点登记簿与时间窗读点簿</b>
+          （★ 分类<b>必须人工核定</b>；★ 投影来源取自 <code>dbpkg.CanonicalSessionOnlyProjectionForTest()</code>
+          权威投影文本，★ 实测五列<b>全部是 base</b> ⇒ 分类 <code>narrow-migratable</code> ★）。</li>
+      <li><b>本轮不做（★ 需 owner ★）</b>：<b>把 492 搬进四条投递通道</b>（＝生产 schema 变更）
+          ⇒ 只在 <code>internal/schemadelivery/known_undelivered.go</code> 登记三条欠账、理由逐字写明；
+          ★ 登记 ≠ 认可没问题 ⇒ 上游补完投递面后<b>必须回来删登记</b>（门有 stale 检查）。</li>
+    </ul>
+    <h3>⑥.6 诚实边界</h3>
+    <ul>
+      <li>本轮<b>零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署</b>；
+          154/245 上只做<b>只读</b>探测（readyz、version、登录、SELECT），<b>未改进程、未改文件、未杀进程</b>。</li>
+      <li>245 的 <code>disk-check.sh</code> 与 cron <b>未修改</b>（补丁为待批件）；三台<b>未做部署</b>。</li>
+      <li>154 的 backfill <b>已于 12:35:00 完成</b>并通过行为验收（<code>ready=true</code>、<code>items</code> 非空）。</li>
+      <li><b>代上游收口的边界</b>：只改了<b>派生台账／快照／生成产物</b> ＋ <b>一个从未被应用过的迁移文件</b>
+          ＋ <b>一条已知欠账登记</b>；<b>没有把任何迁移搬进投递通道</b>（＝生产 schema 变更）
+          ⇒ <b>W4.3 渠道商特性目前在任何环境都不可用</b>（关系与列都不存在），
+          <b>部署 W4.3 前必须先由上游补投递面并修列名</b>，已如实登记为待 owner。</li>
+    </ul>
+  </div>
+
+  <footer>生成于 2026-11-26 · 批判式审计轮（V2 统计面合并）· ①②③④⑤ 读数现跑取自 HEAD c5cb70f7fc/b56206bc83 · ⑥ 收口补记读数现跑取自并上游后合并笔 ec43c1c9c8（origin/main 5a94acb7ca 并入）· ④⑤⑥ 三台只做只读探测</footer>
 </div>
 
 <script>

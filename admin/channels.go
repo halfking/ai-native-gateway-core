@@ -18,6 +18,25 @@ type channelGate struct {
 	db *pgxpool.Pool
 }
 
+// The channel tables are delivered separately from request reporting.
+func (h *Handler) requireChannelSchema(w http.ResponseWriter, r *http.Request, role string) bool {
+	if role != "channel" && role != "super_admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return false
+	}
+	var available bool
+	err := h.db.QueryRow(r.Context(), `SELECT to_regclass('public.customers') IS NOT NULL
+		AND to_regclass('public.channel_users') IS NOT NULL`).Scan(&available)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return false
+	}
+	if !available {
+		http.Error(w, "Channel reporting schema unavailable", http.StatusServiceUnavailable)
+	}
+	return available
+}
+
 // verifyChannelOwnership 检查 user_id 是否归属于 channel_id（通过 channel_users 表）。
 func (g *channelGate) verifyChannelOwnership(ctx context.Context, userID int, channelID int64) error {
 	var exists bool
@@ -66,6 +85,9 @@ func (h *Handler) listChannelCustomers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !h.requireChannelSchema(w, r, auth.Role) {
+		return
+	}
 
 	// 权限检查：channel 用户必须归属该渠道，super_admin 放行
 	if auth.Role == "channel" {
@@ -78,9 +100,6 @@ func (h *Handler) listChannelCustomers(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Internal error", http.StatusInternalServerError)
 			return
 		}
-	} else if auth.Role != "super_admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
 	}
 
 	// 查询客户列表
@@ -136,6 +155,9 @@ func (h *Handler) getChannelCustomerStats(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !h.requireChannelSchema(w, r, auth.Role) {
+		return
+	}
 
 	gate := &channelGate{db: h.db}
 	// 权限检查：channel 用户需验证完整归属链
@@ -148,12 +170,9 @@ func (h *Handler) getChannelCustomerStats(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-	} else if auth.Role != "super_admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
 	}
 
-	// 统计查询：从 request_logs 聚合（407迁移已有 customer_id）
+	// 统计查询：按请求的 customer_id 聚合。
 	type stats struct {
 		TotalSessions int     `json:"total_sessions"`
 		ActiveUsers   int     `json:"active_users"`
@@ -165,9 +184,9 @@ func (h *Handler) getChannelCustomerStats(w http.ResponseWriter, r *http.Request
 			COUNT(DISTINCT COALESCE(identity_hash, '')),
 			COUNT(DISTINCT COALESCE(end_user_id, '')),
 			COALESCE(SUM(cost_usd), 0)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE customer_id = $1
-		  AND created_at >= NOW() - INTERVAL '30 days'
+		  AND ts >= NOW() - INTERVAL '30 days'
 	`, customerID).Scan(&s.TotalSessions, &s.ActiveUsers, &s.MonthlyCost)
 	if err != nil {
 		http.Error(w, "Query error", http.StatusInternalServerError)
@@ -190,6 +209,9 @@ func (h *Handler) getChannelStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !h.requireChannelSchema(w, r, auth.Role) {
+		return
+	}
 
 	if auth.Role == "channel" {
 		gate := &channelGate{db: h.db}
@@ -197,9 +219,6 @@ func (h *Handler) getChannelStats(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-	} else if auth.Role != "super_admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
 	}
 
 	// 聚合渠道下所有客户的统计
@@ -217,9 +236,9 @@ func (h *Handler) getChannelStats(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM channel_customers),
 			COUNT(DISTINCT COALESCE(rl.identity_hash, '')),
 			COALESCE(SUM(rl.cost_usd), 0)
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.customer_id IN (SELECT id FROM channel_customers)
-		  AND rl.created_at >= NOW() - INTERVAL '30 days'
+		  AND rl.ts >= NOW() - INTERVAL '30 days'
 	`, channelID).Scan(&s.TotalCustomers, &s.TotalSessions, &s.MonthlyCost)
 	if err != nil {
 		http.Error(w, "Query error", http.StatusInternalServerError)
@@ -230,7 +249,7 @@ func (h *Handler) getChannelStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // listChannelCustomerSessions (GET /api/channels/{id}/customers/{customer_id}/sessions)
-// 返回客户的会话列表（从 request_logs/session_dim 联查，简化版）。
+// 返回客户最近活跃的会话。
 func (h *Handler) listChannelCustomerSessions(w http.ResponseWriter, r *http.Request) {
 	channelID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -248,6 +267,9 @@ func (h *Handler) listChannelCustomerSessions(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !h.requireChannelSchema(w, r, auth.Role) {
+		return
+	}
 
 	gate := &channelGate{db: h.db}
 	if auth.Role == "channel" {
@@ -259,24 +281,21 @@ func (h *Handler) listChannelCustomerSessions(w http.ResponseWriter, r *http.Req
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-	} else if auth.Role != "super_admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
 	}
 
-	// 查询会话列表（简化版：从 request_logs 取最近会话，分页默认50）
 	limit := 50
 	rows, err := h.db.Query(r.Context(), `
-		SELECT DISTINCT ON (identity_hash)
+		SELECT
 			identity_hash,
-			MAX(created_at) as last_activity,
+			MAX(ts) as last_activity,
 			COUNT(*) as request_count,
-			SUM(cost_usd) as total_cost
-		FROM request_logs
+			COALESCE(SUM(cost_usd), 0) as total_cost
+		FROM request_logs_with_current_month
 		WHERE customer_id = $1
-		  AND created_at >= NOW() - INTERVAL '30 days'
+		  AND ts >= NOW() - INTERVAL '30 days'
+		  AND NULLIF(identity_hash, '') IS NOT NULL
 		GROUP BY identity_hash
-		ORDER BY identity_hash, last_activity DESC
+		ORDER BY last_activity DESC, identity_hash
 		LIMIT $2
 	`, customerID, limit)
 	if err != nil {

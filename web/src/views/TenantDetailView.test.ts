@@ -62,11 +62,31 @@ describe('tenant create-user dialog contract', () => {
     // 前端先拦空用户名/短密码（后端 users.go 仍有 ≥8 + 复杂度 + 闭集校验，双保险）
     expect(source).toContain("t('tenants.detail.usernameRequired')")
     expect(source).toContain("t('tenants.detail.passwordTooShort')")
-    // 角色下拉与后端闭集 {tenant_admin, super_admin} 一致
-    expect(source).toContain('value="tenant_admin"')
-    expect(source).toContain('value="super_admin"')
+    // 2026-11-26 角色治理轮：角色下拉改为**按租户收敛**的 roleOptions
+    // （非 default 租户不给超级管理员），闭集扩到三档（多了「普通用户」）。
+    expect(source).toContain('const roleOptions = computed(')
+    expect(source).toContain("tenantCode.value === DEFAULT_TENANT_CODE")
+    expect(source).toContain('ROLE_USER')
+    expect(source).toContain('v-for="r in roleOptions"')
     // 提交走 api.createUser（后端 POST /api/users），不内联 fetch
     expect(source).toMatch(/await createUser\(/)
+  })
+
+  it('does not offer super_admin to a non-default tenant', async () => {
+    const source = await readViewSource()
+    // 超级管理员只能出现在 default 租户的选项里 ⇒ 非 default 租户的
+    // 选项集由 roleOptions 的 else 分支给出（tenant_admin / user）。
+    expect(source).toMatch(/\?\s*\[ROLE_SUPER_ADMIN, ROLE_TENANT_ADMIN, ROLE_USER\]/)
+    expect(source).toMatch(/:\s*\[ROLE_TENANT_ADMIN, ROLE_USER\]/)
+    // 角色下拉不得再直接写死 value="super_admin"（那等于给任何租户都开超级管理员）
+    expect(source).not.toContain('value="super_admin"')
+  })
+
+  it('offers role change from the tenant user table', async () => {
+    const source = await readViewSource()
+    expect(source).toContain("openRoleDialog(u)")
+    expect(source).toMatch(/await updateUser\(target\.id, \{ role: roleDraft\.value \}\)/)
+    expect(source).toContain("$t('tenants.detail.changeRoleBtn')")
   })
 
   it('keeps the dialog fully i18n-ed (no hardcoded CJK in the new markup)', async () => {

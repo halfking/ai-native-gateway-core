@@ -107,7 +107,8 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/free-discovery"
 - extendedWaitUntil:
-    visible: '免费资源发现'
+    # 211 入口将此路径重定向到 FreeLLMAPI。本地网关保留深链页面。
+    visible: '免费资源发现|路由策略'
     timeout: 20000
 - evalScript: "${output.ms__free_discovery = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:

@@ -60,7 +60,7 @@ func TestMigration745ReportSnapshotsContract(t *testing.T) {
 	}
 	lastPos := -1
 	for _, required := range channelEntries {
-		pos := strings.Index(seqBody, required)
+		pos := strings.Index(seqBody, `"$ROOT_DIR/sql/migrations/startup/`+required+`"`)
 		if pos < 0 {
 			t.Fatalf("apply-db-revision-sequence.sh does not carry migration %s — upgrade-database deployments would never apply it", required)
 		}

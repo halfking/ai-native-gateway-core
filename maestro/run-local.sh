@@ -40,7 +40,7 @@ DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9222}"
 #   panel-title，无 v-if）却判红 ⇒ 覆写视口后同一条 flow **F11_EXIT=0 全绿**。
 #   （与 run-stage-tree.sh 头注、docs/skills/maestro-browser-verification/SKILL.md §六.2 同口径。）
 SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x1400}"
-REPORT_ROOT="${ROOT}/maestro/reports"
+REPORT_ROOT="${MAESTRO_REPORT_ROOT:-${ROOT}/maestro/reports}"
 
 # ── 1. 选 flow ────────────────────────────────────────────────────────────────
 WITH_DEV=0
@@ -126,17 +126,21 @@ if ! command -v maestro >/dev/null 2>&1; then
   exit 2
 fi
 
-# ── 3. 凭据（只从仓根 .env.local） ────────────────────────────────────────────
-if [ ! -f "${ROOT}/.env.local" ]; then
-  echo "!! 仓根没有 .env.local（需要 LLM_GATEWAY_ADMIN_USER / LLM_GATEWAY_ADMIN_PASSWORD）" >&2
-  exit 2
+# ── 3. 凭据 ────────────────────────────────────────────────────────────────
+if [ -z "${LLM_GATEWAY_ADMIN_USER:-}" ] || [ -z "${LLM_GATEWAY_ADMIN_PASSWORD:-}" ]; then
+  if [ ! -f "${ROOT}/.env.local" ]; then
+    echo "!! 需要 LLM_GATEWAY_ADMIN_USER / LLM_GATEWAY_ADMIN_PASSWORD 或仓根 .env.local" >&2
+    exit 2
+  fi
+  set -a
+  # shellcheck disable=SC1091
+  . "${ROOT}/.env.local"
+  set +a
 fi
-set -a
-# shellcheck disable=SC1091
-. "${ROOT}/.env.local"
-set +a
-: "${LLM_GATEWAY_ADMIN_USER:?仓根 .env.local 缺 LLM_GATEWAY_ADMIN_USER}"
-: "${LLM_GATEWAY_ADMIN_PASSWORD:?仓根 .env.local 缺 LLM_GATEWAY_ADMIN_PASSWORD}"
+: "${LLM_GATEWAY_ADMIN_USER:?需要 LLM_GATEWAY_ADMIN_USER}"
+: "${LLM_GATEWAY_ADMIN_PASSWORD:?需要 LLM_GATEWAY_ADMIN_PASSWORD}"
+export BASE_URL LLM_GATEWAY_ADMIN_USER LLM_GATEWAY_ADMIN_PASSWORD
+umask 077
 
 # ── 4. Chrome（CDP） ─────────────────────────────────────────────────────────
 find_chrome() {
