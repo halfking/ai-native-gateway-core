@@ -689,6 +689,39 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// 运营在 routing 页看到的"测试可用"与生产选路脱节。live-router 不可用
 	// 时（nil 注入/解析失败）source=unavailable，行为不劣于旧版。
 	planOrder, planSource := h.livePlanOrder(ctx, normalizedModel, EffectiveTenantIDAll(r))
+	
+	// 2026-11-26: 根据用户角色脱敏凭据信息
+	// - user: Sees
+	// - tenant_admin: 只保留配额状态和健康分数
+	// - super_admin: 看全部（不修改）
+	auth := GetAuthContext(r)
+	if auth != nil {
+		for i := range candidates {
+			if auth.Role == RoleUser {
+				// 普通用户：完全隐藏凭据详情
+				candidates[i].CredentialID = 0
+				candidates[i].CredentialLabel = ""
+				candidates[i].QuotaState = ""
+				candidates[i].QuotaRecoverAt = nil
+				candidates[i].AvailabilityState = ""
+				candidates[i].AvailabilityRecoverAt = nil
+				candidates[i].BalanceUSD = nil
+				candidates[i].CircuitState = ""
+				candidates[i].CoolingUntil = nil
+				candidates[i].EffectiveAt = nil
+				candidates[i].ExpiresAt = nil
+				candidates[i].ConcurrencyLimit = nil
+				candidates[i].EffectiveConcurrency = nil
+			} else if auth.Role == RoleTenantAdmin {
+				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID和密钥
+				candidates[i].CredentialID = 0
+				candidates[i].CredentialLabel = ""
+				// 保留：QuotaState, SuccessRate, P95LatencyMs, Available, RuntimeRoutable
+			}
+			// super_admin 和 admin_key：看全部（不修改）
+		}
+	}
+	
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_model":         model,
 		"canonical_name":       rawModels[0],
@@ -2288,6 +2321,33 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 		outRows = []map[string]any{}
 	}
 
+	// 2026-11-26: 根据用户角色脱敏凭据信息
+	auth := GetAuthContext(r)
+	if auth != nil {
+		for i := range outRows {
+			if auth.Role == RoleUser {
+				// 普通用户：完全隐藏凭据详情
+				outRows[i]["credential_id"] = 0
+				outRows[i]["credential_label"] = ""
+				outRows[i]["quota_state"] = ""
+				outRows[i]["quota_recover_at"] = nil
+				outRows[i]["availability_state"] = ""
+				outRows[i]["availability_recover_at"] = nil
+				outRows[i]["balance_usd"] = nil
+				outRows[i]["circuit_state"] = ""
+				outRows[i]["cooling_until"] = nil
+				outRows[i]["effective_at"] = nil
+				outRows[i]["expires_at"] = nil
+			} else if auth.Role == RoleTenantAdmin {
+				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID和标签
+				outRows[i]["credential_id"] = 0
+				outRows[i]["credential_label"] = ""
+				// 保留：quota_state, availability_state, success_rate, p95_latency_ms, available, runtime_routable
+			}
+			// super_admin 和 admin_key：看全部（不修改）
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"featured": featured,
 		"rows":     outRows,
@@ -2328,9 +2388,11 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	featuredOnly := queryBool(r, "featured_only")
 	tenantID := GetTenantID(r)
 
-	// For tenant_admin, hide credential routing details (which credentials route to which model).
-	// They see model names and availability, but NOT credential labels, provider IDs, pricing, etc.
-	hideCredentialDetails := IsTenantAdmin(r)
+	// 2026-11-26: For tenant_admin and user, hide credential routing details
+	// - tenant_admin: see model names and availability, but NOT credential labels, provider IDs, pricing
+	// - user: same as tenant_admin (ordinary users don't need credential details)
+	auth := GetAuthContext(r)
+	hideCredentialDetails := auth != nil && (auth.Role == RoleTenantAdmin || auth.Role == RoleUser)
 
 	var featuredModels []string
 	//nolint:errcheck // scan error non-critical
@@ -3326,10 +3388,22 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	args := []any{sinceMin}
 	argIdx := 2
 
-	// tenant_admin callers may only see decisions for their own tenant.
-	if IsTenantAdmin(r) {
-		clauses = append(clauses, fmt.Sprintf("rdl.tenant_id = $%d", argIdx))
-		args = append(args, GetTenantID(r))
+	// 2026-11-26: 权限过滤
+	auth := GetAuthContext(r)
+	if !IsSuperAdminOrLegacy(r) {
+		// tenant_admin callers may only see decisions for their own tenant.
+		if IsTenantAdmin(r) {
+			clauses = append(clauses, fmt.Sprintf("rdl.tenant_id = $%d", argIdx))
+			args = append(args, GetTenantID(r))
+			argIdx++
+		}
+	}
+	
+	// 2026-11-26: 用户级过滤（普通用户只看自己的路由决策）
+	// routing_decision_log 通过 identity_hash 关联用户
+	if auth != nil && auth.Role == RoleUser {
+		clauses = append(clauses, fmt.Sprintf("rdl.identity_hash = $%d", argIdx))
+		args = append(args, auth.Username)
 		argIdx++
 	}
 
