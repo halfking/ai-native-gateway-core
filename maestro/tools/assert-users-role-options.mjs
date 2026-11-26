@@ -88,9 +88,29 @@ async function reattach() {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid)
   sessionId = sid
 }
-async function goto(url, waitMs = 6000) {
-  await evaluate(cdp, sessionId, `location.href = ${JSON.stringify(url)}`)
-  await sleep(waitMs)
+async function goto(url, waitMs = 8000) {
+  // ★★ 用 CDP 原生 Page.navigate ＋ 等 Page.loadEventFired，**不用** `location.href=`
+  //   （★ 2026-11-26 L135 轮实测：★ `location.href=` 触发导航后，原 session 的
+  //    Runtime.evaluate 会报「navigated or closed」⇒ ★ waitFor 一直拿到 null ⇒
+  //    ★ 误判成「表格没渲染」（rowCount=0）⇒ ★ **间歇性假失效**（★ 实测同一台机器
+  //    第一次跑 0 行、紧接着第二次跑就正常 13 条全绿 ⇒ ★ 坐实是导航竞态、不是产品问题 ★）。
+  //   ⇒ ★ 改用「有明确 load 事件」导航 ⇒ ★ 判据落在**页面真的就绪**之后。
+  let resolveLoad
+  const loaded = new Promise((r) => { resolveLoad = r })
+  const onLoad = (msg) => {
+    if (msg.method === 'Page.loadEventFired') {
+      cdp.listeners.delete(onLoad)
+      resolveLoad(true)
+    }
+  }
+  cdp.listeners.add(onLoad)
+  try {
+    await cdp.send('Page.navigate', { url }, sessionId)
+  } catch {
+    /* 导航失败也继续走下面的等待 ⇒ 最终由内容判据决定红/量具失效 */
+  }
+  await Promise.race([loaded, sleep(waitMs)])
+  await sleep(600)
   try {
     await reattach()
   } catch {
@@ -142,6 +162,15 @@ if (String(loginStatus) === '200') {
 
 // ── 1. 打开用户管理页 ─────────────────────────────────────────────────────
 await goto(`${BASE}/users`, 2000)
+// ★ 先确认**真的停在 /users**（★ 路由守卫可能把未登录态弹回 /?login=1
+//   ⇒ 那种情况是「没登录」而不是「表格没渲染」⇒ ★ 两种病因要分开说 ★）
+let onUsers = true
+try {
+  await waitFor(cdp, sessionId, `location.pathname.indexOf('/users') >= 0`, 10000)
+} catch {
+  onUsers = false
+}
+const hereUrl = String(await js('location.href').catch(() => '?'))
 // ★ 固定 sleep 不可靠（首跑命中过一次，第二次就 0 行 ⇒ 表格是 v-if loading 分支，
 //   渲染时机随 chunk 加载而变）⇒ 改成**轮询等到表格真的出行**（waitFor）。
 let tableReady = true
@@ -150,9 +179,15 @@ try {
 } catch {
   tableReady = false
 }
-const rowCount = await js(`document.querySelectorAll('table tbody tr').length`)
+const rowCount = await js(`document.querySelectorAll('table tbody tr').length`).catch(() => 0)
+if (!onUsers) {
+  gauge('角色下拉按租户收敛的全部断言', `★ 未停在 /users（当前 URL=${hereUrl}）⇒ ★ 登录态或路由守卫没到位 ⇒ 未评估`)
+  const early = summarize(checks, { skipped })
+  console.log(`\n${early.line}`)
+  process.exit(early.exitCode)
+}
 if (!tableReady || !rowCount || rowCount < 1) {
-  gauge('角色下拉按租户收敛的全部断言', `/users 页表格未渲染出用户行（rowCount=${rowCount}，等待 25s 仍无行）`)
+  gauge('角色下拉按租户收敛的全部断言', `/users 页表格未渲染出用户行（rowCount=${rowCount}，等待 25s 仍无行；当前 URL=${hereUrl}）`)
   const early = summarize(checks, { skipped })
   console.log(`\n${early.line}`)
   process.exit(early.exitCode)
