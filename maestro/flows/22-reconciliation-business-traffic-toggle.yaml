@@ -1,0 +1,78 @@
+# 对账页「仅业务流量」切换按钮状态验证
+# 验证点：
+# 1. 按钮在 provider 视图下可见
+# 2. 点击后按钮状态变为 primary（蓝色高亮）
+# 3. 再次点击后恢复默认状态
+# 4. URL 参数正确更新（traffic_scope=business）
+url: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── 打开对账页（provider 视图）─────────────────────────────────
+- openLink: "${BASE_URL}/admin/reconciliation?view=provider"
+- extendedWaitUntil:
+    visible: '供应商对帐'
+    timeout: 20000
+
+# ── 验证「仅业务流量」按钮存在 ─────────────────────────────────
+- assertVisible:
+    id: reconciliation-business-scope
+    timeout: 5000
+
+# ── 验证初始状态：按钮应该是未激活状态 ─────────────────────────
+# aria-pressed="false" 时按钮是默认样式
+- assertTrue:
+    # 初始 URL 不应包含 traffic_scope 参数
+    condition: "!window.location.href.includes('traffic_scope=business')"
+    label: 'initial-state-no-traffic-scope-param'
+
+# ── 第一次点击：激活「仅业务流量」─────────────────────────────────
+- tapOn:
+    id: reconciliation-business-scope
+- wait: 1000
+
+# ── 验证激活后的状态 ─────────────────────────────────
+- assertTrue:
+    # URL 应该包含 traffic_scope=business 参数
+    condition: "window.location.href.includes('traffic_scope=business')"
+    label: 'activated-state-has-traffic-scope-param'
+
+# ── 验证按钮视觉反馈：通过 aria-pressed 属性 ─────────────────────
+- evalScript: |
+    const btn = document.querySelector('[data-testid="reconciliation-business-scope"]');
+    output.buttonPressed = btn ? btn.getAttribute('aria-pressed') : null;
+- assertTrue:
+    condition: "${output.buttonPressed === 'true'}"
+    label: 'button-aria-pressed-true-when-active'
+
+# ── 第二次点击：取消「仅业务流量」─────────────────────────────────
+- tapOn:
+    id: reconciliation-business-scope
+- wait: 1000
+
+# ── 验证取消后的状态 ─────────────────────────────────
+- assertTrue:
+    # URL 应该不再包含 traffic_scope 参数
+    condition: "!window.location.href.includes('traffic_scope=business')"
+    label: 'deactivated-state-no-traffic-scope-param'
+
+# ── 验证按钮恢复默认状态 ─────────────────────────────────
+- evalScript: |
+    const btn = document.querySelector('[data-testid="reconciliation-business-scope"]');
+    output.buttonPressedAfter = btn ? btn.getAttribute('aria-pressed') : null;
+- assertTrue:
+    condition: "${output.buttonPressedAfter === 'false'}"
+    label: 'button-aria-pressed-false-when-inactive'
+
+# ── 切换到 internal 视图验证按钮隐藏 ─────────────────────────────────
+- tapOn: '内部对帐'
+- wait: 1000
+- assertNotVisible:
+    id: reconciliation-business-scope
+    timeout: 5000
