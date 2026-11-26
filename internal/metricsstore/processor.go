@@ -55,7 +55,26 @@ WITH state AS (
 		-- An old zero without a currency may be an absent CostUSD pointer.
 		WHEN f.source='stats_event_inbox' AND f.revision=1
 		 AND f.event_id=f.request_id||':request_terminal:0' AND f.request_id<>''
-		 AND f.cost_amount<>0 THEN 'USD' END) AS normalized_cost_currency
+		 AND f.cost_amount<>0 THEN 'USD' END) AS normalized_cost_currency,
+		-- ★ 2026-11-26 12h 审计轮（合并并入 V2 投影后补）：usage_facts 的 token 列
+		--   是 bigint（迁移 537）而 request_metrics 的是 INTEGER（迁移 983）。
+		--   单个畸形 fact（token > 2^31-1，例如上游 usage 解析坏值）会让 INSERT
+		--   报 integer out of range ⇒ 整批事务回滚 ⇒ 每轮重试同一批 ⇒ 队头阻塞、
+		--   全部租户的 V2 统计停摆。这里在投影侧按 INTEGER 上界钳制（同
+		--   stats_event_inbox 负值守卫先例：超界值不是「可信数据」，钳到上界
+		--   并让它落表，好过一条坏值毒停整条管线）；latency_ms/ttft_ms 原本就
+		--   带 NULLIF(...,0) 且列为 INTEGER，一并钳制。
+		least(greatest(coalesce(f.prompt_tokens,0),0), 2147483647) AS clamped_prompt_tokens,
+		least(greatest(coalesce(f.completion_tokens,0),0), 2147483647) AS clamped_completion_tokens,
+		least(greatest(coalesce(f.cache_read_tokens,0),0), 2147483647) AS clamped_cache_read_tokens,
+		least(greatest(coalesce(f.cache_write_tokens,0),0), 2147483647) AS clamped_cache_write_tokens,
+		least(greatest(coalesce(f.reasoning_tokens,0),0), 2147483647) AS clamped_reasoning_tokens,
+		least(greatest(coalesce(f.total_tokens,0),0), 2147483647) AS clamped_total_tokens,
+		least(greatest(coalesce(f.image_tokens,0),0), 2147483647) AS clamped_image_tokens,
+		least(greatest(coalesce(f.audio_tokens,0),0), 2147483647) AS clamped_audio_tokens,
+		least(greatest(coalesce(f.video_tokens,0),0), 2147483647) AS clamped_video_tokens,
+		least(greatest(coalesce(f.latency_ms,0),0), 2147483647) AS clamped_latency_ms,
+		least(greatest(coalesce(f.ttft_ms,0),0), 2147483647) AS clamped_ttft_ms
 	FROM latest f
 ), published AS (
 	INSERT INTO public.request_metrics AS rm (
@@ -91,19 +110,19 @@ WITH state AS (
 		     WHEN f.video_tokens>0 THEN 'video'
 		     ELSE 'text' END,
 		COALESCE(l.attachment_count,0),
-		f.prompt_tokens, f.completion_tokens, f.cache_read_tokens, f.cache_write_tokens,
+		f.clamped_prompt_tokens, f.clamped_completion_tokens, f.clamped_cache_read_tokens, f.clamped_cache_write_tokens,
 		CASE WHEN coalesce(f.usage_source,'') NOT IN ('llm','corrected')
-		          OR least(f.prompt_tokens,f.cache_read_tokens,f.cache_write_tokens) < 0 THEN NULL
-		     WHEN f.cache_read_tokens=0 AND f.cache_write_tokens=0 THEN f.prompt_tokens
+		          OR least(f.clamped_prompt_tokens,f.clamped_cache_read_tokens,f.clamped_cache_write_tokens) < 0 THEN NULL
+		     WHEN f.clamped_cache_read_tokens=0 AND f.clamped_cache_write_tokens=0 THEN f.clamped_prompt_tokens
 		     WHEN lower(btrim(l.egress_protocol))='anthropic-messages'
-		          THEN f.prompt_tokens+f.cache_read_tokens+f.cache_write_tokens
+		          THEN f.clamped_prompt_tokens+f.clamped_cache_read_tokens+f.clamped_cache_write_tokens
 		     WHEN lower(btrim(l.egress_protocol)) IN ('openai-completions','openai-responses','gemini-generate')
-		          AND f.cache_write_tokens=0 AND f.cache_read_tokens<=f.prompt_tokens THEN f.prompt_tokens
+		          AND f.clamped_cache_write_tokens=0 AND f.clamped_cache_read_tokens<=f.clamped_prompt_tokens THEN f.clamped_prompt_tokens
 		     ELSE NULL END,
-		f.reasoning_tokens, f.total_tokens, f.image_tokens, f.audio_tokens, f.video_tokens,
+		f.clamped_reasoning_tokens, f.clamped_total_tokens, f.clamped_image_tokens, f.clamped_audio_tokens, f.clamped_video_tokens,
 		CASE WHEN f.normalized_cost_currency='USD' THEN round(f.cost_amount*100)::bigint ELSE 0 END,
 		f.cost_amount, f.normalized_cost_currency, f.credits_charged, f.status, f.traffic_class,
-		f.error_kind, NULLIF(f.latency_ms,0), NULLIF(f.ttft_ms,0), NULLIF(f.usage_source,''), f.revision, f.finalized_at, f.fact_id, 'async_processor'
+		f.error_kind, NULLIF(f.clamped_latency_ms,0), NULLIF(f.clamped_ttft_ms,0), NULLIF(f.usage_source,''), f.revision, f.finalized_at, f.fact_id, 'async_processor'
 	FROM normalized f
 	LEFT JOIN public.providers p ON p.id=f.provider_id
 	LEFT JOIN public.credentials cred ON cred.id=f.credential_id AND cred.provider_id=f.provider_id

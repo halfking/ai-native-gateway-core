@@ -256,8 +256,9 @@ type docEvidence struct {
 //	（⇒ 链体 9215-9234）＋ ★ 本车道探针第四处修正在**探针 worker 接线处**
 //	加了两个调用点（各 2 行；⇒ 链体 9210-9229）⇒ ★ 两笔**在合并树内叠加**
 //	⇒ ★ 本次最终值（★ 合并树逐锚点实测、★ 不是按位移量推算 ★）：
-//	main.go 链体 9219-9238（Recovery :9219、Auth :9235、SecurityHeaders :9238）、
-//	Logging 注释 9221-9228、maintain 注释 9174-9179；
+//	main.go 链体 9204-9223（Recovery :9204、Auth :9220、SecurityHeaders :9223；
+//	★ 2026-11-26 合并轮：codex/211-statistics-v2-release 20 笔并入后第三十次重钉）、
+//	Logging 注释 9206-9213、maintain 注释 9159-9164；
 //	main_pipeline.go 启动日志 :1523、D09 合成/写回窗口 1030-1040（合成点 :1035）
 //	（★ 本轮 main_pipeline.go **无漂移** ⇒ 两处锚点沿用上一轮值 ★）。
 var requestSurfaceDocEvidence = []docEvidence{

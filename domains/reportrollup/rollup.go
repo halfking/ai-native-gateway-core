@@ -49,6 +49,9 @@ func internalPersonScopeKey(tenant, person string) string {
 // 守卫必须校验到第三段冒号（i+1+n+1）：只校验到 tenant 尾（i+1+n）时，
 // "2:ab" 这类恰好在前缀处耗尽的输入会通过守卫再在 k[i+1+n+1:] 越界
 // panic；负数长度（"-1:xyz"）则会落到 k[i+1:i+1+n] 低>高 panic。
+// ★ n 还必须先对 len(k) 上界校验（2026-11-26 12h 审计轮实锤）：n 接近
+// MaxInt64 时 i+1+n+1 先**溢出为负** ⇒ 比较恒假 ⇒ 守卫被绕过 ⇒
+// k[i+1:i+1+n] 以负上界切片 panic（"9223372036854775807:abc" 实测复现）。
 // （R67 24h 审计轮对账子代理实锤，可达面=读库中历史/外来 scope_key。）
 func splitInternalPersonScopeKey(k string) (tenant, person string) {
 	i := strings.IndexByte(k, ':')
@@ -56,7 +59,7 @@ func splitInternalPersonScopeKey(k string) (tenant, person string) {
 		return "", k
 	}
 	n, err := strconv.Atoi(k[:i])
-	if err != nil || n < 0 || i+1+n+1 > len(k) {
+	if err != nil || n < 0 || n > len(k) || i+1+n+1 > len(k) {
 		return "", k
 	}
 	return k[i+1 : i+1+n], k[i+1+n+1:]

@@ -467,6 +467,35 @@ WHERE tenant_id='tenant-versions' AND fact_request_id='revision-key' AND source_
 		}
 	})
 
+	t.Run("oversized_tokens_clamped_not_poison", func(t *testing.T) {
+		// ★ 2026-11-26 12h 审计轮（P2-1）：usage_facts 的 token 列是 bigint（537）、
+		//   request_metrics 的是 INTEGER（983）。一个畸形 fact（total_tokens > 2^31-1）
+		//   曾让投影 INSERT 报 integer out of range ⇒ 整批回滚 ⇒ 每轮重试同一批 ⇒
+		//   队头阻塞（全部租户停摆）。钳制后：坏值落表为上界、批不毒停。
+		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('clamp-bad','clamp-poison',1,'2026-11-25 19:00Z','tenant-clamp','success',4294967296,'llm');`)
+		if _, err := processor.ProcessBatch(ctx, 20); err != nil {
+			t.Fatalf("oversized token fact poisoned the batch (clamp missing?): %v", err)
+		}
+		var tokens int
+		err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
+WHERE tenant_id='tenant-clamp' AND fact_request_id='clamp-poison' AND source_fact_id IS NOT NULL`).Scan(&tokens)
+		if err != nil || tokens != 2147483647 {
+			t.Fatalf("oversized token not clamped to INTEGER max: tokens=%d error=%v", tokens, err)
+		}
+		// 反证：同批/下一批的正常 fact 仍可投影（管线没被毒停）。
+		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('clamp-good','clamp-healthy',1,'2026-11-25 19:01Z','tenant-clamp','success',42,'llm');`)
+		if _, err := processor.ProcessBatch(ctx, 20); err != nil {
+			t.Fatalf("pipeline stayed poisoned after clamp: %v", err)
+		}
+		var healthy int
+		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
+WHERE tenant_id='tenant-clamp' AND fact_request_id='clamp-healthy' AND source_fact_id IS NOT NULL`).Scan(&healthy); err != nil || healthy != 42 {
+			t.Fatalf("healthy fact after oversized one not projected: healthy=%d error=%v", healthy, err)
+		}
+	})
+
 	t.Run("closed_natural_day_report", func(t *testing.T) {
 		exec(`
 ALTER TABLE public.providers ADD COLUMN deleted_at timestamptz;

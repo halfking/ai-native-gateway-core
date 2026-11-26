@@ -368,6 +368,12 @@ func TestSplitInternalPersonScopeKey_MalformedKeysDoNotPanic(t *testing.T) {
 		{"0::p", "", "p", false},       // 空租户合法
 		{"7:tenantA:alice", "tenantA", "alice", false},
 		{"7:ten:ant:alice", "ten:ant", "alice", false}, // tenant 含冒号由长度消歧
+		// ★ 2026-11-26 12h 审计轮（P1 实锤）：n 接近 MaxInt64 时 i+1+n+1 先
+		//   溢出为负 ⇒ 旧守卫（只比 i+1+n+1 > len(k)）恒假 ⇒ k[i+1:i+1+n]
+		//   负上界切片 panic（"9223372036854775807:abc" 独立程序实测复现）。
+		//   新守卫补 n > len(k) 上界前置判断；超大 n 必须 fallback。
+		{"9223372036854775807:abc", "", "9223372036854775807:abc", true},
+		{"4611686018427387904:xyz", "", "4611686018427387904:xyz", true},
 	}
 	for _, tc := range cases {
 		tenant, person := splitInternalPersonScopeKey(tc.in)
