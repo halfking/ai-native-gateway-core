@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批判式审计轮总结 — V2 统计面合并（2026-11-26）</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1420; --card:#1a2130; --card2:#202a3d; --line:#2e3a52;
+    --text:#e6ecf5; --muted:#8b98b0; --green:#4ade80; --red:#f87171;
+    --amber:#fbbf24; --blue:#60a5fa; --purple:#c084fc; --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6;padding:32px 16px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:26px;margin-bottom:4px}
+  h2{font-size:20px;margin:36px 0 14px;padding-left:12px;border-left:4px solid var(--blue)}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:24px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .kpi{font-size:30px;font-weight:700;margin-top:4px}
+  .kpi.ok{color:var(--green)} .kpi.warn{color:var(--amber)}
+  .kpi-label{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;white-space:nowrap}
+  .tag{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;margin-right:6px}
+  .tag.ok{background:rgba(74,222,128,.15);color:var(--green)}
+  .tag.risk{background:rgba(251,191,36,.15);color:var(--amber)}
+  .tag.info{background:rgba(96,165,250,.15);color:var(--blue)}
+  .chart-box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;height:340px;position:relative}
+  ul{margin:8px 0 0 20px}
+  li{margin:6px 0}
+  code{background:var(--card2);padding:2px 6px;border-radius:6px;font-size:13px}
+  .muted{color:var(--muted)}
+  .verdict{border-left:4px solid var(--green);padding:14px 18px;background:var(--card);border-radius:0 12px 12px 0;margin-top:12px}
+  .verdict b{color:var(--green)}
+  footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>批判式审计轮总结 — V2 统计面合并</h1>
+  <div class="sub">2026-11-26 · 审计对象：main 尖端合并批 <code>c5cb70f7fc</code>（codex/211-statistics-v2-release 20 笔 + 上游 76 笔，339 文件 +13,420/−4,394）· 本轮提交 <code>b56206bc83</code></div>
+
+  <h2>① 结论 / 根因</h2>
+  <div class="verdict">
+    <b>结论：合并树方向正确、全量门绿、未发现需本轮代修的真缺陷。</b>
+    V2 投影链路的双写隔离、迁移 up/down 语义对称、chr(1) 键空间隔离经逐项复核均成立；
+    两处疑点（973 down 不删 raw_model_name、登记簿撞键）查实为「归属他人列的防御性 IF NOT EXISTS」与「合并时已正确去重」，均非缺陷。
+  </div>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card">
+      <div class="kpi-label">本轮根因审查的三条主线</div>
+      <ul>
+        <li><b>双计风险</b>：投影行（chr(1) 前缀键）与旧 writer 行共存一张表 → 查实旧 writer <b>零生产调用点</b>，V2 全部读方带 <code>source_fact_id IS NOT NULL</code> 过滤，旧入口读 <code>stats_usage_daily</code>（与投影无关）→ 隔离成立</li>
+        <li><b>迁移对称性</b>：973 up 加 29 列、down 不删 <code>raw_model_name</code> → 查实该列归属 <b>983b</b>（自带 down）→ 语义对称，不是缺陷</li>
+        <li><b>口径一致性</b>：0715 审计的 D-5（usage_ledger_hot 终态 UPDATE 不更新 canonical_id，两库归因分叉）在合并树<b>原样存在</b> → 沿用待 owner，不重复修</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="kpi-label">V2 投影链路（数据来源与去处，已复核闭环）</div>
+      <ul>
+        <li>stats_event_inbox 消费（fencing token 事务）⇒ <code>usage_facts</code></li>
+        <li>AFTER INSERT 触发器（973 建）⇒ <code>request_metrics_pending</code> 入队</li>
+        <li>Processor（pending/history 双游标，main.go:4454 接线）⇒ 投影行</li>
+        <li><code>/api/admin/stats/v2/*</code> + <code>/api/usage/v2/*</code> ⇒ 只读投影行；pending_since 水位暴露积压</li>
+        <li>权限：普通用户限自己 tenant+owner；管理面走 reconciliation scope</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>② 改动文件与关键行为</h2>
+  <div class="grid g4">
+    <div class="card"><div class="kpi-label">审计窗口内合并批</div><div class="kpi">339 <span class="muted" style="font-size:14px">文件</span></div><div class="muted">+13,420 / −4,394</div></div>
+    <div class="card"><div class="kpi-label">本轮新增提交</div><div class="kpi">1 <span class="muted" style="font-size:14px">笔（文档）</span></div><div class="muted">审计报告 docs/…1025-v2统计面合并轮.md</div></div>
+    <div class="card"><div class="kpi-label">schema 变更</div><div class="kpi">0</div><div class="muted">本轮零迁移字节（973 已在合并批内、已投递）</div></div>
+    <div class="card"><div class="kpi-label">生产代码改动</div><div class="kpi">0 <span class="muted" style="font-size:14px">行</span></div><div class="muted">纯审计轮：只增文档，不动行为</div></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <table>
+      <tr><th>面</th><th>关键文件</th><th>关键行为（复核结论）</th></tr>
+      <tr><td>V2 投影器</td><td><code>internal/metricsstore/processor.go</code></td><td>pending/history 双游标 + LATERAL ±1 天窗口补 21 列维度；登记簿 21 列逐字对拍一致</td></tr>
+      <tr><td>迁移 973</td><td><code>sql/migrations/startup/973_request_metrics_projection.sql</code>（+down、installer 双副本、tsv 登记）</td><td>投影列 / CHECK 约束 / 部分索引 / 触发器 / 台账自登记，全幂等；211 实测 0.697s（68,140 行）</td></tr>
+      <tr><td>V2 读取面</td><td><code>domains/metrics/request_*.go</code> × 10、<code>admin/*_v2.go</code> × 20+</td><td>全部投影行口径（source_fact_id 过滤）；pending_since 积压水位；权限口径正确</td></tr>
+      <tr><td>前端</td><td><code>web/src/views/**</code>（V2 面板 30+ 视图）</td><td>period-compare 路由注册断言、i18n 键 369→372、7 文件行号引用订正</td></tr>
+      <tr><td>本轮审计文档</td><td><code>docs/12小时内修订审计-2026-11-26-1025-v2统计面合并轮.md</code></td><td>疑点→证据→结论三段式；死代码登记待 owner</td></tr>
+    </table>
+  </div>
+
+  <h2>③ 测试命令与结果</h2>
+  <div class="grid g2">
+    <div class="chart-box"><canvas id="gatesChart"></canvas></div>
+    <div class="card">
+      <table>
+        <tr><th>门 / 测试</th><th>命令</th><th>结果</th></tr>
+        <tr><td>构建</td><td><code>go build ./...</code></td><td><span class="tag ok">EXIT=0</span></td></tr>
+        <tr><td>静态检查</td><td><code>go vet</code>（10 包）</td><td><span class="tag ok">EXIT=0</span></td></tr>
+        <tr><td>全量门族</td><td><code>go test ./scripts/ursmcheck/</code></td><td><span class="tag ok">ok 286.3s</span></td></tr>
+        <tr><td>admin 全包</td><td><code>go test ./admin/</code></td><td><span class="tag ok">ok 88.3s</span></td></tr>
+        <tr><td>cmd/gateway</td><td><code>go test ./cmd/gateway/</code></td><td><span class="tag ok">ok 24.2s</span></td></tr>
+        <tr><td>V2 读取面三包</td><td><code>go test ./domains/{metrics,reconciliation,reportrollup}/</code></td><td><span class="tag ok">ok</span></td></tr>
+        <tr><td>审计修正族三包</td><td><code>go test ./internal/{logging,schemadelivery}/ ./domains/promptinjection/</code></td><td><span class="tag ok">ok</span></td></tr>
+        <tr><td>登记簿门 ×5</td><td><code>go test ./admin/ -run TestCanonical…</code></td><td><span class="tag ok">全过</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h2>④ 三台部署读数（标准脚本，未用 DD_SKIP_TEST_GATE）</h2>
+  <div class="grid g3" id="deployCards">
+    <div class="card"><div class="kpi-label">211（蓝绿）</div><div class="kpi ok" id="d211">✅ 完成</div><div class="muted" id="d211s">槽 b @8783 接管 · v2.6.2-b56206bc seq3287</div></div>
+    <div class="card"><div class="kpi-label">245（蓝绿）</div><div class="kpi" id="d245">部署中…</div><div class="muted" id="d245s">bash scripts/deploy-245.sh</div></div>
+    <div class="card"><div class="kpi-label">154（生产）</div><div class="kpi" id="d154">排队</div><div class="muted" id="d154s">bash scripts/deploy-154.sh（经 252 跳板）</div></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <b>211 读数（2026-11-26 10:57）</b>
+    <ul>
+      <li>测试闸门（./bg ./cmd/gateway ./scripts/ursmcheck）全过，<b>未使用 DD_SKIP_TEST_GATE</b></li>
+      <li>切流：nginx upstream 127.0.0.1:8781 → 127.0.0.1:8783，goacos 注册表同步指向 8783</li>
+      <li><code>/readyz</code> 200（DB 66µs / Redis 12.5ms）；版本 <code>v2.6.2 git_sha=b56206bc build_seq=3287</code></li>
+      <li>登录补验 HTTP 200（口令走 stdin，role=super_admin）；公网 llm.itestu.cn → 200</li>
+      <li><b>行为读数（新版本真发）</b>：<code>/api/admin/stats/v2/summary?days=1</code> → 200，
+        <code>"source":"request_metrics","ready":true</code>，24h 窗口 success 9,532 / failed 1,750 /
+        success_rate 84.5% / total_tokens 19.52 亿 / unique_models 14 —— V2 投影面在现网真实供数</li>
+      <li>旧槽 a 已停（容器/镜像保留，可 docker start 回滚）</li>
+    </ul>
+  </div>
+
+  <h2>⑤ 遗留风险（待 owner）</h2>
+  <div class="card">
+    <table>
+      <tr><th>编号</th><th>事项</th><th>影响</th><th>状态</th></tr>
+      <tr><td>D-5</td><td><code>usage_ledger_hot</code> 终态 UPDATE 不更新 canonical_id（两库归因口径分叉）</td><td>中等</td><td><span class="tag risk">沿用待 owner</span></td></tr>
+      <tr><td>D-6~D-13</td><td>投递门环境口径 / 文件名当表名 / 能力授权语义 / fail-closed / boot 失败 / 冷却不执行 / 子插件族 / 探针无开关</td><td>中-轻</td><td><span class="tag risk">沿用待 owner</span></td></tr>
+      <tr><td>本轮新增</td><td>死代码：<code>writer.go</code> / <code>writer.go.bak</code> / <code>query.go</code> 四个旧查询函数（零生产调用点）</td><td>轻</td><td><span class="tag info">登记待排期</span></td></tr>
+      <tr><td>结构项</td><td>V2 两分支后续 / 父仓结构件 / web-mobile 豁免 / 扫描器 BLOCK 32 / capability 迁移通道安置</td><td>—</td><td><span class="tag info">沿用</span></td></tr>
+    </table>
+  </div>
+
+  <footer>生成于 2026-11-26 · 批判式审计轮（V2 统计面合并）· 全部读数现跑取自 HEAD c5cb70f7fc/b56206bc83</footer>
+</div>
+
+<script>
+const ctx = document.getElementById('gatesChart');
+new Chart(ctx, {
+  type: 'bar',
+  data: {
+    labels: ['ursmcheck 全量门族', 'admin 全包', 'cmd/gateway', 'logging', 'schemadelivery', 'promptinjection', 'metrics/recon/rollup'],
+    datasets: [{
+      label: '耗时（秒）',
+      data: [286.3, 88.3, 24.2, 8.9, 1.1, 1.5, 2.0],
+      backgroundColor: ['rgba(96,165,250,.75)','rgba(74,222,128,.75)','rgba(74,222,128,.75)','rgba(74,222,128,.75)','rgba(74,222,128,.75)','rgba(74,222,128,.75)','rgba(74,222,128,.75)'],
+      borderColor: ['#60a5fa','#4ade80','#4ade80','#4ade80','#4ade80','#4ade80','#4ade80'],
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      title: { display: true, text: '全量门与测试读数（全绿，2026-11-26 现跑）', color: '#e6ecf5', font: { size: 14 } },
+      legend: { display: false }
+    },
+    scales: {
+      x: { type: 'logarithmic', title: { display: true, text: '秒（对数轴）', color: '#8b98b0' }, ticks: { color: '#8b98b0' }, grid: { color: '#2e3a52' } },
+      y: { ticks: { color: '#e6ecf5' }, grid: { display: false } }
+    }
+  }
+});
+</script>
+</body>
+</html>
