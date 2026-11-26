@@ -54,7 +54,7 @@
     "other": "Kein verfügbarer Provider für Modell „{{.Model}}“: Alle Kandidaten sind blockiert ({{.Causes}}). Erneutes Senden derselben Anfrage hilft nicht — wechseln Sie zu einem anderen Modell oder wenden Sie sich an den Gateway-Administrator."
   },
   "no_candidate_cause_quota": {
-    "other": "Kontingent oder Guthaben des Upstream-Kontos aufgebraucht"
+    "other": "Kontingent oder Guthaben des Upstream-Provider-Kontos erschöpft (nicht Ihre API-Schlüssellimits)"
   },
   "no_candidate_cause_disabled": {
     "other": "Provider oder Zugangsdaten vom Gateway-Administrator deaktiviert"

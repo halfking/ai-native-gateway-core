@@ -73,7 +73,7 @@ const (
 	// Cause phrases for MsgNoCandidateBlocked. Bounded set, one per
 	// provider.ClientCause* token; deliberately carry no counts (how many
 	// upstream credentials a model has is operator-side information).
-	MsgNoCandidateCauseQuota             = "no_candidate_cause_quota"              // "upstream account quota or balance exhausted"
+	MsgNoCandidateCauseQuota             = "no_candidate_cause_quota"              // "upstream provider account quota or balance exhausted (not your API key limits)"
 	MsgNoCandidateCauseDisabled          = "no_candidate_cause_disabled"           // "provider or credential disabled by the gateway operator"
 	MsgNoCandidateCauseCredentialMissing = "no_candidate_cause_credential_missing" // "credential records missing"
 	MsgNoCandidateCauseOtherTenant       = "no_candidate_cause_other_tenant"       // "providers belong to another tenant"

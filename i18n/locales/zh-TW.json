@@ -54,7 +54,7 @@
     "other": "沒有可用於模型「{{.Model}}」的供應商：它的全部候選節點都被擋住（{{.Causes}}）。原樣重試沒有用——請改用其它模型，或聯絡網關管理員。"
   },
   "no_candidate_cause_quota": {
-    "other": "上游帳戶額度或餘額已用盡"
+    "other": "上游供應商帳戶配額或餘額耗盡（不是您的 API 金鑰限制）"
   },
   "no_candidate_cause_disabled": {
     "other": "供應商或憑據已被網關管理員停用"

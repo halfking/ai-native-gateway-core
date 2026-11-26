@@ -54,7 +54,7 @@
     "other": "Aucun fournisseur disponible pour le modèle « {{.Model}} » : tous ses candidats sont bloqués ({{.Causes}}). Réessayer la même requête ne servira à rien — utilisez un autre modèle ou contactez l'administrateur de la passerelle."
   },
   "no_candidate_cause_quota": {
-    "other": "quota ou solde du compte amont épuisé"
+    "other": "quota ou solde du compte du fournisseur en amont épuisé (pas vos limites de clé API)"
   },
   "no_candidate_cause_disabled": {
     "other": "fournisseur ou identifiant désactivé par l'administrateur de la passerelle"
