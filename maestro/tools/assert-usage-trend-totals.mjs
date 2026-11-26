@@ -203,4 +203,13 @@ check('B6 占比列在合计行留空（分母=自身恒 100%，显示是噪音�
 check('B7 合计行跟着数据走（表体有模型行 ⇒ 合计行不是空表的摆设）',
   footer.bodyRows > 0, `表体行数=${footer.bodyRows}`)
 
-summarize(checks, { skipped })
+// ══════════════════════════════════════════════════════════════════════
+// 汇总（口径走 result.mjs）。
+// ★ 绿路径也必须显式 process.exit：CDP 的 WebSocket 让 node 事件循环挂着不退
+//   （2026-11-27 真机实测：断言 8/8 全绿打完、RESULT 行缺失、进程悬挂 7 分钟）
+//   ⇒「跑了但收不了口」＝没有结论 ⇒ 同族工具 assert-stats-range-picker.mjs 的收尾范式。
+// ══════════════════════════════════════════════════════════════════════
+const out = summarize(checks, { skipped })
+console.log('\n' + out.line)
+console.log(`退出码：${out.exitCode}`)
+process.exit(out.exitCode)

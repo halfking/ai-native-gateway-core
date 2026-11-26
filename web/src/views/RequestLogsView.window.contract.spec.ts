@@ -59,4 +59,17 @@ describe('页头时间范围选择器 ⇒ 查询窗口（查询 ≡ 显示）', 
     const thisMonth = timeRange.slice(timeRange.indexOf("case 'thisMonth':"), timeRange.indexOf("case 'thisYear':"))
     expect(thisMonth).toContain('end.setTime(endOfDay(now).getTime())')
   })
+
+  // ★ 2026-11-26 修「手选日期被弹回」（211 报障：选 2026-11-24 无效、点刷新还原）：
+  //   本页时间状态链是分钟级（'YYYY-MM-DD HH:mm'），页头选择器却漏传 precision
+  //   ⇒ 按 date 精度渲染 ⇒ 手选产出纯日期串 'YYYY-MM-DD' ⇒ parseLocalMinute 按
+  //   UTC 解析（parseLocalMinute 对 10 字符串补 T00:00:00Z，datetime.ts:65）⇒
+  //   UTC+8 下起=止=08:00 ⇒ onHeaderRangeApply 的 e<=s 守卫把选择静默丢弃 ⇒
+  //   面板弹回旧值。⇒ precision="datetime" 必须显式在场；再被删掉时本门转红。
+  it('页头选择器显式 precision="datetime"（本页状态链是分钟级；漏传 ⇒ 手选日期被静默丢弃）', () => {
+    const code = stripComments(VIEW_SRC)
+    const header = code.slice(code.indexOf('<KxDateRangePicker'), code.indexOf('/>', code.indexOf('<KxDateRangePicker')))
+    expect(header).toContain('<KxDateRangePicker')
+    expect(header).toContain('precision="datetime"')
+  })
 })
