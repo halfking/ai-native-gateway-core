@@ -40,26 +40,26 @@ type CalculateCreditsResult struct {
 //   - 如果查询费率失败，返回error
 //   - 如果用量为0，返回0积分（nil error）
 func (s *Service) CalculateCredits(ctx context.Context, input CalculateCreditsInput) (*CalculateCreditsResult, error) {
-	// 1. MaaS未启用：返回0
-	if !s.Enabled() {
-		return &CalculateCreditsResult{
-			Credits:        0,
-			RateMultiplier: 1.0,
-		}, nil
-	}
-
-	// 2. 用量为空：返回0
-	if !input.Usage.Any() {
-		return &CalculateCreditsResult{
-			Credits:        0,
-			RateMultiplier: 1.0,
-		}, nil
-	}
-
-	// 3. 规范化倍率
+	// 1. 规范化倍率（无论是否启用MaaS都要规范化）
 	rateMultiplier := input.RateMultiplier
 	if rateMultiplier <= 0 {
 		rateMultiplier = 1.0
+	}
+
+	// 2. MaaS未启用：返回0
+	if !s.Enabled() {
+		return &CalculateCreditsResult{
+			Credits:        0,
+			RateMultiplier: rateMultiplier,
+		}, nil
+	}
+
+	// 3. 用量为空：返回0
+	if !input.Usage.Any() {
+		return &CalculateCreditsResult{
+			Credits:        0,
+			RateMultiplier: rateMultiplier,
+		}, nil
 	}
 
 	// 4. 查询费率
