@@ -12,11 +12,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
-// TestNodeProbeBackoffLadder pins the 5s/30s/60s/5m/1h/2h/6h
+// TestNodeProbeBackoffLadder pins the 5s/30s/60s/5m/1h
 // sequence mandated by the spec — any change here must be a
 // deliberate spec update.
 // 2026-07-24: changed from 24h to 6h to prevent nodes from being
 // stranded for a full day after transient failures.
+// 2026-11-26: the 2h / 6h rungs were removed — the operator's ceiling is
+// "probe backoff steps down per the existing ladder, never more than 1
+// hour". The ladder shape is unchanged, only the cap moved.
 func TestNodeProbeStateUpdatesLogWriteFailures(t *testing.T) {
 	source, err := os.ReadFile("node_probe.go")
 	if err != nil {
@@ -72,8 +75,6 @@ func TestNodeProbeBackoffLadder(t *testing.T) {
 		60 * time.Second,
 		5 * time.Minute,
 		1 * time.Hour,
-		2 * time.Hour,
-		6 * time.Hour, // was 24h
 	}
 	if len(NodeProbeBackoffChain) != len(want) {
 		t.Fatalf("len mismatch: got %d want %d", len(NodeProbeBackoffChain), len(want))
@@ -111,7 +112,7 @@ func TestDirectProbeBodyUsesAnthropicMessagesShape(t *testing.T) {
 func TestNodeProbeMaxAttemptsRearmsFreshFailure(t *testing.T) {
 	// Submit's SQL uses the cap as a reset boundary. Keep the invariant here
 	// so a terminal backoff row cannot become a silent dead letter again.
-	if nodeProbeMaxAttempts != 7 {
+	if nodeProbeMaxAttempts != 5 {
 		t.Fatalf("unexpected probe cap: %d", nodeProbeMaxAttempts)
 	}
 }
@@ -148,11 +149,11 @@ func TestNodeProbeOnlyPicksRecentFailures(t *testing.T) {
 	}
 }
 
-// TestNodeProbeMaxAttempts ensures attempt=7 marks paused (the
-// "max one day" cap from the spec).
+// TestNodeProbeMaxAttempts ensures attempt=5 marks paused (the
+// "at most one hour" cap from the spec).
 func TestNodeProbeMaxAttempts(t *testing.T) {
-	if nodeProbeMaxAttempts != 7 {
-		t.Fatalf("expected 7, got %d", nodeProbeMaxAttempts)
+	if nodeProbeMaxAttempts != 5 {
+		t.Fatalf("expected 5, got %d", nodeProbeMaxAttempts)
 	}
 }
 

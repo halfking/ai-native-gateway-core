@@ -133,11 +133,17 @@ func TestRunOneEmptyHeadersAuditPG17(t *testing.T) {
 }
 
 // R12 P2: node_probe_runs_attempt_check rejects attempt outside 1..7, and the
-// legacy runOne attempt (consecutive_failures+1) grows past 7 once the 7-attempt
+// legacy runOne attempt (consecutive_failures+1) grows past the cap once the
 // pause was removed. The audit write must clamp instead of failing (23514).
+//
+// ★ 2026-11-26（探测回退周期上限轮）：clamp 的上界是 nodeProbeMaxAttempts
+//   （随通用回退梯末两级移除由 7 变 5）⇒ ⇒ 本用例的上界随之由 7 变 5。
+//   ★ DB 侧的 CHECK（attempt BETWEEN 1 AND 7，迁移 415／341）**不动**：
+//   写入值 5 仍在 1..7 之内 ⇒ ⇒ 零 schema 变更即合规；收窄 CHECK属迁移
+//   面，本轮不做（如实登记）。
 func TestClampAuditAttempt(t *testing.T) {
 	cases := []struct{ in, want int }{
-		{-3, 1}, {0, 1}, {1, 1}, {4, 4}, {7, 7}, {8, 7}, {12, 7},
+		{-3, 1}, {0, 1}, {1, 1}, {4, 4}, {5, 5}, {8, 5}, {12, 5},
 	}
 	for _, c := range cases {
 		if got := clampAuditAttempt(c.in); got != c.want {
@@ -155,7 +161,7 @@ func TestInsertNodeProbeRunClampsAttempt(t *testing.T) {
 
 	mock.ExpectExec("INSERT INTO node_probe_runs").
 		WithArgs(
-			7, "raw-model", "request_failure", 7, 300,
+			7, "raw-model", "request_failure", 5, 300,
 			false, 0, "", 0, "",
 			false, 0, "", 0, "",
 			false, pgxmock.AnyArg(), pgxmock.AnyArg(), 5,
@@ -167,7 +173,7 @@ func TestInsertNodeProbeRunClampsAttempt(t *testing.T) {
 
 	worker := &NodeProbeWorker{auditDB: mock}
 	// attempt=11 would violate the CHECK (BETWEEN 1 AND 7); the insert must
-	// receive the clamped value 7.
+	// receive the clamped value (nodeProbeMaxAttempts = 5 since 2026-11-26).
 	if err := worker.insertNodeProbeRun(context.Background(), 7, "raw-model", "request_failure",
 		11, 300, nodeProbeRoundResult{}, nodeProbeRoundResult{}, false,
 		time.Now().Add(-5*time.Millisecond), time.Now(), 5); err != nil {

@@ -49,13 +49,15 @@ func probeRecoveryMaxBackoff() time.Duration {
 // 与 F4 配额钉同一哲学：盲探按证据定节奏，事件负责及时性。
 
 // sustainedFailureAttemptThreshold is the cross-generation attempt count at
-// which the recovery SLA stops compressing the ladder (2026-11-07). Default
-// 21 = three full queue-task generations (nodeProbeMaxAttempts=7) with zero
-// successes — well past "fresh failure", short of "nobody will ever look".
+// which the recovery SLA stops compressing the ladder (2026-11-07).
+//
+// ★ 2026-11-26（探测回退周期上限轮）：默认值21 → **15** —— 通用回退梯的
+// 末两级（2h/6h）被移除 ⇒ 一代队列任务的最深梯级由 7 变 5 ⇒ 「三代完整
+// 梯」这条口径保持不变（3 × 5 = 15，与原先 3 × 7 = 21 同义）。
 func sustainedFailureAttemptThreshold() int {
-	n := settings.GetPlatformInt("probe.sustained_failure_attempt_threshold", 21)
+	n := settings.ProbeSustainedFailureAttemptThreshold()
 	if n < 1 {
-		return 21
+		return 15
 	}
 	return n
 }

@@ -29,9 +29,18 @@ func TestNormalizeModelKey(t *testing.T) {
 
 // newTierWithSet builds a ModelTier and publishes an immutable featuredSet
 // directly (no DB), so IsFeaturedModel can be tested without Postgres.
-func newTierWithSet(static, usage []string) *ModelTier {
+//
+// ★2026-11-26：featuredSet 多了一个 recent 字段（7 天业务用量集合，
+//   自动探测作用域门用）。这里默认给一个**空但有效**的集合（available
+//   语义：集合已装载，只是空的）⇒ 作用域门能给出「无近期用量」的答案。
+//   要测「集合不可用」（fail-open），用 NewModelTier 之后**不** Store。
+func newTierWithSet(static, usage []string, recent ...string) *ModelTier {
 	m := NewModelTier(nil, ModelTierConfig{RefreshInterval: time.Minute})
-	fs := &featuredSet{static: map[string]struct{}{}, usage: map[string]struct{}{}}
+	fs := &featuredSet{
+		static: map[string]struct{}{},
+		usage:  map[string]struct{}{},
+		recent: map[string]struct{}{},
+	}
 	for _, s := range static {
 		if k := normalizeModelKey(s); k != "" {
 			fs.static[k] = struct{}{}
@@ -42,8 +51,48 @@ func newTierWithSet(static, usage []string) *ModelTier {
 			fs.usage[k] = struct{}{}
 		}
 	}
+	for _, s := range recent {
+		if k := normalizeModelKey(s); k != "" {
+			fs.recent[k] = struct{}{}
+		}
+	}
 	m.cur.Store(fs)
 	return m
+}
+
+// TestIsRecentlyUsedModel_Semantics pins the two-valued answer the
+// automatic-probe scope gate depends on: (used, available).
+//
+// ★ The distinction matters: "available and not used" ⇒ the model is out of
+//   scope. "not available" ⇒ the gate cannot judge ⇒ it must fail OPEN
+//   (allow), because a transient refresh failure must never strand recovery
+//   probing (the gate's whole purpose is to shrink steady-state volume).
+func TestIsRecentlyUsedModel_Semantics(t *testing.T) {
+	// Loaded set: gpt-4o used, claude-sonnet-5 not used.
+	m := newTierWithSet(nil, nil, "gpt-4o", "GPT-4O-MINI")
+	used, available := m.IsRecentlyUsedModel("gpt-4o")
+	if !available || !used {
+		t.Fatalf("gpt-4o: used=%v available=%v, want (true, true)", used, available)
+	}
+	used, available = m.IsRecentlyUsedModel("claude-sonnet-5")
+	if !available || used {
+		t.Fatalf("claude-sonnet-5: used=%v available=%v, want (false, true)", used, available)
+	}
+	// Case-insensitive, like the other set lookups.
+	used, _ = m.IsRecentlyUsedModel("gpt-4o-mini")
+	if !used {
+		t.Fatal("gpt-4o-mini must match gpt-4o-mini (case-insensitive)")
+	}
+
+	// Never loaded ⇒ not available (fail open at the call site).
+	empty := NewModelTier(nil, ModelTierConfig{})
+	if used, available := empty.IsRecentlyUsedModel("gpt-4o"); used || available {
+		t.Fatalf("unloaded tier: used=%v available=%v, want (false, false)", used, available)
+	}
+	var nilTier *ModelTier
+	if used, available := nilTier.IsRecentlyUsedModel("gpt-4o"); used || available {
+		t.Fatalf("nil tier: used=%v available=%v, want (false, false)", used, available)
+	}
 }
 
 func TestIsFeaturedModel_StaticAndUsage(t *testing.T) {
