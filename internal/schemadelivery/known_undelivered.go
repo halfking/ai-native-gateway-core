@@ -105,68 +105,24 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 	// ★ 保留这段历史注释，是为了让下一个读的人知道「这里曾经有过三条欠账、
 	//   怎么修的、为什么删」—— 免得同一个缺口再被当成新发现。
 
-	// ── 上游计费 P0 批次的投递面缺口（2026-11-26 第 32 轮登记，待 owner）────────
+	// ── 上游计费 P0 批次的投递面缺口（2026-11-26 第 32 轮登记 ⇒ 2026-11-27 已修 ⇒ 登记已删）──
 	//
-	// ★ 登记缘起：★ 上游计费 P0 修复批次（billing retry／bill payment／balance precheck）
-	//   带了三份新迁移 sql/migrations/startup/1000／1001／1002_*.sql，⇒ ★ 三份都不在
-	//   两条投递通道里（★ 2026-11-26 实测：安装器清单 0 命中、部署通道 files=() 0 命中、
-	//   nonplain 登记册 0 命中 ★）⇒ ⇒ 生产代码（maas 三文件）已在读写这些表与列，
-	//   但新装库与部署库都不会建它们 ⇒ 部署后恒 42P01／42703。
-	// ★ ★ 编号越过了三位数惯例（1000 起为四位数）：★ sqlguard migrationNumPrefix 钉死
-	//   ^[0-9]{3}_ ⇒ ★ 四位数文件名对那道守卫隐形（★ 与 999a 注释里登记的口径一致 ★）；
-	//   ★ 且 1000-1002 也不在 nonplain 登记册 ⇒ 对【投递路径契约门】与【installer 强制
-	//   embed 门】同样隐形 ⇒ ⇒ 三道门全都没看它。
-	// ★ 登记 ≠ 认可它没问题：★ 上游补完投递面后必须回来删登记、门有 stale 检查会自动红。
-	// ★ 出路：把 1000-1002 搬进投递通道并登记（★ schema 交付决策，owner 决定 ★），
-	//   或读端改读已有形状。★ 本车道只登记不代决策。
-	"maas/billing_retry_queue.go": {
-		"billing_retry_queue": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游计费 P0 批次引入，★ 非本车道）：本文件整条读写链（INSERT/UPDATE/SELECT）" +
-				"都打 billing_retry_queue 表，而创建它的 sql/migrations/startup/1002_billing_retry_queue.sql " +
-				"不在两条投递通道里（★ 清单 0、files=() 0、nonplain 册 0，★ 三道门都没看它——见上方编号说明 ★）" +
-				"⇒ 部署与新装都不建这张表 ⇒ 重试队列整条功能部署后恒 42P01。" +
-				"出路：把 1002 搬进投递通道并登记（owner 决定），或读端改读已有形状。★ 本车道只登记不代决策。",
-			// ★ Cols 按门实测命中清单（★ 不是按迁移全文猜：★ 猜宽了会出 stale ★）。
-			Cols: []string{"", "attempts", "completed_at", "credits", "id", "last_error", "last_attempted_at",
-				"max_attempts", "next_retry_at", "owner_user", "request_id", "retry_type", "status", "tenant_id"},
-		},
-	},
-	"maas/bill_payment.go": {
-		"maas_bill_status_audit": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游计费 P0 批次引入）：本文件写账单状态审计表 maas_bill_status_audit，" +
-				"而创建它的 1001_bill_payment_tracking.sql 不在两条投递通道里（★ 三道门都没看它 ★）" +
-				"⇒ 部署后审计写入恒 42P01。出路同上（owner 决定）。★ 本车道只登记不代决策。",
-			Cols: []string{"", "action", "action_by", "action_reason", "bill_id", "created_at", "id", "new_status", "old_status", "payment_details"},
-		},
-		"maas_monthly_bills": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游计费 P0 批次引入）：本文件的账单状态流转读写 maas_monthly_bills 的新增列" +
-				"（paid_at／voided_at／overdue_at 等，1001 定义），而 1001 不在两条投递通道里" +
-				"⇒ 部署后这些列不存在 ⇒ 账单支付跟踪恒 42703。出路同上（owner 决定）。★ 本车道只登记不代决策。",
-			Cols: []string{"payment_amount_cents", "payment_date", "payment_method", "payment_notes", "payment_voucher", "void_by", "void_reason", "voided_at"},
-		},
-	},
-	"maas/balance_precheck.go": {
-		"billing_precheck_log": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游计费 P0 批次引入）：本文件写扣费预检日志表 billing_precheck_log，" +
-				"而创建它的 1000_billing_status_and_credit_limit.sql 不在两条投递通道里（★ 三道门都没看它 ★）" +
-				"⇒ 部署后预检日志写入恒 42P01。出路同上（owner 决定）。★ 本车道只登记不代决策。",
-			// ★ created_at／id／wallet_id 三列被门实测为【未命中】（★ 代码只在 UPDATE SET 或 VALUES
-			//   之外的形态里用到 ⇒ 绑定判据不算 ⇒ 猜上它们反而出 stale ★）⇒ 去掉。
-			Cols: []string{"", "balance_before_credits", "credit_limit_credits", "decision",
-				"estimated_cost_credits", "policy", "reason", "request_id", "tenant_id"},
-		},
-		"tenant_credit_wallets": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游计费 P0 批次引入）：本文件的余额预检读 tenant_credit_wallets 的新增列" +
-				"（credit_limit_credits／credit_policy 等，1000 定义），而 1000 不在两条投递通道里" +
-				"⇒ 部署后这些列不存在 ⇒ 余额预检恒 42703。出路同上（owner 决定）。★ 本车道只登记不代决策。",
-			Cols: []string{"credit_limit_credits", "credit_policy"},
-		},
-	},
+	// ★ 历史（本轮之前的三条登记，★ 本轮修完 ⇒ 按「两头核账」的规则删掉登记）：
+	//   maas/billing_retry_queue.go → billing_retry_queue 整表（1002 创建）
+	//   maas/bill_payment.go → maas_bill_status_audit 整表 ＋ maas_monthly_bills 八列（1001 创建）
+	//   maas/balance_precheck.go → billing_precheck_log 九列 ＋ tenant_credit_wallets 两列（1000 创建）
+	// ★ 登记缘起：★ 上游计费 P0 修复批次带了三份新迁移 1000／1001／1002_*.sql，
+	//   三份都不在两条投递通道里（2026-11-26 实测三道门全没看它）；且 1000 的两个
+	//   索引引用了 session_turns.created_at——**四环境 census 均无此列**（时间列是 ts）
+	//   ⇒ 即便投递了也会在所有环境失败。
+	// ★ 本轮修法（2026-11-27 计费迁移投递收口轮）：
+	//   ① 1000 的 created_at 全部改 ts（四环境真实时间列；①两个索引键 ②回填 WHERE ③视图两处 FILTER）
+	//   ② 三条补 BEGIN/COMMIT 事务包裹 ＋ 5s lock_timeout 守卫（999a/999d 口径）
+	//   ③ 五点同步：embeddata 副本 ＋ go:embed ＋ embeddedSQLFiles ＋ StartupFiles ＋
+	//     部署通道 files=() ＋ nonplain 登记册（canonical/embeddata 双键）＋ 安装器 TSV 清单
+	//   ④ fresh 新装 415/415 全绿（含三条）⇒ 新装链闭合
+	// ★ 三条都已进两条投递通道 ⇒ 门不再命中 ⇒ 按两头核账的规则删登记。
+	// ★ 保留这段历史注释的理由同上段。
 }
 
 // knownEntry 查一处引用是否在台账里（精确到列）。

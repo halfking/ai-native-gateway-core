@@ -3009,6 +3009,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/057_api_keys_team_id.sql"
   "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
   "$ROOT_DIR/sql/migrations/startup/973_request_metrics_projection.sql"
+  # ★ 1000-1002（2026-11-26 上游计费 P0 轮）：计费状态追踪 ＋ 账单付款追踪 ＋
+  #   计费重试队列。上游已把三条登记进安装器 TSV 清单（manifest 411 → 412）
+  #   ⇒ 本通道（部署通道）补三条目＝五点同步的部署腿。
+  #   ★ 三条自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫（999a/999d 口径）。
+  #   ★ 相对顺序：1001 读 1000 的 billing_status ⇒ 顺序不可打乱。
+  "$ROOT_DIR/sql/migrations/startup/1000_billing_status_and_credit_limit.sql"
+  "$ROOT_DIR/sql/migrations/startup/1001_bill_payment_tracking.sql"
+  "$ROOT_DIR/sql/migrations/startup/1002_billing_retry_queue.sql"
 )
 
 

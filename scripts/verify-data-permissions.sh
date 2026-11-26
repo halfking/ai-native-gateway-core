@@ -2,6 +2,15 @@
 # 数据权限实施验证脚本
 # 检查所有 admin 端点的实际权限保护状态
 
+# ★ 专用构建缓存隔离（gocache 脚本族门判据③：在作用域内的脚本必须指向专用缓存；
+#   2026-11-27 代并行车道收口——本文件的 echo 文本含 "go test" 字样 ⇒ 门的编译型
+#   口径把它算进作用域 ⇒ 接上共享入口后判据自然绿；实际不改变脚本任何行为）。
+__gocache_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "$__gocache_dir" ] && [ -f "$__gocache_dir/scripts/lib/gocache.sh" ]; then
+  . "$__gocache_dir/scripts/lib/gocache.sh"
+  gocache_use script
+fi
+
 cd "$(dirname "$0")/.."
 
 echo "=== 数据权限实施验证报告 ==="
