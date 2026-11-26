@@ -28,10 +28,17 @@
   - [x] `go build ./maas`
   - [x] `go build ./bg`
   - [x] `go build ./domains/streaming`
+  - [x] `go build ./cmd/gateway`
 
-- [ ] ⏳ 单元测试通过
-  - [ ] `go test ./maas`
-  - [ ] `go test ./bg`
+- [x] ✅ 单元测试通过
+  - [x] `go test ./maas` (已修复倍率规范化逻辑)
+  - [x] `go test ./bg`
+
+- [x] ✅ Worker集成完成
+  - [x] 修改 `cmd/gateway/main.go`
+  - [x] 已添加import `"github.com/kaixuan/llm-gateway-go/bg"`
+  - [x] 在maasSvc初始化后启动worker (L3412-3425)
+  - [x] 提交: `2552f8890`
 
 ### 数据库迁移
 
@@ -49,11 +56,7 @@
   - [ ] 运行迁移
   - [ ] 验证数据库对象
 
-### Worker启动
-
-- [ ] ⏳ 修改 `cmd/gateway/main.go`
-  - [ ] 添加import `"github.com/kaixuan/llm-gateway-go/bg"`
-  - [ ] 在maasSvc初始化后启动worker（见下方代码）
+### ~~Worker启动~~ (已完成)
 
 ```go
 // 在 cmd/gateway/main.go 中添加
