@@ -178,8 +178,9 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //     <script setup> 头部插行而重锁）。★ 根治方向（未做，登记在 AGENTS.md）：
   //     本表按**行号**锚定 ⇒ 该文件任何增删行都会让它红；改「内容锚点」才谈得
   //     上不漂移（同 internal/rowsguard 的 exemptionAnchorSep 先例）。
-  ['src/views/UserProfileView.vue', 423, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
-  ['src/views/UserProfileView.vue', 486, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  // 统计 V2 扩充筛选和来源说明后，三个内嵌表的详情入口保持原契约。
+  ['src/views/UserProfileView.vue', 477, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
+  ['src/views/UserProfileView.vue', 540, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 282 改为 283。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -214,7 +215,7 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
   //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +1。
   //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
-  ['src/views/tenant/MaaSUsageView.vue', 356, '用量内嵌表，无用量详情页'],
+  ['src/views/tenant/MaaSUsageView.vue', 359, '用量内嵌表，无用量详情页'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 207 改为 208。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -251,7 +252,7 @@ const KNOWN_GAP: Array<[string, number, string]> = [
     //   （successRateText computed + 说明注释），同一轮上游又在模板段 +1 行
     //   ⇒ 其后行号整体 +29。
     //   ★ 契约语义未变（top_tasks 仍是「有目的地、compact 无入口」）⇒ 只重锁行号。
-    455,
+    509,
     '详情目的地 /admin/session-analytics/tasks/:id 存在（goTask 行点击，2026-11-20 逐层下钻轮），'
       + '但入口只写在 #table 插槽的列按钮里 ⇒ compact 卡片无入口（与 ApprovalListView 同型）。',
   ],

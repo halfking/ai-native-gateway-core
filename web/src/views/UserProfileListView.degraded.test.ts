@@ -22,7 +22,7 @@ vi.mock('../api/admin', () => ({
   getUserProfileList: (...a: unknown[]) => getUserProfileListMock(...a),
   getUserUsageMatrix: (...a: unknown[]) => getUserUsageMatrixMock(...a),
 }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => ({ push: vi.fn() }) }))
 
 // element-plus 的表格在 jsdom 下不需要真实渲染逻辑；桩件只保留「有没有数据」
 // 这一个被断言的点，避免把测试变成 element-plus 的集成测试。

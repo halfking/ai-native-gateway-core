@@ -154,13 +154,21 @@ if (firstSession) {
 }
 
 // ── 会话画像三个维度 ──────────────────────────────────────────────────────
-await take('CLIENT_ID', '/api/admin/session-analytics/clients', (j) => j?.clients?.[0]?.client_id)
-await take('TASK_ID', '/api/admin/session-analytics/tasks', (j) => j?.tasks?.[0]?.task_id)
-// 「用户」维度：本机可能为空；会话里的 end_user/owner 字段是兜底来源
-// ★ 必须给哨兵值：Maestro 的 ${VAR} 找不到变量时**渲染成字面量 "undefined"**
-//   ⇒ URL 会变成 /admin/session-analytics/users/undefined（实测 R176）。
-//   ⇒ 兜底成 'unknown'，页面标题就是「用户画像详情: unknown」，语义自洽。
-await take('SESSION_OWNER', '/api/admin/session-analytics/users', (j) => j?.users?.[0]?.user_id ?? j?.users?.[0]?.owner, 'unknown')
+await take('CLIENT_ID', '/api/admin/session-analytics/v2/clients', (j) => j?.clients?.[0]?.client_id && encodeURIComponent(j.clients[0].client_id))
+await take('TASK_ID', '/api/admin/session-analytics/v2/tasks', (j) => j?.tasks?.[0]?.task_id && encodeURIComponent(j.tasks[0].task_id))
+// 画像详情沿用列表的租户和精确查询窗口。
+await take('SESSION_OWNER', '/api/admin/session-analytics/v2/users', (j) => {
+  const row = j?.ready && j.users?.[0]
+  if (!row?.owner_user) return undefined
+  const scope = new URLSearchParams()
+  if (row.tenant_id) scope.set('tenant_id', row.tenant_id)
+  if (j.usage_meta?.window_start && j.usage_meta?.window_end) {
+    scope.set('start_time', j.usage_meta.window_start)
+    scope.set('end_time', j.usage_meta.window_end)
+  }
+  const owner = encodeURIComponent(row.owner_user)
+  return scope.size ? `${owner}?${scope}` : owner
+}, 'unknown')
 
 // ── 路由工作类型 ──────────────────────────────────────────────────────────
 await take('WORK_TYPE_KEY', '/api/admin/work-types', (j) => j?.[0]?.key)

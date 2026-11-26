@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getUserProfile, getUserModelUsage, getUserProjects, type UserProfileDetail, type UserModelUsage, type UserProjectRow } from '../api/admin'
+import { getUserProfile, getUserModelUsage, getUserProjects, type UserProfileDetail, type UserModelUsage, type UserProfileReadScope, type UserProjectRow, type UserUsageMeta } from '../api/admin'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
@@ -12,7 +12,10 @@ import type { EChartsOption } from 'echarts'
 import { ElButton, ElCard, ElCol, ElRow, ElTable, ElTableColumn, ElTag, ElDrawer, ElAlert } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { rangeFromQuery } from './admin/session-analytics/saQueryParams'
+import { systemTzDateStr } from '../components/ui/kxDatePresets'
 import { useWindowClass } from '../composables/useWindowClass'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../components/ui/CardList.vue'
@@ -27,7 +30,7 @@ const data = ref<UserProfileDetail | null>(null)
 // 加载失败与「没有数据」是两件事：前者说原因，后者才说「暂无」。
 const loadError = ref('')
 const days = ref(30)
-const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+const { presets: dayPresets, rangeValue, applyRange, setCustomRange } = useRangeDays(days, [
   { days: 7, labelKey: 'dashboard.range.last7d' },
   { days: 30, labelKey: 'dashboard.range.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
@@ -43,94 +46,140 @@ const modelUsage = ref<UserModelUsage[]>([])
 const modelUsageLoading = ref(false)
 const modelUsageError = ref('')
 const modelUsageDegraded = ref(false)
+const modelUsageMeta = ref<UserUsageMeta>()
+let profileGeneration = 0
+const exactWindow = ref<{ start_time: string; end_time: string }>()
+const tenantId = computed(() => typeof route.query.tenant_id === 'string' ? route.query.tenant_id : undefined)
 const showHelp = ref(false)
 
 const costChartRef = ref<HTMLElement>()
 let costChart: echarts.ECharts | null = null
 
-onMounted(() => {
+function applyRouteWindow() {
+  const from = route.query.start_time
+  const to = route.query.end_time
+  const start = typeof from === 'string' ? Date.parse(from) : NaN
+  const end = typeof to === 'string' ? Date.parse(to) : NaN
+  if (typeof from === 'string' && typeof to === 'string' && end > start) {
+    exactWindow.value = { start_time: from, end_time: to }
+    setCustomRange({ start: systemTzDateStr(start), end: systemTzDateStr(end - 1) })
+  } else {
+    exactWindow.value = undefined
+    setCustomRange(rangeFromQuery(route.query))
+  }
   void load()
-  void loadProjects()
-  void loadModelUsage()
-})
+}
 
-watch(days, () => {
+onMounted(applyRouteWindow)
+watch([owner, tenantId, () => route.query.start_time, () => route.query.end_time, () => route.query.start_date, () => route.query.end_date], applyRouteWindow)
+
+function onRangeApply(range: KxDateRange) {
+  exactWindow.value = undefined
+  applyRange(range)
   void load()
-  void loadProjects()
-  void loadModelUsage()
-  void loadModelUsage()
-})
+}
 
 onUnmounted(() => {
+  profileGeneration++
   costChart?.dispose()
 })
 
 async function load() {
+  const generation = ++profileGeneration
+  const selected = rangeValue.value
+  const username = owner.value
+  const scope: UserProfileReadScope = {
+    tenant_id: tenantId.value,
+    ...(exactWindow.value ?? { start_date: selected?.start, end_date: selected?.end }),
+  }
   loading.value = true
+  loadError.value = ''
+  costChart?.dispose()
+  costChart = null
+  data.value = null
+  projects.value = []
+  projectsError.value = ''
+  projectsLoading.value = false
+  projectsDegraded.value = false
+  modelUsage.value = []
+  modelUsageMeta.value = undefined
+  modelUsageError.value = ''
+  modelUsageLoading.value = false
+  modelUsageDegraded.value = false
   try {
-    data.value = await getUserProfile(owner.value, days.value)
-    loadError.value = ''
+    const profile = await getUserProfile(username, days.value, scope)
+    if (generation !== profileGeneration) return
+    data.value = profile
+    if (!profile) return
+    const resolvedTenant = profile.tenant_id ?? scope.tenant_id
+    const window = profile.usage_meta
+    const resolvedScope = window?.window_start && window.window_end
+      ? { tenant_id: resolvedTenant, start_time: window.window_start, end_time: window.window_end }
+      : { ...scope, tenant_id: resolvedTenant }
+    void loadProjects(generation, username, resolvedScope)
+    void loadModelUsage(generation, username, resolvedScope)
     await nextTick()
-    renderCostChart()
+    if (generation === profileGeneration) renderCostChart()
   } catch (e: unknown) {
     // 2026-10-03：原来 `catch { data.value = null }`，模板随即渲染
     // `sessions.userProfile.empty` =「暂无用户画像数据」。
     // 那是一句**肯定的假话**：不是「没有数据」，是「没取到」。
     // 失败与「真的没有」必须分开说。
-    data.value = null
+    if (generation !== profileGeneration) return
     loadError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.loadFailed')
   } finally {
-    loading.value = false
+    if (generation === profileGeneration) loading.value = false
   }
 }
 
 // 2026-11-20 逐层下钻轮：加载员工→项目聚合（days 与页面选择器同窗）
-async function loadProjects() {
+async function loadProjects(generation: number, username: string, scope: UserProfileReadScope) {
   projectsLoading.value = true
   projectsError.value = ''
   projectsDegraded.value = false
   try {
-    const res = await getUserProjects(owner.value, days.value)
+    const res = await getUserProjects(username, days.value, scope)
+    if (generation !== profileGeneration) return
     projects.value = res.projects || []
     projectsDegraded.value = res.degraded || false
     if (res.degraded && res.degraded_reason) {
       projectsError.value = res.degraded_reason
     }
   } catch (e: unknown) {
+    if (generation !== profileGeneration) return
     projectsError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.loadFailed')
     projects.value = []
   } finally {
-    projectsLoading.value = false
+    if (generation === profileGeneration) projectsLoading.value = false
   }
 }
 
 // 2026-11-19: 加载模型使用统计
-async function loadModelUsage() {
+async function loadModelUsage(generation: number, username: string, scope: UserProfileReadScope) {
   modelUsageLoading.value = true
   modelUsageError.value = ''
   modelUsageDegraded.value = false
   try {
-    // 根据 days 计算时间范围
-    const endTime = new Date()
-    const startTime = new Date()
-    startTime.setDate(startTime.getDate() - days.value)
-    
     const result = await getUserModelUsage(
-      owner.value,
-      startTime.toISOString(),
-      endTime.toISOString()
+      username,
+      scope.start_time ?? scope.start_date,
+      scope.end_time ?? scope.end_date,
+      scope.tenant_id,
     )
-    
+    if (generation !== profileGeneration) return
     modelUsage.value = result.models || []
+    modelUsageMeta.value = result.usage_meta
     modelUsageDegraded.value = result.degraded || false
     if (result.degraded && result.degraded_reason) {
       modelUsageError.value = result.degraded_reason
     }
   } catch (e: unknown) {
+    if (generation !== profileGeneration) return
     modelUsageError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.modelUsageLoadFailed')
     modelUsage.value = []
+    modelUsageMeta.value = undefined
   } finally {
-    modelUsageLoading.value = false
+    if (generation === profileGeneration) modelUsageLoading.value = false
   }
 }
 
@@ -236,15 +285,20 @@ function healthGradeColor(grade?: string): 'success' | 'primary' | 'warning' | '
  *    **不趁这次切片修桌面**。
  */
 
-/** 成本：美元 4 位小数。桌面三列都是 `$(x ?? 0).toFixed(4)`，缺值按 0。 */
 function fmtUsd4(v: unknown): string {
-  return `$${Number(v ?? 0).toFixed(4)}`
+  return v == null ? '—' : `$${Number(v).toFixed(4)}`
 }
 
 /** 2026-11-20 逐层下钻轮：员工 → 任务 → 会话 的任务层入口。 */
 function goTask(taskId: unknown) {
   const id = taskId == null ? '' : String(taskId)
-  if (id) router.push(`/admin/session-analytics/tasks/${encodeURIComponent(id)}`)
+  if (!id) return
+  const window = data.value?.usage_meta
+  void router.push({
+    path: `/admin/session-analytics/tasks/${encodeURIComponent(id)}`,
+    query: { tenant_id: data.value?.tenant_id ?? tenantId.value,
+      start_time: window?.window_start, end_time: window?.window_end },
+  })
 }
 
 /**
@@ -345,8 +399,7 @@ const recentSessionFields = computed<CardField[]>(() => [
         :model-value="rangeValue"
         :presets="dayPresets"
         :max-span-days="90"
-        :presets-only="true"
-        @apply="applyRange"
+        @apply="onRangeApply"
       />
     </div>
 
@@ -354,6 +407,11 @@ const recentSessionFields = computed<CardField[]>(() => [
       <!-- 失败时不说「暂无数据」 -->
       <div v-if="!loading && !data && loadError" class="empty" style="color:var(--warning)">{{ loadError }}</div>
       <div v-else-if="!loading && !data" class="empty">{{ t('sessions.userProfile.empty') }}</div>
+      <el-alert v-if="data?.pending_since" type="warning" :closable="false" :title="t('reports.projectedPending')" />
+      <p v-if="data?.usd_unmeasured_requests">{{ t('reports.projectedMissingUSD', { n: data.usd_unmeasured_requests }) }}</p>
+      <p v-if="exactWindow && data?.usage_meta">
+        {{ data.usage_meta.window_start }} → {{ data.usage_meta.window_end }}
+      </p>
 
       <!-- Stat cards -->
       <el-row v-if="data" :gutter="16" class="stat-row">
@@ -369,7 +427,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           <el-card shadow="hover">
             <div class="stat-card">
               <div class="stat-label">{{ t('sessions.userProfile.totalCost') }}</div>
-              <div class="stat-value">${{ (data?.total_cost_usd ?? 0).toFixed(4) }}</div>
+              <div class="stat-value">{{ fmtUsd4(data?.total_cost_usd) }}</div>
             </div>
           </el-card>
         </el-col>
@@ -399,11 +457,7 @@ const recentSessionFields = computed<CardField[]>(() => [
         <div ref="costChartRef" class="chart-container" style="height: 300px" />
       </el-card>
 
-      <!-- 2026-11-20 逐层下钻轮（L1 收口）：员工→项目卡。
-           ★ 数字出处 = session_summaries × session_owners（**会话级**聚合）：
-             USD 成本 = Σ total_cost_usd，积分 = Σ total_credits_charged——
-             与请求级 usage 列的「内部/外部成本」不同源不同义 ⇒ 不沿用那对标签，
-             卡片注记显式标源（帮助抽屉同口径）。 -->
+      <!-- 项目层沿用画像的租户、日期和请求投影。 -->
       <el-card class="section-card" data-testid="up-projects">
         <template #header>
           <span>{{ t('sessions.userProfile.projectsTitle') }}</span>
@@ -438,7 +492,7 @@ const recentSessionFields = computed<CardField[]>(() => [
             <template #default="scope">{{ (scope?.row?.total_tokens ?? 0).toLocaleString() }}</template>
           </el-table-column>
           <el-table-column prop="total_cost_usd" :label="t('sessions.userProfile.projectCostUsd')" width="130" align="right">
-            <template #default="scope">${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}</template>
+            <template #default="scope">{{ fmtUsd4(scope?.row?.total_cost_usd) }}</template>
           </el-table-column>
           <el-table-column prop="total_credits_charged" :label="t('sessions.userProfile.projectCredits')" width="120" align="right">
             <template #default="scope">{{ (scope?.row?.total_credits_charged ?? 0).toLocaleString() }}</template>
@@ -472,7 +526,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           </el-table-column>
           <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
           <el-table-column prop="total_cost" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
-            <template #default="scope">${{ (scope?.row?.total_cost ?? 0).toFixed(4) }}</template>
+            <template #default="scope">{{ fmtUsd4(scope?.row?.total_cost) }}</template>
           </el-table-column>
           <el-table-column prop="avg_health" :label="t('sessions.userProfile.avgHealth')" width="80" align="right" />
         </el-table>
@@ -495,7 +549,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           <el-table-column prop="end_user_id" :label="t('sessions.userProfile.endUserId')" min-width="200" />
           <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
           <el-table-column prop="total_cost_usd" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
-            <template #default="scope">${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}</template>
+            <template #default="scope">{{ fmtUsd4(scope?.row?.total_cost_usd) }}</template>
           </el-table-column>
           <el-table-column prop="last_activity" :label="t('sessions.userProfile.lastSeenAt')" width="170" />
         </el-table>
@@ -524,7 +578,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           </el-table-column>
           <el-table-column prop="request_count" :label="t('sessions.userProfile.requestCount')" width="80" align="right" />
           <el-table-column prop="cost_usd" :label="t('sessions.userProfile.totalCost')" width="100" align="right">
-            <template #default="scope">${{ (scope?.row?.cost_usd ?? 0).toFixed(4) }}</template>
+            <template #default="scope">{{ fmtUsd4(scope?.row?.cost_usd) }}</template>
           </el-table-column>
           <el-table-column prop="health_grade" :label="t('sessions.userProfile.avgHealthGrade')" width="80" align="center">
             <template #default="scope">
@@ -601,15 +655,13 @@ const recentSessionFields = computed<CardField[]>(() => [
               {{ scope.row.output_tokens.toLocaleString() }}
             </template>
           </el-table-column>
-          <el-table-column prop="internal_cost_usd" :label="t('sessions.userProfile.internalCost')" width="120" align="right">
+          <el-table-column prop="internal_credits" :label="t('common.unit.credits')" width="120" align="right">
             <template #default="scope">
-              ${{ scope.row.internal_cost_usd.toFixed(4) }}
+              {{ scope.row.internal_credits.toLocaleString(undefined, { maximumFractionDigits: 6 }) }}
             </template>
           </el-table-column>
           <el-table-column prop="external_cost_usd" :label="t('sessions.userProfile.externalCost')" width="120" align="right">
-            <template #default="scope">
-              ${{ scope.row.external_cost_usd.toFixed(4) }}
-            </template>
+            <template #default="scope">{{ fmtUsd4(scope?.row?.external_cost_usd) }}</template>
           </el-table-column>
         </el-table>
 
@@ -631,24 +683,14 @@ const recentSessionFields = computed<CardField[]>(() => [
     >
       <div class="help-content">
         <section class="help-section">
-          <h3>{{ t('sessions.userProfile.helpContent.tokenCalculation') }}</h3>
-          <p>{{ t('sessions.userProfile.helpContent.tokenDesc') }}</p>
-          <div class="formula">
-            {{ t('sessions.userProfile.helpContent.tokenFormula') }}
-          </div>
-        </section>
-
-        <section class="help-section">
           <h3>{{ t('sessions.userProfile.helpContent.costCalculation') }}</h3>
-          <p><strong>{{ t('sessions.userProfile.internalCost') }}</strong></p>
-          <p>{{ t('sessions.userProfile.helpContent.internalCostDesc') }}</p>
-          <p><strong>{{ t('sessions.userProfile.externalCost') }}</strong></p>
-          <p>{{ t('sessions.userProfile.helpContent.externalCostDesc') }}</p>
+          <p>{{ t('common.unit.credits') }}</p>
+          <p>{{ t('sessions.userProfile.externalCost') }} (USD)</p>
         </section>
 
-        <section class="help-section">
+        <section v-if="modelUsageMeta" class="help-section">
           <h3>{{ t('sessions.userProfile.helpContent.dataSource') }}</h3>
-          <p>{{ t('sessions.userProfile.helpContent.dataSourceDesc') }}</p>
+          <p>{{ modelUsageMeta.source_view }}</p>
         </section>
 
         <section class="help-section">

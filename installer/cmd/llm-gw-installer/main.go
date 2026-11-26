@@ -1844,6 +1844,7 @@ var apiKeysTeamId973 []byte
 var apiKeysTeamId973Down []byte
 var teamBudgets986 []byte
 var teamBudgets986Down []byte
+
 // ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 //
 //	★ 2026-11-19 文档一致性轮补五点同步——并行车首提交只写了正典，
@@ -1940,6 +1941,12 @@ var sessionSummaryLayers999Down []byte
 //	auto_execute=FALSE（fail-closed 同 995）。幂等（纯 INSERT +
 //	ON CONFLICT DO NOTHING，零 DDL）⇒ 内容指纹重放零冲突。
 //
+//go:embed embeddata/startup/973_request_metrics_projection.sql
+var requestMetricsProjection973 []byte
+
+//go:embed embeddata/startup/973_request_metrics_projection.down.sql
+var requestMetricsProjection973Down []byte
+
 //go:embed embeddata/startup/999a_data_maintenance_playbook.sql
 var dataMaintenancePlaybook999a []byte
 
@@ -2008,10 +2015,8 @@ var teamBudgets058Down []byte
 //go:embed embeddata/startup/056_user_teams.sql
 var userTeams056 []byte
 
-
 //go:embed embeddata/startup/058_team_budgets.sql
 var teamBudgets058 []byte
-
 
 // ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」
 //
@@ -2748,10 +2753,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999_session_summary_layers.sql":                  sessionSummaryLayers999,
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
 	// ★ 999a（2026-11-24 数据维护手册轮；★ 编号取字母后缀空号：sqlguard migrationNumPrefix 钉死 ^[0-9]{3}_ ⇒ 四位数对守卫隐形；983b/983c 先例）：运维/数据维护手册条目六条。
-	"startup/999a_data_maintenance_playbook.sql":              dataMaintenancePlaybook999a,
-	"startup/999a_data_maintenance_playbook.down.sql":         dataMaintenancePlaybook999aDown,
-	"startup/983_request_metrics.sql":                         requestMetrics983,
-	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
+	"startup/973_request_metrics_projection.sql":      requestMetricsProjection973,
+	"startup/973_request_metrics_projection.down.sql": requestMetricsProjection973Down,
+	"startup/999a_data_maintenance_playbook.sql":      dataMaintenancePlaybook999a,
+	"startup/999a_data_maintenance_playbook.down.sql": dataMaintenancePlaybook999aDown,
+	"startup/983_request_metrics.sql":                 requestMetrics983,
+	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
 	//   ★ 983 的补列件（主号+字母后缀）⇒ 必须排在 983 建表件之后。
 	"startup/983b_add_raw_model_name.sql":      addRawModelName983b,

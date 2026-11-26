@@ -5,7 +5,7 @@ import { req, type RequestOptions } from './client'
 // 后端：admin/error_playbook_handler.go 的 RegisterRoutes（fail-closed：
 //   store/pool/secret 任一缺失 ⇒ 端点**不注册** ⇒ 本页会拿到 404 ——
 //   这是「手册未开」的形态，不是请求失败；视图按 404 披露）。
-//   注册点 cmd/gateway/main.go:8287 `pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")`
+//   注册点 cmd/gateway/main.go:8284 `pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")`
 //   （`errorPlaybookStoreGlobal != nil` 才装配）。
 //
 // ★ 权限档：wrap = AdminMiddleware（admin/error_playbook_handler.go:72-74，

@@ -4447,39 +4447,21 @@ func main() {
 		materializedViewRefresher.Start()
 	}
 
-	// 2026-11-24: request_metrics processor — 统计专用数据表填充
-	//
-	// 从 usage_facts 读取并填充 request_metrics 表，支持多维度快速聚合查询。
-	// 这是阶段一（双写验证）：数据异步填充到新表，原有查询不受影响。
-	//
-	// 设计文档: /tmp/request_metrics_design.md
-	// 迁移: 983_request_metrics.sql
-	// 部署验证计划: /tmp/request_metrics_deployment_plan.md
+	// The shared projection serializes backfill across gateway instances.
+	var requestMetricsDB *sql.DB
 	if dbConn != nil && dbConn.Enabled() {
-		metricsProcessor := metricsstore.NewProcessor(dbConn.Stdlib())
-		// ★ 用**可取消**的 ctx（与仓内其它后台 worker 同款写法）：
-		//   context.Background() ⇒ 这个 goroutine 在进程内**永远不可停**
-		//   ⇒ 优雅停机后它仍在跑，而此时连接池已关
-		//   ⇒ 每 5 分钟刷一批「连接已关闭」错误，且批次里的维度永远补不回来。
-		metricsProcessorCtx, metricsProcessorCancel := context.WithCancel(context.Background())
-		// ★ 2026-11-24 吞吐优化轮：参数**可配**（环境变量），不再硬编码。
-		//
-		//   旧形态（硬编码 5m/100）：「每 5 分钟 100 条」是**占位常量**，不是容量测算。
-		//   生产实测写入速率约 1,100 条/小时（近 1 小时均值 18.1 条/分钟，
-		//   峰值 63 条/分钟），而「5 分钟 100 条」的上限只有 **1,200 条/小时**
-		//   ⇒ 余量仅 7% ⇒ 实测 61/61 个批次全部处理满 100 条
-		//   ⇒ 处理器**长期贴着天花板跑** ⇒ 流量一涨就变成数据滞后。
-		//
-		//   新形态：间隔/批量/追平轮数三项可配，且每轮**自适应追平**
-		//   （持续处理直到本批不满）⇒ 积压时自动加速，空闲时自动降频。
-		metricsCfg := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
-		go metricsProcessor.Run(metricsProcessorCtx, metricsCfg)
-		defer metricsProcessorCancel()
+		requestMetricsDB = dbConn.Stdlib()
+		metricsProcessor := metricsstore.NewProcessor(requestMetricsDB)
+		metricsCtx, cancelMetrics := context.WithCancel(context.Background())
+		defer cancelMetrics()
+		metricsConfig := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())
+		go metricsProcessor.Run(metricsCtx, metricsConfig)
+
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
-			"interval", metricsCfg.Interval.String(),
-			"batch_size", metricsCfg.BatchSize,
-			"max_rounds_per_tick", metricsCfg.MaxRoundsPerTick)
+			"interval", metricsConfig.Interval.String(),
+			"batch_size", metricsConfig.BatchSize,
+			"max_rounds_per_tick", metricsConfig.MaxRoundsPerTick)
 	}
 
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
@@ -5094,6 +5076,8 @@ func main() {
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 				nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
+				// ★ 2026-11-26（第36轮 · 第四处修正）：注入路由层自己的候选解析器。
+				wireGatewayPlanLookup(nodeProbeWorker, providerClient)
 				if ursmV2Mgr != nil && (ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative || ursmV2Mgr.StrictCanary()) {
 					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 				}
@@ -5424,6 +5408,8 @@ func main() {
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc(), settings.ErrorProbeTimeoutMs())
 			nodeProbeWorker.SetResponsesCapabilitySink(fpSlots)
+			// ★ 2026-11-26（第36轮 · 第四处修正）：同 site 1 的接线（判据单源）。
+			wireGatewayPlanLookup(nodeProbeWorker, providerClient)
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
 			if probeStreamHub != nil {
@@ -7147,6 +7133,8 @@ func main() {
 	//   /readyz  严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
 	//   /version 仅暴露 build metadata（version + git_sha + build_seq + build_date），无敏感信息。
 	mux.Handle("/readyz", healthHandler)
+	mux.Handle("/readyz/request-metrics",
+		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(metricsstore.ProjectionReadinessHandler(requestMetricsDB)))
 	mux.Handle("/version", healthHandler)
 	// 2026-07-14: 30s system-health JSON for the GDRT H badge on the
 	// homepage. CORS open (no auth) so the SPA login page can show
@@ -8768,6 +8756,7 @@ func main() {
 		if adminHandler != nil {
 			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
 			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
+			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))
 			mux.HandleFunc("/api/admin/session-clusters/", wrapSessionAnalytics(adminHandler.RouteSessionClusters))
 			// Task T1.1: 时间序列分析端点 (2026-07-06)
@@ -9250,6 +9239,44 @@ func main() {
 	//   **不是**整个请求的耗时（后者会被 LLM 调用主导 ⇒ 对"扩展点耗时"没有意义）。
 	//   ⇒ 纯观测：不改状态码、不改响应体、不吞错误。
 	finalHandler := middleware.LedgerMiddleware(handler)
+
+	// 2026-11-26（211 充值事故轮）：**需求驱动复探**。
+	//
+	// 事故形状：凭据被判「永久配额耗尽」后，候选 SQL 把它整体排除
+	// ⇒ 该模型零候选 ⇒ 没有业务流量 ⇒ 没有新的健康证据 ⇒ 只能等
+	// 余额探针的**时间轮询**（退避上限 1 小时）⇒「充值了但网关最长
+	// 1 小时不知道」。
+	//
+	// 本接线把发现机制升级为**需求驱动**：新请求打到一个模型上 ⇒ 若
+	// 它有额度耗尽的节点 ⇒ 立刻为这些节点发起一次探活（不等 1 小时
+	// 退避）⇒ 探到已恢复 ⇒ 凭据翻绿 ⇒ 候选恢复 ⇒ 模型立刻可用。
+	// 探测间隔由调度器自动回退（30s→1m→2m→4m→**5m 封顶**）⇒ 高频
+	// 请求不会把上游打爆。
+	//
+	// 与余额探针共用同一个凭据级探针（credProbeV2）⇒ 恢复动作完全
+	// 一致（writeHealth → quota_state=ok → 候选恢复）。
+	//
+	// ★ **为什么接线放在这里（而不是 credProbeV2 块旁边）**：
+	//   `cmd/gateway/main.go` 有一批**按行号钉**的权威坐标
+	//   （对拍表 `scripts/ursmcheck/request_surface_doc_currency_test.go`
+	//   的 9159-9164 / 9204-9223 / 9206-9213 三窗口、设计页
+	//   `docs/subsystems/request-surface.md`、认证表 A1
+	//   `docs/audit/2026-10-24-magpie-v0.1.1367-改造落地审计.md`，
+	//   以及 admin 路由快照 `scripts/audit/asset/admin-routes.txt` 里
+	//   main.go 最大行 9138）⇒ 在这些坐标**之前**插一行就要重钉四面文档。
+	//   ★ 本块放在最后一个窗口（9223）之后 ⇒ **零位移** ⇒ 不触碰他人
+	//   在途修改的三份共享文档 ⇒ 也不需要第二十八次重钉。
+	//   ★ 约束：位置仍在 `srv := &http.Server{` 之前 ⇒ 接线必然早于
+	//   服务开始收流量 ⇒ 不会有"先来请求后接线"的空窗。
+	if credProbeV2 != nil && chatHandler != nil && dbConn != nil {
+		demandExhaustedProbe := bg.NewExhaustedNodeDemandProbe(dbConn.Pool(), credProbeV2.ProbeNowAsyncIfIdle)
+		chatHandler.SetExhaustedNodeProbeTrigger(func(ctx context.Context, model, tenantID string) {
+			demandExhaustedProbe.NotifyRequest(ctx, model, tenantID)
+		})
+		slog.Info("exhausted node demand probe wired",
+			"trigger", "new_request_on_exhausted_model",
+			"backoff_first", "30s", "backoff_cap", "5m")
+	}
 
 	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，

@@ -108,7 +108,7 @@ type execer interface {
 
 // upsertRequestMetricSQL 单条幂等写入。
 //
-// ★ 冲突键 = (request_id, occurred_at)（与迁移 983 的主键一致）。
+// 此路径按原始键写入旧格式；投影处理器使用独立的键空间。
 // ★ DO UPDATE 更新**所有**业务列：同一请求可能被后续批次用更新后的维度/计量值重写，
 //
 //	只更新部分列会让旧值长期残留。

@@ -122,7 +122,7 @@ afterEach(() => {
 describe('路径与响应键（逐字对 writeJSON）', () => {
   it('★★★★★★ clients 打 `/session-analytics/clients`，键是 `clients`（:14-20 / :203）', async () => {
     const r = await fetchAnalyticsClients()
-    expect(lastUrl()).toContain('/api/admin/session-analytics/clients')
+    expect(lastUrl()).toContain('/api/admin/session-analytics/v2/clients')
     expect(r.clients).toHaveLength(1)
     expect(r.total).toBe(1)
   })
@@ -130,7 +130,7 @@ describe('路径与响应键（逐字对 writeJSON）', () => {
   it('★★★★★★ tasks 打 `/session-analytics/tasks`，键是 **`tasks`** 不是 `clients`', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(tasksBody()))
     const r = await fetchAnalyticsTasks()
-    expect(lastUrl()).toContain('/api/admin/session-analytics/tasks')
+    expect(lastUrl()).toContain('/api/admin/session-analytics/v2/tasks')
     expect(r.tasks).toHaveLength(1)
   })
 

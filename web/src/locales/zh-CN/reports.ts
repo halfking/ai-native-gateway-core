@@ -1,6 +1,14 @@
 // reports.ts — 对账报表视图词条（2026-09-25 落地轮；2026-09-30 统计 UI 优化轮扩）。
 // 组件内 t(key, '中文') 内联兜底与本词条并存：词条供正式翻译，内联串防裸 key。
 export default {
+  terminalExecutions: '终态执行数',
+  projectedView: '历史请求统计',
+  projectedDays: '有请求记录的日期共 {n} 天',
+  projectedBasis: '按 {zone} 自然日统计，每条执行终态计一次，编排子调用分别计入。客户端收件、供应商发送和账单见日对账，实际过账见积分账本。',
+  projectedPending: '所选日期仍有请求待同步。',
+  projectedMissingUSD: '{n} 条请求缺少 USD 金额或使用其他币种。',
+  projectedEmpty: '所选日期和筛选条件下没有可用的请求记录。',
+  projectedToday: '（今天尚未结束）',
   legacySnapshotView: '历史快照',
   daily: {
     title: '日对账证据', section: '证据类型', day: '对账日期', timezone: '时区（IANA）',
@@ -10,6 +18,8 @@ export default {
     details: '对账证据明细', amountBreakdown: '按币种和流量归属汇总的供应商金额',
     window: '{start} 至 {end}（不含结束时刻），{zone}', readAt: '读取时间 {at}', exactInCSV: '精确值见 CSV', yes: '是', no: '否',
     internalNote: '积分核对使用整小时用量桶，跨过日界线的桶单列。',
+    terminalProjection: '收件按网关收件时间归日，终态用量来自请求统计。',
+    terminalProjectionPending: '终态用量仍在同步，最早排队于 {at}。跨日修订也可能影响结果。',
     sections: { requests: '客户端请求', attempts: '供应商调用', sessions: '会话', postings: '积分过账', coverage: '证据覆盖', internal: '内部积分核对', supplier_invoices: '供应商日账单' },
     invoices: {
       load: '查询当日账单', noInvoices: '该自然日无已导入的供应商账单。', account: '供应商 {provider} · 账户 {account}',
@@ -52,6 +62,7 @@ export default {
       requests: '客户端请求', success: '成功', failure: '失败', rate_limited: '限流', cancelled: '取消', pending: '进行中',
       unknown_status: '终态未知', unassigned_session: '无会话归属', local_day: '当地日期', request_id: '请求 ID',
       admission_rejected_requests: '网关入口拒绝', admission_rejection: '入口拒绝原因',
+      total_tokens: '留存终态总 Token', measured_total_requests: '有终态总 Token 的请求', usage_source: '用量来源',
       parent_request_id: '父请求 ID', linked_client_requests: '关联的客户端请求',
       tenant_id: '租户 ID', session_id: '会话 ID', traffic_class: '流量归属', status: '状态', input_tokens: '输入 Token',
       output_tokens: '输出 Token', recorded_supplier_sends: '该请求已记录发送', recorded_attempts: '已记录调用', sent: '确认发送',

@@ -12,7 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const ReportVersion = "request-reconciliation-v1"
+const (
+	ReportVersion          = "request-reconciliation-v1"
+	ProjectedReportVersion = "request-reconciliation-v2"
+)
 
 // ReportScope is assigned by the server from the authenticated caller.
 // A tenant scope can read requests, sessions and internal postings.
@@ -32,21 +35,24 @@ type ReportQuery struct {
 }
 
 type Report struct {
-	Version       string            `json:"version"`
-	Section       string            `json:"section"`
-	Start         time.Time         `json:"start"`
-	End           time.Time         `json:"end"`
-	Timezone      string            `json:"timezone"`
-	Day           string            `json:"day,omitempty"`
-	Month         string            `json:"month,omitempty"`
-	TenantID      string            `json:"tenant_id,omitempty"`
-	PlatformScope bool              `json:"platform_scope"`
-	ReadAt        time.Time         `json:"read_at"`
-	Coverage      string            `json:"coverage"`
-	Limit         int               `json:"limit"`
-	Offset        int               `json:"offset"`
-	Summary       json.RawMessage   `json:"summary"`
-	Rows          []json.RawMessage `json:"rows"`
+	Version           string            `json:"version"`
+	Section           string            `json:"section"`
+	Start             time.Time         `json:"start"`
+	End               time.Time         `json:"end"`
+	Timezone          string            `json:"timezone"`
+	Day               string            `json:"day,omitempty"`
+	Month             string            `json:"month,omitempty"`
+	TenantID          string            `json:"tenant_id,omitempty"`
+	PlatformScope     bool              `json:"platform_scope"`
+	ReadAt            time.Time         `json:"read_at"`
+	Coverage          string            `json:"coverage"`
+	RequestCountBasis string            `json:"request_count_basis,omitempty"`
+	Limit             int               `json:"limit"`
+	Offset            int               `json:"offset"`
+	Summary           json.RawMessage   `json:"summary"`
+	Rows              []json.RawMessage `json:"rows"`
+	Projection        *ReportProjection `json:"projection,omitempty"`
+	FinancialPeriod   *FinancialPeriod  `json:"financial_period,omitempty"`
 }
 
 type reportSection struct {
@@ -56,11 +62,11 @@ type reportSection struct {
 	calendarPeriodOnly            bool
 }
 
-var reportSections = map[string]reportSection{
-	"requests": {
-		base: requestFacts + ` SELECT CASE WHEN unassigned_admission IS NOT TRUE THEN tenant_id END AS tenant_id,
+const requestDetailColumns = ` SELECT CASE WHEN unassigned_admission IS NOT TRUE THEN tenant_id END AS tenant_id,
 			request_id, received_at, local_day, status, traffic_class,
-			session_id, client_id, application_id, input_tokens, output_tokens, usage_source, admission_rejection,
+			session_id, client_id, application_id, input_tokens, output_tokens, usage_source, admission_rejection,`
+
+const requestDetailSends = `
 			CASE WHEN current_setting('app.bypass_rls', true) = 'true' THEN a.sent END AS recorded_supplier_sends
 		FROM request_facts r LEFT JOIN LATERAL (
 			SELECT count(*) AS sent FROM (
@@ -71,8 +77,9 @@ var reportSections = map[string]reportSection{
 				JOIN public.provider_call_attempts a ON a.tenant_id = l.tenant_id AND a.request_id = l.child_request_id
 				WHERE l.tenant_id = r.tenant_id AND l.parent_request_id = r.request_id AND a.delivery = 'sent'
 			) sent_attempts WHERE current_setting('app.bypass_rls', true) = 'true'
-		) a ON true`,
-		totals: `SELECT count(*) AS requests,
+		) a ON true`
+
+const requestTotals = `SELECT count(*) AS requests,
 			count(*) FILTER (WHERE status IN ('success','failure','rate_limited','cancelled')) AS terminal,
 			count(*) FILTER (WHERE status = 'success') AS success,
 			count(*) FILTER (WHERE status = 'failure') AS failure,
@@ -96,9 +103,37 @@ var reportSections = map[string]reportSection{
 			count(*) FILTER (WHERE (input_tokens IS NULL) <> (output_tokens IS NULL)) AS partial_measured_requests,
 			count(*) FILTER (WHERE input_tokens IS NULL AND output_tokens IS NULL) AS requests_without_measured_tokens,
 			sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
-			sum(input_tokens + output_tokens) AS total_tokens FROM facts`,
-		order: `received_at, tenant_id, request_id`, coverage: "recorded_wal_and_linked_terminal_usage_legacy_zeros_unverified",
-		columns: []string{"tenant_id", "request_id", "received_at", "local_day", "status", "traffic_class", "session_id", "client_id", "application_id", "input_tokens", "output_tokens", "usage_source", "recorded_supplier_sends", "admission_rejection"},
+			`
+
+const sessionReportRows = `, active AS (
+			SELECT tenant_id, session_id, count(*) AS window_requests
+			FROM request_facts WHERE session_id IS NOT NULL GROUP BY tenant_id, session_id
+		)
+		SELECT s.tenant_id, s.gw_session_id AS session_id,
+			COALESCE(a.window_requests, 0) AS window_requests,
+			(a.window_requests IS NOT NULL) AS active,
+			COALESCE(s.first_request_at >= $1 AND s.first_request_at < $2, false) AS new,
+			COALESCE(s.closed_at >= $1 AND s.closed_at < $2, false) AS closed,
+			s.first_request_at, timezone($4, s.first_request_at)::date AS first_request_day,
+			s.closed_at, timezone($4, s.closed_at)::date AS closed_day
+		FROM public.session_dim s LEFT JOIN active a ON a.tenant_id = s.tenant_id AND a.session_id = s.gw_session_id
+		WHERE ($3 = '' OR s.tenant_id = $3)
+		  AND (a.window_requests IS NOT NULL OR (
+		    ((s.first_request_at >= $1 AND s.first_request_at < $2) OR (s.closed_at >= $1 AND s.closed_at < $2))
+		    AND NOT COALESCE((
+		      SELECT bool_and(l.child_request_id IS NOT NULL)
+		      FROM public.request_wal_with_current_month w
+		      LEFT JOIN public.request_reconciliation_links l ON l.tenant_id = w.tenant_id AND l.child_request_id = w.request_id
+		      WHERE w.tenant_id = s.tenant_id AND w.gw_session_id = s.gw_session_id
+		    ), false)))`
+
+var reportSections = map[string]reportSection{
+	"requests": {
+		base:     requestFacts + requestDetailColumns + requestDetailSends,
+		totals:   requestTotals + `sum(input_tokens + output_tokens) AS total_tokens FROM facts`,
+		order:    `received_at, tenant_id, request_id`,
+		coverage: "recorded_wal_and_linked_terminal_usage_legacy_zeros_unverified",
+		columns:  []string{"tenant_id", "request_id", "received_at", "local_day", "status", "traffic_class", "session_id", "client_id", "application_id", "input_tokens", "output_tokens", "usage_source", "recorded_supplier_sends", "admission_rejection"},
 	},
 	"attempts": {
 		platformOnly: true,
@@ -166,27 +201,7 @@ var reportSections = map[string]reportSection{
 		columns: []string{"tenant_id", "posting_id", "request_id", "parent_request_id", "posted_at", "local_day", "entry_type", "pool", "owner_user", "net_credits", "internal_amount", "internal_currency"},
 	},
 	"sessions": {
-		base: requestFacts + `, active AS (
-			SELECT tenant_id, session_id, count(*) AS window_requests
-			FROM request_facts WHERE session_id IS NOT NULL GROUP BY tenant_id, session_id
-		)
-		SELECT s.tenant_id, s.gw_session_id AS session_id,
-			COALESCE(a.window_requests, 0) AS window_requests,
-			(a.window_requests IS NOT NULL) AS active,
-			COALESCE(s.first_request_at >= $1 AND s.first_request_at < $2, false) AS new,
-			COALESCE(s.closed_at >= $1 AND s.closed_at < $2, false) AS closed,
-			s.first_request_at, timezone($4, s.first_request_at)::date AS first_request_day,
-			s.closed_at, timezone($4, s.closed_at)::date AS closed_day
-		FROM public.session_dim s LEFT JOIN active a ON a.tenant_id = s.tenant_id AND a.session_id = s.gw_session_id
-		WHERE ($3 = '' OR s.tenant_id = $3)
-		  AND (a.window_requests IS NOT NULL OR (
-		    ((s.first_request_at >= $1 AND s.first_request_at < $2) OR (s.closed_at >= $1 AND s.closed_at < $2))
-		    AND NOT COALESCE((
-		      SELECT bool_and(l.child_request_id IS NOT NULL)
-		      FROM public.request_wal_with_current_month w
-		      LEFT JOIN public.request_reconciliation_links l ON l.tenant_id = w.tenant_id AND l.child_request_id = w.request_id
-		      WHERE w.tenant_id = s.tenant_id AND w.gw_session_id = s.gw_session_id
-		    ), false)))`,
+		base: requestFacts + sessionReportRows,
 		totals: `SELECT count(*) AS sessions, count(*) FILTER (WHERE active) AS active,
 			count(*) FILTER (WHERE new) AS new, count(*) FILTER (WHERE closed) AS closed FROM facts`,
 		order: `tenant_id, session_id`, coverage: "canonical_session_dimension_and_recorded_activity",
@@ -215,7 +230,9 @@ const requestPostings = `SELECT DISTINCT ON (tenant_id, id) tenant_id, id AS pos
 // Both the details and totals read from facts inside one database statement.
 // Terminal-only evidence is joined by tenant and server request ID. A WAL
 // session ID is provisional until it matches a canonical dimension row.
-const requestFacts = `WITH candidates AS (
+const requestFacts = requestClassification + retainedUsageColumns + requestEvidenceDimensions + retainedUsageSource + requestScopeFilter
+
+const requestClassificationStart = `WITH candidates AS (
 	SELECT DISTINCT tenant_id, request_id
 	FROM public.request_wal_with_current_month
 	WHERE created_at >= $1 AND created_at < $2 AND ($3 = '' OR tenant_id = $3)
@@ -233,29 +250,48 @@ const requestFacts = `WITH candidates AS (
 		     WHEN f.status IN ('success','failure') THEN f.status
 		     WHEN w.status = 'pending' THEN 'pending' ELSE 'unknown' END AS status,
 		s.gw_session_id AS session_id,
-		CASE WHEN starts_with(w.error, 'gateway_admission:platform:') THEN 'platform'
+		`
+
+const receiptTrafficPriority = `CASE WHEN starts_with(w.error, 'gateway_admission:platform:') THEN 'platform'
 		     WHEN starts_with(w.error, 'gateway_admission:tenant:') THEN 'business'
 		     WHEN k.is_system AND (f.traffic_class IN ('probe','self_check','system_health','admin_test')
 		       OR (c.source_channel = 'reconciliation_modality' AND c.origin_stage IN
-		           ('node_probe','probe_direct','probe_v2','model_probe','passive_probe','self_check','system_health','manual'))) THEN 'platform'
-		     WHEN k.is_system = false THEN 'business' ELSE 'unknown' END AS traffic_class,
+		           ('node_probe','probe_direct','probe_v2','model_probe','passive_probe','self_check','system_health','manual'))) THEN 'platform'`
+
+const receiptKeyTraffic = `CASE WHEN k.is_system = false THEN 'business' ELSE 'unknown' END`
+
+const receiptTrafficClass = receiptTrafficPriority + ` ELSE ` + receiptKeyTraffic + ` END`
+
+const requestClassificationEnd = ` AS traffic_class,
 		COALESCE(NULLIF(c.virtual_client_id, ''), s.client_id) AS observed_client_id,
 		c.application_id,
-		CASE WHEN f.usage_source = 'llm' THEN NULLIF(f.prompt_tokens, 0) END AS input_tokens,
+		`
+
+const requestClassification = requestClassificationStart + receiptTrafficClass + requestClassificationEnd
+
+const retainedUsageColumns = `CASE WHEN f.usage_source = 'llm' THEN NULLIF(f.prompt_tokens, 0) END AS input_tokens,
 		CASE WHEN f.usage_source = 'llm' THEN NULLIF(f.completion_tokens, 0) END AS output_tokens,
-		CASE WHEN starts_with(w.error, 'gateway_admission:') THEN split_part(w.error, ':', 3) END AS admission_rejection,
+		` + requestAdmissionColumns
+
+const requestAdmissionColumns = `CASE WHEN starts_with(w.error, 'gateway_admission:') THEN split_part(w.error, ':', 3) END AS admission_rejection,
 		starts_with(w.error, 'gateway_admission:unassigned:') AS unassigned_admission,
 		f.usage_source
-	FROM wal w
+	`
+
+const requestEvidenceDimensions = `FROM wal w
 	LEFT JOIN public.request_reconciliation_links l ON l.tenant_id = w.tenant_id AND l.child_request_id = w.request_id
 	LEFT JOIN public.request_context_attrs c ON c.request_id = w.request_id AND c.tenant_id = w.tenant_id
 	LEFT JOIN public.session_dim s ON s.tenant_id = w.tenant_id AND s.gw_session_id = COALESCE(NULLIF(c.gw_session_id,''), w.gw_session_id)
-	LEFT JOIN LATERAL (
+	`
+
+const retainedUsageSource = `LEFT JOIN LATERAL (
 		SELECT status, prompt_tokens, completion_tokens, usage_source, api_key_id, traffic_class FROM public.usage_facts
 		WHERE request_id = w.request_id AND tenant_id = w.tenant_id
 		ORDER BY revision DESC, finalized_at DESC, fact_id DESC LIMIT 1
 	) f ON true
-	LEFT JOIN public.api_keys k ON k.id = COALESCE(c.api_key_id, f.api_key_id) AND k.tenant_id = w.tenant_id
+	`
+
+const requestScopeFilter = `LEFT JOIN public.api_keys k ON k.id = COALESCE(c.api_key_id, f.api_key_id) AND k.tenant_id = w.tenant_id
 	WHERE w.received_at >= $1 AND w.received_at < $2 AND l.child_request_id IS NULL
 	  AND (starts_with(w.error, 'gateway_admission:unassigned:') IS NOT TRUE
 	       OR ($3 = '' AND current_setting('app.bypass_rls', true) = 'true'))
@@ -269,6 +305,13 @@ func ReportColumns(section string) []string {
 	return append([]string(nil), reportSections[section].columns...)
 }
 
+func ReportColumnsForVersion(section, version string) []string {
+	if version == ProjectedReportVersion {
+		return append([]string(nil), projectedReportSection(section, reportSections[section]).columns...)
+	}
+	return ReportColumns(section)
+}
+
 // ReportRequiresPlatformAccess identifies report sections reserved for operators.
 func ReportRequiresPlatformAccess(section string) bool {
 	return reportSections[section].platformOnly
@@ -280,6 +323,10 @@ func ReportRequiresCalendarPeriod(section string) bool {
 }
 
 func ReadReport(ctx context.Context, pool *pgxpool.Pool, scope ReportScope, query ReportQuery) (Report, error) {
+	return readReport(ctx, pool, scope, query, false)
+}
+
+func readReport(ctx context.Context, pool *pgxpool.Pool, scope ReportScope, query ReportQuery, projected bool) (Report, error) {
 	section, ok := reportSections[query.Section]
 	if !ok || (!scope.Platform && (scope.TenantID == "" || section.platformOnly)) {
 		return Report{}, fmt.Errorf("report section unavailable in caller scope")
@@ -306,7 +353,12 @@ func ReadReport(ctx context.Context, pool *pgxpool.Pool, scope ReportScope, quer
 	}
 	// Keep RLS settings transaction-local. The SQL tenant predicate remains in
 	// each source even on connections whose role owns the underlying tables.
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	options := pgx.TxOptions{AccessMode: pgx.ReadOnly}
+	if projected {
+		options.IsoLevel = pgx.RepeatableRead
+		section = projectedReportSection(query.Section, section)
+	}
+	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
 		return Report{}, err
 	}
@@ -314,12 +366,43 @@ func ReadReport(ctx context.Context, pool *pgxpool.Pool, scope ReportScope, quer
 	if err := setReportScope(ctx, tx, scope); err != nil {
 		return Report{}, err
 	}
+	var period *FinancialPeriod
+	if projected {
+		calendar, readAt, err := ReadFinancialCalendar(ctx, tx)
+		if err != nil {
+			return Report{}, err
+		}
+		period = financialPeriod(calendar, query.Day, query.Timezone, query.End, readAt)
+		if period != nil {
+			switch period.Status {
+			case "outside_calendar":
+				return Report{}, fmt.Errorf("%w: %s", ErrFinancialTimezone, period.Timezone)
+			case "open":
+				return Report{}, ErrFinancialDayOpen
+			}
+		}
+	}
+	var projection *ReportProjection
+	if projected && needsRequestProjection(query.Section) {
+		projection, err = readTerminalProjection(ctx, tx, scope.TenantID)
+		if err != nil {
+			return Report{}, err
+		}
+	}
 	result, err := readReportSection(ctx, tx, scope, query, section)
 	if err != nil {
 		return Report{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Report{}, err
+	}
+	if projected {
+		result.Version = ProjectedReportVersion
+		result.Projection = projection
+		result.FinancialPeriod = period
+		if query.Section == "requests" {
+			result.RequestCountBasis = "client_receipt"
+		}
 	}
 	return result, nil
 }

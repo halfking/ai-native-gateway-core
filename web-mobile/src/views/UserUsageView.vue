@@ -352,6 +352,9 @@ onBeforeUnmount(() => { disposed = true; listAborter?.abort(); detailAborter?.ab
                 <StatCard :label="t('users.cost')" :value="fmtUsd(tenantSections[tenant.code]!.stats!.total_cost_usd)" />
                 <StatCard :label="t('users.credits')" :value="fmtInt(tenantSections[tenant.code]!.stats!.total_credits)" />
               </div>
+              <p v-if="tenantSections[tenant.code]!.stats!.cost_rows_outside_usd">
+                {{ t('tnd.usdCoverage', { n: tenantSections[tenant.code]!.stats!.cost_rows_outside_usd ?? 0 }) }}
+              </p>
               <section class="user-usage__tenant-breakdown">
                 <h3>{{ t('users.topModels') }}</h3>
                 <p v-if="!tenantSections[tenant.code]!.stats!.by_model.length" class="user-usage__empty">{{ t('common.empty') }}</p>

@@ -86,7 +86,7 @@ function bothEmptyArrays(): Record<string, unknown> {
 
 describe('会话筛选项 · 常量与路径', () => {
   it('路径是 /api/admin/session-analytics/filter-options（main.go:7286 前缀 catch-all）', () => {
-    expect(SESSION_ANALYTICS_FILTER_OPTIONS_PATH).toBe('/api/admin/session-analytics/filter-options')
+    expect(SESSION_ANALYTICS_FILTER_OPTIONS_PATH).toBe('/api/admin/session-analytics/v2/filter-options')
   })
 
   it('响应只有 2 个键（session_analytics_top.go:48-49）', () => {
@@ -304,7 +304,7 @@ describe('会话筛选项 · fetch', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(populated()))
     await fetchSessionAnalyticsFilterOptions()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toContain('/api/admin/session-analytics/filter-options')
+    expect(url).toContain('/api/admin/session-analytics/v2/filter-options')
     expect(url).not.toContain('?')
     expect(init.method).toBe('GET')
   })

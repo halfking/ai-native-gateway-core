@@ -39,7 +39,7 @@ url: ${BASE_URL}
       ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── ② 导航到用户画像列表页 ──────────────────────────────────────
-- openLink: ${BASE_URL}/admin/session-analytics/users
+- openLink: ${BASE_URL}/admin/session-analytics/user-profiles
 
 # ── ③ 验证用户画像列表页加载 ──────────────────────────────────────
 - assertVisible:
@@ -50,13 +50,13 @@ url: ${BASE_URL}
 
 # ⑤ 验证列表页基本元素（如果有数据）
 - assertVisible:
-    text: "详情"
+    text: "画像详情"
     optional: true
 
 # ── ⑥ 点击第一个用户进入详情页 ────────────────────────────────────
 # 注意：如果列表为空，这步会失败，但这是预期的
 - tapOn:
-    text: "详情"
+    text: "画像详情"
     optional: true
 
 - waitForAnimationToEnd
@@ -105,7 +105,7 @@ url: ${BASE_URL}
     optional: true
 
 - assertVisible:
-    text: "内部成本"
+    text: "积分"
     optional: true
 
 - assertVisible:
@@ -127,10 +127,6 @@ url: ${BASE_URL}
 # ── ⑫ 验证帮助面板内容 ────────────────────────────────────────────
 - assertVisible:
     text: "统计说明"
-    optional: true
-
-- assertVisible:
-    text: "Token 统计公式"
     optional: true
 
 - assertVisible:

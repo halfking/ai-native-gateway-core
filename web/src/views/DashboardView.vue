@@ -13,6 +13,7 @@ import {
   type HotApiKeyEntry,
 } from '../api'
 import { useDashboardBoard } from '../composables/useDashboardBoard'
+import { usageQueryForBoardRange } from '../utils/boardTimeRange'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck' | 'systemmonitor' // systemmonitor 保留兼容，已映射到 selfcheck
@@ -132,9 +133,10 @@ watch(
 async function loadDrawerData() {
   drawerLoading.value = true
   try {
+    const time = usageQueryForBoardRange(boardState.timeRange.value)
     const [modelsData, hotKeysData] = await Promise.all([
-      getUsageByModel(boardState.days.value),
-      getHotApiKeys(boardState.days.value),
+      getUsageByModel(time),
+      getHotApiKeys(time),
     ])
     // 2026-10-03: 两个端点后端从裸数组改为降级信封。若任一为 degraded，
     // 空列表就不是「没有数据」而是「聚合视图没迁移」—— 必须让用户看见，

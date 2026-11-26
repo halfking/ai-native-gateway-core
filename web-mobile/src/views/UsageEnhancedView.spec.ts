@@ -293,6 +293,11 @@ describe('① 权限档 admin（本仓第一个「有租户维度但缺角色下
     const rr = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/usage/request-reconciliation",'))
     expect(rr, '找不到 request-reconciliation 注册行').toBeGreaterThan(-1)
     expect(lines[rr]).toMatch(/h\.admin\(h\.handleRequestReconciliation\)/)
+    // ★ 2026-11-26 合并轮（codex/211-statistics-v2-release 并入）：本车道带来的
+    // ★ V2 同期对比路由注册行也要同档守护（同族结构锚点判，不钉行号）。
+    const pc = lines.findIndex((l) => l.includes('HandleFunc("/api/admin/usage/v2/period-compare",'))
+    expect(pc, '找不到 usage/v2/period-compare 注册行').toBeGreaterThan(-1)
+    expect(lines[pc]).toMatch(/h\.admin\(h\.handleUsagePeriodCompareV2\)/)
   })
 
   it('①-9 ★★★★ 角色判别 helper 随 role 变（不是恒真）', () => {

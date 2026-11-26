@@ -20,7 +20,7 @@ vi.mock('./boardLiveMerge', () => ({ applyLiveRequestToBoard: vi.fn() }))
 
 import { useDashboardBoard } from './useDashboardBoard'
 import { dashboardPreferenceStorageKey } from './liveStreamPreferences'
-import { fetchDashboardBoard } from '../api/board'
+import { fetchDashboardBoard, type BoardPayload } from '../api/board'
 
 const legacyTimeRangeStorageKey = 'dashboard_board_time_range_v1'
 
@@ -210,4 +210,19 @@ describe('useDashboardBoard startAutoRefresh idempotency', () => {
       expect(visRemoveCount() - baselineRemove).toBeGreaterThanOrEqual(1)
     })
   })
+})
+
+it('accepts a lower total when the persisted projection publishes a correction', async () => {
+  localStorage.clear()
+  const payload: BoardPayload = {
+    summary: { total_requests: 10 }, days: 1, trends: [], source: 'request_metrics',
+    pies: { clients: [], client_ips: [], identity_hashes: [], models: [], errors: [], tenants: [], providers: [] },
+  }
+  vi.mocked(fetchDashboardBoard)
+    .mockResolvedValueOnce(payload)
+    .mockResolvedValueOnce({ ...payload, summary: { total_requests: 9 } })
+  const board = useDashboardBoard()
+  await board.load()
+  await board.load({ silent: true })
+  expect(board.board.value?.summary.total_requests).toBe(9)
 })

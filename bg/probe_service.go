@@ -507,11 +507,20 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	//
 	// ⇒ 直连轮成功时**不**问视图：网关轮此刻的职责是确认路由层看见了已恢复的
 	// 状态，而视图可能还停留在上一轮的失败态，问它会误杀这一职责。
+	//
+	// ★ 2026-11-26 第36轮（第四处修正）：再加第三种**可证明冗余** —— 路由层对这个
+	// **模型**整体就没有候选时（plan_count=0；211 实测切流后仍发出的 15 轮
+	// 503 全部如此），钉住哪一把凭据都一样是 no_candidate。判据见
+	// probe_gateway_plan.go（问路由层**自己的**候选解析器，不抄合取）。
 	routable := true
+	planEmpty := false
 	if !direct.ok {
 		routable = s.worker.gatewayRoundRoutable(hbCtx, credID, model)
+		// 这条路径的网关轮用空的 raw modality 造 body（ProbeTarget 不带 Modality）
+		// ⇒ 模态参数与它一致（纯文本 ⇒ "text"；embedding 形状 ⇒ /v1/embeddings）。
+		planEmpty = s.worker.gatewayPlanEmpty(hbCtx, model, "")
 	}
-	runGateway, skipReason := probeGatewayRoundDecision(direct, routable)
+	runGateway, skipReason := probeGatewayRoundDecision(direct, routable, planEmpty)
 	gateway := gatewayProbeResult{round: nodeProbeRoundResult{rootCause: direct.rootCause}}
 	if runGateway {
 		gateway = s.gatewayRound(hbCtx, credID, model)

@@ -76,6 +76,7 @@ const entries: PageHelpEntry[] = [
   { match: '/admin/session-analytics/users/overview', id: 'session-analytics-overview', titleKey: 'pageHelp.title.sessionAnalyticsOverview', statistics: true },
   { match: '/admin/session-analytics/users/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail', statistics: true },
   { match: '/admin/session-analytics/users', id: 'session-users', titleKey: 'pageHelp.title.sessionUsers', statistics: true },
+  { match: '/admin/session-analytics/user-profiles', id: 'session-users', titleKey: 'pageHelp.title.sessionUsers', statistics: true },
   { match: '/admin/session-analytics/clients/:id', id: 'session-client-detail', titleKey: 'pageHelp.title.sessionClientDetail', statistics: true },
   { match: '/admin/session-analytics/tasks/:id', id: 'session-task-detail', titleKey: 'pageHelp.title.sessionTaskDetail', statistics: true },
   { match: '/admin/session-analytics/user-ranking/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail', statistics: true },

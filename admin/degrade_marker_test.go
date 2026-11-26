@@ -292,6 +292,12 @@ func TestDegradeHelperNeedlesCarryNoArgument(t *testing.T) {
 // 复制两份窗口逻辑必然分叉，而分叉的后果是「一半站点没人判标记」——
 // 与本文件开头记的那些盲区同一族。
 func hasMarkerNear(lines []string, i int) bool {
+	// A missing relation that immediately returns HTTP 503 cannot look like
+	// a successful empty result. Require both the response and the exit.
+	if i+2 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "writeError(w, http.StatusServiceUnavailable,") &&
+		strings.TrimSpace(lines[i+2]) == "return" {
+		return true
+	}
 	windowed := strings.Join(lines[i:minInt(i+1+degradeMarkerWindow, len(lines))], "\n")
 	for _, pat := range markerPatterns {
 		if strings.Contains(windowed, pat) {
@@ -454,6 +460,13 @@ func TestDegradePayloadsCarryMarker(t *testing.T) {
 	}`
 	if got := findUnmarkedDegradeSites(marked, "synthetic.go"); len(got) > 0 {
 		t.Errorf("检测器误报了合法站点: %v", got)
+	}
+	unavailable := `if IsMissingRelationError(err) {
+		writeError(w, http.StatusServiceUnavailable, "request metrics are not initialized")
+		return
+	}`
+	if got := findUnmarkedDegradeSites(unavailable, "synthetic.go"); len(got) > 0 {
+		t.Errorf("检测器误报了直接返回 503 的站点: %v", got)
 	}
 	// 阳性对照二：机制自身的**函数声明**不得被当成降级站点。
 	// 第一版就是在这里误报的，代价是 dashboard_degrade.go 出现在违规清单里。

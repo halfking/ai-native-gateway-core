@@ -96,9 +96,13 @@ const resetPasswordsMatch = computed(() => !resetConfirmPwd.value || passwordsMa
 // ── 用量统计（2026-09-30）：列表列 + 顶部统计条 ──────────────
 const usageDays = 30
 const usageItems = ref<UserUsageSummaryItem[]>([])
+const usageReady = ref(false)
+function accountKey(user: { tenant_id: string; username: string }): string {
+  return JSON.stringify([user.tenant_id, user.username])
+}
 const usageByUser = computed<Map<string, UserUsageSummaryItem>>(() => {
   const m = new Map<string, UserUsageSummaryItem>()
-  for (const it of usageItems.value) m.set(it.username, it)
+  for (const it of usageItems.value) m.set(accountKey(it), it)
   return m
 })
 
@@ -146,8 +150,8 @@ const filteredUsers = computed(() => {
   }
   if (sortBy.value !== 'default') {
     list = [...list].sort((a, b) => {
-      const ua = usageByUser.value.get(a.username)
-      const ub = usageByUser.value.get(b.username)
+      const ua = usageOf(a)
+      const ub = usageOf(b)
       const va = sortBy.value === 'requests' ? ua?.requests ?? 0 : ua?.credits ?? 0
       const vb = sortBy.value === 'requests' ? ub?.requests ?? 0 : ub?.credits ?? 0
       return vb - va
@@ -157,7 +161,7 @@ const filteredUsers = computed(() => {
 })
 
 const maxRequests = computed(() =>
-  filteredUsers.value.reduce((m, u) => Math.max(m, usageByUser.value.get(u.username)?.requests ?? 0), 0),
+  filteredUsers.value.reduce((m, u) => Math.max(m, usageOf(u)?.requests ?? 0), 0),
 )
 
 // 顶部统计条：基于当前筛选结果 + 用量表
@@ -167,7 +171,7 @@ const statBar = computed(() => {
   let req = 0
   let credits = 0
   for (const u of list) {
-    const usage = usageByUser.value.get(u.username)
+    const usage = usageOf(u)
     if (usage && usage.requests > 0) {
       active++
       req += usage.requests
@@ -185,7 +189,7 @@ const statBar = computed(() => {
 })
 
 function usageOf(u: User): UserUsageSummaryItem | undefined {
-  return usageByUser.value.get(u.username)
+  return usageByUser.value.get(accountKey(u))
 }
 function fmtNum(n: number | null | undefined): string {
   return (n ?? 0).toLocaleString('en-US')
@@ -232,8 +236,10 @@ async function load() {
     // 用量统计独立拉取：失败不阻塞列表（列显示 —）。
     try {
       const summary = await getUserUsageSummary(usageDays)
-      usageItems.value = summary.items ?? []
+      usageReady.value = summary.degraded !== true
+      usageItems.value = usageReady.value ? summary.items ?? [] : []
     } catch {
+      usageReady.value = false
       usageItems.value = []
     }
   } catch (e: unknown) {
@@ -356,11 +362,11 @@ onMounted(() => { load(); loadTenants() })
     <!-- ══ 顶部统计条（2026-09-30 统计 UI 优化轮） ══ -->
     <div class="mini-stats" data-testid="user-stats-bar">
       <div class="mini-stat"><div class="v">{{ statBar.total }}</div><div class="l">{{ t('users.stats.total', ) }}</div></div>
-      <div class="mini-stat"><div class="v v-ok">{{ statBar.active }}</div><div class="l">{{ t('users.stats.active', ) }}</div></div>
+      <div class="mini-stat"><div class="v v-ok">{{ usageReady ? statBar.active : '—' }}</div><div class="l">{{ t('users.stats.active', ) }}</div></div>
       <div class="mini-stat"><div class="v">{{ statBar.admins }}</div><div class="l">{{ t('users.stats.admins', ) }}</div></div>
       <div class="mini-stat"><div class="v v-err">{{ statBar.disabled }}</div><div class="l">{{ t('users.stats.disabled', ) }}</div></div>
-      <div class="mini-stat"><div class="v">{{ fmtNum(statBar.req) }}</div><div class="l">{{ t('users.stats.requests30d', ) }}</div></div>
-      <div class="mini-stat"><div class="v">{{ fmtNum(statBar.credits) }}</div><div class="l">{{ t('users.stats.credits30d', ) }}</div></div>
+      <div class="mini-stat"><div class="v">{{ usageReady ? fmtNum(statBar.req) : '—' }}</div><div class="l">{{ t('users.stats.requests30d', ) }}</div></div>
+      <div class="mini-stat"><div class="v">{{ usageReady ? fmtNum(statBar.credits) : '—' }}</div><div class="l">{{ t('users.stats.credits30d', ) }}</div></div>
     </div>
 
     <!-- 2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部 -->

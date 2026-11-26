@@ -59,6 +59,17 @@ let loadToken = 0
 let lastLoadedAt = 0
 
 async function loadSeries(throttle = false) {
+  if (props.board?.source === 'request_metrics') {
+    loadToken++
+    series.value = props.board.model_series ?? []
+    bucketMinutes.value = props.board.bucket_minutes ?? boardTrendBucketMinutes(props.timeRange)
+    seriesLoading.value = false
+    seriesError.value = null
+    seriesDegraded.value = props.board.degraded_trends === true
+    seriesMissingView.value = props.board.trends_missing_view ?? ''
+    return
+  }
+  if (!props.board) return
   if (throttle && Date.now() - lastLoadedAt < SERIES_REFRESH_MIN_MS) return
   const token = ++loadToken
   seriesLoading.value = true

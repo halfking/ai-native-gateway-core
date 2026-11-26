@@ -171,7 +171,7 @@ describe('UsersView 统计 UI 优化轮（2026-09-30）', { timeout: 20_000 }, (
     getUserUsageSummaryMock.mockResolvedValue({
       days: 30,
       items: [
-        { username: 'alice', requests: 12483, tokens: 892400000, credits: 45203, last_active_at: '2026-09-30T01:00:00Z' },
+        { username: 'alice', tenant_id: 'tenant-a', requests: 12483, tokens: 892400000, credits: 45203, last_active_at: '2026-09-30T01:00:00Z' },
       ],
     })
   })

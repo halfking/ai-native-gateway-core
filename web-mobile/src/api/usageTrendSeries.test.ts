@@ -259,9 +259,10 @@ describe('常量对齐后端字面量', () => {
     expect(TREND_BUCKET_60M).toBe(60)
   })
 
-  it('对外 source 只有三个值且不含 _without_customer_id', () => {
+  it('对外 source 包含新版投影和旧版名称', () => {
     // admin/usage_trend_series.go:155-164 —— 对外少一个后缀
     expect(TREND_SOURCES).toEqual([
+      'request_metrics',
       'request_logs_with_current_month',
       'request_stats_minute',
       'request_stats_dim_minute',
@@ -864,27 +865,27 @@ describe('fetch 打到正确 URL', () => {
   it('trend-series 缺省打到 days=1', async () => {
     ok(seriesOk())
     await fetchTrendSeries()
-    expect(reqMock.mock.calls[0]![1]).toBe('/api/admin/usage/trend-series?days=1')
+    expect(reqMock.mock.calls[0]![1]).toBe('/api/admin/usage/v2/trend-series?days=1')
   })
 
   it('trend-series 带过滤时 URL 含 provider_id', async () => {
     ok(seriesOk())
     await fetchTrendSeries({ days: 7, provider_id: 5 })
     expect(reqMock.mock.calls[0]![1]).toBe(
-      '/api/admin/usage/trend-series?days=7&provider_id=5',
+      '/api/admin/usage/v2/trend-series?days=7&provider_id=5',
     )
   })
 
   it('trend-models 缺省打到 days=1', async () => {
     ok(modelsOk())
     await fetchTrendModels()
-    expect(reqMock.mock.calls[0]![1]).toBe('/api/admin/usage/trend-models?days=1')
+    expect(reqMock.mock.calls[0]![1]).toBe('/api/admin/usage/v2/trend-models?days=1')
   })
 
   it('trend-models 带 model 多选时用重复参数', async () => {
     ok(modelsOk())
     await fetchTrendModels({ model: ['a', 'b'] })
-    expect(reqMock.mock.calls[0]![1]).toBe('/api/admin/usage/trend-models?days=1&model=a&model=b')
+    expect(reqMock.mock.calls[0]![1]).toBe('/api/admin/usage/v2/trend-models?days=1&model=a&model=b')
   })
 
   it('fetch 会过解包器', async () => {

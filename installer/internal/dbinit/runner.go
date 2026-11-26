@@ -2146,6 +2146,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 幂等（纯 INSERT + ON CONFLICT DO NOTHING，零 DDL）⇒
 			//     内容指纹重放零冲突；零外部依赖 ⇒ 位置只受清单序约束。
 			"999a_data_maintenance_playbook.sql",
+			"973_request_metrics_projection.sql",
 		},
 	}
 }
@@ -2270,6 +2271,15 @@ ON CONFLICT (canonical_name) DO UPDATE
 //	  （★ 已被部署通道按同一内容指纹应用过的文件 ⇒ 不重放；★ 这与部署通道
 //	  ★ 自己的跳过判据同款 ⇒ ★ 两条通道从此对「什么算已应用」口径一致）。
 func (r *Runner) InitSchema(logger func(string)) error {
+	return r.initSchema(logger, false)
+}
+
+// UpgradeSchema requires an existing ledger because offline packages only contain startup SQL.
+func (r *Runner) UpgradeSchema(logger func(string)) error {
+	return r.initSchema(logger, true)
+}
+
+func (r *Runner) initSchema(logger func(string), upgradeOnly bool) error {
 	// ★★★ 2026-11-23（L30 轮·补②⑤）：★ **重号守卫（fail-closed）**。
 	//
 	//	★ 为什么这道守卫必须住在【安装器】里、而不只住在测试套件里：
@@ -2301,6 +2311,9 @@ func (r *Runner) InitSchema(logger func(string)) error {
 		return err
 	}
 	incremental := hasLedger && len(applied) > 0
+	if upgradeOnly && !incremental {
+		return fmt.Errorf("offline startup upgrade requires an existing migration ledger")
+	}
 
 	// ★ F3：增量路径**只读**部署通道的权威台账（★ 表不存在 ⇒ 空表 ⇒ 不影响）。
 	var deployApplied map[string]string

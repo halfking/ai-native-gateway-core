@@ -14,7 +14,7 @@
 //    卡片头承担「唯一句柄」职责 —— fixture 里两行**前 16 字符完全相同**。
 //
 // 门禁清单：
-// A. 桌面零回归：三张表的列头与列数（4/4/5）、成本 4 位小数与缺值 $0.0000、
+// A. 桌面零回归：三张表的列头与列数（4/4/5）、成本 4 位小数与缺值 —、
 //    health_grade 五档 el-tag 类型、会话链接的 href 与截断文字、el-table 仍在
 // B. el-table 地形：容器直接子元素是 div.el-table（证明 D12）、不传 table-min-width
 // C. compact 卡片：出卡不出表、三张表字段集与列一一对应、tone 逐行、
@@ -27,6 +27,7 @@ import { ElLoading } from 'element-plus'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getUserModelUsage, getUserProjects } from '../api/admin'
 import UserProfileView from './UserProfileView.vue'
 import { _resetForTests } from '../composables/useWindowClass'
 import { _resetDataViewModeForTests } from '../composables/useDataViewMode'
@@ -63,8 +64,7 @@ const TOP_TASKS = [
   { task_id: 'chat', session_count: 120, total_cost: 1.5, avg_health: 88 },
   { task_id: 'reasoning', session_count: 30, total_cost: 0.25, avg_health: 42 },
   { task_id: 'code', session_count: 7, total_cost: 0 },
-  // ★ 成本**缺值**的一行。缺它时 `?? 0` 这个回落分支在桌面与卡片两侧都走不到
-  //   ⇒ 台账上「去掉 `?? 0`」与「去掉 `v ?? 0`」两条变异**行为等价**（无牙）。
+  // 成本证据缺失与实际为零分别显示。
   { task_id: 'embedding', session_count: 2 },
 ]
 
@@ -80,14 +80,19 @@ const RECENT_SESSIONS = [
   { session_id: 'sess-0000000000000004-b', request_count: 2, cost_usd: 0.01, health_grade: 'B', created_at: '2026-10-03T00:00:00Z' },
   { session_id: 'sess-0000000000000005-d', request_count: 2, cost_usd: 0.01, health_grade: 'D', created_at: '2026-10-02T00:00:00Z' },
   { session_id: 'sess-0000000000000006-none', request_count: 0, cost_usd: 0, created_at: '2026-10-01T00:00:00Z' },
-  // ★ 成本**缺值**的一行（这张表也要有：M25 打的是本表的 `?? 0`，
-  //   缺值行只加在 top_tasks 上时该变异仍然是行为等价的）。
+  // 最近会话也覆盖缺失成本。
   { session_id: 'sess-0000000000000007-nocost', request_count: 1, health_grade: 'A', created_at: '2026-09-30T00:00:00Z' },
 ]
 
 function payload() {
   return {
     session_count: 6,
+    tenant_id: 'tenant-a',
+    usage_meta: {
+      source_view: 'request_metrics',
+      window_start: '2026-09-23T00:15:00.123456Z',
+      window_end: '2026-10-23T00:15:00.123456Z',
+    },
     total_cost_usd: 1.79,
     total_requests: 20,
     total_success: 18,
@@ -150,7 +155,7 @@ vi.mock('../components/ui/KxDateRangePicker.vue', () => ({
 
 /** 本页用 `useRoute().params.owner` 当查询键、`useRouter().back()` 返回 —— 两者都得给。 */
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { owner: 'alice' } }),
+  useRoute: () => ({ params: { owner: 'alice' }, query: {} }),
   useRouter: () => ({ back: vi.fn(), push: vi.fn() }),
 }))
 
@@ -257,19 +262,19 @@ describe('UserProfileView：桌面三张表零回归', () => {
     expect(w.findAll('[data-testid="card-list"] .card')).toHaveLength(0)
   })
 
-  it('成本列 4 位小数；缺值/0 出 $0.0000（与桌面 `?? 0` 同一口径）', async () => {
+  it('成本列保留 4 位小数并区分缺失与零', async () => {
     const w = await factory()
     // 热门任务：1.5 / 0.25 / 0
     const costCells = () =>
       w.findAll('[data-testid="up-top-tasks"] .el-table__body tbody tr').map((r) => r.findAll('td')[2]!.text())
-    expect(costCells()).toEqual(['$1.5000', '$0.2500', '$0.0000', '$0.0000'])
+    expect(costCells()).toEqual(['$1.5000', '$0.2500', '$0.0000', '—'])
 
     // ★ 最近会话的成本列也要断：缺值行加在这张表上，若不断它，
     //   「去掉 `?? 0`」这条变异是行为等价的（台账上一条无牙）。
     const sessCost = w
       .findAll('[data-testid="up-recent-sessions"] .el-table__body tbody tr')
       .map((r) => r.findAll('td')[2]!.text())
-    expect(sessCost).toEqual(['$0.5000', '$0.0000', '$0.0200', '$0.0100', '$0.0100', '$0.0000', '$0.0000'])
+    expect(sessCost).toEqual(['$0.5000', '$0.0000', '$0.0200', '$0.0100', '$0.0100', '$0.0000', '—'])
   })
 
   /**
@@ -325,6 +330,15 @@ describe('UserProfileView：桌面三张表零回归', () => {
   it('首屏取数带 route 上的 owner 与默认 days=30', async () => {
     await factory()
     expect(ctrl.calls).toEqual([{ owner: 'alice', days: 30 }])
+  })
+
+  it('项目和模型请求沿用画像返回的租户及精确窗口', async () => {
+    await factory()
+    const { window_start, window_end } = payload().usage_meta
+    expect(getUserProjects).toHaveBeenCalledWith('alice', 30, {
+      tenant_id: 'tenant-a', start_time: window_start, end_time: window_end,
+    })
+    expect(getUserModelUsage).toHaveBeenCalledWith('alice', window_start, window_end, 'tenant-a')
   })
 
   /**
@@ -411,7 +425,7 @@ describe('UserProfileView：compact 卡片形态', () => {
     const tasks = cardsIn(w, 'up-top-tasks')
     expect(fieldValue(tasks[0]!, '总成本').text()).toBe('$1.5000')
     expect(fieldValue(tasks[2]!, '总成本').text()).toBe('$0.0000')
-    expect(fieldValue(tasks[3]!, '总成本').text()).toBe('$0.0000')
+    expect(fieldValue(tasks[3]!, '总成本').text()).toBe('—')
     expect(fieldValue(tasks[0]!, '平均健康分').text()).toBe('88')
     // 第 3 行没有 avg_health ⇒ 卡片出 —（桌面是空白，已在桌面那侧钉住）
     const missing = tasks[2]!.findAll('.card__field').find((f) => f.find('dt').text() === '平均健康分')!
@@ -432,14 +446,14 @@ describe('UserProfileView：compact 卡片形态', () => {
     expect(gradeOf('sess-0000000000000006-none').attributes('data-tone')).toBe('neutral')
   })
 
-  it('最近会话的成本与桌面同源；缺值出 $0.0000（不是 NaN）', async () => {
+  it('最近会话的卡片与桌面都将缺失成本显示为 —', async () => {
     const w = await factory()
     const cards = cardsIn(w, 'up-recent-sessions')
     expect(fieldValue(cards[0]!, '总成本').text()).toBe('$0.5000')
     expect(fieldValue(cards[2]!, '总成本').text()).toBe('$0.0200')
     // 缺 `cost_usd` 的那一行：与桌面 `?? 0` 同一口径
     const noCost = cards.find((c) => c.attributes('data-title') === 'sess-0000000000000007-nocost')!
-    expect(fieldValue(noCost, '总成本').text()).toBe('$0.0000')
+    expect(fieldValue(noCost, '总成本').text()).toBe('—')
   })
 
   it('未登记的等级不出 tone（不猜）', async () => {
@@ -535,7 +549,7 @@ describe('UserProfileView：跨层契约', () => {
   it('空态按统计对象分键：三张表各自 firstUse', () => {
     const used = new Set([...CODE_ONLY.matchAll(/t\('([^']+)'/g)].map((m) => m[1]))
     for (const k of used) {
-      expect(/^(sessions\.userProfile\.|common\.|hyper\.|dataLifecycle\.)/.test(k), `预期词条前缀之外的键：${k}`).toBe(true)
+      expect(/^(sessions\.userProfile\.|common\.|hyper\.|dataLifecycle\.|reports\.projected)/.test(k), `预期词条前缀之外的键：${k}`).toBe(true)
     }
     // ★ 第 14 增量：三张表的空态分别点名各自的统计对象（任务 / 终端用户 / 会话）。
     expect(used.has('sessions.userProfile.emptyFirstUseTopTasks'), 'top_tasks 空态点名「任务」').toBe(true)

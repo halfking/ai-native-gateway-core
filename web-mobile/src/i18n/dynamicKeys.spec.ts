@@ -203,7 +203,7 @@ const OPEN_PREFIXES: readonly string[] = [
  * ★ 生成键总数（本批钉死）。改了 DYNAMIC_KEYS 的后缀集就会动它 ⇒ ⑥-6 会红。
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
-const GENERATED_KEY_TOTAL = 369 // 2026-11-25 菜单 PC 对齐轮重测：295 + 74（rr.evidence.values. 37 + statisticsHelp.pages. 22 + ep.plan/source/status/trigger 15）：56 个前缀 × 各自后缀数（295 = 50 个前缀那版）
+const GENERATED_KEY_TOTAL = 372 // 2026-11-26 合并轮重测：369 + 3（V2 投影轮新增 3 个动态键：2006-11-25 菜单 PC 对齐轮 369 → 合并树 372；56 个前缀 × 各自后缀数）
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {

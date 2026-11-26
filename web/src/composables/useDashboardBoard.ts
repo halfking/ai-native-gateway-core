@@ -114,7 +114,7 @@ export function useDashboardBoard() {
   function mergeTerminalRequest(requestId: string, req: Parameters<typeof applyLiveRequestToBoard>[1]) {
     if (!liveMergeAllowed.value) return
     if (appliedTerminalIds.has(requestId)) return
-    if (!board.value) return
+    if (!board.value || board.value.source === 'request_metrics') return
     appliedTerminalIds.add(requestId)
     board.value = applyLiveRequestToBoard(board.value, req, timeRange.value)
   }
@@ -124,7 +124,7 @@ export function useDashboardBoard() {
     const localTotal = local?.summary?.total_requests ?? 0
     const remoteTotal = fresh.summary?.total_requests ?? 0
 
-    if (opts?.silentReconcile && liveMergeAllowed.value && local && remoteTotal < localTotal) {
+    if (opts?.silentReconcile && fresh.source !== 'request_metrics' && liveMergeAllowed.value && local && remoteTotal < localTotal) {
       board.value = {
         ...fresh,
         summary: local.summary,
@@ -138,12 +138,14 @@ export function useDashboardBoard() {
 
     board.value = fresh
     appliedTerminalIds.clear()
+    if (fresh.source === 'request_metrics') unwireLiveUpdates()
   }
 
   async function loadOperational() {
-    if (document.hidden) return
+    if (document.hidden || board.value?.source === 'request_metrics') return
     try {
-      operational.value = await fetchBoardOperational()
+      const value = await fetchBoardOperational()
+      if (board.value?.source !== 'request_metrics') operational.value = value
     } catch {
       // operational cards are non-critical; keep last snapshot
     }
@@ -167,6 +169,8 @@ export function useDashboardBoard() {
       adoptBoardPayload(fresh, { silentReconcile: silent })
       if (fresh.operational) {
         operational.value = fresh.operational
+      } else if (fresh.source === 'request_metrics') {
+        operational.value = null
       } else {
         await loadOperational()
       }
@@ -183,7 +187,7 @@ export function useDashboardBoard() {
   }
 
   function wireLiveUpdates() {
-    if (!liveUpdatesEnabled.value) return
+    if (!liveUpdatesEnabled.value || board.value?.source === 'request_metrics') return
     if (!unsubscribeTerminal) {
       unsubscribeTerminal = subscribeTerminalRequests((req) => {
         if (!req.request_id) return
@@ -199,7 +203,7 @@ export function useDashboardBoard() {
 
   async function resolvePollIntervalMs(): Promise<number> {
     const base = await resolveRefreshMs()
-    if (liveUpdatesEnabled.value && sseConnectionActive()) {
+    if (liveUpdatesEnabled.value && board.value?.source !== 'request_metrics' && sseConnectionActive()) {
       return Math.max(base, SSE_RECONCILE_MIN_MS)
     }
     return base

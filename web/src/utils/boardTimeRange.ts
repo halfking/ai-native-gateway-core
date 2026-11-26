@@ -19,6 +19,7 @@ export interface BoardTimeQuery {
   end?: string
   /** 2026-11-20 口径对齐轮：true → 英雄区汇总切供应商对账口径（含探测）。 */
   include_probes?: boolean
+  tenant_id?: string
 }
 
 import { systemTzDateStr, systemTzDayStartMs, systemTzNoonMs } from '@/components/ui/kxDatePresets'

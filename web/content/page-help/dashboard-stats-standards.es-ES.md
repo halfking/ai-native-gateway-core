@@ -1,5 +1,13 @@
 # Reglas de cálculo del panel y de las estadísticas de sesión
 
+## Definiciones actuales de V2
+
+El panel lee la tabla `request_metrics`, actualizada de forma asíncrona, según la hora de cada solicitud. Las estadísticas de sesiones cuentan las solicitudes vinculadas del mismo intervalo y deduplican por inquilino e ID de sesión. El inicio y el cierre usan la primera solicitud y el cierre efectivo. Los sondeos se excluyen de forma predeterminada. Los costes en USD, los créditos y otras divisas se muestran por separado, con avisos de actualizaciones pendientes y datos de costes ausentes.
+
+Los informes históricos abarcan días naturales cerrados en la zona horaria del sistema. La conciliación diaria usa la hora de recepción de la pasarela y la proyección de solicitudes para el uso final. Los envíos al proveedor, las facturas y los asientos internos se comprueban por separado.
+
+## Mediciones históricas (V1)
+
 El «Panel», las «Estadísticas de sesión» y la «Conciliación de proveedores» resumen el mismo flujo de llamadas a modelos con **tres reglas de cálculo distintas**. Esta página explica cómo se obtiene cada número, de dónde salen los datos y qué ventana temporal cubren, e incluye un **desglose punto por punto** de por qué los números de los tres módulos no cuadran. Sirve para alinear datos y comprobar desvíos por cuenta propia.
 
 > Base de la medición: 2026-11-23 21:05 (Asia/Shanghai) en producción. Todas las cifras se tomaron en el **mismo instante** (dentro de una única consulta SQL), ventana = `NOW()-7 días`; la conciliación de proveedores se midió aparte sobre el intervalo cerrado de días naturales `2026-11-17 ~ 2026-11-23` y se contrastó día a día con la tabla de hechos.

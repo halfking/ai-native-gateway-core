@@ -20,7 +20,7 @@
 // 用法：
 //   node assert-board-op-custom-range.mjs --cdp http://127.0.0.1:9223 \
 //         --url https://llm.itestu.cn --user admin --password '...'
-import { connect, openPage, evaluate, waitFor } from './cdp-client.mjs'
+import { connect, openPage, evaluate, waitFor, navigateToDocument } from './cdp-client.mjs'
 import { summarize } from './result.mjs'
 
 const args = Object.fromEntries(
@@ -54,8 +54,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const js = (expression) => evaluate(cdp, sessionId, expression)
 
 async function goto(url, readyExpr, timeoutMs = 30000) {
-  await js(`location.href = ${JSON.stringify(url)}; true`)
-  await waitFor(cdp, sessionId, `document.readyState === 'complete'`, timeoutMs)
+  await navigateToDocument(cdp, sessionId, url, timeoutMs)
   if (readyExpr) {
     try {
       await waitFor(cdp, sessionId, readyExpr, timeoutMs)
@@ -67,7 +66,7 @@ async function goto(url, readyExpr, timeoutMs = 30000) {
 }
 
 // ── 登录（与 assert-stats-range-picker.mjs 同口径：先 /api/auth/me 再 /api/auth/token）
-await goto(`${BASE}/dashboard`, '!!document.querySelector("#app, body")')
+await goto(`${BASE}/version`)
 let loginStatus = await js(`fetch('/api/auth/me',{credentials:'include'}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
 if (String(loginStatus) !== '200') {
   if (!PASSWORD) {
@@ -82,7 +81,6 @@ if (String(loginStatus) !== '200') {
     console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
     process.exit(2)
   }
-  await goto(`${BASE}/dashboard`, '!!document.querySelector("#app, body")')
 }
 console.log(`ℹ️ 登录态就绪（${BASE}）`)
 
@@ -168,6 +166,9 @@ if (!startOk || !endOk) {
   process.exit(out.exitCode)
 }
 
+const boardURLQuery = `performance.getEntriesByType('resource').map(e => e.name).filter(n => new URL(n).pathname === '/api/admin/dashboard/v2/board')`
+const beforeCustom = ((await js(boardURLQuery)) || []).length
+
 // 点「应用」（非 instant 模式 ⇒ 必须点应用才提交）
 const applyClicked = await js(
   `(() => { const b = document.querySelector('[data-testid="kx-dr-apply"]'); if (b) b.click(); return !!b })()`,
@@ -177,11 +178,8 @@ const applyClicked = await js(
 let customUrl = ''
 for (let i = 0; i < 40; i++) {
   await sleep(500)
-  const urls =
-    (await js(
-      `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
-    )) || []
-  const hit = urls.find((u) => u.includes('start='))
+  const urls = (await js(boardURLQuery)) || []
+  const hit = urls.slice(beforeCustom).at(-1)
   if (hit) {
     customUrl = hit
     break
@@ -279,7 +277,6 @@ const presetRows = []
 let presetWindowOk = true
 let presetHintOk = true
 let presetMeasured = 0
-let lastBoardUrl = ''
 
 for (const pid of PRESET_IDS) {
   const row = { id: pid }
@@ -290,6 +287,7 @@ for (const pid of PRESET_IDS) {
     presetRows.push(row)
     continue
   }
+  const beforePreset = ((await js(boardURLQuery)) || []).length
   const clicked = await js(
     `(() => { const b = document.querySelector('[data-testid="kx-dr-preset-${pid}"]'); if (b) { b.click(); return true; } return false })()`,
   )
@@ -300,34 +298,27 @@ for (const pid of PRESET_IDS) {
     continue
   }
   await sleep(400)
-  // 非 instant 模式 ⇒ 必须点「应用」才提交
+  // 非 instant 模式需要点击应用。按新条目计数，同一个窗口也可能重新发请求。
   await js(`(() => { const b = document.querySelector('[data-testid="kx-dr-apply"]'); if (b) b.click(); return !!b })()`)
-
-  // 等一条**新的**看板请求（performance 条目会累积 ⇒ 取最后一条且与上次不同）
-  let url = ''
-  for (let i = 0; i < 30; i++) {
-    await sleep(500)
-    const urls =
-      (await js(
-        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
-      )) || []
-    const latest = urls[urls.length - 1] || ''
-    if (latest && latest !== lastBoardUrl) {
-      url = latest
-      break
-    }
-  }
-  lastBoardUrl = url
-  let q = {}
-  try {
-    q = Object.fromEntries(new URL(url).searchParams.entries())
-  } catch {
-    q = {}
-  }
   const rangeText = await js(
     `(() => { const e = document.querySelector('.kx-dr-trigger__range'); return e ? (e.textContent || '').trim() : '' })()`,
   )
   const shown = windowFromRangeText(rangeText)
+  let url = ''
+  for (let i = 0; i < 30 && shown; i++) {
+    await sleep(500)
+    const urls = ((await js(boardURLQuery)) || []).slice(beforePreset)
+    const matching = urls.find((candidate) => {
+      const { searchParams } = new URL(candidate)
+      const days = searchParams.get('days')
+      return searchParams.has('start')
+        ? searchParams.get('start') === shown.start && searchParams.get('end') === shown.end
+        : days !== null && Number(days) === shown.days
+    })
+    url = matching || urls.at(-1) || url
+    if (matching) break
+  }
+  const q = url ? Object.fromEntries(new URL(url).searchParams.entries()) : {}
   row.shown = rangeText
   row.req = q.start ? `[${q.start}..${q.end}]` : `days=${q.days}`
   if (!shown || !url) {

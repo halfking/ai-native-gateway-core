@@ -1,8 +1,4 @@
 <script setup lang="ts">
-// SessionAnalyticsFilterOptionsView — 批 158a（2026-10-17）
-// P1 sessionAnalyticsFilterOptions 孤儿接前端：3 个下拉框（clients /
-// tasks / users），后端 listSessionAnalyticsFilterOptions 聚合 6 端点
-// 数据（29 跳已验证全有 12-18 命中租户隔离）。
 import { onMounted, ref } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
@@ -35,21 +31,28 @@ async function load() {
 }
 
 function goToClient(clientId: string) {
-  router.push({
-    path: `/admin/session-analytics/clients/${encodeURIComponent(clientId)}`,
+  router.push({ path: `/admin/session-analytics/clients/${encodeURIComponent(clientId)}`,
+    query: selectedDates(),
   })
 }
 
 function goToTask(taskId: string) {
   router.push({
     path: `/admin/session-analytics/tasks/${encodeURIComponent(taskId)}`,
+    query: selectedDates(),
   })
 }
 
-function goToUser(user: string) {
+function goToUser(user: SessionAnalyticsFilterOptions['users'][number]) {
   router.push({
-    path: `/admin/session-analytics/users/${encodeURIComponent(user)}`,
+    name: 'session-analytics-user-detail',
+    params: { owner: user.owner },
+    query: { ...selectedDates(), tenant_id: user.tenant_id },
   })
+}
+
+function selectedDates() {
+  return { start_date: options.value.startDate, end_date: options.value.endDate }
 }
 
 onMounted(() => {
@@ -96,8 +99,8 @@ onMounted(() => {
       <section class="filter-options-section">
         <h2 class="filter-options-section-title">{{ $t('common.terms.user') }}</h2>
         <ul v-if="options.users.length" class="filter-options-list">
-          <li v-for="u in options.users" :key="u" class="filter-options-item">
-            <button class="filter-options-link" @click="goToUser(u)">{{ u }}</button>
+          <li v-for="u in options.users" :key="JSON.stringify([u.tenant_id, u.owner])" class="filter-options-item">
+            <button class="filter-options-link" :title="u.tenant_id" @click="goToUser(u)">{{ u.owner }}</button>
           </li>
         </ul>
         <p v-else class="filter-options-empty">{{ $t('common.terms.noData') }}</p>

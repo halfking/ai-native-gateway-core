@@ -177,7 +177,7 @@ describe('★★★★★★ 档位：两条注册都是 h.superAdmin', () => {
       '/api/admin/tenants/acme',
       '/api/admin/tenants/acme/users',
       '/api/admin/tenants/acme/keys',
-      '/api/admin/tenants/acme/stats?days=7',
+      '/api/admin/tenants/v2/acme/stats?days=7',
     ])
   })
 

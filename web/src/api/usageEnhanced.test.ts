@@ -9,7 +9,7 @@
 //   · period-compare 传 `current=last_7d&previous=previous_7d`
 //     ⇒ 后端 admin/usage_enhanced.go:parsePeriod 只收 `YYYY-MM` ⇒ **恒 400**
 //   · hot-keys 打成 `/api/admin/usage/hot-api-keys`
-//     ⇒ 后端没有这条路由（真实路由 `/api/usage/hot-keys`）⇒ **恒 404**
+//     ⇒ 后端没有这条路由（真实路由 `/api/usage/v2/hot-keys`）⇒ **恒 404**
 //   · 5 个端点的返回形状全部对不上（total_cost↔total_cost_usd、data↔entries、
 //     delta_cost_pct↔change_pct、cache_hit_rate↔cache_hit_ratio、{keys:[…]}↔裸数组）
 //
@@ -62,7 +62,7 @@ describe('getUsageEnhancedData —— 端点与参数', () => {
   it('period-compare 的 current/previous 必须是 YYYY-MM（后端只认这个格式）', async () => {
     await getUsageEnhancedData({ days: 7, topN: 10, currentPeriod: '2026-10', previousPeriod: '2026-09' })
 
-    const url = requestedUrls().find((u) => u.includes('/api/admin/usage/period-compare'))
+    const url = requestedUrls().find((u) => u.includes('/api/admin/usage/v2/period-compare'))
     expect(url, 'period-compare 请求必须发出').toBeTruthy()
     const q = new URL(url!, 'http://localhost').searchParams
     expect(q.get('current')).toBe('2026-10')
@@ -82,7 +82,7 @@ describe('getUsageEnhancedData —— 端点与参数', () => {
     expect(previousMonthPeriod()).toBe('2026-09')
 
     await getUsageEnhancedData()
-    const url = requestedUrls().find((u) => u.includes('/api/admin/usage/period-compare'))
+    const url = requestedUrls().find((u) => u.includes('/api/admin/usage/v2/period-compare'))
     const q = new URL(url!, 'http://localhost').searchParams
     expect(q.get('current')).toBe('2026-10')
     expect(q.get('previous')).toBe('2026-09')
@@ -91,10 +91,10 @@ describe('getUsageEnhancedData —— 端点与参数', () => {
   it('summary 带 days、hot-keys 带 days+limit、cost-trend 带 group_by', async () => {
     await getUsageEnhancedData({ days: 7, topN: 10 })
 
-    const summary = new URL(requestedUrls().find((u) => u.includes('/api/usage/summary'))!, 'http://localhost')
+    const summary = new URL(requestedUrls().find((u) => u.includes('/api/usage/v2/summary'))!, 'http://localhost')
     expect(summary.searchParams.get('days')).toBe('7')
 
-    const hot = new URL(requestedUrls().find((u) => u.includes('/api/usage/hot-keys'))!, 'http://localhost')
+    const hot = new URL(requestedUrls().find((u) => u.includes('/api/usage/v2/hot-keys'))!, 'http://localhost')
     expect(hot.searchParams.get('days')).toBe('7')
     expect(hot.searchParams.get('limit')).toBe('10')
 
@@ -102,7 +102,7 @@ describe('getUsageEnhancedData —— 端点与参数', () => {
     expect(trend.searchParams.get('group_by')).toBe('model')
   })
 
-  it('显式 date_from/date_to 会带到 cost-trend 与 cache-economics', async () => {
+  it('用量卡片、成本、缓存和密钥排行共用选定的日历窗口', async () => {
     await getUsageEnhancedData({ dateFrom: '2026-09-01', dateTo: '2026-09-30' })
 
     const trend = new URL(requestedUrls().find((u) => u.includes('/cost-trend'))!, 'http://localhost')
@@ -112,6 +112,12 @@ describe('getUsageEnhancedData —— 端点与参数', () => {
     const cache = new URL(requestedUrls().find((u) => u.includes('/cache-economics'))!, 'http://localhost')
     expect(cache.searchParams.get('date_from')).toBe('2026-09-01')
     expect(cache.searchParams.get('date_to')).toBe('2026-09-30')
+    for (const path of ['/api/usage/v2/summary', '/api/usage/v2/hot-keys']) {
+      const url = new URL(requestedUrls().find((u) => u.includes(path))!, 'http://localhost')
+      expect(url.searchParams.get('start')).toBe('2026-09-01')
+      expect(url.searchParams.get('end')).toBe('2026-09-30')
+      expect(url.searchParams.has('days')).toBe(false)
+    }
   })
 })
 
@@ -164,7 +170,7 @@ describe('getUsageEnhancedData —— 返回形状', () => {
   it('hot-keys 返回降级信封时，条目取自 items 且降级标记透出', async () => {
     mockedReq.mockImplementation(async (_method, url) => {
       const path = new URL(url, 'http://localhost').pathname
-      if (path === '/api/usage/hot-keys') {
+      if (path === '/api/usage/v2/hot-keys') {
         return { items: [], degraded: true, degraded_reason: 'usage_ledger_with_current_month' }
       }
       return realUsageResponse(url)

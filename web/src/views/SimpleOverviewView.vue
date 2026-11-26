@@ -21,8 +21,8 @@
 //     统计 / 状态 / 快捷操作补在上面（G1 的处置）。
 //
 // ★ 数据口径**与专家面完全一致**（同一批 API、同一张表）：
-//   /api/admin/dashboard/board?days=1 ⇒ summary / pies / operational（今日口径）
-//   /api/admin/dashboard/board?days=7 ⇒ trends（15min 桶）+ 7 日 summary（2026-11-18 新增；
+//   /api/admin/dashboard/v2/board?days=1 ⇒ summary / pies / operational（今日口径）
+//   /api/admin/dashboard/v2/board?days=7 ⇒ trends（15min 桶）+ 7 日 summary（2026-11-18 新增；
 //                                        专家面看板 7d 预设同款；桶在前端按 UTC 日聚合）
 //   /api/providers                     ⇒ 上游健康
 //   /api/keys                          ⇒ 密钥清单

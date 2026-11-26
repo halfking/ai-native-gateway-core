@@ -13,6 +13,8 @@ export interface ProviderPieRef {
 }
 
 export interface ProviderUsageRef {
+  credits?: number
+  total_tokens?: number
   provider_id?: number
   provider_code: string
   provider_name: string
@@ -52,8 +54,8 @@ export function buildProviderCards(
         name: row.provider_name || row.provider_code,
         id: row.provider_id,
         requests: row.request_count ?? pie?.requests ?? 0,
-        tokens: pie?.tokens ?? (row.prompt_tokens ?? 0) + (row.completion_tokens ?? 0),
-        credits: pie?.credits ?? 0,
+        tokens: row.total_tokens ?? pie?.tokens ?? (row.prompt_tokens ?? 0) + (row.completion_tokens ?? 0),
+        credits: row.credits ?? pie?.credits ?? 0,
         costUsd: row.total_cost_usd ?? 0,
       }
     })

@@ -74,17 +74,17 @@ describe('P1-2 ECharts 实例生命周期', () => {
     const src = await read('views/ClientAnalyticsView.vue')
     expect(src).toContain('onBeforeUnmount')
     expect(src).toMatch(/chartInstance\.dispose\(\)/)
-    expect(src).toMatch(/watch\(clientId/)
+    expect(src).toMatch(/watch\(\[?clientId/)
     // 换 id ⇒ 丢弃旧实例 + 重新取数
-    expect(src).toMatch(/watch\(clientId[\s\S]*?disposeChart\(\)[\s\S]*?void load\(\)/)
+    expect(src).toMatch(/watch\(\[?clientId[\s\S]*?disposeChart\(\)[\s\S]*?void load\(\)/)
   })
 
   it('③ TaskAnalyticsView：dispose + 路由参数 watch（换 id 必须重画）', async () => {
     const src = await read('views/TaskAnalyticsView.vue')
     expect(src).toContain('onBeforeUnmount')
     expect(src).toMatch(/chartInstance\.dispose\(\)/)
-    expect(src).toMatch(/watch\(taskId/)
-    expect(src).toMatch(/watch\(taskId[\s\S]*?disposeChart\(\)[\s\S]*?void load\(\)/)
+    expect(src).toMatch(/watch\(\[?taskId/)
+    expect(src).toMatch(/watch\(\[?taskId[\s\S]*?disposeChart\(\)[\s\S]*?void load\(\)/)
   })
 
   it('④ 两页都必须在 data 赋值后等 nextTick 再画（chartRef 在 v-if 内）', async () => {

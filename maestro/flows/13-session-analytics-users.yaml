@@ -1,4 +1,4 @@
-# 13-session-analytics-users.yaml —— 会话分析中心 /admin/session-analytics/users 逐页验证
+# 13-session-analytics-users.yaml —— 会话分析用户总览、画像列表与个人详情
 #
 # 覆盖对象：web/src/views/UserProfileListView.vue（数字出处轮 2026-11-20）+ UserProfileView.vue
 #
@@ -36,30 +36,32 @@ url: ${BASE_URL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
-# ── ② 落地页身份（/admin/session-analytics/users）─────────────────────────
+# ── ② 从会话统计进入用户画像（/admin/session-analytics/users/overview）─────────────────────────
 # h2 = t('sessions.userProfile.title')＝「用户画像」；列表页独有形态 =
-# 工具栏的**数字出处行**（含 canonical 视图名 request_logs_with_current_month）。
-- openLink: ${BASE_URL}/admin/session-analytics/users
+# 工具栏的数字出处行显示 request_metrics。
+- openLink: ${BASE_URL}/admin/session-analytics/users/overview
 - extendedWaitUntil:
-    visible: ".*request_logs_with_current_month.*"
+    visible:
+      id: "sa-user-profiles-link"
+    timeout: 25000
+- tapOn:
+    id: "sa-user-profiles-link"
+- extendedWaitUntil:
+    visible:
+      id: "user-profile-usage-meta"
     timeout: 25000
 
 # ── ③ 窗口用量五列的列头（静态文案，逐列可断言）───────────────────────────
 - assertVisible: "请求数（窗口内）"
 - assertVisible: "Token（窗口内）"
-- assertVisible: "内部成本（窗口内）"
+- assertVisible: "积分"
 - assertVisible: "外部成本（窗口内）"
 - assertVisible: "模型数（窗口内）"
 - assertVisible: "用户标识"
 - assertVisible: "会话数"
 
-# ── ④ 帮助按钮 ⇒ 右侧抽屉（统计公式与出处）────────────────────────────────
-# ★ 抽屉打开的**真判据**是「画像列与用量列的口径区别」——它是抽屉独有段；
-#   「统计窗口」在工具栏出处行里也出现 ⇒ 单独断它会假绿（出处行也在）。
+# ── ④ 帮助按钮 ⇒ 右侧抽屉（费用单位与出处）────────────────────────────────
 - tapOn: "查看统计说明"
-- assertVisible: "画像列与用量列的口径区别"
-- assertVisible: "Token 统计公式"
-- assertVisible: '总 Token 数 = 输入 Token \+ 输出 Token'
 - assertVisible: "成本核算公式"
 - assertVisible: "数据来源"
 
@@ -70,9 +72,10 @@ url: ${BASE_URL}
 #   tapOn 偶发不触发（Element Plus 固定列 overlay 双份按钮）⇒ repeat 重试兜底。
 #   （2026-11-20 CDP 实证：click 真路径导航正常；首跑失败主因是
 #     「模型使用明细」卡在折叠线下（top≈4999 > 1400 视口）⇒ 断言必须先滚动。）
-- openLink: ${BASE_URL}/admin/session-analytics/users
+- openLink: ${BASE_URL}/admin/session-analytics/user-profiles
 - extendedWaitUntil:
-    visible: ".*request_logs_with_current_month.*"
+    visible:
+      id: "user-profile-usage-meta"
     timeout: 25000
 - tapOn: "画像详情"
 # 2026-11-20 首跑实证：列头与按钮文案分离后首跳即导航；repeat 的内部重试

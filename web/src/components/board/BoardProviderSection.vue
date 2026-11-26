@@ -87,26 +87,38 @@ const tableRows = computed(() => {
     .sort((a, b) => (b.total_cost_usd ?? 0) - (a.total_cost_usd ?? 0))
     .map((r) => ({
       ...r,
-      credits: pieFor(r.provider_code, r.provider_name)?.credits,
+      credits: r.credits ?? pieFor(r.provider_code, r.provider_name)?.credits,
       quality: qualityByName.value.get(r.provider_name),
     }))
 })
 
+let usageLoad = 0
 async function loadUsage() {
+  const generation = ++usageLoad
+  if (props.board?.source === 'request_metrics') {
+    usageRows.value = props.board.provider_rows ?? []
+    usageLoading.value = false
+    usageError.value = ''
+    usageDegraded.value = providersDegraded.value ? props.board.degraded_reason || 'request_metrics' : ''
+    return
+  }
+  if (!props.board) return
   usageLoading.value = true
   usageError.value = ''
   usageDegraded.value = ''
   try {
     const res = await getUsageByProvider(props.timeQuery, 50)
+    if (generation !== usageLoad) return
     // 2026-10-03: 后端由裸数组改为降级信封。降级时空列表不能当真值 ——
     // 它说的是「聚合视图没迁移」，不是「这个窗口没有供应商用量」。
     usageRows.value = res.items
     usageDegraded.value = res.degraded ? res.reason : ''
   } catch (e: unknown) {
+    if (generation !== usageLoad) return
     usageRows.value = []
     usageError.value = e instanceof Error && e.message ? e.message : t('dashboard.loadError')
   } finally {
-    usageLoading.value = false
+    if (generation === usageLoad) usageLoading.value = false
   }
 }
 
@@ -210,6 +222,9 @@ watch(
   { deep: true },
 )
 
+watch(() => props.board, (next, prev) => {
+  if (next?.source === 'request_metrics' || !prev) void loadUsage()
+})
 watch(usageRows, () => void loadBalances())
 </script>
 

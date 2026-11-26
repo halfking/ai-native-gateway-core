@@ -354,7 +354,7 @@ export const router = createRouter({
     // （`request_logs_with_current_month` 出处行 ＋ 五列窗口用量 ＋ 抽屉里的
     // 「画像列与用量列的口径区别」）⇒ ★ 整合页**没有**这些（★ 实测 grep 0 命中）
     // ⇒ ⇒ 挂回列表页是正解。
-    { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
+    { path: '/admin/session-analytics/users', alias: '/admin/session-analytics/user-profiles', component: UserProfileListView, meta: { requiresAuth: true } },
     // ★ 整合页（★ 上游 95e44dc15 新增：Dashboard 会话统计 ＋ Top10 用户排行）
     // **另找落点**，不与列表页抢同一个 URL ⇒ ★ 上游新增的 8 语种键
     // `nav.item.sessionAnalyticsUsers` 本就只被它用作副标题、★ 从未做菜单项

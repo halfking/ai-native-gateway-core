@@ -1,35 +1,5 @@
 <script setup lang="ts">
-// SessionAnalyticsView — 会话分析面：客户端维度 / 任务维度两个列表（**admin 档**）。
-//
-// GET /api/admin/session-analytics/clients
-// GET /api/admin/session-analytics/tasks
-//
-// 它答的是「**哪些客户端/任务在花多少钱、健康度如何**」。
-//
-// ⚠️⚠️⚠️⚠️ 本页第一件要紧的事：**这份数据可能是不刷新的。**
-//
-// `session_client_stats` / `session_task_stats` 是**物化视图**，
-// 而刷新函数 `refresh_session_analytics_views()` 的调用点只有两处、
-// 都在 migration 末尾的「初始刷新」（357:143 / 358:396）；
-// 本仓唯一的周期性刷新器 `bg.MaterializedViewRefresher` 只管
-// `routing_analytics_7d` 与 `routing_audit_summary_7d`。
-// ⇒ **响应里的 `refreshed_at` 是唯一的「数据有多旧」线索，本页必须显示它。**
-//
-// ⚠️ 其余七条后端语义（详见 api/sessionAnalytics.ts 文件头）：
-//
-// (1) ★★★★★ 扫描失败是 `continue`（**静默丢行**）⇒ `total` 来自独立的
-//     `COUNT(*)`，列表可能比 total 少 ⇒ 本页**必须**说明这个差额。
-// (2) ★★★★★ `refreshed_at` 在**空列表**时是 Go 零值 `0001-01-01…`
-//     ⇒ 那一栏要单独说「这一页是空的、拿不到刷新时间」。
-// (3) ★★★★ `limit` 越界是**回落 50**（既非 clamp 也非回落 20）。
-// (4) ★★★ 不传 `order_by` ⇒ 后端用**各自**的默认（clients=cost、tasks=sessions）；
-//     `switch` 无 default ⇒ 非法值静默落回、不报错 ⇒ 本页只发三个合法值。
-// (5) ★★★ `avg_health_score` / `avg_latency_ms` 是 `*int` + `omitempty`
-//     ⇒ **键可能整个不存在**，缺失显示「—」而不是 0。
-// (6) ★★ `health_distribution` 只有 5 个键（a/b/c/d/f），**没有 total、没有百分比**。
-// (7) ★ 普通用户被显式 403（`IsRegularUser`），比注册档位更严。
-//
-// ★ 写操作本页一律不碰。
+// 客户端和任务画像展示当前请求投影的日期范围及同步时间。
 
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
@@ -62,27 +32,37 @@ const offset = ref(0)
 const rows = ref<Array<AnalyticsClientSummary | AnalyticsTaskSummary>>([])
 const total = ref(0)
 const refreshedAt = ref('')
+const period = ref('')
+const projectionPending = ref(false)
 const error = ref<string | null>(null)
 const loading = ref(false)
+let requestVersion = 0
 
 async function load(): Promise<void> {
+  const version = ++requestVersion
   loading.value = true
   error.value = null
   try {
     const params = { orderBy: orderBy.value || undefined, offset: offset.value, limit: ANALYTICS_LIMIT_DEFAULT }
     const r = dim.value === 'clients' ? await fetchAnalyticsClients(params) : await fetchAnalyticsTasks(params)
+    if (version !== requestVersion) return
     rows.value = (r as { clients?: AnalyticsClientSummary[]; tasks?: AnalyticsTaskSummary[] }).clients ??
       (r as { tasks?: AnalyticsTaskSummary[] }).tasks ?? []
     total.value = r.total
-    refreshedAt.value = r.refreshed_at
+    refreshedAt.value = r.refreshed_at ?? ''
+    period.value = r.start_date && r.end_date ? `${r.start_date} → ${r.end_date}` : ''
+    projectionPending.value = !!r.pending_since
   } catch (e) {
+    if (version !== requestVersion) return
     // ★★ 抛错**不许**退化成空列表：那会把「查询失败」显示成「没有数据」。
     rows.value = []
     total.value = 0
     refreshedAt.value = ''
+    period.value = ''
+    projectionPending.value = false
     error.value = (e as Error)?.message || t('common.error')
   } finally {
-    loading.value = false
+    if (version === requestVersion) loading.value = false
   }
 }
 
@@ -139,12 +119,12 @@ function successPct(r: AnalyticsClientSummary | AnalyticsTaskSummary): number | 
   return analyticsSuccessRate({ total_requests: r.total_requests, total_success: r.total_success })
 }
 
-/** ★ omitempty 指针：键可能整个不存在 ⇒ 显示「—」而不是 0。见坑 5。 */
-function optionalNum(v: number | undefined): string {
+function optionalNum(v: number | null | undefined): string {
   return typeof v === 'number' ? fmtInt(v) : t('sa.noValue')
 }
 
 onBeforeUnmount(() => {
+  requestVersion++
   rows.value = []
   total.value = 0
   refreshedAt.value = ''
@@ -160,15 +140,12 @@ void load()
     <section class="sa__panel">
       <span class="sa__panel-title">{{ t('sa.freshness') }}</span>
 
-      <!-- ★★ 物化视图可能没有周期刷新路径，所以「数据截至」必须显眼 -->
-      <p class="sa__note sa__note--warn">
-        <AppIcon name="alert" :size="14" />
-        <span>{{ t('sa.staleSourceNote') }}</span>
-      </p>
+      <p class="sa__note">{{ t('sa.staleSourceNote') }}</p>
+      <p v-if="period && !loading" class="sa__note">{{ period }}</p>
+      <p v-if="projectionPending && !loading" class="sa__note sa__note--warn" role="status">{{ t('rr.projectedPending') }}</p>
 
       <div v-if="!loading && !error" class="sa__fresh">
         <template v-if="refreshedIsZero">
-          <!-- ★ 空列表 ⇒ refreshed_at 是 Go 零值，拿不到真实刷新时间 -->
           <p class="sa__note sa__note--warn">
             <AppIcon name="alert" :size="14" />
             <span>{{ t('sa.refreshedZero') }}</span>

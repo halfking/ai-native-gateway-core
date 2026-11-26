@@ -553,17 +553,19 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "R172 会话族两臂直查 helper：canonical 视图名只出现在一条注释里（对比说明「canonical 视图没有反连接」）；本文件的读面是会话族 hot ∪ 父表，与 canonical 视图无关",
 	},
-	// internal/metricsstore/processor.go：请求指标**维增强**读 canonical 视图
-	//   request_logs_with_current_month（迁移 890 删掉 v1 母表后的双腿稳定形态）。
-	// ★ 分类核定依据：该读点读 gw_task_id（734 **details 腿**列）与 gw_session_id
-	//   （视图里的 **CASE 表达式**列）⇒ 与 admin/request_trace.go 的读点1 同形态
-	//   ⇒ 归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
+	// internal/metricsstore/processor.go：**V2 投影器**（2026-11-26 合并轮：
+	//   codex/211-statistics-v2-release 的 feat(stats) 把旧「批量维增强」重写为
+	//   终态请求投影 Processor —— pending/history 双游标 + LATERAL 维补齐）。
+	// ★ 分类核定依据：投影 SQL 里 LEFT JOIN LATERAL 读双腿 canonical 视图
+	//   request_logs_with_current_month（ts ±1 天窗口按 request_id 点查）
+	//   ⇒ 读 gw_task_id（734 **details 腿**列）与 gw_session_id（视图里的
+	//   **CASE 表达式**列）⇒ 仍归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
 	"internal/metricsstore/processor.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "请求指标维增强：按 request_id 取会话/任务/协议/附件维度（读双腿 canonical 视图 request_logs_with_current_month —— 迁移 890 已删 v1 母表，裸读 FROM request_logs 在生产上 42P01）",
+		Note:  "V2 终态请求投影：pending/history 双游标逐 fact 用 LATERAL 点查 canonical 视图补齐 21 列维度（读双腿视图 request_logs_with_current_month —— 迁移 890 已删 v1 母表，裸读 FROM request_logs 在生产上 42P01）",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"attachment_count:base", "client_protocol:base", "egress_protocol:base", "gw_session_id:expr", "gw_task_id:detail", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "请求指标维增强读点：读 attachment_count:base,client_protocol:base,egress_protocol:base,gw_session_id:expr,gw_task_id:detail,request_id:base,ts:base ⇒ 引用了 734 details 腿的列（gw_task_id）与视图里的 CASE 表达式列（gw_session_id）⇒ 窄投影须带上 details LEFT JOIN；★ gw_session_id 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
+			{Kind: "read", Columns: []string{"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base", "client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base", "egress_protocol:base", "error_kind:base", "failure_detail_code:base", "gw_session_id:expr", "gw_task_id:detail", "identity_hash:base", "outbound_model:base", "request_id:base", "stream_interrupted:base", "task_type:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "V2 投影 LATERAL 读点：按 (tenant_id, request_id, ts±1d) 点查双腿视图补齐维度 ⇒ 引用 734 details 腿的列（gw_task_id/api_key_prefix）与视图里的 CASE 表达式列（gw_session_id）⇒ 窄投影须带上 details LEFT JOIN 并复刻 CASE 表达式"},
 		},
 	},
 	"admin/providers.go": {
@@ -2655,6 +2657,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"admin/diagnostics_credential.go":            "凭据诊断明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/live_stream_sse.go":                   "SSE 实时流：① 全量事件行；② 按 request_id 数组取状态；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/memora_handlers.go":                   "memora 上下文：① 任务/会话头；② 最近一条模型；③ 计数；④ 轮次明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/metricsstore/processor.go":         "V2 终态请求投影（2026-11-26 合并轮补登）：pending/history 双游标逐 fact 用 LATERAL 按 (tenant_id, request_id, ts ±1 天) 点查 canonical 视图补齐维度；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（★ 该窗口谓词就是为绕开逐分区扫描设的 ±1 天窄窗，实测逐 fact 点查走索引）",
 	"admin/model_routing_diagnostic.go":          "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/model_status.go":                      "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/no_topic_session.go":                  "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

@@ -196,11 +196,30 @@ beforeEach(() => {
   mDims.mockResolvedValue(dimPayload())
 })
 
+it('uses projected totals and shows missing USD and latency evidence', async () => {
+  mSum.mockResolvedValue(summaryPayload({
+    source: 'request_metrics',
+    projection: { from: '2026-09-30T16:00:00Z', through: '2026-10-07T16:00:00Z', timezone: 'Asia/Shanghai', updated_at: null, pending_since: null },
+    totals: totals({ total_tokens: 24, usd_measured_requests: 0, usd_unmeasured_requests: 1, latency_measured_requests: 0 }),
+  }))
+  const wrapper = await mountView()
+  await byId(wrapper, 'rr-load').trigger('click')
+  await flushPromises()
+  expect(hasId(wrapper, 'rr-totaltokens-bad')).toBe(false)
+  expect(hasId(wrapper, 'rr-source-bad')).toBe(false)
+  expect(hasId(wrapper, 'rr-t-internal_cost_cents')).toBe(false)
+  expect(cell(wrapper, 'rr-t-estimated_cost_cents')).toBe('—')
+  expect(cell(wrapper, 'rr-t-latency_p95_ms')).toBe('—')
+  expect(wrapper.text()).toContain('缺少 USD 金额')
+})
+
 it('reads live evidence for the selected reconciliation day without loading the snapshot', async () => {
   vi.mocked(fetchDailyEvidence).mockResolvedValue({
+    version: 'request-reconciliation-v2',
     section: 'coverage', day: '2026-11-23', timezone: 'Asia/Shanghai', platform_scope: true,
     start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z',
     summary: { received_requests: 12, terminal_usage_without_retained_receipt: 0, recorded_sends: 14, recorded_sends_without_reported_amount: 3 },
+    projection: { source: 'request_metrics', updated_at: '2026-11-24T00:00:00Z', pending_since: '2026-11-24T01:00:00Z' },
     limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z', rows: [],
   })
   const wrapper = await mountView()
@@ -213,6 +232,7 @@ it('reads live evidence for the selected reconciliation day without loading the 
   expect(mSum).not.toHaveBeenCalled()
   expect(evidence.text()).toContain('Asia/Shanghai')
   expect(evidence.text()).toContain('终态用量缺接收记录0')
+  expect(evidence.text()).toContain('终态用量仍在同步')
   wrapper.unmount()
 })
 
@@ -222,6 +242,7 @@ it('opens the server calendar automatically and brings back snapshots on request
     daily_reconciliation_default: { day: '2026-11-21', timezone: 'America/Los_Angeles' },
   })
   vi.mocked(fetchDailyEvidence).mockResolvedValue({
+    version: 'request-reconciliation-v2',
     section: 'coverage', day: '2026-11-21', timezone: 'America/Los_Angeles', platform_scope: true,
     start: '2026-11-21T08:00:00Z', end: '2026-11-22T08:00:00Z', summary: { received_requests: 12 },
     limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z', rows: [],
@@ -241,7 +262,7 @@ it('opens the server calendar automatically and brings back snapshots on request
 
 function evidenceResponse(query: DailyEvidenceQuery, rows: DailyEvidence['rows']): DailyEvidence {
   return {
-    ...query, tenant_id: query.tenantId, timezone: query.timezone ?? 'Asia/Shanghai', platform_scope: true,
+    ...query, version: 'request-reconciliation-v2', tenant_id: query.tenantId, timezone: query.timezone ?? 'Asia/Shanghai', platform_scope: true,
     start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z', read_at: '2026-11-25T00:00:00Z',
     summary: { recorded_attempts: 21, sent: 21 }, rows,
   }
@@ -636,17 +657,14 @@ describe('⑥ 回显与不回显', () => {
     expect(hasId(w, 'rr-echo-shape')).toBe(true)
   })
 
-  it('⑥-2 ★★★ 发出去的区间是 YYYY-MM-DD 且**不含今日**（T+1）', async () => {
+  it('按天数查询，由网关时区确定已结束日期', async () => {
     const w = await mountView()
     await byId(w, 'rr-load').trigger('click')
     await flushPromises()
     const p = mSum.mock.calls[0]![0]
-    expect(p.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-    expect(p.end).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-    // ★★ 今日必须**不在**区间里：聚合是 T+1 的
-    const today = new Date().toISOString().slice(0, 10)
-    expect(p.start <= today).toBe(true)
-    expect(p.end < today).toBe(true)
+    expect(p.days).toBe(7)
+    expect(p.start).toBeUndefined()
+    expect(p.end).toBeUndefined()
   })
 
   it('⑥-3 ★★ 单日区间合法（start === end），上界是 366 天', async () => {
@@ -717,7 +735,7 @@ describe('⑧ 参数下发', () => {
     await byId(w, 'rr-load-dims').trigger('click')
     await flushPromises()
     const p = mDims.mock.calls[0]![0]
-    expect(p.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(p.days).toBe(7)
     expect(p.view).toBe(REPORT_ROLLUP_DEFAULT_VIEW)
     expect(p.detail).toBeUndefined()
   })

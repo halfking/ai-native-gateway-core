@@ -86,6 +86,28 @@ func TestPsqlQueryKeepsNoticesOutOfSuccessfulProbe(t *testing.T) {
 	}
 }
 
+func TestUpgradeSchemaRejectsMissingLedgerBeforeExecutingSQL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires an executable shell fixture")
+	}
+	dir := t.TempDir()
+	probe := `#!/bin/sh
+case "$*" in
+  *"SELECT to_regclass('public.schema_migrations')"*) exit 0 ;;
+  *) printf 'unexpected database command\n' >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(probe), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	r := NewRunner("fixture", "fixture", "fixture", dir)
+	err := r.UpgradeSchema(func(message string) { t.Log(message) })
+	if err == nil || !strings.Contains(err.Error(), "requires an existing migration ledger") {
+		t.Fatalf("upgrade without an existing ledger returned %v", err)
+	}
+}
+
 // contractPhrase 是「安装器专属资产」在文件头里的**契约声明**。
 //
 // ★ 这条短语是 freshInstallOnlyAssets 的**唯一**判据来源 ⇒ ★ 资产自己

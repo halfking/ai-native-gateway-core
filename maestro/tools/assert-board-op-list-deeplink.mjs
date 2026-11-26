@@ -24,7 +24,7 @@
 // 用法：
 //   node assert-board-op-list-deeplink.mjs --cdp http://127.0.0.1:9223 \
 //         --url https://llm.itestu.cn --user admin --password '...'
-import { connect, openPage, evaluate, waitFor } from './cdp-client.mjs'
+import { connect, openPage, evaluate, waitFor, navigateToDocument } from './cdp-client.mjs'
 import { summarize } from './result.mjs'
 
 const args = Object.fromEntries(
@@ -58,8 +58,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const js = (expression) => evaluate(cdp, sessionId, expression)
 
 async function goto(url, readyExpr, timeoutMs = 30000) {
-  await js(`location.href = ${JSON.stringify(url)}; true`)
-  await waitFor(cdp, sessionId, `document.readyState === 'complete'`, timeoutMs)
+  await navigateToDocument(cdp, sessionId, url, timeoutMs)
   if (readyExpr) {
     try {
       await waitFor(cdp, sessionId, readyExpr, timeoutMs)
@@ -71,7 +70,7 @@ async function goto(url, readyExpr, timeoutMs = 30000) {
 }
 
 // ── 登录（与另外两个探针同口径：先 /api/auth/me 再 /api/auth/token）
-await goto(`${BASE}/dashboard`, '!!document.querySelector("#app, body")')
+await goto(`${BASE}/version`)
 let loginStatus = await js(`fetch('/api/auth/me',{credentials:'include'}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
 if (String(loginStatus) !== '200') {
   if (!PASSWORD) {
@@ -86,7 +85,6 @@ if (String(loginStatus) !== '200') {
     console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
     process.exit(2)
   }
-  await goto(`${BASE}/dashboard`, '!!document.querySelector("#app, body")')
 }
 console.log(`ℹ️ 登录态就绪（${BASE}）`)
 
@@ -113,7 +111,7 @@ async function boardQueryFor(url, readyExpr) {
     await sleep(500)
     const urls =
       (await js(
-        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/api/admin/dashboard/board')))()`,
+        `(() => performance.getEntriesByType('resource').map(e => e.name).filter(n => new URL(n).pathname === '/api/admin/dashboard/v2/board'))()`,
       )) || []
     last = urls[urls.length - 1] || last
     if (last) break
@@ -199,10 +197,10 @@ check(
 const plain = await boardQueryFor(`${BASE}${LIST_PATH}`, TRIGGER_READY)
 const plainText = await shownRange()
 const plainShown = windowFromRangeText(plainText)
-const plainOk =
-  plain.q.days !== undefined
+const plainOk = !!plain.url && !!plainShown && plainShown.days === 7 &&
+  (plain.q.days !== undefined
     ? Number(plain.q.days) === 7
-    : !!plainShown && plainShown.days === 7
+    : plain.q.start === plainShown.start && plain.q.end === plainShown.end)
 check(
   'D4 ★ 无参进入列表页 ⇒ 默认 7 天窗口（⇒ 并入共享组件没改坏默认档位）',
   plainOk,

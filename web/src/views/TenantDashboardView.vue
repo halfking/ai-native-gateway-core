@@ -16,10 +16,11 @@ import { fmtDateShort } from '../i18n/useFormat'
 import {
   getMaasUsageSummary,
   getMaasWallet,
-  getRequestLogs,
+  getMaasUsageRequests,
+  type MaasUsageRequest,
+  type MaasUsageRequestQuery,
   type MaasUsageSummary,
   type MaasWallet,
-  type RequestLogRow,
 } from '../api'
 import { getCurrentTenantId } from '../store'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
@@ -91,32 +92,27 @@ const error = ref('')
 
 const selectedModel = ref<string | null>(null)
 const selectedDate = ref<string | null>(null)
-const detailRows = ref<RequestLogRow[]>([])
+const detailRows = ref<MaasUsageRequest[]>([])
 const detailLoading = ref(false)
 const detailTitle = ref('')
+let detailRevision = 0
+let detailWindow: MaasUsageRequestQuery = {}
 
 const tenantLabel = computed(() => `${t('tenants.dashboard.tenantLabel', { id: getCurrentTenantId() })}`)
 
 const activeSubscription = computed(() => wallet.value?.subscription ?? null)
 
 const successRate = computed(() => {
-  const total = summary.value?.total_requests ?? 0
-  if (!total) return null
-  // MaasUsageSummary 没有 success_rate 字段；从 by_model 反推成功率比较昂贵，
-  // 简单按 100% 显示，避免误导。
-  return 1
+  const result = summary.value
+  return result?.total_requests && result.success_count != null ? result.success_count / result.total_requests : null
 })
 
 const avgLatencyMs = computed(() => {
-  const rows = summary.value?.by_model ?? []
-  const lat = rows
-    .map((r) => (r as unknown as { avg_latency_ms?: number }).avg_latency_ms)
-    .filter((v): v is number => typeof v === 'number')
-  if (!lat.length) return null
-  return Math.round(lat.reduce((s, x) => s + x, 0) / lat.length)
+  const latency = summary.value?.avg_latency_ms
+  return latency == null ? null : Math.round(latency)
 })
 
-const activeModels = computed(() => summary.value?.by_model?.length ?? 0)
+const activeModels = computed(() => summary.value?.unique_models ?? summary.value?.by_model?.length ?? 0)
 
 const degradedHint = computed(() => {
   if (summary.value?.degraded) {
@@ -182,13 +178,6 @@ async function load() {
   }
 }
 
-function dateRangeForDay(day: string): { from: string; to: string } {
-  const start = new Date(day + 'T00:00:00Z')
-  const end = new Date(start)
-  end.setUTCDate(end.getUTCDate() + 1)
-  return { from: start.toISOString(), to: end.toISOString() }
-}
-
 /**
  * ── 明细下钻（2026-10-05 H6 切片六）───────────────────────────────────────
  * 双模板 + 双加载方式，**只作用于这张下钻表**（页面其余是 KPI/图表/实时流，不是列表）。
@@ -215,27 +204,34 @@ const DETAIL_PAGE_SIZE = 50
  * `selectedDate`，请求参数从这里推导 —— 原先是两份各写一份，改时间窗要改两处。
  * 不含 page / page_size：那是加载方式，不是筛选条件。
  */
-function detailQuery(): { model?: string; from?: string; to?: string } {
-  if (selectedDate.value) return dateRangeForDay(selectedDate.value)
-  if (selectedModel.value) {
-    const since = new Date()
-    since.setUTCDate(since.getUTCDate() - days.value)
-    return { model: selectedModel.value, from: since.toISOString() }
+function captureDetailWindow(): void {
+  const result = summary.value
+  detailWindow = result?.window_start && result.window_end
+    ? { start: result.window_start, end: result.window_end, timezone: result.timezone }
+    : { days: days.value }
+}
+
+function detailQuery(): MaasUsageRequestQuery {
+  return {
+    ...detailWindow,
+    model: selectedModel.value ?? undefined,
+    bucket_day: selectedDate.value ?? undefined,
   }
-  return {}
 }
 
 /** 桌面路径：只取第 1 页（既有行为逐字保留，桌面不新增页码条）。 */
 async function loadDetail() {
+  const revision = ++detailRevision
   detailLoading.value = true
   try {
-    const res = await getRequestLogs({ ...detailQuery(), page: 1, page_size: DETAIL_PAGE_SIZE })
-    detailRows.value = res.items ?? []
+    const res = await getMaasUsageRequests({ ...detailQuery(), page: 1, page_size: DETAIL_PAGE_SIZE })
+    if (revision === detailRevision) detailRows.value = res.rows ?? []
   } catch (e: unknown) {
+    if (revision !== detailRevision) return
     detailRows.value = []
     error.value = surfaceError(e, { key: 'tenants.dashboard.detailLoadFailed' })
   } finally {
-    detailLoading.value = false
+    if (revision === detailRevision) detailLoading.value = false
   }
 }
 
@@ -244,22 +240,21 @@ async function loadDetail() {
 /** 服务端 count。页码路径不消费它（本页桌面没有页码条），保留是为了卡片形态可自查。 */
 const detailCount = ref(0)
 
-const detailPages = createHyperPages<RequestLogRow>({
+const detailPages = createHyperPages<MaasUsageRequest>({
   pageSize: DETAIL_PAGE_SIZE,
-  // request_id 是后端主键且稳定。**不能用数组下标** —— 连续加载第 2 页的下标 0
-  // 是另一行，去重会把它当成与第 1 页第 0 行相同，表现为「行随机消失」。
-  rowKey: (r) => r.request_id,
+  // 投影在同一租户内按请求 ID 和发生时间去重。
+  rowKey: (r) => `${r.request_id}:${r.ts}`,
   fetchPage: async (p) => {
     // ★ 这里**不**吞异常：不抛的话 `createHyperPages` 收不到，
     // 状态停在 refreshing，尾部控件永远显示「加载中」而不会转成可重试。
-    const res = await getRequestLogs({ ...detailQuery(), page: p, page_size: DETAIL_PAGE_SIZE })
-    detailCount.value = res.count ?? 0
-    return { rows: res.items ?? [], total: res.count ?? 0 }
+    const res = await getMaasUsageRequests({ ...detailQuery(), page: p, page_size: DETAIL_PAGE_SIZE })
+    detailCount.value = res.total ?? 0
+    return { rows: res.rows ?? [], total: res.total ?? 0 }
   },
 })
 
 /** 实际展示的行：按档位二选一。 */
-const detailRowsForView = computed<RequestLogRow[]>(() =>
+const detailRowsForView = computed<MaasUsageRequest[]>(() =>
   isCompact.value ? detailPages.rows.value : detailRows.value,
 )
 
@@ -282,6 +277,9 @@ async function reloadDetail() {
 
 /** 关掉下钻时把两条路径的累积行一起清掉，否则 compact 会留着上一段明细。 */
 function clearDetailRows() {
+  detailRevision++
+  detailLoading.value = false
+  detailTitle.value = ''
   detailRows.value = []
   // `_reset` 名义上是「测试与登出用」，这里用它是因为**只有它会清 rows** ——
   // `invalidate()` 只提 revision 不清累积。不用它的话 compact 会显示上一段明细。
@@ -289,18 +287,18 @@ function clearDetailRows() {
 }
 
 /** 模型列文本。表格与卡片共用，不做第二份。 */
-function modelCellText(r: RequestLogRow): string {
+function modelCellText(r: MaasUsageRequest): string {
   return r.client_model || r.outbound_model || '—'
 }
 
 /** 状态徽章文本。三支都要有，缺一支徽章就变空。 */
-function statusText(r: RequestLogRow): string {
+function statusText(r: MaasUsageRequest): string {
   if (r.request_status === 'rate_limited') return t('requests.list.filter.resultRateLimited')
   return r.success ? t('tenants.dashboard.statusOk') : t('tenants.dashboard.statusFail')
 }
 
 /** 状态徽章配色。与表格原表达式逐字一致（搬出来只是为了让表格/卡片读同一份）。 */
-function statusBadgeClass(r: RequestLogRow): string {
+function statusBadgeClass(r: MaasUsageRequest): string {
   return r.request_status === 'rate_limited' ? 'badge-amber' : r.success ? 'badge-green' : 'badge-red'
 }
 
@@ -323,13 +321,13 @@ const detailCardFields = computed<CardField[]>(() => [
   {
     key: 'client_model',
     label: t('tenants.dashboard.detailColModel'),
-    format: (_v, row) => modelCellText(row as unknown as RequestLogRow),
+    format: (_v, row) => modelCellText(row as unknown as MaasUsageRequest),
   },
   {
     key: 'request_status',
     label: t('tenants.dashboard.detailColStatus'),
     type: 'badge',
-    format: (_v, row) => statusText(row as unknown as RequestLogRow),
+    format: (_v, row) => statusText(row as unknown as MaasUsageRequest),
   },
   {
     key: 'credits_charged',
@@ -341,7 +339,7 @@ const detailCardFields = computed<CardField[]>(() => [
 ])
 
 /** 卡片整卡点击：与表格里那格「请求 ID → 跳请求日志」同一意图。 */
-function onDetailRowClick(r: RequestLogRow) {
+function onDetailRowClick(r: MaasUsageRequest) {
   void router.push({ path: '/request-logs', query: { q: r.request_id } })
 }
 
@@ -353,6 +351,7 @@ function showModelDetail(model: string) {
   }
   selectedModel.value = model
   selectedDate.value = null
+  captureDetailWindow()
   detailTitle.value = t('tenants.dashboard.detailTitleModel', { model })
   void reloadDetail()
 }
@@ -365,6 +364,7 @@ function showDateDetail(day: string) {
   }
   selectedDate.value = day
   selectedModel.value = null
+  captureDetailWindow()
   detailTitle.value = t('tenants.dashboard.detailTitleDay', { day })
   void reloadDetail()
 }
@@ -742,7 +742,7 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in detailRows" :key="r.request_id">
+            <tr v-for="r in detailRows" :key="`${r.request_id}:${r.ts}`">
               <td class="mono">{{ fmtTime(r.ts) }}</td>
               <td><code>{{ modelCellText(r) }}</code></td>
               <td>

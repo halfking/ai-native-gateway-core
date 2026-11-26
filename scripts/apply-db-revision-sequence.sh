@@ -2976,6 +2976,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/056_user_teams.sql"
   "$ROOT_DIR/sql/migrations/startup/057_api_keys_team_id.sql"
   "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
+  "$ROOT_DIR/sql/migrations/startup/973_request_metrics_projection.sql"
 )
 
 
@@ -3550,6 +3551,9 @@ for file in "${files[@]}"; do
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
   psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256, execution_sha256, runtime_adaptation) VALUES ('${marker}', '${file_sha}', '${execution_sha}', '${runtime_adaptation}') ON CONFLICT (sequence_name) DO NOTHING"
+  if [[ "$base" == 973_request_metrics_projection.sql ]]; then
+    sha_matched_markers+=("$base")
+  fi
 done
 # Fingerprints cannot detect physical drift after delivery. Fail before cutover.
 psql_query "SELECT public.assert_session_bodies_kind_contract()"
@@ -3982,6 +3986,8 @@ ledger_artifact_probe "925_supplier_contract_rates.sql" \
 #   ★ 注：生产上该列已由别的路径在场（211 只读实测：45 列、末列即 raw_model_name），
 #     但本迁移未 applied、未记账 ⇒ probe 的台账行判据（version='983b'）仍未满足
 #     ⇒ 这正是本迁移要补的缺口（幂等重跑无害）。
+ledger_artifact_probe "973_request_metrics_projection.sql" \
+  "to_regclass('public.request_metrics_projection_state') IS NOT NULL AND to_regclass('public.idx_request_metrics_projected_time') IS NOT NULL AND to_regclass('public.idx_request_metrics_fact_request') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (request_id, occurred_at)') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND conname='request_metrics_fact_identity' AND convalidated) AND to_regclass('public.request_metrics_pending') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics_pending' AND column_name='tenant_id') AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact') AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name IN ('raw_model_name','credential_id','provider_code','provider_name','client_id','client_model','agent_name','client_ip','identity_hash','task_type','owner_user','api_key_prefix','application_code','person_key','cache_write_tokens','cost_amount','cost_currency','source_revision','source_fact_id','work_type','session_intent','compression_applied','cache_input_tokens','credential_label','api_key_owner_user','client_cancelled','usage_source','source_finalized_at')) = 28 AND (SELECT count(*) FROM public.schema_migrations WHERE version='973') = 1"
 ledger_artifact_probe "983b_add_raw_model_name.sql" \
   "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983b') = 1"
 # ★ 983c 的产物 = 复合游标索引 + 台账行。

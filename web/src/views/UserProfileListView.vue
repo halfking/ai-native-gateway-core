@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted, watch } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getUserProfileList,
@@ -15,6 +15,7 @@ import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { makeDateRangePresets } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import { parseLocalMinute } from '../utils/datetime'
+import { rangeFromQuery } from './admin/session-analytics/saQueryParams'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import {
   ElButton,
@@ -37,6 +38,7 @@ import {
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 
 const loading = ref(false)
 const users = ref<UserProfileSummary[]>([])
@@ -45,19 +47,24 @@ const search = ref('')
 const currentPage = ref(1)
 const pageSize = 20
 
-// ── 2026-11-19 时间范围统一轮：页面右上角统一 KxDateRangePicker ──────────
-// 口径：date_from/date_to 双语义 —— ①过滤窗口内有活动的用户（so.last_seen_at）；
-// ②2026-11-20 数字出处轮起，同一窗口驱动「窗口内用量」列与展开行模型明细
-// （request_logs_with_current_month 聚合）。未选窗口时后端默认近 30 天，
-// 真实窗口回传在 usage_window —— 页面展示它，不自行脑补。
+// 列表和展开明细共用接口返回的请求统计窗口。
 const kxPresets = makeDateRangePresets('datetime')
 const timeRange = ref<KxDateRange | null>(null)
+const linkedRange = computed(() => rangeFromQuery(route.query))
+let listGeneration = 0
+let matrixGeneration = 0
 
 function onRangeApply(range: KxDateRange) {
   timeRange.value = range
+  reloadRange()
+}
+
+function reloadRange() {
   currentPage.value = 1
-  // 窗口变了 ⇒ 展开行缓存全部作废（旧行是旧窗口的数字）。
+  matrixGeneration++
   matrixRows.clear()
+  matrixLoading.clear()
+  matrixErrors.clear()
   expandedOwners.value = []
   void load()
 }
@@ -102,23 +109,32 @@ const usageWindowText = computed(() => {
 })
 
 function formatCost(v: number | undefined | null): string {
-  return `$${(v ?? 0).toFixed(4)}`
+  return v == null ? '—' : `$${v.toFixed(4)}`
 }
 
 function formatTokens(v: number | undefined | null): string {
   return (v ?? 0).toLocaleString()
 }
 
+function formatCredits(v: number | undefined | null): string {
+  return v == null ? '—' : v.toLocaleString(undefined, { maximumFractionDigits: 6 })
+}
+
 onMounted(() => void load())
+watch(linkedRange, () => {
+  timeRange.value = null
+  reloadRange()
+})
 
 async function load() {
+  const generation = ++listGeneration
   loading.value = true
   loadError.value = ''
   degraded.value = emptyDegradation()
   try {
     // 时间范围 → ISO（Kx 的分钟级串无秒非规范格式，走补秒解析）。
-    let dateFrom: string | undefined
-    let dateTo: string | undefined
+    let dateFrom = linkedRange.value?.start
+    let dateTo = linkedRange.value?.end
     if (timeRange.value) {
       const s = parseLocalMinute(timeRange.value.start)
       const e = parseLocalMinute(timeRange.value.end)
@@ -132,6 +148,7 @@ async function load() {
       date_from: dateFrom,
       date_to: dateTo,
     })
+    if (generation !== listGeneration) return
     users.value = res.users || []
     total.value = res.total
     usageMeta.value = res.usage_meta ?? null
@@ -143,13 +160,14 @@ async function load() {
       )
     }
   } catch (e) {
+    if (generation !== listGeneration) return
     // 记 console（可诊断）+ 记 error（用户可见），两者都不能少。
     console.error('user profile list load failed:', e)
     users.value = []
     total.value = 0
     loadError.value = surfaceError(e)
   } finally {
-    loading.value = false
+    if (generation === listGeneration) loading.value = false
   }
 }
 
@@ -168,35 +186,54 @@ function currentWindowParams(): { start_date?: string; end_date?: string } {
   return {}
 }
 
-// Element Plus expand-change 的实参是 (row, expandedRows: 行对象数组)；
-// 以 owner_user（row-key）为键惰性拉取。
+function profileRowKey(owner?: string, tenant?: string): string {
+  return JSON.stringify([tenant ?? '', owner ?? ''])
+}
+
+const ownerRowKey = (row: UserProfileSummary) => profileRowKey(row.owner_user, row.tenant_id)
+
 async function onExpandChange(_row: unknown, expanded: unknown) {
-  const rows: UserProfileSummary[] = Array.isArray(expanded) ? (expanded as UserProfileSummary[]) : []
-  const owners = rows.map((r) => r?.owner_user).filter((o): o is string => !!o)
-  expandedOwners.value = owners
-  for (const owner of owners) {
-    if (matrixRows.has(owner) || matrixLoading.has(owner)) continue
-    matrixLoading.add(owner)
-    matrixErrors.delete(owner)
+  const generation = matrixGeneration
+  const window = currentWindowParams()
+  const rows = (Array.isArray(expanded) ? expanded as UserProfileSummary[] : []).filter(row => row?.owner_user)
+  expandedOwners.value = rows.map(ownerRowKey)
+  for (const row of rows) {
+    const key = ownerRowKey(row)
+    if (generation !== matrixGeneration) return
+    if (matrixRows.has(key) || matrixLoading.has(key)) continue
+    matrixLoading.add(key)
+    matrixErrors.delete(key)
     try {
       const res = await getUserUsageMatrix({
-        ...currentWindowParams(),
-        owner,
+        ...window,
+        owner: row.owner_user,
+        tenant_id: row.tenant_id,
         limit: 200,
       })
-      matrixRows.set(owner, res.rows ?? [])
+      if (generation !== matrixGeneration) return
+      if (isDegraded(res)) {
+        matrixErrors.set(key, t('sessions.userProfile.modelUsageLoadFailed'))
+      } else {
+        matrixRows.set(key, res.rows ?? [])
+      }
     } catch (e) {
-      console.error('usage matrix load failed:', owner, e)
-      matrixErrors.set(owner, surfaceError(e))
-      matrixRows.set(owner, [])
+      if (generation !== matrixGeneration) return
+      console.error('usage matrix load failed:', row.owner_user, e)
+      matrixErrors.set(key, surfaceError(e))
+      matrixRows.set(key, [])
     } finally {
-      matrixLoading.delete(owner)
+      if (generation === matrixGeneration) matrixLoading.delete(key)
     }
   }
 }
 
-function goProfile(owner: string) {
-  router.push(`/admin/session-analytics/users/${owner}`)
+function goProfile(owner?: string, tenant?: string) {
+  if (!owner) return
+  const window = currentWindowParams()
+  void router.push({
+    path: `/admin/session-analytics/users/${encodeURIComponent(owner)}`,
+    query: { tenant_id: tenant, start_time: window.start_date, end_time: window.end_date },
+  })
 }
 
 function goTask(owner: string, taskId: string) {
@@ -277,7 +314,7 @@ function onSearch() {
         :data="sortedUsers"
         stripe
         :expand-row-keys="expandedOwners"
-        row-key="owner_user"
+        :row-key="ownerRowKey"
         @expand-change="onExpandChange"
       >
         <!-- 2026-11-20 数字出处轮：展开行 = 该员工窗口内「用了哪些模型、各多少」。 -->
@@ -285,15 +322,15 @@ function onSearch() {
           <template #default="scope">
             <div class="expand-block">
               <div class="expand-title">{{ t('sessions.userProfile.expandModelsTitle', { owner: scope?.row?.owner_user }) }}</div>
-              <div v-if="matrixLoading.has(scope?.row?.owner_user)" class="expand-hint">
+              <div v-if="matrixLoading.has(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id))" class="expand-hint">
                 {{ t('sessions.userProfile.loading') }}
               </div>
-              <div v-else-if="matrixErrors.get(scope?.row?.owner_user)" class="alert alert-danger">
-                {{ matrixErrors.get(scope?.row?.owner_user) }}
+              <div v-else-if="matrixErrors.get(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id))" class="alert alert-danger">
+                {{ matrixErrors.get(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id)) }}
               </div>
               <el-table
                 v-else
-                :data="matrixRows.get(scope?.row?.owner_user) ?? []"
+                :data="matrixRows.get(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id)) ?? []"
                 size="small"
                 class="expand-table"
               >
@@ -309,24 +346,24 @@ function onSearch() {
                 <el-table-column :label="t('sessions.userProfile.usageColTokens')" prop="total_tokens" width="120" align="right">
                   <template #default="s">{{ formatTokens(s?.row?.total_tokens) }}</template>
                 </el-table-column>
-                <el-table-column :label="t('sessions.userProfile.usageColInternalCost')" prop="internal_cost_usd" width="120" align="right">
-                  <template #default="s">{{ formatCost(s?.row?.internal_cost_usd) }}</template>
+                <el-table-column :label="t('common.unit.credits')" prop="internal_credits" width="120" align="right">
+                  <template #default="s">{{ formatCredits(s?.row?.internal_credits) }}</template>
                 </el-table-column>
                 <el-table-column :label="t('sessions.userProfile.usageColExternalCost')" prop="external_cost_usd" width="120" align="right">
                   <template #default="s">{{ formatCost(s?.row?.external_cost_usd) }}</template>
                 </el-table-column>
                 <el-table-column :label="t('sessions.userProfile.actionDetail')" width="90" fixed="right">
                   <template #default="s">
-                    <el-button size="small" link type="primary" @click="goProfile(scope?.row?.owner_user)">
+                    <el-button size="small" link type="primary" @click="goProfile(scope?.row?.owner_user, scope?.row?.tenant_id)">
                       {{ t('sessions.userProfile.expandToProfile') }}
                     </el-button>
                   </template>
                 </el-table-column>
               </el-table>
               <div
-                v-if="!matrixLoading.has(scope?.row?.owner_user)
-                  && !matrixErrors.get(scope?.row?.owner_user)
-                  && (matrixRows.get(scope?.row?.owner_user) ?? []).length === 0"
+                v-if="!matrixLoading.has(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id))
+                  && !matrixErrors.get(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id))
+                  && (matrixRows.get(profileRowKey(scope?.row?.owner_user, scope?.row?.tenant_id)) ?? []).length === 0"
                 class="expand-hint"
               >
                 {{ t('sessions.userProfile.expandModelsEmpty') }}
@@ -336,16 +373,14 @@ function onSearch() {
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.ownerUser')" prop="owner_user" min-width="160" />
         <el-table-column :label="t('sessions.userProfile.sessionCount')" prop="session_count" width="100" align="right" />
-        <!-- 2026-11-20：窗口内用量五列（出处 = request_logs_with_current_month，
-             与详情页模型卡同源同表达式；窗口与口径见右上角帮助抽屉）。 -->
         <el-table-column :label="t('sessions.userProfile.usageColRequests')" width="100" align="right">
           <template #default="scope">{{ scope?.row?.window_usage?.request_count ?? '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.usageColTokens')" width="130" align="right">
           <template #default="scope">{{ scope?.row?.window_usage ? formatTokens(scope.row.window_usage.total_tokens) : '—' }}</template>
         </el-table-column>
-        <el-table-column :label="t('sessions.userProfile.usageColInternalCost')" width="130" align="right">
-          <template #default="scope">{{ scope?.row?.window_usage ? formatCost(scope.row.window_usage.internal_cost_usd) : '—' }}</template>
+        <el-table-column :label="t('common.unit.credits')" width="130" align="right">
+          <template #default="scope">{{ formatCredits(scope?.row?.window_usage?.internal_credits) }}</template>
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.usageColExternalCost')" width="130" align="right">
           <template #default="scope">{{ scope?.row?.window_usage ? formatCost(scope.row.window_usage.external_cost_usd) : '—' }}</template>
@@ -355,7 +390,7 @@ function onSearch() {
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.totalCost')" prop="total_cost_usd" width="120" align="right">
           <template #default="scope">
-            ${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}
+            {{ formatCost(scope?.row?.total_cost_usd) }}
           </template>
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.avgCostPerSession')" prop="avg_cost_per_session" width="120" align="right">
@@ -369,7 +404,7 @@ function onSearch() {
           <template #default="scope">
             <!-- ★ 按钮文字必须与列头「详情」不同：Maestro textRegex 按先序命中，
                  撞上列头（TH）就永远点不到行按钮（2026-11-20 首跑实测）。 -->
-            <el-button size="small" type="primary" link @click="goProfile(scope?.row?.owner_user)">
+            <el-button size="small" type="primary" link @click="goProfile(scope?.row?.owner_user, scope?.row?.tenant_id)">
               {{ t('sessions.userProfile.actionGoDetail') }}
             </el-button>
           </template>
@@ -396,9 +431,6 @@ function onSearch() {
       </div>
     </el-card>
 
-    <!-- 2026-11-20 数字出处轮：统计口径帮助抽屉（右侧滑出）。
-         口径文案与列表列一一对应；公式/出处复用详情页 helpContent 键（同口径同文案），
-         列表特有口径用 listHelp 键。 -->
     <el-drawer
       v-model="showHelp"
       :title="t('sessions.userProfile.helpTitle')"
@@ -408,31 +440,18 @@ function onSearch() {
       <div class="help-content">
         <section class="help-section">
           <h3>{{ t('sessions.userProfile.listHelp.windowSection') }}</h3>
-          <p>{{ t('sessions.userProfile.listHelp.windowDesc') }}</p>
           <div v-if="usageMeta" class="formula">{{ usageWindowText }}</div>
         </section>
 
         <section class="help-section">
-          <h3>{{ t('sessions.userProfile.helpContent.tokenCalculation') }}</h3>
-          <p>{{ t('sessions.userProfile.helpContent.tokenDesc') }}</p>
-          <div class="formula">{{ t('sessions.userProfile.helpContent.tokenFormula') }}</div>
-        </section>
-
-        <section class="help-section">
           <h3>{{ t('sessions.userProfile.helpContent.costCalculation') }}</h3>
-          <p><strong>{{ t('sessions.userProfile.internalCost') }}</strong>{{ t('sessions.userProfile.helpContent.internalCostDesc') }}</p>
-          <p><strong>{{ t('sessions.userProfile.externalCost') }}</strong>{{ t('sessions.userProfile.helpContent.externalCostDesc') }}</p>
-        </section>
-
-        <section class="help-section">
-          <h3>{{ t('sessions.userProfile.listHelp.identitySection') }}</h3>
-          <p>{{ t('sessions.userProfile.listHelp.identityDesc') }}</p>
+          <p>{{ t('common.unit.credits') }}</p>
+          <p>{{ t('sessions.userProfile.externalCost') }} (USD)</p>
         </section>
 
         <section class="help-section">
           <h3>{{ t('sessions.userProfile.helpContent.dataSource') }}</h3>
-          <p>{{ t('sessions.userProfile.listHelp.dataSourceDesc') }}</p>
-          <div class="formula">{{ usageMeta?.source_view || 'request_logs_with_current_month' }}</div>
+          <div v-if="usageMeta" class="formula">{{ usageMeta.source_view }}</div>
         </section>
 
         <section class="help-section">

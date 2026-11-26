@@ -171,3 +171,48 @@ func TestRequestReconciliationNaturalMonth(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectedReconciliationRequiresCompletedCalendarDay(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/?section=coverage&day=2026-11-01&timezone=America%2FNew_York", nil)
+	q, err := parseRequestReconciliationQuery(r)
+	if err != nil || q.End.Sub(q.Start) != 25*time.Hour {
+		t.Fatalf("invalid fall-back day: %+v, %v", q, err)
+	}
+	if requireCompletedReconciliationDay(q, q.End.Add(-time.Nanosecond)) == nil || requireCompletedReconciliationDay(q, q.End) != nil {
+		t.Fatal("the report must wait for local midnight")
+	}
+	q.Day, q.Month = "", "2026-11"
+	if requireCompletedReconciliationDay(q, q.End.Add(time.Hour)) == nil {
+		t.Fatal("V2 accepted a monthly interval")
+	}
+}
+
+func TestProjectedReconciliationCSVAddsMeasuredTotal(t *testing.T) {
+	report := reconciliation.Report{Version: reconciliation.ProjectedReportVersion, Section: "requests", Rows: []json.RawMessage{
+		json.RawMessage(`{"request_id":"r","total_tokens":149,"input_tokens":100,"output_tokens":30}`),
+	}}
+	data, err := requestReconciliationCSV(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(bytes.NewReader(data)).ReadAll()
+	if err != nil || len(rows) != 2 || rows[0][len(rows[0])-1] != "total_tokens" || rows[1][len(rows[1])-1] != "149" {
+		t.Fatalf("V2 export lost measured total: %q, %v", data, err)
+	}
+	pending := time.Date(2026, 11, 23, 17, 0, 0, 0, time.UTC)
+	summary, err := requestReconciliationSummaryCSVWithProjection(json.RawMessage(`{"total_tokens":149}`),
+		&reconciliation.ReportProjection{Source: "request_metrics", PendingSince: &pending}, "client_receipt")
+	if err != nil || !strings.Contains(string(summary), "projection_pending_since,") || !strings.Contains(string(summary), "request_metrics") {
+		t.Fatalf("V2 summary export lost projection state: %q, %v", summary, err)
+	}
+	records, err := csv.NewReader(bytes.NewReader(summary)).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range records {
+		if row[0] == "request_count_basis" && row[1] == `"client_receipt"` {
+			return
+		}
+	}
+	t.Fatalf("V2 summary export lost the client receipt count basis: %q", summary)
+}

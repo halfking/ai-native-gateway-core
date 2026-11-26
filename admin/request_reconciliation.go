@@ -18,6 +18,14 @@ import (
 )
 
 func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Request) {
+	h.serveRequestReconciliation(w, r, false)
+}
+
+func (h *Handler) handleRequestReconciliationV2(w http.ResponseWriter, r *http.Request) {
+	h.serveRequestReconciliation(w, r, true)
+}
+
+func (h *Handler) serveRequestReconciliation(w http.ResponseWriter, r *http.Request, projected bool) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -33,6 +41,12 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if projected {
+		if err := requireCompletedReconciliationDay(query, time.Now()); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if reconciliation.ReportRequiresPlatformAccess(query.Section) && !scope.Platform {
 		writeError(w, http.StatusForbidden, "report section requires platform access")
@@ -53,8 +67,20 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
-	report, err := reconciliation.ReadReport(ctx, h.db, scope, query)
+	read := reconciliation.ReadReport
+	if projected {
+		read = reconciliation.ReadProjectedReport
+	}
+	report, err := read(ctx, h.db, scope, query)
 	if err != nil {
+		if errors.Is(err, reconciliation.ErrFinancialDayOpen) || errors.Is(err, reconciliation.ErrFinancialTimezone) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, reconciliation.ErrTerminalProjectionBackfill) {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		slog.WarnContext(ctx, "request reconciliation report read failed", "section", query.Section, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "report data unavailable")
 		return
@@ -65,7 +91,7 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 		name := query.Section
 		if format == "csv-summary" {
 			name += "-summary"
-			data, err = requestReconciliationSummaryCSV(report.Summary)
+			data, err = requestReconciliationSummaryCSVWithProjection(report.Summary, report.Projection, report.RequestCountBasis)
 			w.Header().Set("X-Report-Export", "summary")
 		} else {
 			data, err = requestReconciliationCSV(report)
@@ -89,6 +115,23 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 			w.Header().Set("X-Report-Month", report.Month)
 		}
 		w.Header().Set("X-Report-Coverage", report.Coverage)
+		if period := report.FinancialPeriod; period != nil {
+			w.Header().Set("X-Report-Financial-Status", period.Status)
+			w.Header().Set("X-Report-Financial-Timezone", period.Timezone)
+			w.Header().Set("X-Report-Financial-Closed-Through", period.ClosedThrough)
+		}
+		if report.RequestCountBasis != "" {
+			w.Header().Set("X-Report-Request-Count-Basis", report.RequestCountBasis)
+		}
+		if p := report.Projection; p != nil {
+			w.Header().Set("X-Report-Terminal-Usage-Source", p.Source)
+			if p.UpdatedAt != nil {
+				w.Header().Set("X-Report-Projection-Updated-At", p.UpdatedAt.UTC().Format(time.RFC3339Nano))
+			}
+			if p.PendingSince != nil {
+				w.Header().Set("X-Report-Projection-Pending-Since", p.PendingSince.UTC().Format(time.RFC3339Nano))
+			}
+		}
 		w.Header().Set("X-Report-Limit", strconv.Itoa(report.Limit))
 		w.Header().Set("X-Report-Offset", strconv.Itoa(report.Offset))
 		_, _ = w.Write(data)
@@ -97,10 +140,43 @@ func (h *Handler) handleRequestReconciliation(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, report)
 }
 
+func requireCompletedReconciliationDay(query reconciliation.ReportQuery, now time.Time) error {
+	if query.Day == "" || query.Month != "" || query.End.After(now) {
+		return errors.New("daily reconciliation requires a completed calendar day")
+	}
+	return nil
+}
+
 func requestReconciliationSummaryCSV(raw json.RawMessage) ([]byte, error) {
+	return requestReconciliationSummaryCSVWithProjection(raw, nil, "")
+}
+
+func requestReconciliationSummaryCSVWithProjection(raw json.RawMessage, projection *reconciliation.ReportProjection, requestCountBasis string) ([]byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
+	}
+	if requestCountBasis != "" {
+		if fields == nil {
+			fields = map[string]json.RawMessage{}
+		}
+		fields["request_count_basis"], _ = json.Marshal(requestCountBasis)
+	}
+	if projection != nil {
+		if fields == nil {
+			fields = map[string]json.RawMessage{}
+		}
+		for name, value := range map[string]any{
+			"terminal_usage_source":    projection.Source,
+			"projection_updated_at":    projection.UpdatedAt,
+			"projection_pending_since": projection.PendingSince,
+		} {
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return nil, err
+			}
+			fields[name] = encoded
+		}
 	}
 	keys := make([]string, 0, len(fields))
 	for key := range fields {
@@ -203,7 +279,7 @@ func parseRequestReconciliationQuery(r *http.Request) (reconciliation.ReportQuer
 }
 
 func requestReconciliationCSV(report reconciliation.Report) ([]byte, error) {
-	return reconciliationRowsCSV(reconciliation.ReportColumns(report.Section), report.Rows)
+	return reconciliationRowsCSV(reconciliation.ReportColumnsForVersion(report.Section, report.Version), report.Rows)
 }
 
 func reconciliationRowsCSV(columns []string, rows []json.RawMessage) ([]byte, error) {

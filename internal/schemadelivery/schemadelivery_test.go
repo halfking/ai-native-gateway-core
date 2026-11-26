@@ -325,6 +325,53 @@ func TestCheck_LooseFileReferencedByProductionSQL(t *testing.T) {
 	}
 }
 
+// TestCheck_CommentedChannelEntryIsNotDelivery：★ **整行注释掉的通道条目不是投递点**。
+//
+// ★★ **这条判据的由来（2026-11-26 12h 审计轮）**：★★ 本门原先用一条 regex
+// 扫**整份通道脚本文本** ⇒ ⇒ **注释掉的条目也被算成「已投递」** ⇒ ⇒ **假绿**
+// （真源 `scripts/lib/deploy-surface.sh` 早就明写「注释行（★ `#` 开头 ★★）
+// ⇒ ★ **不是投递面** ★★」⇒ ★ **同一口径写了两份 ⇒ 迟早分叉** ⇒ ★ 本门
+// 就是那份漂移的抄本 ★）。
+// ⇒ ★ 实测命中面：全脚本 371 处该形态的引用里，唯一**只因注释**而被误算的是
+// `sql/migrations/startup/890_drop_request_logs_v1_family.sql`（退役用 DROP TABLE
+// ⇒ 不建对象 ⇒ 今天对象账不受影响，★ 但「它已投递」这件事本身是假的 ★）。
+//
+// ⇒ ★ 两个臂：注释掉 ⇒ **不算投递**（对象仍进 References ⇒ 门会红）；
+// 取消注释 ⇒ **算投递**（对象进 Delivered ⇒ 门不红）。
+// ⇒ ★ 钉成判据是防「下一轮又漂回去」。
+func TestCheck_CommentedChannelEntryIsNotDelivery(t *testing.T) {
+	entry := "  \"$ROOT_DIR/sql/migrations/startup/0100_caps.sql\"\n"
+
+	t.Run("注释掉的条目不算投递点", func(t *testing.T) {
+		root := newRoot(t)
+		write(t, root, "sql/migrations/startup/0100_caps.sql", looseCaps)
+		write(t, root, DeployChannelScript,
+			"files=(\n  \"$ROOT_DIR/sql/migrations/startup/0010_base.sql\"\n  #"+entry)
+
+		res := check(t, root)
+		if _, ok := res.Delivered[capsObject]; ok {
+			t.Errorf("★ 注释掉的通道条目被算成已投递 ⇒ 假绿（对象 %s 不该在 Delivered 里，来源 %q）",
+				capsObject, res.Delivered[capsObject])
+		}
+		// ★ 它必须仍在 Undelivered 里 ⇒ 「没投递」这件事没被藏起来 ⇒ 门会红。
+		if got := res.Undelivered[capsObject]; len(got) == 0 {
+			t.Errorf("★ 注释掉的通道条目对应的对象 %s 从 Undelivered 里消失了 ⇒ 「没投递」被藏起来了", capsObject)
+		}
+	})
+
+	t.Run("取消注释后算投递点", func(t *testing.T) {
+		root := newRoot(t)
+		write(t, root, "sql/migrations/startup/0100_caps.sql", looseCaps)
+		write(t, root, DeployChannelScript,
+			"files=(\n  \"$ROOT_DIR/sql/migrations/startup/0010_base.sql\"\n"+entry)
+
+		res := check(t, root)
+		if got := res.Delivered[capsObject]; got != "sql/migrations/startup/0100_caps.sql" {
+			t.Errorf("取消注释后的通道条目没有被算成投递点：来源 = %q", got)
+		}
+	})
+}
+
 func TestCheck_DeliverySources(t *testing.T) {
 	deployNames := func(rel string) string {
 		return "files=(\n  \"$ROOT_DIR/sql/migrations/startup/0010_base.sql\"\n  \"$ROOT_DIR/" + rel + "\"\n)\n"

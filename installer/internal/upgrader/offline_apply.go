@@ -23,6 +23,9 @@ type OfflineApplier struct {
 	backupDir     string
 	composeFile   string
 	containerName string
+
+	// UpgradeStartup executes the verified startup plan on the target database.
+	UpgradeStartup func(sqlDir string, files []string) error
 }
 
 // NewOfflineApplier 创建离线升级应用器
@@ -42,7 +45,7 @@ func NewOfflineApplier(dataDir, backupDir, composeFile, containerName string) *O
 // 2. 验证 manifest.json 的 SHA256
 // 3. 备份当前二进制 + docker-compose.yml + .env
 // 4. docker load < images.tar（加载新镜像）
-// 5. 执行 SQL 迁移（migrations/*.sql）
+// 5. 执行安装器增量迁移（兼容旧包的 SQL 目录）
 // 6. 替换二进制 + 写 VERSION 文件
 // 7. 重启 docker-compose
 // 8. 5s 内探测 /healthz，失败自动 rollback
@@ -69,6 +72,16 @@ func (a *OfflineApplier) ApplyOfflinePackage(tarPath, dataDir string) error {
 
 	if err := VerifyManifest(manifest, tmpDir); err != nil {
 		return fmt.Errorf("verify manifest: %w", err)
+	}
+	startupFiles, err := installerStartupFiles(manifest)
+	if err != nil {
+		return fmt.Errorf("read migration plan: %w", err)
+	}
+	if startupFiles != nil {
+		if a.UpgradeStartup == nil {
+			return fmt.Errorf("installer startup migration runner is unavailable")
+		}
+		return a.applyInstallerStartupPackage(ctx, manifest, tmpDir, startupFiles)
 	}
 
 	// 3. 备份当前状态
@@ -97,12 +110,9 @@ func (a *OfflineApplier) ApplyOfflinePackage(tarPath, dataDir string) error {
 	}
 
 	// 5. 执行 SQL 迁移
-	migrationsDir := filepath.Join(tmpDir, "migrations")
-	if _, err := os.Stat(migrationsDir); err == nil {
-		if err := a.executeMigrations(ctx, migrationsDir); err != nil {
-			rollbackNeeded = true
-			return fmt.Errorf("execute migrations: %w", err)
-		}
+	if err := a.applyPackageMigrations(ctx, filepath.Join(tmpDir, "migrations"), startupFiles); err != nil {
+		rollbackNeeded = true
+		return fmt.Errorf("execute migrations: %w", err)
 	}
 
 	// 6. 替换二进制
@@ -275,8 +285,19 @@ func (a *OfflineApplier) loadDockerImages(imagesPath string) error {
 	return nil
 }
 
-// executeMigrations executes forward SQL migrations recursively in lexical
-// path order. Down migrations are release artifacts, never upgrade inputs.
+func (a *OfflineApplier) applyPackageMigrations(ctx context.Context, migrationsDir string, startupFiles []string) error {
+	if startupFiles != nil {
+		return a.UpgradeStartup(migrationsDir, startupFiles)
+	}
+	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return a.executeMigrations(ctx, migrationsDir)
+}
+
+// executeMigrations applies forward SQL from legacy archives.
 func (a *OfflineApplier) executeMigrations(ctx context.Context, migrationsDir string) error {
 	sqlFiles, err := forwardMigrationFiles(migrationsDir)
 	if err != nil {

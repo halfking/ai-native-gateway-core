@@ -480,8 +480,9 @@ function isSystemKey(k: ApiKey): boolean {
 
         <div v-if="loading" class="udd-empty">{{ t('users.detail.loading') }}</div>
         <div v-else-if="errorText" class="udd-empty udd-error">{{ errorText }}</div>
+        <div v-else-if="stats?.degraded" class="udd-empty udd-error">{{ t('users.detail.loadStatsFailed') }}</div>
 
-        <template v-else-if="stats">
+        <template v-else-if="stats?.kpi">
           <!-- KPI -->
           <div class="udd-kpis">
             <StatCard :label="t('users.detail.kpiRequests')" compact>

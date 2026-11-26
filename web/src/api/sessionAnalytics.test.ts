@@ -8,6 +8,8 @@ import {
   getUserDetail,
   getUserProjects,
   getUserRanking,
+  getUserModelUsage,
+  getUserAPIKeyUsage,
   isViewMissingError,
   isViewStaleError,
   toDateParam,
@@ -50,7 +52,7 @@ describe('sessionAnalytics client — URL construction', () => {
     const { calls } = captureFetch()
     await getOverview({ start_date: '2026-11-01', end_date: '2026-11-07' })
     expect(calls[0]).toBe(
-      '/api/admin/session-analytics/overview?start_date=2026-11-01&end_date=2026-11-07',
+      '/api/admin/session-analytics/v2/overview?start_date=2026-11-01&end_date=2026-11-07',
     )
   })
 
@@ -102,14 +104,28 @@ describe('sessionAnalytics client — URL construction', () => {
     const { calls } = captureFetch()
     await getAgentRanking({ start_date: '2026-11-01', end_date: '2026-11-07' })
     await getModelRanking({ start_date: '2026-11-01', end_date: '2026-11-07' })
-    expect(calls[0]).toContain('/api/admin/session-analytics/agent-ranking?')
-    expect(calls[1]).toContain('/api/admin/session-analytics/model-ranking?')
+    expect(calls[0]).toContain('/api/admin/session-analytics/v2/agent-ranking?')
+    expect(calls[1]).toContain('/api/admin/session-analytics/v2/model-ranking?')
   })
 
   it('user projects endpoint is nested under the owner', async () => {
     const { calls } = captureFetch()
     await getUserProjects('alice', { start_date: '2026-11-01', end_date: '2026-11-07' })
-    expect(calls[0]).toContain('/api/admin/session-analytics/user-ranking/alice/projects?')
+    expect(calls[0]).toContain('/api/admin/session-analytics/v2/user-ranking/alice/projects?')
+  })
+
+  it('all personnel detail tabs keep the selected tenant and the same natural-day window', async () => {
+    const { calls } = captureFetch()
+    const scope = { tenant_id: 'tenant-b', start_date: '2026-11-01', end_date: '2026-11-07' }
+    await getUserDetail('alice', scope)
+    await getUserProjects('alice', scope)
+    await getProjectTasks('alice', 'p/1', scope)
+    await getUserModelUsage('alice', scope)
+    await getUserAPIKeyUsage('alice', scope)
+    for (const url of calls) {
+      expect(url).toContain('/api/admin/session-analytics/v2/user-ranking/alice')
+      expect(url).toContain('tenant_id=tenant-b&start_date=2026-11-01&end_date=2026-11-07')
+    }
   })
 })
 

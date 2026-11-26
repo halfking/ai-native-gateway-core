@@ -263,6 +263,7 @@ export interface TenantStats {
   cache_read_tokens: number
   cache_write_tokens: number
   avg_latency_ms: number
+  cost_rows_outside_usd?: number
   by_model: TenantModelBreakdown[]
   by_application: TenantAppBreakdown[]
   /** ★ `generate_series` 补零 ⇒ 恒有 `days` 条连续日期。 */
@@ -279,7 +280,7 @@ export function fetchTenantStats(
     qs.set('days', String(Math.trunc(params.days)))
   }
   const s = qs.toString()
-  return req<unknown>('GET', `${tenantPath(code, 'stats')}${s ? '?' + s : ''}`, undefined, options).then(
+  return req<unknown>('GET', `/api/admin/tenants/v2/${encodeURIComponent(code)}/stats${s ? '?' + s : ''}`, undefined, options).then(
     unwrapTenantStats,
   )
 }

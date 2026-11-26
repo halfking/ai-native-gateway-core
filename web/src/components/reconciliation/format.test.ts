@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { topReasons, weightedQuality } from './format'
+import { fmtReportUsd, topReasons, weightedQuality } from './format'
 import { dayDist, modelDist, providerDist, tenantDist } from './distRows'
-import type { RangeReport } from '../../api/reportrollup'
+import type { RangeReport, ReportTotals } from '../../api/reportrollup'
 
 describe('reconciliation format', () => {
+  it('shows sub-cent USD amounts and distinguishes missing evidence', () => {
+    const totals = { request_count: 3, usd_measured_requests: 2, estimated_cost_cents: 0.124 } as ReportTotals
+    expect(fmtReportUsd(totals)).toBe('$0.00124')
+    expect(fmtReportUsd({ ...totals, usd_measured_requests: 0, estimated_cost_cents: 0 })).toBe('—')
+  })
+
   it('weights quality by request count and sorts failure reasons descending', () => {
     const score = weightedQuality([
       { quality_score: 50, totals: { request_count: 1 } },

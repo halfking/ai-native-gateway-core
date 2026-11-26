@@ -154,22 +154,25 @@ export interface TrendEntry {
   cost_usd: number
 }
 
-export function getUsageSummary(days = 7) {
-  return req<UsageSummary>('GET', `/api/usage/summary?days=${days}`)
+export function getUsageSummary(time: number | BoardTimeQuery = 7) {
+  const qs = usageTimeQs(typeof time === 'number' ? { days: time } : time)
+  return req<UsageSummary>('GET', `/api/usage/v2/summary?${qs}`)
 }
 
 export function getDashboardOverview(days = 7) {
   return req<DashboardOverview>('GET', `/api/usage/dashboard?days=${days}`)
 }
 
-export function getHotApiKeys(days = 7, limit = 10) {
+export function getHotApiKeys(time: number | BoardTimeQuery = 7, limit = 10) {
+  const qs = usageTimeQs({ ...(typeof time === 'number' ? { days: time } : time), limit })
   return req<DegradedListEnvelope<HotApiKeyEntry> | HotApiKeyEntry[]>(
-    'GET', `/api/usage/hot-keys?days=${days}&limit=${limit}`,
+    'GET', `/api/usage/v2/hot-keys?${qs}`,
   ).then(unwrapDegradedList<HotApiKeyEntry>)
 }
 
-export function getUsageByModel(days = 7) {
-  return req<DegradedListEnvelope<ModelUsage> | ModelUsage[]>('GET', `/api/usage/by-model?days=${days}`)
+export function getUsageByModel(time: number | BoardTimeQuery = 7) {
+  const qs = usageTimeQs(typeof time === 'number' ? { days: time } : time)
+  return req<DegradedListEnvelope<ModelUsage> | ModelUsage[]>('GET', `/api/usage/v2/by-model?${qs}`)
     .then(unwrapDegradedList<ModelUsage>)
 }
 
@@ -179,7 +182,7 @@ export function getKeyUsage(keyId: number, params: { days?: number; start?: stri
   if (params.start) qs.set('start', params.start)
   if (params.end) qs.set('end', params.end)
   const s = qs.toString()
-  return req<KeyUsageSummary>('GET', `/api/usage/${keyId}${s ? '?' + s : ''}`)
+  return req<KeyUsageSummary>('GET', `/api/usage/v2/keys/${keyId}${s ? '?' + s : ''}`)
 }
 
 export function getKeyUsageByModel(keyId: number, params: { days?: number; start?: string; end?: string; limit?: number } = {}) {
@@ -189,7 +192,7 @@ export function getKeyUsageByModel(keyId: number, params: { days?: number; start
   if (params.end) qs.set('end', params.end)
   if (params.limit) qs.set('limit', String(params.limit))
   const s = qs.toString()
-  return req<ModelUsageForKey[]>('GET', `/api/usage/${keyId}/models${s ? '?' + s : ''}`)
+  return req<ModelUsageForKey[]>('GET', `/api/usage/v2/keys/${keyId}/models${s ? '?' + s : ''}`)
 }
 
 export type UsageTrendPeriod = 'minute' | 'hour' | 'day' | 'week' | 'month'
@@ -203,7 +206,7 @@ export function getKeyUsageTrend(keyId: number, period: UsageTrendPeriod = 'day'
   } else {
     qs.set('days', String(opts.days ?? 30))
   }
-  return req<TrendEntry[]>('GET', `/api/usage/${keyId}/trend?${qs.toString()}`)
+  return req<TrendEntry[]>('GET', `/api/usage/v2/keys/${keyId}/trend?${qs.toString()}`)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -214,8 +217,8 @@ export interface CostTrendEntry {
   dimension_value: string
   request_count: number
   total_cost_usd: number
-  input_cost_usd: number
-  output_cost_usd: number
+  input_cost_usd: number | null
+  output_cost_usd: number | null
   prompt_tokens: number
   completion_tokens: number
   avg_latency_ms: number
@@ -231,6 +234,8 @@ export interface CostTrendResponse extends DegradationMarker {
   entries: CostTrendEntry[]
   other_cost: number
   other_count: number
+  source?: 'request_metrics'
+  cost_rows_outside_usd?: number
 }
 
 export interface PeriodStats {
@@ -251,7 +256,7 @@ export interface DimChange {
   dimension_value: string
   current_cost: number
   previous_cost: number
-  change_pct: number
+  change_pct: number | null
 }
 
 /**
@@ -265,7 +270,7 @@ export type { DegradationMarker }
 export interface PeriodCompareResponse extends DegradationMarker {
   current: PeriodStats
   previous: PeriodStats
-  change_pct: number
+  change_pct: number | null
   change_abs: number
   trend: 'up' | 'down' | 'flat'
   significant: boolean
@@ -278,36 +283,51 @@ export interface CacheEconomicsResponse extends DegradationMarker {
   total_requests: number
   cache_read_tokens: number
   prompt_tokens: number
-  cache_hit_ratio: number
-  dollars_saved: number
+  cache_hit_ratio: number | null
+  cache_input_tokens?: number
+  eligible_cache_read_tokens?: number
+  cache_scope_requests?: number
+  compression_scope_requests?: number
+  cache_write_tokens?: number
+  dollars_saved: number | null
   dollars_spent: number
-  effective_cost_ratio: number
-  compressed_requests: number
-  compression_saved: number
-  total_saved: number
-  savings_rate: number
+  effective_cost_ratio: number | null
+  compressed_requests: number | null
+  compression_saved: number | null
+  total_saved: number | null
+  savings_rate: number | null
+  source?: 'request_metrics'
 }
 
 export type CostTrendGroupBy = 'model' | 'provider' | 'intent' | 'work_type' | 'api_key'
 
-export function getCostTrend(groupBy: CostTrendGroupBy = 'model', opts: { date_from?: string; date_to?: string } = {}) {
+type EconomicsWindowQuery = { days?: number; date_from?: string; date_to?: string }
+
+function economicsWindowParams(opts: EconomicsWindowQuery): URLSearchParams {
   const qs = new URLSearchParams()
+  if (opts.date_from || opts.date_to) {
+    if (opts.date_from) qs.set('date_from', opts.date_from)
+    if (opts.date_to) qs.set('date_to', opts.date_to)
+  } else if (opts.days !== undefined) {
+    qs.set('days', String(opts.days))
+  }
+  return qs
+}
+
+export function getCostTrend(groupBy: CostTrendGroupBy = 'model', opts: EconomicsWindowQuery = {}) {
+  const qs = economicsWindowParams(opts)
   qs.set('group_by', groupBy)
-  if (opts.date_from) qs.set('date_from', opts.date_from)
-  if (opts.date_to) qs.set('date_to', opts.date_to)
-  return req<CostTrendResponse>('GET', `/api/admin/usage/cost-trend?${qs.toString()}`)
+  return req<CostTrendResponse>('GET', `/api/admin/usage/v2/cost-trend?${qs.toString()}`)
 }
 
 export function getPeriodCompare(current: string, previous: string) {
-  return req<PeriodCompareResponse>('GET', `/api/admin/usage/period-compare?current=${current}&previous=${previous}`)
+  const params = new URLSearchParams({ current, previous })
+  return req<PeriodCompareResponse>('GET', `/api/admin/usage/v2/period-compare?${params}`)
 }
 
-export function getCacheEconomics(opts: { date_from?: string; date_to?: string } = {}) {
-  const qs = new URLSearchParams()
-  if (opts.date_from) qs.set('date_from', opts.date_from)
-  if (opts.date_to) qs.set('date_to', opts.date_to)
-  const s = qs.toString()
-  return req<CacheEconomicsResponse>('GET', `/api/admin/usage/cache-economics${s ? '?' + s : ''}`)
+export function getCacheEconomics(opts: EconomicsWindowQuery = {}) {
+  const s = economicsWindowParams(opts).toString()
+  return req<CacheEconomicsResponse>('GET', `/api/admin/usage/v2/cache-economics${s ? '?' + s : ''}`)
 }
 
 // ── Provider usage (dashboard reconciliation) ─────────────────────────
@@ -319,6 +339,8 @@ export interface ProviderUsageRow {
   request_count: number
   prompt_tokens: number
   completion_tokens: number
+  credits?: number
+  total_tokens?: number
   total_cost_usd: number
   success_rate: number
 }
@@ -361,6 +383,8 @@ function usageTimeQs(q: BoardTimeQuery & { limit?: number }) {
   } else {
     qs.set('days', String(q.days ?? 1))
   }
+  if (q.tenant_id) qs.set('tenant_id', q.tenant_id)
+  if (q.include_probes) qs.set('include_probes', '1')
   if (q.limit != null) qs.set('limit', String(q.limit))
   return qs
 }
@@ -368,13 +392,13 @@ function usageTimeQs(q: BoardTimeQuery & { limit?: number }) {
 export function getUsageByProvider(time: BoardTimeQuery, limit = 200) {
   const qs = usageTimeQs({ ...time, limit })
   return req<DegradedListEnvelope<ProviderUsageRow> | ProviderUsageRow[]>(
-    'GET', `/api/usage/by-provider?${qs}`,
+    'GET', `/api/usage/v2/by-provider?${qs}`,
   ).then(unwrapDegradedList<ProviderUsageRow>)
 }
 
 export function getProviderUsageSummary(providerId: number, time: BoardTimeQuery) {
   const qs = usageTimeQs(time)
-  return req<ProviderUsageSummary>('GET', `/api/usage/providers/${providerId}?${qs}`)
+  return req<ProviderUsageSummary>('GET', `/api/usage/v2/providers/${providerId}?${qs}`)
 }
 
 export function getProviderUsageTrend(
@@ -384,17 +408,17 @@ export function getProviderUsageTrend(
 ) {
   const qs = usageTimeQs(time)
   qs.set('period', period)
-  return req<TrendEntry[]>('GET', `/api/usage/providers/${providerId}/trend?${qs}`)
+  return req<TrendEntry[]>('GET', `/api/usage/v2/providers/${providerId}/trend?${qs}`)
 }
 
 export function getProviderUsageModels(providerId: number, time: BoardTimeQuery, limit = 100) {
   const qs = usageTimeQs({ ...time, limit })
-  return req<ProviderModelUsage[]>('GET', `/api/usage/providers/${providerId}/models?${qs}`)
+  return req<ProviderModelUsage[]>('GET', `/api/usage/v2/providers/${providerId}/models?${qs}`)
 }
 
 export function getProviderDailyModels(providerId: number, time: BoardTimeQuery) {
   const qs = usageTimeQs(time)
-  return req<ProviderDailyModelUsage[]>('GET', `/api/usage/providers/${providerId}/daily-models?${qs}`)
+  return req<ProviderDailyModelUsage[]>('GET', `/api/usage/v2/providers/${providerId}/daily-models?${qs}`)
 }
 
 function exportFilename(prefix: string, time: BoardTimeQuery) {
@@ -405,7 +429,7 @@ function exportFilename(prefix: string, time: BoardTimeQuery) {
 export async function downloadProviderUsageExport(time: BoardTimeQuery) {
   const { BASE, headers } = await import('./_core')
   const qs = usageTimeQs(time)
-  const res = await fetch(`${BASE}/api/usage/providers/export?${qs}`, { headers: headers('GET') })
+  const res = await fetch(`${BASE}/api/usage/v2/providers/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   // 2026-10-06（UI规范 10 §4.6.18）：经 readExportBlob 取体，超上限即拒。
   // 此前是裸 res.blob()：整个文件先落进 WebView 堆，大报表在中低端机是 OOM 面。
@@ -419,7 +443,7 @@ export async function downloadProviderUsageExport(time: BoardTimeQuery) {
 export async function downloadProviderDetailExport(providerId: number, time: BoardTimeQuery) {
   const { BASE, headers } = await import('./_core')
   const qs = usageTimeQs(time)
-  const res = await fetch(`${BASE}/api/usage/providers/${providerId}/export?${qs}`, { headers: headers('GET') })
+  const res = await fetch(`${BASE}/api/usage/v2/providers/${providerId}/export?${qs}`, { headers: headers('GET') })
   if (!res.ok) throw new Error(`export failed: ${res.status}`)
   // 2026-10-06（UI规范 10 §4.6.18）：同上，经受控取流而非裸 blob()。
   const blob = await readExportBlob(res)
@@ -537,11 +561,11 @@ export function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
 }
 
 export function getUsageTrendSeries(q: UsageTrendFilterQuery, signal?: AbortSignal) {
-  return req<UsageTrendSeriesResponse>('GET', `/api/admin/usage/trend-series?${usageTrendQs(q)}`, undefined, { signal })
+  return req<UsageTrendSeriesResponse>('GET', `/api/admin/usage/v2/trend-series?${usageTrendQs(q)}`, undefined, { signal })
 }
 
 export function getUsageTrendModels(q: UsageTrendFilterQuery, signal?: AbortSignal) {
-  return req<UsageTrendModelsResponse>('GET', `/api/admin/usage/trend-models?${usageTrendQs(q)}`, undefined, { signal })
+  return req<UsageTrendModelsResponse>('GET', `/api/admin/usage/v2/trend-models?${usageTrendQs(q)}`, undefined, { signal })
 }
 
 // ── Top Rankings (2026-11-21) ─────────────────────────────────────────
@@ -565,7 +589,7 @@ export interface TopRankingsResponse {
 }
 
 /**
- * Top 用量排行（/api/admin/usage/top-rankings）。
+ * Top 用量排行（/api/admin/usage/v2/top-rankings）。
  *
  * ★ 2026-11-23 深链钉住轮：可带维度过滤（供应商 / 模型 / API Key）——
  *   页面被深链钉住某个维度时，**下方排行榜必须跟着那个维度走**，否则同一屏里
@@ -589,5 +613,5 @@ export function getTopRankings(time: BoardTimeQuery, usersLimit = 10, filters: T
     if (m) qs.append('model', m)
   }
   if (filters.dims) applyRankingDimensionQs(qs, filters.dims)
-  return req<TopRankingsResponse>('GET', `/api/admin/usage/top-rankings?${qs}&users_limit=${usersLimit}`)
+  return req<TopRankingsResponse>('GET', `/api/admin/usage/v2/top-rankings?${qs}&users_limit=${usersLimit}`)
 }

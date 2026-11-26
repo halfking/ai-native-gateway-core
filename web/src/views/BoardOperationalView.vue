@@ -3,8 +3,7 @@
 // 从运营角度汇总分析系统整体状况，整合多维度数据
 //
 // 端点：
-// - GET /api/admin/dashboard/operational（后台任务、自检）
-// - GET /api/admin/dashboard/board（完整看板数据：summary、pies、trends）
+// - GET /api/admin/dashboard/v2/board（请求统计和平台运维状态）
 //
 // 优化：整合运营关键指标、流量分析、成本分析、错误分析、趋势图表
 // 2026-11-20: 增加"更多"按钮和详情页导航
@@ -13,14 +12,14 @@ import { useRouter } from 'vue-router'
 import { surfaceError } from '../i18n/errorSurface'
 import { ANALYTICS_REGISTRY } from '../config/analyticsRegistry'
 import {
-  fetchBoardOperational,
   fetchDashboardBoard,
-  type BoardOperationalPayload,
   type BoardPayload,
+  type BoardTrendPoint,
 } from '../api/board'
 import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
 import { useI18n } from 'vue-i18n'
 import { boardRangeFromKxRange, toBoardTimeQuery, type BoardTimeRange } from '../utils/boardTimeRange'
+import { formatDateTimeIso } from '../utils/datetime'
 import { rangeFromSpanDays } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import * as echarts from 'echarts'
@@ -30,8 +29,8 @@ const router = useRouter()
 const { t } = useI18n()
 const loading = ref(false)
 const error = ref('')
-const operationalData = ref<BoardOperationalPayload | null>(null)
 const boardData = ref<BoardPayload | null>(null)
+const operationalData = computed(() => boardData.value?.operational ?? null)
 const trendChartRef = ref<HTMLDivElement>()
 let trendChartInstance: echarts.ECharts | null = null
 
@@ -72,17 +71,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [opData, bdData] = await Promise.all([
-      fetchBoardOperational(),
-      // ★ 窗口与界面显示同尺：预设走 days、自定义走 start/end（看板页同一把尺）。
-      fetchDashboardBoard(toBoardTimeQuery(boardRange.value)),
-    ])
-    operationalData.value = opData
-    boardData.value = bdData
-    
-    // 初始化趋势图表
-    await nextTick()
-    initTrendChart()
+    boardData.value = await fetchDashboardBoard(toBoardTimeQuery(boardRange.value))
   } catch (e) {
     error.value = surfaceError(e)
   } finally {
@@ -196,12 +185,12 @@ function initTrendChart() {
 }
 
 // 聚合趋势数据：按天汇总
-function aggregateTrendsByDay(trends: any[]) {
+function aggregateTrendsByDay(trends: BoardTrendPoint[]) {
   const dailyMap = new Map<string, { requests: number; success: number; cost: number }>()
 
   for (const point of trends) {
     // 提取日期部分 (YYYY-MM-DD)
-    const date = point.bucket.split('T')[0]
+    const date = formatDateTimeIso(point.bucket).split(' ')[0]
     
     if (!dailyMap.has(date)) {
       dailyMap.set(date, { requests: 0, success: 0, cost: 0 })

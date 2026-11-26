@@ -1,54 +1,5 @@
 <script setup lang="ts">
-// SessionAnalyticsFilterOptionsView — 会话分析页的模型/提供商筛选项（2026-10-15，第一百二十八批）。
-//
-// GET /api/admin/session-analytics/filter-options
-//
-// ══════════════════════════════════════════════════════════════════════════
-// ★★★★★ 本页与兄弟端点 `TurnsFilterOptionsView` **四处方向相反**，抄错就是全错
-// ══════════════════════════════════════════════════════════════════════════
-//
-//   兄弟：/api/admin/turns/sessions/filter-options（批 127）
-//   本页：/api/admin/session-analytics/filter-options（本批）
-//
-//   | 维度                | 本页（session-analytics）      | 兄弟（turns/sessions）    |
-//   |---------------------|-------------------------------|---------------------------|
-//   | 维度个数            | **2**（models / providers）   | 8                          |
-//   | 无数据时的编码      | ★★★★★ **`null`**             | ★★★★★ `[]`                |
-//   | **半空形状**        | ★★★★★ **可达且合法**          | ★★★★★ **不可达**          |
-//   | 租户可见范围        | ★★★★★ **super_admin 看全部租户** | ★★★★★ 永远租户内         |
-//   | 无 DB 时            | ★★★★ **404（整棵树不注册）** | 503（恒注册）              |
-//   | 能 `?tenant=` 收窄？ | ★★★★ **不能**               | 能                         |
-//   | scan 失败           | ★★★★ 静默跳过该行             | 500                        |
-//   | 超时                | 10s                           | 12s                        |
-//
-// ══ 权限 ══════════════════════════════════════════════════════════════════
-// ★★★★★ `requiresRole: 'admin'`。
-//
-//   注册 `cmd/gateway/main.go:7409`：
-//     mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
-//   ⇒ `wrapSessionAnalytics` = `newWrapSessionAnalytics`（`main_admin_wrappers.go:42`）
-//   ⇒ ★★ 它是**双模式**的，而**两条分支都不给浏览器用户设角色下限**：
-//     （甲）session-service JWT 未启用 ⇒ `admin.AdminMiddleware`
-//           ⇒ `admin/auth.go:86` 起，**全文无任何 `claims.Role` 比对**
-//     （乙）已启用且验签通过 ⇒ `admin.SessionAnalyticsMiddleware`
-//           （`admin/session_service_auth.go:18`）**确实**逐字检了
-//           `hasScope(claims.Scope, "session:read")` + `claims.TenantID != ""`
-//           ⇒ ★ 但那是被强制成 `Role: "tenant_admin"` 的**服务间调用**，
-//             **不是浏览器用户**的路；浏览器用户走（甲）⇒ **零角色下限**。
-//
-//   ⇒ **两条独立理由，缺一不可**：
-//     （甲）**需要 admin**：载荷是**租户级聚合清单** ——
-//          「这个租户所有人跑过的模型与提供商」。一个只该看自己请求的
-//          普通用户，没理由看到整个租户的模型/提供商清单。
-//     （乙）**不过度限制到 super_admin**：除 super_admin 外，handler 对两条查询
-//          **都**拼了 `AND tenant_id = $1`（`session_analytics_top.go:213`、`:226`）
-//          ⇒ 非 super_admin 拿到的是**自己租户内**的 ⇒ 按批 119 边界不过度限制。
-//
-//   ⚠️ **别把兄弟端点的结论搬过来**：兄弟那边 super_admin 也只看自己租户，
-//     本页 super_admin **看全部租户的聚合**，且**没有 `?tenant=` 手段收窄**
-//     （`effectiveScopeTenant` 不读查询参数，`admin/session_tenant.go:180`）。
-//
-//   ⇒ ★★ **服务端这一层是唯一的门**（对浏览器用户而言）；前端严于后端是**兜底不是修复**。
+// 会话分析的模型和供应商候选，按当前权限范围读取统一请求统计。
 import { computed, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
@@ -143,8 +94,8 @@ interface Dim {
 }
 
 const DIMS: readonly Dim[] = [
-  { key: 'models', labelKey: 'saf.dim.models', sourceColumn: 'models_used' },
-  { key: 'providers', labelKey: 'saf.dim.providers', sourceColumn: 'providers' },
+  { key: 'models', labelKey: 'saf.dim.models', sourceColumn: 'outbound_model' },
+  { key: 'providers', labelKey: 'saf.dim.providers', sourceColumn: 'provider_code' },
 ]
 
 /**
@@ -248,6 +199,10 @@ const keyCount = SESSION_ANALYTICS_FILTER_OPTION_KEYS.length
         <p class="saf__msg" data-testid="saf-window-note">
           {{ t('saf.windowNote', { days: windowDays, n: keyCount }) }}
         </p>
+        <p v-if="options?.start_date && options?.end_date" class="saf__msg">
+          {{ options.start_date }} → {{ options.end_date }}
+        </p>
+        <p v-if="options?.pending_since" class="saf__msg saf__msg--warn" role="status">{{ t('rr.projectedPending') }}</p>
 
         <section
           v-for="d in DIMS"

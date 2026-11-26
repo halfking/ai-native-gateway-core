@@ -13,6 +13,7 @@ import {
   type CostTrendGroupBy,
 } from '../../api/usage'
 import KxDatePicker from '../../components/ui/KxDatePicker.vue'
+import { systemTzDateStr } from '../../components/ui/kxDatePresets'
 import { formatNumberLocale } from '../../utils/format'
 import {
   emptyDegradation,
@@ -82,20 +83,25 @@ currentPeriod.value = getCurrentPeriod()
 previousPeriod.value = getPreviousPeriod()
 
 // 格式化金额
-const formatCurrency = (value: number) => {
-  return `$${value.toFixed(2)}`
+const formatCurrency = (value: number | null) => {
+  return value === null ? '—' : `$${value.toFixed(2)}`
 }
 
 // 格式化百分比
-const formatPercent = (value: number) => {
-  return `${value.toFixed(1)}%`
+const formatPercent = (value: number | null) => {
+  return value === null ? '—' : `${value.toFixed(1)}%`
 }
 
 // 格式化数字
-const formatNumber = (value: number) => {
+const formatNumber = (value: number | null) => {
   // 2026-10-01 ④ format 收敛：实现单点化至 utils/format.ts。
-  return formatNumberLocale(value)
+  return value === null ? '—' : formatNumberLocale(value)
 }
+
+const cacheRatioPercent = computed(() => {
+  const ratio = cacheEconomicsData.value?.cache_hit_ratio
+  return ratio == null ? null : ratio * 100
+})
 
 // 趋势类名
 const trendClass = computed(() => {
@@ -123,9 +129,16 @@ const attributionColumnLabel = computed(() => {
 })
 
 // API 调用
+function currentEconomicsWindow() {
+  const today = systemTzDateStr()
+  const start = new Date(`${today}T00:00:00Z`)
+  start.setUTCDate(start.getUTCDate() - 29)
+  return { date_from: start.toISOString().slice(0, 10), date_to: today }
+}
+let economicsWindow = currentEconomicsWindow()
 const fetchCostTrend = async () => {
   try {
-    const data = await getCostTrend(attributionDimension.value)
+    const data = await getCostTrend(attributionDimension.value, economicsWindow)
     costTrendData.value = data
     // 降级时后端给的是空 entries + total_cost 0 ⇒ 一张空饼图。
     // 不记下来的话，图看起来就是「这段时间没花钱」。
@@ -150,7 +163,7 @@ const fetchPeriodCompare = async () => {
 
 const fetchCacheEconomics = async () => {
   try {
-    const data = await getCacheEconomics()
+    const data = await getCacheEconomics(economicsWindow)
     cacheEconomicsData.value = data
     recordDegradation(t('dataLifecycle.usageCost.cache.title'), data)
   } catch (e) {
@@ -160,6 +173,7 @@ const fetchCacheEconomics = async () => {
 }
 
 const loadAll = async () => {
+  economicsWindow = currentEconomicsWindow()
   loading.value = true
   error.value = ''
   // 先清空再重收：本轮若全部降级为 false，旧的那条降级提示必须消失。
@@ -260,8 +274,7 @@ const renderTrendChart = () => {
 
   const data = costTrendData.value.entries.slice(0, 10) // 前10个
   const labels = data.map(e => e.dimension_value)
-  const inputCosts = data.map(e => e.input_cost_usd)
-  const outputCosts = data.map(e => e.output_cost_usd)
+  const totalCosts = data.map(e => e.total_cost_usd)
 
   trendChartInstance = new Chart(ctx, {
     type: 'bar',
@@ -269,14 +282,8 @@ const renderTrendChart = () => {
       labels,
       datasets: [
         {
-          label: t('dataLifecycle.usageCost.charts.inputCost'),
-          data: inputCosts,
-          backgroundColor: '#3b82f6',
-          stack: 'stack1',
-        },
-        {
-          label: t('dataLifecycle.usageCost.charts.outputCost'),
-          data: outputCosts,
+          label: t('dataLifecycle.usageCost.attribution.colTotalCost'),
+          data: totalCosts,
           backgroundColor: '#3b82f6',
           stack: 'stack1',
         },
@@ -417,7 +424,7 @@ onMounted(() => {
               <div class="compare-col compare-change">
                 <div class="compare-label">{{ t('dataLifecycle.usageCost.compare.change') }}</div>
                 <div class="compare-value" :class="trendClass">
-                  {{ trendIcon }} {{ formatPercent(Math.abs(periodCompareData.change_pct)) }}
+                  {{ periodCompareData.change_pct == null ? '—' : `${trendIcon} ${formatPercent(Math.abs(periodCompareData.change_pct))}` }}
                 </div>
                 <div class="compare-meta">
                   {{ periodCompareData.change_abs >= 0 ? '+' : '' }}{{ formatCurrency(periodCompareData.change_abs) }}
@@ -460,12 +467,16 @@ onMounted(() => {
           </div>
 
           <div class="chart-panel">
-            <h4 class="chart-title">{{ t('dataLifecycle.usageCost.attribution.detailChart') }}</h4>
+            <h4 class="chart-title">{{ t('dataLifecycle.usageCost.attribution.colTotalCost') }} (USD)</h4>
             <div class="chart-wrapper">
               <canvas id="costTrendChart"></canvas>
             </div>
           </div>
         </div>
+
+        <p v-if="costTrendData.source === 'request_metrics'" class="chart-note">
+          {{ costTrendData.date_from }} ~ {{ costTrendData.date_to }} · {{ t('dataLifecycle.usageCost.attribution.componentsUnavailable') }}
+        </p>
 
         <!-- 成本明细表 -->
         <div class="cost-table-wrapper">
@@ -505,23 +516,29 @@ onMounted(() => {
         <div class="cache-grid">
           <div class="cache-item">
             <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.hitRate') }}</div>
-            <div class="cache-value">{{ formatPercent(cacheEconomicsData.cache_hit_ratio * 100) }}</div>
+            <div class="cache-value">{{ formatPercent(cacheRatioPercent) }}</div>
             <div class="cache-hint">
-              {{ formatNumber(cacheEconomicsData.cache_read_tokens) }} /
-              {{ formatNumber(cacheEconomicsData.cache_read_tokens + cacheEconomicsData.prompt_tokens) }} tokens
+              {{ formatNumber(cacheEconomicsData.eligible_cache_read_tokens ?? cacheEconomicsData.cache_read_tokens) }} /
+              {{ formatNumber(cacheEconomicsData.cache_input_tokens ?? cacheEconomicsData.cache_read_tokens + cacheEconomicsData.prompt_tokens) }} tokens
+            </div>
+            <div v-if="cacheEconomicsData.cache_scope_requests !== undefined" class="cache-hint">
+              {{ t('dataLifecycle.usageCost.cache.coverage', { known: formatNumber(cacheEconomicsData.cache_scope_requests), total: formatNumber(cacheEconomicsData.total_requests) }) }}
             </div>
           </div>
 
           <div class="cache-item">
             <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.cacheSaved') }}</div>
             <div class="cache-value cache-value--green">{{ formatCurrency(cacheEconomicsData.dollars_saved) }}</div>
-            <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.cacheSavedHint') }}</div>
+            <div class="cache-hint">{{ t(cacheEconomicsData.dollars_saved === null ? 'dataLifecycle.usageCost.cache.savingsUnavailable' : 'dataLifecycle.usageCost.cache.cacheSavedHint') }}</div>
           </div>
 
           <div class="cache-item">
             <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.compressionSaved') }}</div>
             <div class="cache-value cache-value--green">{{ formatCurrency(cacheEconomicsData.compression_saved) }}</div>
             <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.compressionCount', { n: formatNumber(cacheEconomicsData.compressed_requests) }) }}</div>
+            <div v-if="cacheEconomicsData.compression_scope_requests !== undefined" class="cache-hint">
+              {{ t('dataLifecycle.usageCost.cache.coverage', { known: formatNumber(cacheEconomicsData.compression_scope_requests), total: formatNumber(cacheEconomicsData.total_requests) }) }}
+            </div>
           </div>
 
           <div class="cache-item">
@@ -531,9 +548,11 @@ onMounted(() => {
           </div>
 
           <div class="cache-item">
-            <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.actualSpend') }}</div>
+            <div class="cache-label">{{ t('dataLifecycle.usageCost.attribution.colTotalCost') }} (USD)</div>
             <div class="cache-value">{{ formatCurrency(cacheEconomicsData.dollars_spent) }}</div>
-            <div class="cache-hint">{{ t('dataLifecycle.usageCost.cache.effectiveRatio', { pct: formatPercent(cacheEconomicsData.effective_cost_ratio * 100) }) }}</div>
+            <div v-if="cacheEconomicsData.effective_cost_ratio !== null" class="cache-hint">
+              {{ t('dataLifecycle.usageCost.cache.effectiveRatio', { pct: formatPercent(cacheEconomicsData.effective_cost_ratio * 100) }) }}
+            </div>
           </div>
 
           <div class="cache-item">

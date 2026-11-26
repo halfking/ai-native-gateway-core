@@ -18,7 +18,9 @@ var coverageColumns = []string{
 // distinct from a receipt missing altogether. Each daily count has its own
 // cohort. Legacy usage rows establish retained request keys, so the count of
 // recorded sends still has no historical total.
-const coverageFacts = `WITH postings AS (` + requestPostings + `),
+const coverageFacts = coverageEvidenceKeys + legacyUsageWindowKeys + coverageReceiptKeys + legacyUsageReceiptJoin + coverageComparison
+
+const coverageEvidenceKeys = `WITH postings AS (` + requestPostings + `),
 legacy_usage_keys AS (
 	SELECT timezone($4, ts)::date AS local_day, tenant_id, request_id, count(*) AS ledger_rows
 	FROM public.usage_ledger_with_current_month
@@ -31,10 +33,14 @@ keys AS (
 	WHERE created_at >= $1 AND created_at < $2 AND ($3 = '' OR tenant_id = $3)
 	  AND ($3 = '' OR starts_with(error, 'gateway_admission:unassigned:') IS NOT TRUE)
 	UNION
-	SELECT tenant_id, request_id FROM public.usage_facts
+`
+
+const legacyUsageWindowKeys = `	SELECT tenant_id, request_id FROM public.usage_facts
 	WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3 = '' OR tenant_id = $3)
 	  AND status IN ('success','failure','rate_limited','cancelled')
-	UNION
+`
+
+const coverageReceiptKeys = `	UNION
 	SELECT tenant_id, request_id FROM postings
 	UNION
 	SELECT tenant_id, request_id FROM legacy_usage_keys
@@ -45,11 +51,15 @@ keys AS (
 	WHERE $3 = '' OR starts_with(w.error, 'gateway_admission:unassigned:') IS NOT TRUE
 	GROUP BY k.tenant_id, k.request_id, l.child_request_id
 ), usage_by_key AS (
-	SELECT k.tenant_id, k.request_id, min(u.occurred_at) AS occurred_at
+`
+
+const legacyUsageReceiptJoin = `	SELECT k.tenant_id, k.request_id, min(u.occurred_at) AS occurred_at
 	FROM keys k JOIN public.usage_facts u USING (tenant_id, request_id)
 	WHERE u.status IN ('success','failure','rate_limited','cancelled')
 	GROUP BY k.tenant_id, k.request_id
-), evidence AS (
+`
+
+const coverageComparison = `), evidence AS (
 	SELECT k.tenant_id, k.request_id, w.received_at, u.occurred_at, w.orchestration_child,
 	       (w.received_at >= $1 AND w.received_at < $2) AS receipt_in_window
 	FROM keys k

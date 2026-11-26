@@ -24,3 +24,4 @@
 ../../domains/ursm/v2/persist/shutdown_pool_probe_test.go	postgres://127.0.0.1:1/none?connect_timeout=1	436abc09f6	probe	pending	端口 1 + connect_timeout=1
 ../../internal/outbox/writer_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且无视 env；**写入型**（好在包在 tx 里且 defer tx.Rollback() ⇒ 不留残留）⇒ R70 改成认事实源
 ../../internal/quality/integration_test.go	postgres://user:pass@localhost/db	f1b76be42d	sample	pending	Example 文档示例（godoc 用），不是被测连接
+../../admin/routing_popular_models_test.go	postgres://fixture@127.0.0.1:1/fixture?sslmode=disable	ac67c913bf	probe	pending	端口 1 = 必连不上；pgxpool.New 惰性建池，构造非 nil pool 走测试桩分支 ⇒ 任何机器上都连不上真实库

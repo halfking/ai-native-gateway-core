@@ -25,7 +25,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, v, i, a) => {
 const CDP_URL = args.cdp || 'http://127.0.0.1:9223'
 const BASE = (args.url || 'http://127.0.0.1:8782').replace(/\/$/, '')
 const USER = args.user || 'admin'
-const PASSWORD = args.password || ''
+const PASSWORD = process.env.ADMIN_PASSWORD || args.password || ''
 const OWNER = args.owner || ''
 
 const results = []
@@ -104,10 +104,9 @@ check('登录 /api/auth/token 200', true)
 //   对准数据（90d = 后端上限），而不是把空窗当产品红。
 // 89 天：90d 整边界会因 now() 两次取样的毫秒差触发「>90d」闸（2026-11-20 实测 400）
 const WIN_FROM = new Date(Date.now() - 89 * 24 * 3600 * 1000).toISOString()
-const listApiRaw = await js(`fetch('/api/admin/session-analytics/users?limit=50&date_from=${encodeURIComponent(WIN_FROM)}',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
-console.log('LIST_RAW =', listApiRaw)
+const listApiRaw = await js(`fetch('/api/admin/session-analytics/v2/users?limit=50&date_from=${encodeURIComponent(WIN_FROM)}',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
 const list = JSON.parse(String(listApiRaw).replace(/^\d+ :: /, ''))
-check('列表端点 200 且带 usage_meta（出处块）', !!(list.usage_meta && list.usage_meta.source_view === 'request_logs_with_current_month'), `source_view=${list.usage_meta && list.usage_meta.source_view}`)
+check('列表端点 200 且投影就绪', String(listApiRaw).startsWith('200 :: ') && list.ready === true && list.usage_meta?.source_view === 'request_metrics', `source_view=${list.usage_meta?.source_view} ready=${list.ready}`)
 check('列表端点带真实用量窗口（usage_window）', !!(list.usage_window && list.usage_window.start && list.usage_window.end), list.usage_window ? `${list.usage_window.start} ~ ${list.usage_window.end}` : 'missing')
 const users = list.users || []
 if (!users.length) {
@@ -119,21 +118,37 @@ const withUsage = users.filter(u => u.window_usage)
 check(`窗口聚合数字至少覆盖一个员工（${users.length} 用户中 ${withUsage.length} 有 window_usage）`, users.some(u => u.window_usage !== undefined), 'window_usage 为 undefined = 窗口内无请求，与 0 语义分家 ✓')
 
 // 员工×模型矩阵（API 形状）
-const firstOwner = OWNER || users[0].owner_user
-const matrixApi = await js(`fetch('/api/admin/session-analytics/users/usage-matrix?owner=${encodeURIComponent(firstOwner)}&start_date=${encodeURIComponent(WIN_FROM)}&limit=200',{credentials:'include'}).then(r=>r.json()).then(j=>JSON.stringify(j)).catch(e=>'ERR:'+e.message)`)
+const selectedUser = (OWNER && users.find(user => user.owner_user === OWNER)) || users[0]
+const firstOwner = selectedUser.owner_user
+const bounds = new URLSearchParams({ owner: firstOwner, start_date: list.usage_meta.window_start, end_date: list.usage_meta.window_end, limit: '200' })
+if (selectedUser.tenant_id) bounds.set('tenant_id', selectedUser.tenant_id)
+const matrixApi = await js(`fetch('/api/admin/session-analytics/v2/users/usage-matrix?${bounds}',{credentials:'include'}).then(r=>r.json()).then(j=>JSON.stringify(j)).catch(e=>'ERR:'+e.message)`)
 const matrix = JSON.parse(matrixApi)
-check('usage-matrix 端点 200 且带 usage_meta', !!(matrix.usage_meta && matrix.rows), `rows=${(matrix.rows || []).length}`)
+check('模型矩阵投影就绪，沿用列表窗口', matrix.ready === true && matrix.usage_meta?.source_view === 'request_metrics' && matrix.start_date === list.usage_meta.window_start && matrix.end_date === list.usage_meta.window_end && Array.isArray(matrix.rows), `rows=${(matrix.rows || []).length}`)
 const mrow = (matrix.rows || []).find(r => r.total_tokens > 0)
 if (mrow) {
-  check('矩阵行含 token 三列（input/output/total）与内外成本', ['input_tokens', 'output_tokens', 'total_tokens', 'internal_cost_usd', 'external_cost_usd'].every(k => typeof mrow[k] === 'number'), `${mrow.owner_user}/${mrow.model_name} tokens=${mrow.total_tokens}`)
+  check('矩阵行含 Token、积分和 USD 成本',
+    ['input_tokens', 'output_tokens', 'total_tokens', 'internal_credits'].every(k => typeof mrow[k] === 'number') &&
+    (mrow.external_cost_usd === null || typeof mrow.external_cost_usd === 'number'), `tokens=${mrow.total_tokens}`)
+}
+const listedUsage = selectedUser.window_usage
+if (listedUsage && matrix.rows?.length < 200) {
+  const fields = ['request_count', 'input_tokens', 'output_tokens', 'total_tokens', 'internal_credits']
+  const mismatched = fields.filter(k => Math.abs(matrix.rows.reduce((total, row) => total + row[k], 0) - listedUsage[k]) > 0.0000001)
+  const usdAmounts = matrix.rows.map(row => row.external_cost_usd).filter(value => value !== null)
+  if (listedUsage.external_cost_usd === null ? usdAmounts.length > 0 :
+      Math.abs(usdAmounts.reduce((total, amount) => total + amount, 0) - listedUsage.external_cost_usd) > 0.0000001) {
+    mismatched.push('external_cost_usd')
+  }
+  check('同一员工同窗口的模型行与列表合计一致', mismatched.length === 0, mismatched.join(', ') || '6 项一致')
 }
 
 // ── 2. 列表页（真渲染）：出处行 + 五列 + 展开行 ──────────────────────────
-await goto(`${BASE}/admin/session-analytics/users`, 6000)
+await goto(`${BASE}/admin/session-analytics/user-profiles`, 6000)
 const listPage = await js(`(() => {
   const meta = document.querySelector('[data-testid="user-profile-usage-meta"]')
   const headers = [...document.querySelectorAll('.el-table th')].map(t => t.textContent.trim())
-  const need = ['请求数（窗口内）','Token（窗口内）','内部成本（窗口内）','外部成本（窗口内）','模型数（窗口内）']
+  const need = ['请求数（窗口内）','Token（窗口内）','积分','外部成本（窗口内）','模型数（窗口内）']
   return JSON.stringify({
     meta: meta ? meta.textContent.trim().slice(0, 120) : null,
     headers: need.map(h => headers.includes(h)),
@@ -141,7 +156,7 @@ const listPage = await js(`(() => {
   })
 })()`)
 const lp = JSON.parse(listPage)
-check('列表页渲染出处行（数字出处：request_logs_with_current_month …）', !!lp.meta && lp.meta.includes('request_logs_with_current_month'), lp.meta || 'missing')
+check('列表页渲染 request_metrics 出处行', !!lp.meta && lp.meta.includes('request_metrics'), lp.meta || 'missing')
 check('窗口用量五列列头全部在', lp.headers.every(Boolean), JSON.stringify(lp.headers))
 check(`列表行有数据（rows=${lp.rows}）`, lp.rows > 0)
 
@@ -168,12 +183,14 @@ if (!ex.ok && ex.why === 'NO_EXPAND_ARROW') {
 }
 
 // ── 3. 详情页（真渲染）：模型卡列头 + 任务链接 ────────────────────────────
-await goto(`${BASE}/admin/session-analytics/users/${encodeURIComponent(firstOwner)}`, 6000)
+const profileScope = new URLSearchParams({ start_time: list.usage_meta.window_start, end_time: list.usage_meta.window_end })
+if (selectedUser.tenant_id) profileScope.set('tenant_id', selectedUser.tenant_id)
+await goto(`${BASE}/admin/session-analytics/users/${encodeURIComponent(firstOwner)}?${profileScope}`, 6000)
 const detail = await js(`(() => {
   const h2 = document.querySelector('h2')?.textContent?.trim() || ''
   const card = document.querySelector('[data-testid="up-model-usage"]')
   const headers = card ? [...card.querySelectorAll('th')].map(t => t.textContent.trim()) : []
-  const need = ['模型名称','供应商','请求次数','总 Token 数','输入 Token','输出 Token','内部成本','外部成本']
+  const need = ['模型名称','供应商','请求次数','总 Token 数','输入 Token','输出 Token','积分','外部成本']
   const rows = card ? card.querySelectorAll('tbody tr').length : -1
   const taskLinks = [...document.querySelectorAll('[data-testid="up-top-tasks"] button')].filter(b => (b.textContent||'').trim() && b.textContent.trim() !== '').length
   return JSON.stringify({ h2, hasCard: !!card, headers: need.map(h => headers.includes(h)), rows, taskLinks })
@@ -190,10 +207,12 @@ else if (emptyState === true) check('热门任务空态合法（该 owner 无任
 else check('热门任务行是可点链接（员工→任务→会话下钻）', false, `links=${dp.taskLinks} 且无空态`)
 
 // ── 3.5 项目卡（L1 收口：员工→项目层，2026-11-20 二段）────────────────────
-const projApi = await js(`fetch('/api/admin/session-analytics/users/${encodeURIComponent(firstOwner)}/projects?days=30',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
+const projApi = await js(`fetch('/api/admin/session-analytics/v2/users/${encodeURIComponent(firstOwner)}/projects?${profileScope}',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
 const projStatus = String(projApi).split(' :: ')[0]
 const projBody = JSON.parse(String(projApi).replace(/^\d+ :: /, ''))
-check('projects 端点 200 且带 usage_meta（会话级出处块）', projStatus === '200' && projBody.usage_meta?.source_view === 'session_summaries × session_dim', `status=${projStatus} source=${projBody.usage_meta?.source_view}`)
+check('projects 端点 200 且沿用请求投影与所选租户', projStatus === '200' &&
+  projBody.usage_meta?.source_view === 'request_metrics' && (!selectedUser.tenant_id || projBody.tenant_id === selectedUser.tenant_id),
+`status=${projStatus} source=${projBody.usage_meta?.source_view}`)
 const projRowsApi = (projBody.projects || []).length
 check(`projects 端点返回行（rows=${projRowsApi}；0 = 该 owner 无项目数据，合法）`, projStatus === '200' && projRowsApi >= 0)
 
@@ -214,7 +233,7 @@ if (!pc.ok) {
   gauge('项目卡真渲染（员工→项目层）', pc.why)
 } else if (pc.rows > 0) {
   check('项目卡八列表头齐 + 行数据在场', pc.headers.every(Boolean), `rows=${pc.rows} sample=${pc.sample}`)
-  check('项目卡出处注记标明会话级来源', pc.note.includes('session_summaries'), pc.note)
+  check('项目卡出处注记标明请求投影', pc.note.includes('request_metrics'), pc.note)
 } else if (pc.emptyText) {
   check('项目卡空态合法（该 owner 无项目数据，出空态文案而非报错）', true, 'rows=0 + 空态在场')
 } else {
@@ -230,12 +249,12 @@ const drawerDetail = await js(`(async () => {
   if (!btn) return JSON.stringify({ ok: false, why: 'NO_BTN' })
   btn.click()
   await new Promise(r => setTimeout(r, 1200))
-  const drawerText = document.querySelector('.el-drawer')?.textContent || ''
-  const need = ['Token 统计公式', '总 Token 数 = 输入 Token + 输出 Token', '成本核算公式', '数据来源', '时间范围说明']
-  return JSON.stringify({ ok: true, sections: need.map(n => drawerText.includes(n)), src: drawerText.includes('request_logs') })
+  const drawerText = document.querySelector('.el-drawer .help-content')?.textContent || ''
+  const need = ['成本核算公式', '积分', 'USD', '数据来源', 'request_metrics', '时间范围说明']
+  return JSON.stringify({ ok: true, sections: need.map(n => drawerText.includes(n)) })
 })()`)
 const dd = JSON.parse(drawerDetail)
-check('详情页帮助抽屉五段口径齐（公式/来源/时间范围）', dd.ok && dd.sections && dd.sections.every(Boolean), JSON.stringify(dd.sections || dd))
+check('详情页帮助抽屉显示计量单位、投影来源和时间范围', dd.ok && dd.sections && dd.sections.every(Boolean), JSON.stringify(dd.sections || dd))
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 const green = results.filter(r => r.ok).length

@@ -549,7 +549,16 @@ export interface MaasUsageSummary {
   tenant_id: string
   total_requests: number
   total_credits: number
+  unique_models?: number
+  success_count?: number
+  avg_latency_ms?: number
+  window_start?: string
+  window_end?: string
+  timezone?: string
   total_cost_usd?: number
+  source?: 'request_metrics'
+  cost_rows_outside_usd?: number
+  cost_rows_without_usd_evidence?: number
   by_model: MaasUsageModelRow[]
   trend: MaasUsageTrendRow[]
   // Optional degradation markers. When usage_ledger_with_current_month (or
@@ -577,10 +586,16 @@ export interface MaasConsumptionDetailRow {
   cache_read_tokens: number
   cache_write_tokens: number
   credits_charged: number
-  upstream_cost_usd: number
-  tenant_revenue_usd: number
-  gross_margin_usd: number
-  gross_margin_rate: number
+  upstream_cost_usd: number | null
+  tenant_revenue_usd: number | null
+  gross_margin_usd: number | null
+  gross_margin_rate: number | null
+  estimated_revenue_usd?: number | null
+  estimated_margin_usd?: number | null
+  estimated_margin_rate?: number | null
+  cost_rows_outside_usd?: number | null
+  cost_rows_without_usd_evidence?: number | null
+  billed_without_cancellation_evidence?: number
   cancelled_billed_requests: number
 }
 
@@ -588,37 +603,9 @@ export interface MaasConsumptionDetail {
   tenant_id: string
   owner_user?: string
   days: number
-  cents_per_credit: number
-  rows: MaasConsumptionDetailRow[]
-}
-
-export interface MaasConsumptionDetailRow {
-  tenant_id: string
-  owner_user?: string
-  provider_id?: number | null
-  provider_name: string
-  credential_id?: number | null
-  credential_label: string
-  canonical_id?: number | null
-  model: string
-  requests: number
-  prompt_tokens: number
-  completion_tokens: number
-  cache_read_tokens: number
-  cache_write_tokens: number
-  credits_charged: number
-  upstream_cost_usd: number
-  tenant_revenue_usd: number
-  gross_margin_usd: number
-  gross_margin_rate: number
-  cancelled_billed_requests: number
-}
-
-export interface MaasConsumptionDetail {
-  tenant_id: string
-  owner_user?: string
-  days: number
-  cents_per_credit: number
+  cents_per_credit?: number
+  source?: 'request_metrics'
+  estimate_basis?: 'current_credit_reference'
   rows: MaasConsumptionDetailRow[]
 }
 
@@ -626,7 +613,34 @@ export function getMaasUsageSummary(days = 7, limit = 10) {
   const q = new URLSearchParams()
   q.set('days', String(days))
   q.set('limit', String(limit))
-  return req<MaasUsageSummary>('GET', `/api/maas/usage/summary?${q.toString()}`)
+  return req<MaasUsageSummary>('GET', `/api/maas/v2/usage/summary?${q.toString()}`)
+}
+
+export interface MaasUsageRequest {
+  request_id: string
+  ts: string
+  client_model: string | null
+  outbound_model: string | null
+  request_status: string
+  success: boolean
+  credits_charged: number | null
+}
+
+export interface MaasUsageRequestQuery {
+  start?: string
+  end?: string
+  days?: number
+  timezone?: string
+  model?: string
+  bucket_day?: string
+}
+
+export function getMaasUsageRequests(params: MaasUsageRequestQuery & { page: number; page_size: number }) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) query.set(key, String(value))
+  }
+  return req<{ rows: MaasUsageRequest[]; total: number }>('GET', `/api/maas/v2/usage/requests?${query}`)
 }
 
 export function getAdminMaasWallet(tenantCode: string) {
@@ -646,7 +660,7 @@ export function getAdminMaasUsageSummary(tenantCode: string, days = 7, limit = 1
   q.set('limit', String(limit))
   return req<MaasUsageSummary>(
     'GET',
-    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/usage/summary?${q.toString()}`,
+    `/api/admin/maas/v2/tenants/${encodeURIComponent(tenantCode)}/usage/summary?${q.toString()}`,
   )
 }
 
@@ -655,7 +669,7 @@ export function getAdminMaasConsumptionDetail(tenantCode: string, days = 7, owne
   if (ownerUser.trim()) q.set('owner_user', ownerUser.trim())
   return req<MaasConsumptionDetail>(
     'GET',
-    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/usage/detail?${q.toString()}`,
+    `/api/admin/maas/v2/tenants/${encodeURIComponent(tenantCode)}/usage/detail?${q.toString()}`,
   )
 }
 

@@ -1051,6 +1051,9 @@ export interface MaasUsageSummary {
   total_requests: number
   total_credits: number
   total_cost_usd?: number
+  source?: 'request_metrics'
+  cost_rows_outside_usd?: number
+  cost_rows_without_usd_evidence?: number
   by_model: MaasUsageModelRow[]
   trend: MaasUsageTrendRow[]
 }
@@ -1064,7 +1067,7 @@ export function fetchMaasUsageSummary(
   if (typeof params.days === 'number' && Number.isFinite(params.days)) qs.set('days', String(Math.trunc(params.days)))
   if (typeof params.limit === 'number' && Number.isFinite(params.limit)) qs.set('limit', String(Math.trunc(params.limit)))
   const s = qs.toString()
-  return req<unknown>('GET', `${tenantsBase(tenantCode, 'usage/summary')}${s ? '?' + s : ''}`, undefined, options).then(
+  return req<unknown>('GET', `/api/admin/maas/v2/tenants/${encodeURIComponent(tenantCode)}/usage/summary${s ? '?' + s : ''}`, undefined, options).then(
     unwrapMaasUsageSummary,
   )
 }
@@ -1102,13 +1105,16 @@ export interface MaasConsumptionRow {
   cache_read_tokens: number
   cache_write_tokens: number
   credits_charged: number
-  upstream_cost_usd: number
-  /** ★ 算出来的：`credits_charged * cents_per_credit / 100`。 */
-  tenant_revenue_usd: number
-  gross_margin_usd: number
-  /** ★★ 收入为 0 时**保持零值 0**（无定义）⇒ 与「真·零毛利」不可区分。 */
-  gross_margin_rate: number
-  /** ★ SQL FILTER 计数：已计费 + 流中断 + 失败码 ∈ {client_cancel, client_disconnected}。 */
+  upstream_cost_usd: number | null
+  tenant_revenue_usd: number | null
+  gross_margin_usd: number | null
+  gross_margin_rate: number | null
+  estimated_revenue_usd?: number | null
+  estimated_margin_usd?: number | null
+  estimated_margin_rate?: number | null
+  cost_rows_outside_usd?: number | null
+  cost_rows_without_usd_evidence?: number | null
+  billed_without_cancellation_evidence?: number
   cancelled_billed_requests: number
 }
 
@@ -1116,8 +1122,11 @@ export interface MaasConsumptionDetail {
   tenant_id: string
   owner_user?: string
   days: number
-  /** ★ 从 `maas_settings WHERE id = 1` 直读 ⇒ 客户端可据此复算 revenue。 */
-  cents_per_credit: number
+  cents_per_credit?: number
+  source?: 'request_metrics'
+  estimate_basis?: 'current_credit_reference'
+  credit_reference_currency?: 'USD' | 'CNY'
+  credit_reference_cny_per_usd?: number
   rows: MaasConsumptionRow[]
 }
 
@@ -1130,7 +1139,7 @@ export function fetchMaasConsumptionDetail(
   if (params.ownerUser) qs.set('owner_user', params.ownerUser)
   if (typeof params.days === 'number' && Number.isFinite(params.days)) qs.set('days', String(Math.trunc(params.days)))
   const s = qs.toString()
-  return req<unknown>('GET', `${tenantsBase(tenantCode, 'usage/detail')}${s ? '?' + s : ''}`, undefined, options).then(
+  return req<unknown>('GET', `/api/admin/maas/v2/tenants/${encodeURIComponent(tenantCode)}/usage/detail${s ? '?' + s : ''}`, undefined, options).then(
     unwrapMaasConsumptionDetail,
   )
 }
@@ -1225,8 +1234,9 @@ export function maasTenantRevenueUsd(creditsCharged: number, centsPerCredit: num
  * ★★★ `gross_margin_rate` 在 `revenue == 0` 时**保持零值**（无定义）。
  * 返回 true 表示「这个 0 是无定义，不是零毛利」。
  */
-export function maasMarginRateUndefined(r: { tenant_revenue_usd: number; gross_margin_rate: number }): boolean {
-  return r.tenant_revenue_usd === 0
+export function maasMarginRateUndefined(r: Pick<MaasConsumptionRow, 'tenant_revenue_usd' | 'gross_margin_rate' | 'estimated_margin_rate'>): boolean {
+  if (r.estimated_margin_rate !== undefined) return r.estimated_margin_rate === null
+  return r.tenant_revenue_usd == null || r.tenant_revenue_usd === 0 || r.gross_margin_rate == null
 }
 
 /** ★★ 「已计费但被客户端取消」的请求数 —— 收入侧的已知漏点。 */
