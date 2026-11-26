@@ -197,6 +197,8 @@
 | `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。★ **必须经 `maestro/run-session-analytics.sh` 跑**（它负责喂动态段 owner、钉 zh-CN 界面语言、起全新 Chrome）—— 前置条件见 §4.4。 |
 | `maestro/flows/18-stats-range-and-scope-hint.yaml` | **时间范围统一 + 统计说明提示符**（看板 / 会话统计 / 会话分析用户页 / 运营面板） | 4 | 是 | ★ 2026-11-24~25 统一轮新增：第一层证明「浏览器真的能打开这四页、点到日期控件、面板真的展开」（判据全用 `data-testid` ⇒ 与界面语言解耦）。第二层语义对拍在 `maestro/tools/assert-stats-range-picker.mjs`（26 条）与 `maestro/tools/assert-board-op-custom-range.mjs`（5 条：自定义区间 + 7 档位逐个对拍）与 `maestro/tools/assert-board-op-list-deeplink.mjs`（4 条：**列表页** `/admin/board-operational/:dimension` 的 `?start=&end=` **深链**——深链到达后端 / 显示=数据 / 深链优先于 days / 默认 7 天；★ 2026-11-25 第 30 轮新增，★ 列表页并入共享日期组件后这条能力**只有它有** ⇒ 必须有独立证据）。★ **必须经 `maestro/run-stats-range-picker.sh` 跑**（它负责起全新 Chrome、顺延端口、注入凭据与视口，并按 `result.mjs` 的 `mergeExitCodes` 合并三层退出码）。★ **2026-11-25 起默认走「CDP 预置会话」**：runner 在 211 本机现签 JWT ⇒ 注入浏览器 ⇒ **完全不走 UI 登录** ⇒ 因此**不受生产 captcha 闸门约束**（机制与计数清零条件见 §6.4，实现与两态实测表见 §6.5.1）。 |
 | `maestro/flows/19-request-logs-time-ranges.yaml` | **请求日志：切换时间范围后数据正确 ＋ 查询不超时 ＋ 加载态可见**（`/request-logs`） | 1 | 是 | ★ 2026-11-25 request-logs 根修轮新增：第一层证明「真实浏览器能点到八个档位、连续快速切换停在最后选的档、含探测口径、查询按钮与翻页，且每次都是加载收尾 / 有数据 / 无报错」（共享子流程 `_shared/request-logs-range.yaml`）。第二层语义对拍在 `maestro/tools/assert-request-logs-time-ranges.mjs`（请求窗口 == 档位窗口、响应窗口 == 请求窗口、界面 == 响应、被取代的 fetch 被中止、加载态可见有读数、多条件矩阵）。★ **必须经 `maestro/run-request-logs-time-ranges.sh` 跑**（同款预置会话 / 全新 Chrome / `mergeExitCodes`；并按 API 实况决定「今天」档位）。 |
+| `maestro/flows/20-user-role-governance.yaml` | **租户详情页的「变更角色」＋ 非 default 租户不得是超级管理员**（`/tenants/:code`） | 3 | 是 | ★ 2026-11-26 角色治理轮新增（★ **2026-11-26 L135 补登记**：★ 该 flow 落地时漏登记进本表 ★）：在 `acme`（租户内无超管）验「建号下拉里没有超级管理员、且有普通用户」、在 `chenb` 验「变更角色入口存在、可打开、下拉只有租户管理员/普通用户」。★ **该页用 element-plus `<el-select>` ⇒ option 只在展开时渲染 ⇒ 「超级管理员不可见」可以用 `assertNotVisible` 干净断言**（★ 与 `21` 的口径**相反** ★）。 |
+| `maestro/flows/21-users-page-role-governance.yaml` | **平台级用户目录页（`/users`）的「变更角色」入口可达性** | 1 | 是 | ★ 2026-11-26 L135 补真机覆盖轮新增：★ 用户诉求「**在用户管理中**增加变更角色功能」落在 `/users`（★ `router.ts:310` ⇒ `UsersView.vue` ★），而上一轮的真机证据只在租户详情页 ⇒ ★ 本 flow 补上这一页。★ ★ **该页用原生 `<select>` ⇒ option 常驻 DOM ⇒ 「超级管理员不可见」在该页是【恒红的假门】**（★ 必然被筛选区角色下拉的 option 命中 ★）⇒ ★★ **控件级断言改由 `maestro/tools/assert-users-role-options.mjs` 承担**（★ 读该 select 的 **option 集合**、★ 并用「同一控件在两个租户上得出相反结果」互为对照 ★）；★ 本 flow **只管真实鼠标可达性**（页能开 / 按钮能点 / 弹窗能开 / 「普通用户」在界面上真的可见 / 保存按钮在）。★ **必须经 `maestro/run-users-role-governance.sh` 跑**（三层合并：flow ＋ 探针 ＋ 探针 `--negate` 自证层）。★ **2026-11-26 改写：默认走「CDP 预置会话」**（runner 在 211 本机现签 JWT `maestro/tools/mint-jwt-token.py` ⇒ 注入浏览器 ⇒ **完全不走 UI 登录** ⇒ 不受生产 captcha 闸门约束；机制与计数清零条件见 §6.4）。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
 合计：**运行时路由 136 条**（§1.1 口径）。
@@ -747,6 +749,26 @@ flow 里的 URL 用 `${ENV_VAR}` 引用**运行时传入的变量**（通道 = `
 
 ★ 判据 ③ 就是「HTTP 200 但没有会话 cookie」那个坑的**真判据**；它用驱动原生方式实现，
   不依赖任何页面内 JS（页面内 JS 在 web 驱动下**根本跑不起来**，见 §6.3/§6.6）。
+
+★ ★★ **2026-11-26 L135 轮加固（★ 共享资产，改动影响**所有**需登录的 flow ★）★★**：
+判据 ①（`notVisible: id: login-modal-title`）现在**带一次重试**（★ `retry: {maxRetries: "2"}`，
+★ **只包「等弹窗关闭」这一步**、★ 超时 20s ⇒ 最长等 40s ★）。
+
+★ ★ **为什么只重试「等」而不重试整段输入（★ 实测撞出来的 ★）**：
+★ 有一次失败的现场层级里 ★ **页面其实已经登录了**（顶栏「系统管理员 · 超级管理员」、
+  `app-user-menu-name` 可见、★ **登录弹窗根本不在**）⇒ ★★ **登录是成功的**、★ 只是
+  「弹窗关得慢」让判据 ① 超时 ⇒ ★★ 若把「输入 ＋ 等待」整段包进 retry ⇒ ★ retry 的第一步
+  `tapOn login-username` ★ **必然扑空**（★ 弹窗已经关了 ★）⇒ ★★ **retry 会把「成功」变成「失败」**。
+⇒ ★ **只重试「等」**：① 已关闭 ⇒ 立即过；② 关得慢 ⇒ 继续等；③ 真登录失败 ⇒ 等满仍红
+⇒ ★★ **判据语义完全不变**。
+
+★ ★★ **另一种已知间歇性故障（★ 「请求没发出」型 ★）**：★ 实测有一次失败现场是
+★ **弹窗仍在、无错误横幅、无验证码输入框** ⇒ ★★ **后端根本没收到请求** ⇒ ★ **不是口令错、
+也不是 captcha 闸门** ⇒ ★★ 而是 Maestro 的「键入/提交」没生效（★ 最可能：SPA 尚未 hydrate 时
+`inputText` 写进了 DOM、但 v-model 没收到事件 ★）⇒ ★ 这种情况下本 flow 只能判红 ⇒
+★ **调用方须按「量具失效」归类、而不是「产品红」**（★ 范式见
+`maestro/run-users-role-governance.sh` 的「登录段红 ⇒ 量具失效」 ★）。
+★ ★ **要彻底绕开 UI 登录 ⇒ 走 §6.5 的 CDP 预置会话**（★ 不受生产 captcha 闸门约束 ★）。
 
 ### 6.2 为什么提交用 Enter 而不是点「登录」按钮
 
