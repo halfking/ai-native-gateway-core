@@ -1095,6 +1095,10 @@ func main() {
 	// 2026-10-06 ASR 多模型轮：refine/analyze 转写后处理二件套，与
 	// /v1/audio/* 共享 AudioService 鉴权；LLM 步骤走环回 chat 面。
 	var audioTransformHandler *streaming.AudioTransformHandler
+	// 2026-11-26 语音流式轮：/v1/audio/converse 级联语音会话（ASR → 环回
+	// chat → TTS 一次调用串成多轮语音对话），与 /v1/audio/* 共享
+	// AudioService。
+	var audioConverseHandler *streaming.ConverseHandler
 	// 2026-10-26 多模态标准接口轮：文本加工三件套（标题总结 / 内容总结 /
 	// 任务分类），LLM 编排经环回 chat 面，与 refine/analyze 同款鉴权。
 	var summarizeHandler *streaming.SummarizeHandler
@@ -2843,6 +2847,9 @@ func main() {
 		transformSvc := streaming.NewAudioTransformService(audioService)
 		audioTransformHandler = streaming.NewAudioTransformHandler(transformSvc)
 		audioMCPHandler.SetTransformService(transformSvc)
+		// 2026-11-26 语音流式轮：级联语音会话编排（复用 audioService 的
+		// ASR/TTS/鉴权，LLM 步走环回 chat 面）。
+		audioConverseHandler = streaming.NewConverseHandler(streaming.NewConverseService(audioService))
 		// 2026-10-26 多模态标准接口轮：文本三件套（标题/总结/分类）。
 		// 只接鉴权不接 RPM limiter——环回 chat 步携带调用方 key 已计
 		// 一次限流（authenticateNoRPM 的口径，见 summarize.go）。
@@ -7798,6 +7805,13 @@ func main() {
 	if audioTransformHandler != nil {
 		mux.Handle("/v1/audio/refine", observeModality(audioTransformHandler))
 		mux.Handle("/v1/audio/analyze", observeModality(audioTransformHandler))
+	}
+	// 2026-11-26 语音流式轮：级联语音会话。不包 keyConcurrentGate——
+	// ASR/TTS 步走 audioService 自身的 8 路并发闸，LLM 步经环回 chat 面
+	// 携带同一把调用方 key 已计一次并发；外层再包=双计（refine/analyze
+	// 同款装配论证，见 audio_converse.go 头注）。
+	if audioConverseHandler != nil {
+		mux.Handle("/v1/audio/converse", observeModality(audioConverseHandler))
 	}
 	// 2026-10-26 多模态标准接口轮：文本加工三件套（LLM 编排经环回 chat 面）。
 	if summarizeHandler != nil {
