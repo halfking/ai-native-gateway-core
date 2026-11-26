@@ -3187,7 +3187,12 @@ func (h *ChatHandler) serveWithExecutor(
 		// 收到请求后立即提取并保存附件到文件系统。这样即使后续转发/记录失败，
 		// 附件依然可追溯。提取失败不阻塞请求转发（best-effort）。
 		if h.attachmentExtractor != nil {
-			extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes)
+			// P0 安全修复 (2026-11-26): 传递 tenantID 用于配额检查
+		var tenantID string
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes, tenantID)
 			if extractResult != nil {
 				failed := applyAttachmentResult(logCtx, extractResult)
 				slog.Debug("attachments: extracted from request",

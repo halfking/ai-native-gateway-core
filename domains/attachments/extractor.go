@@ -69,8 +69,15 @@ type ExtractResult struct {
 //
 // body 为原始 JSON 字节，不会被修改（转发用原始 body，确保上游收到完整图片）。
 // 保存策略由调用方决定；结果始终包含每个检测到的附件状态。
-func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *ExtractResult {
+func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte, tenantID ...string) *ExtractResult {
 	result := &ExtractResult{}
+
+	// Extract optional tenantID
+	var tenant string
+	if len(tenantID) > 0 {
+		tenant = tenantID[0]
+	}
+
 
 	var bodyMap map[string]any
 	if err := json.Unmarshal(body, &bodyMap); err != nil {
@@ -110,7 +117,7 @@ func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *Extrac
 					continue
 				}
 				result.TotalFound++
-				e.processOne(requestID, url, msgIdx, blockIdx, "image", result)
+				e.processOne(requestID, url, msgIdx, blockIdx, "image", tenant, result)
 			case "input_audio":
 				ia, ok := blockMap["input_audio"].(map[string]any)
 				if !ok {
@@ -122,7 +129,7 @@ func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *Extrac
 				}
 				format, _ := ia["format"].(string)
 				result.TotalFound++
-				e.processOne(requestID, audioDataURI(format, data), msgIdx, blockIdx, "audio", result)
+				e.processOne(requestID, audioDataURI(format, data), msgIdx, blockIdx, "audio", tenant, result)
 			case "video_url":
 				vu, ok := blockMap["video_url"].(map[string]any)
 				if !ok {
@@ -133,7 +140,7 @@ func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *Extrac
 					continue
 				}
 				result.TotalFound++
-				e.processOne(requestID, url, msgIdx, blockIdx, "video", result)
+				e.processOne(requestID, url, msgIdx, blockIdx, "video", tenant, result)
 			case "file":
 				fi, ok := blockMap["file"].(map[string]any)
 				if !ok {
@@ -144,7 +151,7 @@ func (e *Extractor) ExtractFromOpenAIBody(requestID string, body []byte) *Extrac
 					continue
 				}
 				result.TotalFound++
-				e.processOne(requestID, fd, msgIdx, blockIdx, "file", result)
+				e.processOne(requestID, fd, msgIdx, blockIdx, "file", tenant, result)
 			}
 		}
 	}
@@ -175,8 +182,15 @@ func audioDataURI(format, base64Data string) string {
 //	{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
 //
 // 我们将其归一化为 data URI 再交给 Storage。
-func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *ExtractResult {
+func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte, tenantID ...string) *ExtractResult {
 	result := &ExtractResult{}
+
+	// Extract optional tenantID
+	var tenant string
+	if len(tenantID) > 0 {
+		tenant = tenantID[0]
+	}
+
 
 	var bodyMap map[string]any
 	if err := json.Unmarshal(body, &bodyMap); err != nil {
@@ -219,7 +233,7 @@ func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *Ext
 				}
 				dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
 				result.TotalFound++
-				e.processOne(requestID, dataURI, msgIdx, blockIdx, "image", result)
+				e.processOne(requestID, dataURI, msgIdx, blockIdx, "image", tenant, result)
 			case "document":
 				// N21-3 顺带闭合：Anthropic document 块（PDF 上传）此前
 				// 与 openai-chat 侧的 file 块同样不入附件列。
@@ -240,7 +254,7 @@ func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *Ext
 				}
 				dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
 				result.TotalFound++
-				e.processOne(requestID, dataURI, msgIdx, blockIdx, "file", result)
+				e.processOne(requestID, dataURI, msgIdx, blockIdx, "file", tenant, result)
 			}
 		}
 	}
@@ -261,8 +275,15 @@ func (e *Extractor) ExtractFromAnthropicBody(requestID string, body []byte) *Ext
 //   - input_file：file_data 为 data URI 字符串；兼容 {file:{file_data}} 形态
 //
 // 仅提取 data: URI，HTTP URL 维持不拉取（与既有纪律一致）。
-func (e *Extractor) ExtractFromResponsesBody(requestID string, body []byte) *ExtractResult {
+func (e *Extractor) ExtractFromResponsesBody(requestID string, body []byte, tenantID ...string) *ExtractResult {
 	result := &ExtractResult{}
+
+	// Extract optional tenantID
+	var tenant string
+	if len(tenantID) > 0 {
+		tenant = tenantID[0]
+	}
+
 
 	var bodyMap map[string]any
 	if err := json.Unmarshal(body, &bodyMap); err != nil {
@@ -282,7 +303,7 @@ func (e *Extractor) ExtractFromResponsesBody(requestID string, body []byte) *Ext
 			continue
 		}
 		// 平铺块形态：item 本身就是媒体块（识别命中即跳过 content 扫描）
-		if e.scanResponsesBlock(requestID, itemMap, itemIdx, 0, result) {
+		if e.scanResponsesBlock(requestID, itemMap, itemIdx, 0, tenant, result) {
 			continue
 		}
 		// 包裹式形态：媒体块在 content[] 里
@@ -295,7 +316,7 @@ func (e *Extractor) ExtractFromResponsesBody(requestID string, body []byte) *Ext
 			if !ok {
 				continue
 			}
-			e.scanResponsesBlock(requestID, blockMap, itemIdx, blockIdx, result)
+			e.scanResponsesBlock(requestID, blockMap, itemIdx, blockIdx, tenant, result)
 		}
 	}
 
@@ -304,7 +325,7 @@ func (e *Extractor) ExtractFromResponsesBody(requestID string, body []byte) *Ext
 
 // scanResponsesBlock 识别单个 Responses 媒体块；返回 true 表示该 map 是
 // 识别过的媒体块类型（含无 data URI 的 file_id/file URL 引用形态）。
-func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, itemIdx, blockIdx int, result *ExtractResult) bool {
+func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, itemIdx, blockIdx int, tenantID string, result *ExtractResult) bool {
 	switch block["type"] {
 	case "input_image", "image_url":
 		var url string
@@ -318,7 +339,7 @@ func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, i
 			return true
 		}
 		result.TotalFound++
-		e.processOne(requestID, url, itemIdx, blockIdx, "image", result)
+		e.processOne(requestID, url, itemIdx, blockIdx, "image", tenantID, result)
 		return true
 	case "input_audio":
 		ia, ok := block["input_audio"].(map[string]any)
@@ -331,7 +352,7 @@ func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, i
 		}
 		format, _ := ia["format"].(string)
 		result.TotalFound++
-		e.processOne(requestID, audioDataURI(format, data), itemIdx, blockIdx, "audio", result)
+		e.processOne(requestID, audioDataURI(format, data), itemIdx, blockIdx, "audio", tenantID, result)
 		return true
 	case "input_file", "file":
 		var fileData string
@@ -344,7 +365,7 @@ func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, i
 			return true
 		}
 		result.TotalFound++
-		e.processOne(requestID, fileData, itemIdx, blockIdx, "file", result)
+		e.processOne(requestID, fileData, itemIdx, blockIdx, "file", tenantID, result)
 		return true
 	}
 	return false
@@ -352,12 +373,12 @@ func (e *Extractor) scanResponsesBlock(requestID string, block map[string]any, i
 
 // processOne 处理单个附件（同步或异步）。kind 是来源块的媒体种类
 // （image/audio/video/file），同时用于成功与失败记录的类型标注。
-func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, kind string, result *ExtractResult) {
+func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, kind string, tenantID string, result *ExtractResult) {
 	if e.async {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
-			meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx, kind)
+			meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx, kind, tenantID)
 			if err == nil && e.callback != nil {
 				e.callback(requestID, []AttachmentMetadata{meta})
 			}
@@ -365,7 +386,7 @@ func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, 
 		return
 	}
 	// 同步
-	meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx, kind)
+	meta, err := e.saveOne(requestID, dataURI, msgIdx, blockIdx, kind, tenantID)
 	result.Attachments = append(result.Attachments, meta)
 	if err == nil {
 		result.Saved++
@@ -375,7 +396,7 @@ func (e *Extractor) processOne(requestID, dataURI string, msgIdx, blockIdx int, 
 }
 
 // saveOne calls Storage and returns a log-safe record for both outcomes.
-func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int, kind string) (AttachmentMetadata, error) {
+func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int, kind string, tenantID string) (AttachmentMetadata, error) {
 	failed := AttachmentMetadata{
 		Type:         kind,
 		OriginalURL:  truncateOriginalURL(dataURI),
@@ -388,7 +409,7 @@ func (e *Extractor) saveOne(requestID, dataURI string, msgIdx, blockIdx int, kin
 	if e.storage == nil {
 		return failed, errors.New("attachments: storage is nil")
 	}
-	res, err := e.storage.SaveBase64Image(requestID, dataURI, msgIdx, blockIdx)
+	res, err := e.storage.SaveBase64Image(requestID, dataURI, msgIdx, blockIdx, tenantID)
 	if err != nil {
 		slog.Warn("attachments: save failed",
 			"request_id", requestID,
