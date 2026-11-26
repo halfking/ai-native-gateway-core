@@ -183,24 +183,23 @@ fi
 # flows 里有 16 处动态路由参数（${PROVIDER_ID} / ${REQUEST_ID} / ${TENANT_CODE}…）。
 # Maestro 的 ${} 只做字符串替换 ⇒ 不喂真值就会打开 "/providers/" 这种打不开的 URL，
 # 断言必然红、而红的原因与被测页面无关。⇒ 从活着的网关上解析真值。
+mkdir -p "${REPORT_ROOT}"
+OUT="$(mktemp -d "${REPORT_ROOT}/$(date +%Y%m%d-%H%M%S).XXXXXX")"
 ID_ARGS=()
-if node "${ROOT}/maestro/tools/resolve-ids.mjs" >/tmp/maestro-local-ids.txt 2>/tmp/maestro-local-ids.err; then
+if node "${ROOT}/maestro/tools/resolve-ids.mjs" >"${OUT}/route-ids.txt" 2>"${OUT}/route-ids.err"; then
   while IFS= read -r line; do
     case "${line}" in
       [A-Z_]*=*) ID_ARGS+=( -e "${line}" ) ;;
     esac
-  done </tmp/maestro-local-ids.txt
-  echo "== 动态路由 ID：$(wc -l </tmp/maestro-local-ids.txt | tr -d ' ') 个"
-  [ -s /tmp/maestro-local-ids.err ] && sed 's/^/   /' /tmp/maestro-local-ids.err
+  done <"${OUT}/route-ids.txt"
+  echo "== 动态路由 ID：$(wc -l <"${OUT}/route-ids.txt" | tr -d ' ') 个"
+  [ -s "${OUT}/route-ids.err" ] && sed 's/^/   /' "${OUT}/route-ids.err"
 else
   echo "!! 解析动态路由 ID 失败（flows 的动态路由会退化成空 URL）" >&2
-  sed 's/^/   /' /tmp/maestro-local-ids.err >&2 || true
+  sed 's/^/   /' "${OUT}/route-ids.err" >&2 || true
 fi
 
-# ── 6. 逐个 flow 实跑 ────────────────────────────────────────────────────────
-STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT="${REPORT_ROOT}/${STAMP}"
-mkdir -p "${OUT}"
+# ── 6. 逐个 flow 实跑 ────────────────────────────────────────────────────
 SUMMARY="${OUT}/summary.txt"
 : >"${SUMMARY}"
 
