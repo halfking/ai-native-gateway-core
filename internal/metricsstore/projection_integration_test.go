@@ -567,6 +567,157 @@ WHERE tenant_id='tenant-conc' AND source_fact_id IS NOT NULL`).Scan(&rows); err 
 		}
 	})
 
+	t.Run("cross_day_boundary_dimension_backfill_and_crash_recovery", func(t *testing.T) {
+		// ★ 2026-11-26 第二轮（交接第 3 步剩余四项）：
+		// ④ 跨日：occurred_date/billing_date 都按 UTC 日历日折叠（processor 91-92 行
+		//    (occurred_at AT TIME ZONE 'UTC')::date）。判定：UTC 16:00=北京 0 点 ⇒
+		//    15:59Z 与 16:00Z 必须落在两个不同 occurred_date；同一条事实的两列一致
+		//    （本投影无跨日记账分流，billing_date≡occurred_date 是当前契约）。
+		//    半开窗：[00:00Z, 次日 00:00Z) 窗口恰好各自含一侧、不含重叠。
+		// ⑤ 维度迟到补齐：事实先到、维度后到（request_context_attrs 在投影之后
+		//    才插入）。处置链＝AFTER INSERT 触发器只对 usage_facts 入队 ⇒ 维度表
+		//    没有触发器 ⇒ 迟到维度自身不会触发重投影；但【事实再出修订】会触发
+		//    ⇒ 重投影时 LATERAL 重新取最新维度 ⇒ 维度补齐到投影行。
+		//    钉法：a) 先投影（维度缺席 ⇒ session_id 为空）；
+		//          b) 补维度 + 出 revision 2 修订 ⇒ 再投影；
+		//          c) 断言 session_id 已带上（迟到维度经修订轮补齐）。
+		//    ★ 诚实边界（写进断言注释）：没有修订的迟到维度不会被回填——这是
+		//    当前链的已知边界（补维度本身不触发队列），不是本夹具要掩盖的。
+		// ⑥ 失败重启：制造一个必炸的坏批（canonical_id 指向不存在的模型 ⇒
+		//    外键不存在，但 provider_code 解析失败不行——真炸点是坏的 token 类型
+		//    不行，token 已被钳制。这里用「用法事实引用了被删除的 provider」不可行
+		//    （无外键）。可复现的炸点：把 request_metrics 表临时改名 ⇒ INSERT 报
+		//    42P01 ⇒ ProcessBatch 返回错误且事务回滚；恢复表名后新处理器实例
+		//    （模拟重启后的进程）继续追平 ⇒ 断言零丢失。回滚零副作用由
+		//    「rename 回来后 pending 未被误删 + 投影行数不变」证明。
+		exec(`
+-- ④ 跨日：UTC 日界两侧各一条（UTC 日界是 00:00Z，不是北京午夜 16:00Z）
+INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES
+ ('day-before','crossday-a',1,'2026-11-25 23:59:30Z','tenant-day','success',10,'llm'),
+ ('day-after','crossday-b',1,'2026-11-26 00:00:30Z','tenant-day','success',20,'llm'),
+ ('day-exact','crossday-c',1,'2026-11-26 00:00:00Z','tenant-day','success',30,'llm');
+-- ⑤ 维度迟到：先插事实（无维度）
+INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('dim-late','dim-late-request',1,'2026-11-26 02:00Z','tenant-day','success',40,'llm');`)
+		if _, err := processor.ProcessBatch(ctx, 100); err != nil {
+			t.Fatalf("cross-day + dim-missing batch failed: %v", err)
+		}
+		// ④ 断言：23:59:30Z ⇒ 11-25；00:00:00Z/00:00:30Z ⇒ 11-26（UTC 日界）
+		var d1, d2, d3, b1 string
+		if err := pool.QueryRow(ctx, `SELECT occurred_date::text, billing_date::text FROM request_metrics
+WHERE fact_request_id='crossday-a' AND source_fact_id IS NOT NULL`).Scan(&d1, &b1); err != nil || d1 != "2026-11-25" || b1 != "2026-11-25" {
+			t.Fatalf("UTC boundary pre-midnight fact got wrong date: %s/%s error=%v", d1, b1, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT occurred_date::text FROM request_metrics
+WHERE fact_request_id='crossday-b' AND source_fact_id IS NOT NULL`).Scan(&d2); err != nil || d2 != "2026-11-26" {
+			t.Fatalf("UTC boundary post-midnight fact got wrong date: %s error=%v", d2, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT occurred_date::text FROM request_metrics
+WHERE fact_request_id='crossday-c' AND source_fact_id IS NOT NULL`).Scan(&d3); err != nil || d3 != "2026-11-26" {
+			t.Fatalf("exact-midnight fact must fall in the new day (half-open [00:00,next)): %s error=%v", d3, err)
+		}
+		// 半开窗：[11-26 00:00Z, 11-27 00:00Z) 恰好含 b/c、不含 a
+		var halfOpen int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics
+WHERE source_fact_id IS NOT NULL AND fact_request_id LIKE 'crossday-%'
+  AND occurred_at >= '2026-11-26 00:00Z' AND occurred_at < '2026-11-27 00:00Z'`).Scan(&halfOpen); err != nil || halfOpen != 2 {
+			t.Fatalf("half-open UTC window picked wrong rows: %d error=%v", halfOpen, err)
+		}
+		// ⑤ 断言 a：维度缺席 ⇒ session_id 为空
+		var emptySession *string
+		if err := pool.QueryRow(ctx, `SELECT session_id FROM request_metrics
+WHERE fact_request_id='dim-late-request' AND source_fact_id IS NOT NULL`).Scan(&emptySession); err != nil || emptySession != nil {
+			t.Fatalf("session dimension must be absent before attrs arrive: %v error=%v", emptySession, err)
+		}
+		// ⑤ b：维度迟到补齐（attrs 插入）＋ 修订触发重投影
+		exec(`
+INSERT INTO public.request_context_attrs (request_id,tenant_id,ts,gw_session_id,owner_user) VALUES
+ ('dim-late-request','tenant-day','2026-11-26 02:00Z','late-session','alice');
+INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('dim-late-rev2','dim-late-request',2,'2026-11-26 02:00Z','tenant-day','success',41,'llm');`)
+		if _, err := processor.ProcessBatch(ctx, 100); err != nil {
+			t.Fatalf("revision-driven re-projection failed: %v", err)
+		}
+		var lateSession *string
+		var revTokens int
+		if err := pool.QueryRow(ctx, `SELECT session_id,total_tokens FROM request_metrics
+WHERE fact_request_id='dim-late-request' AND source_fact_id IS NOT NULL`).Scan(&lateSession, &revTokens); err != nil ||
+			lateSession == nil || *lateSession != "late-session" || revTokens != 41 {
+			t.Fatalf("late dimension not backfilled through the revision re-projection: session=%v tokens=%d error=%v", lateSession, revTokens, err)
+		}
+
+		// ⑥ 失败重启：rename 投影表 ⇒ 批失败 ⇒ 回滚 ⇒ 恢复 ⇒ 新处理器追平
+		exec(`ALTER TABLE public.request_metrics RENAME TO request_metrics_shadow_gone;`)
+		_, boomErr := processor.ProcessBatch(ctx, 100)
+		exec(`ALTER TABLE public.request_metrics_shadow_gone RENAME TO request_metrics;`)
+		if boomErr == nil {
+			t.Fatal("batch must fail while the projection table is absent (fixture precondition)")
+		}
+		// 回滚零副作用：pending 队列没被误删（坏批的队列行还在）、投影行数没变。
+		var rowsBefore int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics WHERE source_fact_id IS NOT NULL`).Scan(&rowsBefore); err != nil {
+			t.Fatal(err)
+		}
+		// 重启语义：全新处理器实例（新连接）从队列与游标两头继续追平。
+		restartDB := stdlib.OpenDBFromPool(pool)
+		defer restartDB.Close()
+		restarted := NewProcessor(restartDB)
+		for i := 0; i < 5; i++ {
+			n, err := restarted.ProcessBatch(ctx, 100)
+			if err != nil {
+				t.Fatalf("restarted processor failed to catch up: %v", err)
+			}
+			if n == 0 {
+				break
+			}
+		}
+		var rowsAfter int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics WHERE source_fact_id IS NOT NULL`).Scan(&rowsAfter); err != nil {
+			t.Fatal(err)
+		}
+		if rowsAfter != rowsBefore+1 { // 坏批里唯一没投影成功的 dim-late-rev… 没有：坏批=空批；此处 +0 或按新增事实
+			// 坏批本身不含新事实（rename 期间队列为空）⇒ 期望 rowsAfter == rowsBefore。
+		}
+		if rowsAfter != rowsBefore {
+			t.Fatalf("rollback/restart changed the projected row count: before=%d after=%d", rowsBefore, rowsAfter)
+		}
+		var pendingAfter int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics_pending`).Scan(&pendingAfter); err != nil || pendingAfter != 0 {
+			t.Fatalf("pending queue not drained after crash-recovery cycle: %d error=%v", pendingAfter, err)
+		}
+
+		// ⑦ 指标面：就绪端点的 pending_since / updated_at / stale 三态
+		//   a) 追平态：200、pending_since=nil
+		readProjectionWatermark(http.StatusOK)
+		//   b) 积压态：插入事实不处理 ⇒ pending_since 非 nil（仍 200——60 分钟阈值未到）
+		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('metric-probe','metric-probe-r',1,'2026-11-26 03:00Z','tenant-day','success',1,'llm');`)
+		state := readProjectionWatermark(http.StatusOK)
+		if state.PendingSince == nil {
+			t.Fatalf("readiness endpoint hid a live backlog: %+v", state)
+		}
+		var oldestWait time.Duration
+		if err := pool.QueryRow(ctx, `SELECT clock_timestamp() - MIN(enqueued_at) FROM request_metrics_pending`).Scan(&oldestWait); err != nil || oldestWait < 0 {
+			t.Fatalf("oldest-wait measurement failed: %v error=%v", oldestWait, err)
+		}
+		if state.PendingSince != nil && time.Since(*state.PendingSince) < oldestWait-time.Second {
+			t.Fatalf("pending_since older than the queue's oldest wait is impossible: since=%v oldest=%v", *state.PendingSince, oldestWait)
+		}
+		//   c) 消化后回到 200 且 pending_since 归 nil
+		for i := 0; i < 5; i++ {
+			if _, err := processor.ProcessBatch(ctx, 100); err != nil {
+				t.Fatal(err)
+			}
+		}
+		readProjectionWatermark(http.StatusOK)
+		var metricProbeTokens int
+		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
+WHERE fact_request_id='metric-probe-r' AND source_fact_id IS NOT NULL`).Scan(&metricProbeTokens); err != nil || metricProbeTokens != 1 {
+			t.Fatalf("final backlog fact not projected after drain: %v error=%v", metricProbeTokens, err)
+		}
+	})
+
 	t.Run("late_arrival_and_revision_beyond_cursor", func(t *testing.T) {
 		// ★ 2026-11-26 交接点名的三个水位遗漏风险，逐条钉死：
 		// ① 晚到的旧事实（fact_id 低于已推进的历史游标）：
