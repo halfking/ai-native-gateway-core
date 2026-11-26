@@ -58,6 +58,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 认证检查（如果配置了 authenticator）
+	var tenantID string
 	if h.authenticator != nil {
 		authCtx, err := h.authenticator.Authenticate(r)
 		if err != nil {
@@ -74,6 +75,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"authentication required")
 			return
 		}
+		tenantID = authCtx.TenantID
 		// TODO: 审计日志记录 authCtx.TenantID / KeyPrefix
 	}
 
@@ -84,6 +86,33 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"attachment path is required")
 		return
+	}
+
+	// P0 安全修复 (2026-11-26): 验证附件归属
+	// 防止租户 A 通过路径枚举访问租户 B 的附件
+	if tenantID != "" && h.dbPool != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		belongs, err := h.verifyAttachmentOwnership(ctx, relPath, tenantID)
+		if err != nil {
+			slog.Error("attachments: ownership verification failed",
+				"path", relPath,
+				"tenant_id", tenantID,
+				"error", err)
+			writeJSONError(w, http.StatusInternalServerError, "verification_failed",
+				"attachment ownership verification failed")
+			return
+		}
+		if !belongs {
+			slog.Warn("attachments: cross-tenant access attempt blocked",
+				"path", relPath,
+				"tenant_id", tenantID,
+				"remote_addr", r.RemoteAddr)
+			writeJSONError(w, http.StatusForbidden, "forbidden",
+				"attachment not accessible")
+			return
+		}
 	}
 
 	// 流式打开（大文件友好）
@@ -194,6 +223,32 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 		"attachments": attachments,
 		"count":       len(attachments),
 	})
+}
+
+// verifyAttachmentOwnership 验证指定附件路径是否属于给定租户。
+//
+// 从 request_logs.attachments JSONB 中查询该路径是否被该租户的任一请求引用。
+// P0 安全修复 (2026-11-26): 防止跨租户附件访问。
+func (h *Handler) verifyAttachmentOwnership(ctx context.Context, relPath, tenantID string) (bool, error) {
+	// 构造 JSONB 查询：检查 attachments 数组中是否包含指定路径的对象
+	// attachments @> '[{"path": "..."}]'::jsonb
+	pathJSON := fmt.Sprintf(`[{"path":"%s"}]`, relPath)
+
+	query := `
+		SELECT EXISTS(
+			SELECT 1 FROM request_logs_with_current_month 
+			WHERE tenant_id = $1 
+			AND attachments @> $2::jsonb
+		)
+	`
+
+	var exists bool
+	err := h.dbPool.QueryRow(ctx, query, tenantID, pathJSON).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("ownership query failed: %w", err)
+	}
+
+	return exists, nil
 }
 
 // ─── 响应辅助 ───────────────────────────────────────────────────

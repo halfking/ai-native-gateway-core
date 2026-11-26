@@ -32,23 +32,6 @@ export interface UsageSummary {
   hint?: string
 }
 
-export interface DashboardOverview {
-  total_api_keys: number
-  active_api_keys: number
-  active_api_keys_in_window: number
-  total_models: number
-  active_models_in_window: number
-  total_providers: number
-  active_providers: number
-  offline_models: number
-  offline_credentials: number
-  total_credentials: number
-  degraded?: boolean
-  missing_view?: string
-  error_code?: string
-  hint?: string
-}
-
 export interface HotApiKeyEntry {
   api_key_id: number
   key_prefix: string | null
@@ -159,9 +142,10 @@ export function getUsageSummary(time: number | BoardTimeQuery = 7) {
   return req<UsageSummary>('GET', `/api/usage/v2/summary?${qs}`)
 }
 
-export function getDashboardOverview(days = 7) {
-  return req<DashboardOverview>('GET', `/api/usage/dashboard?days=${days}`)
-}
+// ★ 2026-11-26 统计 V2 审计轮：getDashboardOverview（v1 /api/usage/dashboard）
+//   已删除 —— 该端点读 usage_ledger 账本，前端早已零调用点（死代码导出），
+//   统计口径已统一到 /api/usage/v2/summary（request_metrics 投影）。
+//   后端路由（handleUsage case "dashboard"）仍在，属后端清理项，待 owner。
 
 export function getHotApiKeys(time: number | BoardTimeQuery = 7, limit = 10) {
   const qs = usageTimeQs({ ...(typeof time === 'number' ? { days: time } : time), limit })

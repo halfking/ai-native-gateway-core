@@ -3,8 +3,9 @@
 //
 // /users 列表点击行打开：KPI（请求/Token/积分/失败率·P95）+ 请求与 Token
 // 趋势 + Top 模型/应用 + 最近请求（首字/总耗时）+ 基本信息。
-// 数据面 GET /api/admin/users/{id}/stats（usage_facts × api_keys.owner_user，
-// 与对账快照同源）；账号无用量时 KPI 全零 + 空态文案，基本信息仍完整展示。
+// 数据面 GET /api/admin/users/v2/{id}/stats（request_metrics 投影，
+// 2026-11 统计 V2 轮起，v1 usage_facts 口径已退役）；账号无用量时 KPI 全零 +
+// 空态文案，基本信息仍完整展示。
 // 启停/重置密码操作不在抽屉内自行执行，emit 回列表页复用既有 handler。
 //
 // 2026-11-17 审计修复轮：新增「API 密钥」标签页（签发 / 启停 / 吊销 / 查完整密钥）。
