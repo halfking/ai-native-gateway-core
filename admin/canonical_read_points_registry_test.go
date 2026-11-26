@@ -2694,6 +2694,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"admin/model_status.go":                      "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/my_endpoints.go":                      "用户级端点：我的用量统计（30 天窗口）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/no_topic_session.go":                  "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/permission_fix_examples.go":           "数据权限修复示例：① 租户聚合；② 用户聚合；③ 明细查询；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（★ 2026-11-26 数据权限审计轮：★ 读点从已被 890 物理删除的 v1 底表改指到 canonical 视图 ⇒ ★ 本文件因此进入本簿 ★）",
 	"admin/probe_history.go":                     "探针历史；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/provider_models.go":                   "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/route_incidents.go":                   "路由事故面；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
