@@ -1,0 +1,82 @@
+# 21-users-page-role-governance.yaml —— 「用户管理」页（/users）的角色治理入口真机验收
+#
+# ★ 本 flow 与 flow 20（20-user-role-governance.yaml，租户详情页）**分工**：
+#   · flow 20 验的是**租户详情页**（/tenants/chenb 等，用户点名的那类页）——
+#     那里用 element-plus 的 <el-select>。
+#   · 本 flow 验的是**平台级用户目录页**（/users）—— 那里用**原生 <select>**。
+#   ⇒ 两者不可互相替代：用户诉求「在用户管理中增加可以变更用户角色的功能」
+#     落在 /users 这一页，而本轮补的探针（assert-users-role-options.mjs）
+#     也证明**同一个页面里两套实现并存** ⇒ 必须各自验。
+#
+# ★★★ 本 flow 为什么**不**断言「超级管理员不可见」★★★：
+#   ★ 这是本轮最值钱的一条**机制**发现（实测，不是推测）：
+#     · element-plus <el-select>（租户详情页）的 option **只在展开时渲染**
+#       ⇒ 未展开时页面上根本没有「超级管理员」四个字
+#       ⇒ flow 20 才能用 assertNotVisible 干净地断言「下拉里没有超级管理员」；
+#     · 原生 <select>（本页）的 option **始终在 DOM 里**
+#       ⇒ 「超级管理员」四个字即使不展开也**一直在可访问树里**
+#       ⇒ ★ 在本页用 assertNotVisible 断言「下拉里没有超级管理员」= **恒红的假门**
+#         （它会被**筛选区**那个角色下拉的 option 命中；筛选区一展开就必然命中）。
+#   ⇒ 所以本页的「下拉按租户收敛」改由**行为级探针**承担：
+#     maestro/tools/assert-users-role-options.mjs
+#     （它读的是**该 select 的 option 集合**，并用「同一控件在两个租户上得出相反结果」
+#       互为对照 ⇒ 排除「恒定缺项」的假门）。
+#   ⇒ 本 flow 只负责**探针覆盖不到的那一层**：**真实鼠标路径的可达性**
+#     （页能不能开、按钮能不能点、弹窗能不能开、「普通用户」这一档在界面上**真的可见**）。
+#
+# ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（与 flow 20 同源）：
+#   ① `text:` 是**全匹配正则** ⇒ 读数会变的元素一律 `.*….*`；
+#   ② `id:` 选的是 **data-testid**（不是 DOM id）⇒ 本 flow 用
+#      `user-change-role-btn` / `user-role-select` / `user-role-save` 三个锚点；
+#      （这三个元素都**不带** title/aria-label ⇒ 不会被遮蔽、id: 命中得了）；
+#   ③ 视口必须 1440x1400（表格列多，窄视口会把右侧列横向吃掉）。
+#
+# 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
+# -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ──────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── ② 用户管理页能打开，且每行都有「变更角色」入口 ───────────────────────
+- openLink: ${BASE_URL}/users
+- extendedWaitUntil:
+    visible:
+      id: "user-change-role-btn"
+    timeout: 30000
+
+# ── ③ 点「变更角色」⇒ 弹窗真的打开（真实鼠标路径）──────────────────────
+- tapOn:
+    id: "user-change-role-btn"
+- extendedWaitUntil:
+    visible:
+      id: "user-role-select"
+    timeout: 20000
+
+# ── ④ 界面上真的看得见「普通用户」这一档 ─────────────────────────────────
+#   ★ 这一条是**干净的**：线上没有任何 role=user 的存量账号 ⇒ 表格里不存在
+#     「普通用户」徽章 ⇒ 命中「普通用户」的**只有**变更角色弹窗里那个下拉的 option。
+#   ★ 不写 assertNotVisible「超级管理员」—— 原因见文件头（原生 select 的 option 常驻 DOM）。
+- assertVisible: ".*普通用户.*"
+
+# ── ⑤ 保存按钮存在（点了会真写库；本 flow **不点**，写库由探针 C 组承担并还原）──
+- assertVisible:
+    id: "user-role-save"
+
+# ── ⑥ 关掉弹窗（不留下遮罩）─────────────────────────────────────────────
+- tapOn:
+    text: ".*取消.*"
