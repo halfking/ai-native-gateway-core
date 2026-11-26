@@ -19,18 +19,33 @@ PASSWORD = "fixture-admin-password"
 WORKBOOK_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def workbook(source):
+def workbook(case):
     stream = io.BytesIO()
+    target = "worksheets/sheet2.xml" if case == "orphan_workbook" else "worksheets/sheet1.xml"
+    day = "2026-11-24" if case == "wrong_workbook_day" else DAY
+    source = "legacy" if case in ("legacy_workbook", "spoofed_workbook_source") else "request_metrics"
+    misplaced = '<c r="A3" t="inlineStr"><is><t>Debug: request_metrics</t></is></c>' if case == "spoofed_workbook_source" else ""
     with zipfile.ZipFile(stream, "w") as output:
         output.writestr(
             "xl/workbook.xml",
-            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-            '<sheets><sheet name="summary" sheetId="1"/></sheets></workbook>',
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="汇总" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        )
+        output.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="{target}"/></Relationships>',
         )
         output.writestr(
             "xl/worksheets/sheet1.xml",
             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-            f'<sheetData><row><c t="inlineStr"><is><t>Source: {source}</t></is></c></row></sheetData></worksheet>',
+            '<sheetData><row r="2">'
+            f'<c r="A2" t="inlineStr"><is><t>区间: {day} ~ {day}</t></is></c>'
+            f'<c r="D2" t="inlineStr"><is><t>统计来源: {source}</t></is></c>'
+            f'</row><row r="3">{misplaced}</row></sheetData></worksheet>',
         )
     return stream.getvalue()
 
@@ -86,9 +101,7 @@ class CandidateHandler(BaseHTTPRequestHandler):
             }
         else:
             content_type = WORKBOOK_TYPE
-            body = b"invalid zip" if case == "broken_workbook" else workbook(
-                "legacy" if case == "legacy_workbook" else "request_metrics"
-            )
+            body = b"invalid zip" if case == "broken_workbook" else workbook(case)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         for name, value in headers.items():
@@ -142,6 +155,9 @@ class ReconciliationCutoverTest(unittest.TestCase):
             ("legacy_csv", "candidate CSV", 4),
             ("broken_workbook", "invalid V2 reconciliation data", 5),
             ("legacy_workbook", "workbook lacks", 5),
+            ("orphan_workbook", "no link to the summary", 5),
+            ("wrong_workbook_day", "returned the wrong day", 5),
+            ("spoofed_workbook_source", "workbook lacks the request_metrics source", 5),
         ):
             with self.subTest(variant=variant):
                 result, requests = self.check(variant)

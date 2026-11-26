@@ -67,18 +67,44 @@ def login_candidate(port, credentials):
     return token
 
 
-def check_workbook(body):
-    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+def workbook_xml(workbook, name):
+    part = workbook.getinfo(name)
+    if part.file_size > MAX_RESPONSE_BYTES:
+        raise RuntimeError("V2 Excel workbook exceeds the XML size limit")
+    return ElementTree.fromstring(workbook.read(part))
+
+
+def check_workbook(body, day):
+    sheet_ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    ref_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    rel_ns = "{http://schemas.openxmlformats.org/package/2006/relationships}"
     with zipfile.ZipFile(io.BytesIO(body)) as workbook:
-        with workbook.open("xl/workbook.xml") as xml_file:
-            book = ElementTree.fromstring(xml_file.read(MAX_RESPONSE_BYTES + 1))
-        if book.tag != f"{namespace}workbook" or book.find(f"{namespace}sheets/{namespace}sheet") is None:
-            raise RuntimeError("V2 Excel workbook has no worksheets")
-        with workbook.open("xl/worksheets/sheet1.xml") as xml_file:
-            summary = ElementTree.fromstring(xml_file.read(MAX_RESPONSE_BYTES + 1))
-        if summary.tag != f"{namespace}worksheet" or not any(
-            (cell.text or "").endswith(f": {PROJECTION_SOURCE}") for cell in summary.iter(f"{namespace}t")
+        # The rollup exporter writes the summary to sheet1. Check that Excel can
+        # reach it through the workbook, and read the exporter’s metadata row.
+        book = workbook_xml(workbook, "xl/workbook.xml")
+        sheet = book.find(f"{sheet_ns}sheets/{sheet_ns}sheet")
+        links = workbook_xml(workbook, "xl/_rels/workbook.xml.rels")
+        if book.tag != f"{sheet_ns}workbook" or sheet is None or sheet.get("name") != "汇总":
+            raise RuntimeError("V2 Excel workbook has no summary worksheet")
+        if not sheet.get(f"{{{ref_ns}}}id") or not any(
+            link.get("Id") == sheet.get(f"{{{ref_ns}}}id")
+            and link.get("Type") == f"{ref_ns}/worksheet"
+            and link.get("Target") == "worksheets/sheet1.xml"
+            and link.get("TargetMode", "Internal") == "Internal"
+            for link in links.findall(f"{rel_ns}Relationship")
         ):
+            raise RuntimeError("V2 Excel workbook has no link to the summary worksheet")
+        summary = workbook_xml(workbook, "xl/worksheets/sheet1.xml")
+        metadata = summary.find(f"{sheet_ns}sheetData/{sheet_ns}row[@r='2']")
+        if summary.tag != f"{sheet_ns}worksheet" or metadata is None:
+            raise RuntimeError("V2 Excel workbook lacks summary metadata")
+        cells = {
+            cell.get("r"): cell.findtext(f"{sheet_ns}is/{sheet_ns}t")
+            for cell in metadata.findall(f"{sheet_ns}c")
+        }
+        if cells.get("A2") != f"区间: {day} ~ {day}":
+            raise RuntimeError("V2 Excel workbook returned the wrong day")
+        if cells.get("D2") != f"统计来源: {PROJECTION_SOURCE}":
             raise RuntimeError("V2 Excel workbook lacks the request_metrics source")
 
 
@@ -124,7 +150,7 @@ def check_candidate(port, token):
 
     query = dict(start=day, end=day, view="provider", group="provider", detail="summary")
     _, body = read_candidate(port, token, "/api/admin/report-rollup/v2/export", WORKBOOK_TYPE, query)
-    check_workbook(body)
+    check_workbook(body, day)
     print(f"V2 reconciliation ready: day={day} timezone={timezone}, coverage JSON/CSV and Excel verified")
 
 
