@@ -3582,10 +3582,23 @@ func main() {
 		}
 
 		// Phase 2: Initialize auth plugin registry
+		// ★ 2026-11-27 L135 轮（断点③修复）：直接走统一装配点
+		//   initializePluginRegistry（plugin_init.go）—— 与下方 plugin-config
+		//   API（~9090 行）共用**同一个** registry 实例：四接口单点注册、
+		//   配置源一致（env 覆盖 > plugin_config 表 > 默认）、plugin-config PUT
+		//   经 SwitchConfig 热切换后登录面立即生效。旧 initAuthRegistry（只读
+		//   env、三接口、无 ApprovalProvider）已薄壳化，不再是生产路径。
 		var authRegistry *authplugin.Registry
 		if adminDB != nil {
 			var err error
-			authRegistry, err = initAuthRegistry(adminDB, cfg.SecretKey)
+			// redisClientForCache 类型是 session.RedisClient 包装；装配点此处
+			// 它已就位（1209 行赋值，早于本块），nil 时 approval store 缓存退化
+			// 为直连 DB（domains/approval 各路径均有 cache==nil 分支，实测安全）。
+			var approvalRedis *redis.Client
+			if redisClientForCache != nil {
+				approvalRedis = redisClientForCache.Client()
+			}
+			authRegistry, err = initializePluginRegistry(adminDB, approvalRedis, cfg.SecretKey)
 			if err != nil {
 				slog.Error("failed to initialize auth registry", "error", err)
 				// Continue without registry for now (legacy mode)
@@ -9087,7 +9100,7 @@ func main() {
 		var pluginRegistry *authplugin.Registry
 		if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
 			var err error
-			pluginRegistry, err = initializePluginRegistry(dbConn.Pool(), redisClientForCache.Client())
+			pluginRegistry, err = initializePluginRegistry(dbConn.Pool(), redisClientForCache.Client(), cfg.SecretKey)
 			if err != nil {
 				slog.Error("failed to initialize plugin registry", "error", err)
 				// Continue without plugin registry - handlers will fall back to legacy implementations

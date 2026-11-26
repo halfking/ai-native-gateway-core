@@ -1,198 +1,29 @@
+// Package main initialization - legacy auth registry shell.
+//
+// ★ 2026-11-27 L135 轮（断点③修复）：本文件此前是一条**独立的** registry
+//
+//	装配链（只读 env、只注册 auth/user/tenant 三接口、无 ApprovalProvider、
+//	casdoor 配置单独走 loadCasdoorConfig）⇒ 与 plugin_init.go 的
+//	initializePluginRegistry 形成两条平行链：adminHandler 挂旧链实例，
+//	plugin-config API 挂新链实例 —— PUT 切换的 provider 对登录面永远不可见。
+//
+//	现在两者合并：initAuthRegistry 只是 initializePluginRegistry 的薄壳，
+//	jwtSecret 参数作为 native 签名链的回退键传入（链：
+//	LLM_GATEWAY_JWT_SECRET → jwtSecretFallback），与 admin 面同一把签名密钥。
+//	main.go 的调用点（adminHandler 装配处）已改为直接调
+//	initializePluginRegistry —— 本壳仅为保留函数名与既有测试兼容。
 package main
 
 import (
-	"fmt"
-	"log/slog"
-	"os"
-
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
-	"github.com/kaixuan/llm-gateway-go/pkg/authplugin/casdoor"
-	"github.com/kaixuan/llm-gateway-go/pkg/authplugin/native"
 )
 
-// initAuthRegistry creates and configures the authentication plugin registry.
-// It registers providers based on environment variables:
-//   - AUTH_PROVIDER: "native" (default) or "casdoor"
-//   - USER_MANAGER: "native" (default) or "casdoor"
-//   - TENANT_MANAGER: "native" (default) or "casdoor"
-//
-// Casdoor configuration (required if any Casdoor provider is used):
-//   - CASDOOR_ENDPOINT: Casdoor server URL
-//   - CASDOOR_CLIENT_ID: OAuth2 client ID
-//   - CASDOOR_CLIENT_SECRET: OAuth2 client secret
-//   - CASDOOR_ORGANIZATION: Organization name
-//   - CASDOOR_APPLICATION: Application name
-//   - CASDOOR_CERTIFICATE: (optional) Public certificate for JWT validation
+// initAuthRegistry creates the authentication plugin registry via the
+// unified assembly point (initializePluginRegistry). Kept as a thin shell
+// for naming compatibility; production wiring goes through
+// initializePluginRegistry directly.
 func initAuthRegistry(db *pgxpool.Pool, jwtSecret string) (*authplugin.Registry, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database pool is required for auth registry")
-	}
-
-	// Read provider configuration from environment
-	authProviderType := getEnvOrDefault("AUTH_PROVIDER", "native")
-	userManagerType := getEnvOrDefault("USER_MANAGER", "native")
-	tenantManagerType := getEnvOrDefault("TENANT_MANAGER", "native")
-
-	// Create registry with configured providers
-	config := &authplugin.PluginConfig{
-		AuthProvider:  authProviderType,
-		UserManager:   userManagerType,
-		TenantManager: tenantManagerType,
-	}
-
-	registry := authplugin.NewRegistry(config)
-
-	// Check if any Casdoor provider is needed
-	needsCasdoor := authProviderType == "casdoor" || userManagerType == "casdoor" || tenantManagerType == "casdoor"
-	var casdoorConfig *authplugin.CasdoorConfig
-	if needsCasdoor {
-		var err error
-		casdoorConfig, err = loadCasdoorConfig()
-		if err != nil {
-			return nil, fmt.Errorf("load casdoor config: %w", err)
-		}
-	}
-
-	// Register auth provider
-	if err := registerAuthProvider(registry, authProviderType, db, jwtSecret, casdoorConfig); err != nil {
-		return nil, fmt.Errorf("register auth provider: %w", err)
-	}
-
-	// Register user manager
-	if err := registerUserManager(registry, userManagerType, db, casdoorConfig); err != nil {
-		return nil, fmt.Errorf("register user manager: %w", err)
-	}
-
-	// Register tenant manager
-	if err := registerTenantManager(registry, tenantManagerType, db, casdoorConfig); err != nil {
-		return nil, fmt.Errorf("register tenant manager: %w", err)
-	}
-
-	slog.Info("auth plugin registry initialized",
-		"auth_provider", authProviderType,
-		"user_manager", userManagerType,
-		"tenant_manager", tenantManagerType)
-
-	return registry, nil
+	return initializePluginRegistry(db, nil, jwtSecret)
 }
-
-// loadCasdoorConfig loads Casdoor configuration from environment variables.
-func loadCasdoorConfig() (*authplugin.CasdoorConfig, error) {
-	endpoint := os.Getenv("CASDOOR_ENDPOINT")
-	clientID := os.Getenv("CASDOOR_CLIENT_ID")
-	clientSecret := os.Getenv("CASDOOR_CLIENT_SECRET")
-	organization := os.Getenv("CASDOOR_ORGANIZATION")
-	application := os.Getenv("CASDOOR_APPLICATION")
-	certificate := os.Getenv("CASDOOR_CERTIFICATE")
-
-	// Validate required fields
-	if endpoint == "" {
-		return nil, fmt.Errorf("CASDOOR_ENDPOINT environment variable is required")
-	}
-	if clientID == "" {
-		return nil, fmt.Errorf("CASDOOR_CLIENT_ID environment variable is required")
-	}
-	if clientSecret == "" {
-		return nil, fmt.Errorf("CASDOOR_CLIENT_SECRET environment variable is required")
-	}
-	if organization == "" {
-		return nil, fmt.Errorf("CASDOOR_ORGANIZATION environment variable is required")
-	}
-	if application == "" {
-		return nil, fmt.Errorf("CASDOOR_APPLICATION environment variable is required")
-	}
-
-	return &authplugin.CasdoorConfig{
-		Endpoint:     endpoint,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Organization: organization,
-		Application:  application,
-		Certificate:  certificate,
-	}, nil
-}
-
-// registerAuthProvider registers the configured authentication provider.
-func registerAuthProvider(registry *authplugin.Registry, providerType string, db *pgxpool.Pool, jwtSecret string, casdoorConfig *authplugin.CasdoorConfig) error {
-	switch providerType {
-	case "native":
-		provider, err := native.NewNativeAuthProvider(db, jwtSecret)
-		if err != nil {
-			return fmt.Errorf("create native auth provider: %w", err)
-		}
-		return registry.RegisterAuthProvider(provider)
-
-	case "casdoor":
-		if casdoorConfig == nil {
-			return fmt.Errorf("casdoor config is required for casdoor auth provider")
-		}
-		provider, err := casdoor.NewCasdoorAuthProvider(casdoorConfig, db)
-		if err != nil {
-			return fmt.Errorf("create casdoor auth provider: %w", err)
-		}
-		return registry.RegisterAuthProvider(provider)
-
-	default:
-		return fmt.Errorf("unsupported auth provider type: %s", providerType)
-	}
-}
-
-// registerUserManager registers the configured user manager.
-func registerUserManager(registry *authplugin.Registry, managerType string, db *pgxpool.Pool, casdoorConfig *authplugin.CasdoorConfig) error {
-	switch managerType {
-	case "native":
-		manager, err := native.NewNativeUserManager(db)
-		if err != nil {
-			return fmt.Errorf("create native user manager: %w", err)
-		}
-		return registry.RegisterUserManager(manager)
-
-	case "casdoor":
-		if casdoorConfig == nil {
-			return fmt.Errorf("casdoor config is required for casdoor user manager")
-		}
-		manager, err := casdoor.NewCasdoorUserManager(casdoorConfig, db)
-		if err != nil {
-			return fmt.Errorf("create casdoor user manager: %w", err)
-		}
-		return registry.RegisterUserManager(manager)
-
-	default:
-		return fmt.Errorf("unsupported user manager type: %s", managerType)
-	}
-}
-
-// registerTenantManager registers the configured tenant manager.
-func registerTenantManager(registry *authplugin.Registry, managerType string, db *pgxpool.Pool, casdoorConfig *authplugin.CasdoorConfig) error {
-	switch managerType {
-	case "native":
-		manager, err := native.NewNativeTenantManager(db)
-		if err != nil {
-			return fmt.Errorf("create native tenant manager: %w", err)
-		}
-		return registry.RegisterTenantManager(manager)
-
-	case "casdoor":
-		if casdoorConfig == nil {
-			return fmt.Errorf("casdoor config is required for casdoor tenant manager")
-		}
-		manager, err := casdoor.NewCasdoorTenantManager(casdoorConfig)
-		if err != nil {
-			return fmt.Errorf("create casdoor tenant manager: %w", err)
-		}
-		return registry.RegisterTenantManager(manager)
-
-	default:
-		return fmt.Errorf("unsupported tenant manager type: %s", managerType)
-	}
-}
-
-// getEnvOrDefault returns the environment variable value or the default if not set.
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-

@@ -363,3 +363,42 @@ func (r *Registry) Summary() string {
 		r.config.ApprovalProvider, r.listApprovalProviders(),
 	)
 }
+
+// ============================================================================
+// Hot-switch (2026-11-27 L135 round, breakpoint ③ fix)
+// ============================================================================
+
+// SwitchConfig atomically replaces the provider-selection part of the
+// registry configuration. It is the hot-switch entry the plugin-config PUT
+// handler uses: after a successful switch, every subsequent Get*Provider call
+// resolves against the new selection — no restart, no env mutation.
+//
+// The Casdoor/Native sub-config pointers are carried over unchanged (they
+// describe connection parameters, not selection). Passing nil is a no-op.
+//
+// ★ 语义边界：切换只改「选中谁」，不改「有谁」。若新选择指向一个尚未注册的
+//
+//	provider，Get*Provider 会返回 not-found —— 调用方（plugin-config PUT）
+//	先经 validateProviderSelection 确认目标在 available 列表里才允许到这里。
+func (r *Registry) SwitchConfig(authProvider, userManager, tenantManager, approvalProvider string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Copy-on-write: replace the config struct wholesale so any reader that
+	// holds an old *PluginConfig copy (Config() returns a shallow copy) keeps
+	// a coherent snapshot.
+	next := *r.config
+	if authProvider != "" {
+		next.AuthProvider = authProvider
+	}
+	if userManager != "" {
+		next.UserManager = userManager
+	}
+	if tenantManager != "" {
+		next.TenantManager = tenantManager
+	}
+	if approvalProvider != "" {
+		next.ApprovalProvider = approvalProvider
+	}
+	r.config = &next
+}

@@ -52,6 +52,7 @@ type CasdoorAuthProvider struct {
 	client       *casdoorsdk.Client
 	config       *authplugin.CasdoorConfig
 	idMapper     *IDMapper
+	provisioner  *userProvisioner
 	organization string
 	application  string
 }
@@ -97,6 +98,7 @@ func NewCasdoorAuthProvider(config *authplugin.CasdoorConfig, db *pgxpool.Pool) 
 		client:       client,
 		config:       config,
 		idMapper:     NewIDMapperFromPool(db),
+		provisioner:  newUserProvisioner(NewIDMapperFromPool(db)),
 		organization: config.Organization,
 		application:  config.Application,
 	}, nil
@@ -185,7 +187,7 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 	}
 
 	// Map Casdoor user ID to internal ID (or create new mapping)
-	internalID, err := p.idMapper.MapOrCreate(
+	mappingID, err := p.idMapper.MapOrCreate(
 		ctx,
 		"casdoor",
 		user.Id,    // Casdoor UUID
@@ -198,6 +200,24 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 		return nil, fmt.Errorf("id mapping failed: %w", err)
 	}
 
+	// ★ 2026-11-27 L135 轮（断点①修复）：把 casdoor 身份**物化成本地 users 行**，
+	//   AuthResult.UserID 一律携带 users.id —— 不再直接下发 auth_id_mapping 的
+	//   internal_id（独立 SERIAL，与 users.id 是两个 ID 空间；直接下发会撞上
+	//   同号 native 用户的撤销纪元/审计/profile 语义）。
+	//   db 未装配（单测）时跳过物化、保持旧行为（返回映射 ID），登录面调用方
+	//   （admin/handleLogin）在无 DB 时本来就 503。
+	localID := mappingID
+	if p.idMapper.db != nil {
+		localID, err = p.provisioner.ensureLocalUser(ctx, p.idMapper.db, user.Id, user.Owner, user.Name, user.DisplayName, user.Email)
+		if err != nil {
+			if errors.Is(err, ErrUsernameConflict) {
+				// 用户名撞存量本地用户：fail-closed，可判读的错误。
+				return nil, fmt.Errorf("%w", err)
+			}
+			return nil, fmt.Errorf("local user provisioning failed: %w", err)
+		}
+	}
+
 	// Map Casdoor role to internal role
 	role := p.mapRole(user)
 
@@ -206,7 +226,7 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 
 	return &authplugin.AuthResult{
 		Success:      true,
-		UserID:       internalID,
+		UserID:       localID,
 		ExternalID:   user.Id,
 		Username:     user.Name,
 		TenantID:     user.Owner,
@@ -219,9 +239,10 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 		ExpiresAt:    expiresAt,
 		RefreshToken: token.RefreshToken,
 		Metadata: map[string]interface{}{
-			"casdoor_id":   user.Id,
-			"organization": user.Owner,
-			"phone":        user.Phone, // Store phone in metadata
+			"casdoor_id":         user.Id,
+			"organization":       user.Owner,
+			"phone":              user.Phone, // Store phone in metadata
+			"casdoor_mapping_id": mappingID,
 			"casdoor_roles": func() []string {
 				roles := make([]string, len(user.Roles))
 				for i, r := range user.Roles {

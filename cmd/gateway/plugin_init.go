@@ -22,11 +22,19 @@ import (
 // initializePluginRegistry sets up the plugin registry with all available providers.
 // It reads configuration from environment variables or database and registers
 // both Native (PostgreSQL) and Casdoor providers.
-func initializePluginRegistry(db *pgxpool.Pool, redisClient *redis.Client) (*authplugin.Registry, error) {
+//
+// ★ 2026-11-27 L135 轮（断点③修复）：这是**全站唯一**的 authplugin.Registry
+//
+//	装配点。此前 main.go 有两条独立链——adminHandler 挂 initAuthRegistry（只读
+//	env、三接口、无 ApprovalProvider），plugin-config API 挂本函数（读表+env、
+//	四接口）⇒ plugin-config PUT 切换的 provider 对登录面永远不可见。
+//	jwtSecretFallback 是 admin 面的 cfg.SecretKey，作为 native 签名链的回退键
+//	（链：LLM_GATEWAY_JWT_SECRET → 此回退），与 admin.JWTExpiry 同一 SSOT。
+func initializePluginRegistry(db *pgxpool.Pool, redisClient *redis.Client, jwtSecretFallback string) (*authplugin.Registry, error) {
 	ctx := context.Background()
 
 	// Read provider selection from database or environment
-	config := loadPluginConfig(ctx, db)
+	config := loadPluginConfig(ctx, db, jwtSecretFallback)
 
 	slog.Info("initializing plugin registry",
 		"auth_provider", config.AuthProvider,
@@ -63,9 +71,30 @@ func initializePluginRegistry(db *pgxpool.Pool, redisClient *redis.Client) (*aut
 	return registry, nil
 }
 
+// jwtSecretFromEnvOrFallback returns the admin-face JWT signing secret:
+// LLM_GATEWAY_JWT_SECRET env first (the first link of the same chain admin
+// jwtSecret uses), then the cfg.SecretKey fallback injected by the caller
+// via loadPluginConfig's jwtSecretFallback parameter. Mirrors
+// native.resolveJWTSecret / admin.jwtSecret — one chain, two faces.
+func jwtSecretFromEnvOrFallback(fallback string) string {
+	if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
+		return s
+	}
+	return fallback
+}
+
 // loadPluginConfig reads plugin configuration from database or environment variables.
 // Priority: Environment Variables > Database > Defaults
-func loadPluginConfig(ctx context.Context, db *pgxpool.Pool) *authplugin.PluginConfig {
+//
+// ★ 2026-11-27 L135 轮（断点③修复 · 密钥源收口）：Native.JWTSecret 此前读
+//
+//	野生 `JWT_SECRET` env——部署面从不配置它 ⇒ native provider 的签名回退键
+//	恒为空 ⇒ 一旦登录走 plugin 链（registry 非 nil），native 签发 token 全部
+//	失败（resolveJWTSecret 返回 nil）。改为 jwtSecretFromEnv()：与 admin 面
+//	同一条链（LLM_GATEWAY_JWT_SECRET → 调用点显式注入的 cfg.SecretKey 回退），
+//	合并后 registry 与 admin 用同一把签名密钥，native 签发的 token 能过
+//	AdminMiddleware → identity.Verify 的 legacy 验签路径。
+func loadPluginConfig(ctx context.Context, db *pgxpool.Pool, jwtSecretFallback string) *authplugin.PluginConfig {
 	config := &authplugin.PluginConfig{
 		AuthProvider:     "native",
 		UserManager:      "native",
@@ -73,7 +102,7 @@ func loadPluginConfig(ctx context.Context, db *pgxpool.Pool) *authplugin.PluginC
 		ApprovalProvider: "native",
 		Native: &authplugin.NativeConfig{
 			DatabaseDSN:   os.Getenv("DATABASE_URL"),
-			JWTSecret:     os.Getenv("JWT_SECRET"),
+			JWTSecret:     jwtSecretFromEnvOrFallback(jwtSecretFallback),
 			EncryptionKey: []byte(os.Getenv("ENCRYPTION_KEY")),
 		},
 		Casdoor: &authplugin.CasdoorConfig{
