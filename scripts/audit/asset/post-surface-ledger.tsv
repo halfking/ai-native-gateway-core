@@ -40,6 +40,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 769 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 772 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 4 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 773 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 777 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -775,6 +776,7 @@
 /tools/{name}	PUT	mcp/control.go:125	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /v1/approvals/	ANY	admin/handler.go:1322	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /v1/audio/analyze	ANY	cmd/gateway/main.go:6975	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/audio/converse	ANY	cmd/gateway/main.go:7814	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/audio/refine	ANY	cmd/gateway/main.go:6974	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/audio/speech	ANY	cmd/gateway/main.go:6967	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/audio/transcriptions	ANY	cmd/gateway/main.go:6964	unknown				not-probed-unresolved	★ 静态分级：解析不出
