@@ -25,14 +25,20 @@
 
 ### 分层模型
 
+> 层号口径（2026-11-27 统一标准轮）：本模块的 L0/L1/L2 是**网关自有会话内分层**，
+> 跨仓文档引用时写作 `GA-L0 / GA-L1 / GA-L2`（GA = Gateway Agent），与 memora
+> 存储层 L1/L2/L3（会话短期/语义事实/持久知识，见 memora 仓
+> `docs/standards/layer-vocabulary.md`）**不同域**。GA-L2 是"容器"，
+> memora 存储层是它装的内容。
+
 | 层 | 内容 | 数据源 | 寻址方式 | 体积量级 |
 |---|---|---|---|---|
-| **L0 索引** | 每步一行「目标 → 结果」 | `session_request_summaries`（网关 PG） | 步号 | ≈45 token/步 |
-| **L1 明细** | 某一步的完整正文（工具输出、报错、文件内容） | `session_bodies_unified`（网关 PG） | 步号（精确） | ≈2.4K token/步（随工具输出大小变） |
-| **L2 长期** | 跨会话事实、偏好、踩过的坑 | Memora | 语义（top-k） | 8 条/次 |
+| **GA-L0 索引** | 每步一行「目标 → 结果」 | `session_request_summaries`（网关 PG） | 步号 | ≈45 token/步 |
+| **GA-L1 明细** | 某一步的完整正文（工具输出、报错、文件内容） | `session_bodies_unified`（网关 PG） | 步号（精确） | ≈2.4K token/步（随工具输出大小变） |
+| **GA-L2 长期** | 跨会话事实、偏好、踩过的坑 | Memora | 语义（top-k）；2026-11-27 起可走 `POST /api/v2/agent-context` 分层面（`LLM_GATEWAY_CONTEXT_AGENT_AGENT_CONTEXT=1`，memora 侧 project ACL 判定，失败降级单条 search） | 8 条/次 |
 | **KB 知识库** | 项目级知识 | **仓内无知识库存储** | —— | 仅留契约与预算位 |
 
-★ **Memora 只能做 L2**：它的检索请求体是 `{user_id, query, top_k}`（`domains/memory/client/client.go:324-326`），**没有 id/step 寻址**，所以「加载第 N 步」必须走网关 PG。这是 L0/L1 用 PG、L2 用 Memora 的唯一理由。
+★ **Memora 只做 GA-L2**：GA-L0/GA-L1 需要 id/step 寻址，memora 的 legacy 检索请求体是 `{user_id, query, top_k}`（`domains/memory/client/client.go`），没有按步寻址 ⇒ 「加载第 N 步」必须走网关 PG。2026-11-27 起 GA-L2 的 memora 通道升级为 `POST /api/v2/agent-context` 分层面（返回 memora 存储层 L1/L2/L3 内容 + knowledge；env 门控 + 失败降级，见 `cmd/gateway/context_agent.go` 与 `internal/prompt-optimizer/memora/agent_context.go`）。
 
 ★ **「步」= 网关原生粒度「轮」**：网关的原生粒度是「轮」（一次 HTTP 请求 = `session_turns.turn_no`），不是「步」。本模块把「轮」作为可寻址的步号，`X-Gw-Step-Index` / `X-Gw-Step-Id` 作为未来客户端契约预留。
 
