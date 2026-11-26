@@ -300,8 +300,8 @@ func (h *Handler) handleUsageStatsAfter(w http.ResponseWriter, r *http.Request) 
 			tenant_id,
 			count(*) as request_count,
 			sum(cost_usd) as total_cost
-		FROM request_logs
-		WHERE created_at >= now() - interval '7 days'`
+		FROM request_logs_with_current_month
+		WHERE ts >= now() - interval '7 days'`
 
 	args := []any{}
 
