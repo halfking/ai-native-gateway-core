@@ -496,6 +496,84 @@ WHERE tenant_id='tenant-clamp' AND fact_request_id='clamp-healthy' AND source_fa
 		}
 	})
 
+	t.Run("late_arrival_and_revision_beyond_cursor", func(t *testing.T) {
+		// ★ 2026-11-26 交接点名的三个水位遗漏风险，逐条钉死：
+		// ① 晚到的旧事实（fact_id 低于已推进的历史游标）：
+		//    先让游标越过一批，再插入一条 occurred_at/fact_id 都更早的旧事实。
+		//    历史游标不会再回头读它 ⇒ 只能靠 pending 队列（AFTER INSERT 触发器）
+		//    把它带回来。若队列缺位，该事实永远不进投影（静默少算）。
+		//    钉法：等水位完全追平（backfill_complete=true 且 pending 清空）之后
+		//    再插旧事实 ⇒ 此时投影它的唯一通路就是 pending 队列。
+		// ② 跨租户同号（不同租户共用同一 request_id）：
+		//    latest 的 DISTINCT ON 键是 (tenant_id, request_id, occurred_at)
+		//    ⇒ 两租户必须各出一行，且互不覆盖对方的修订。
+		// ③ 已过游标的事实再出新修订（revision 2 在投影之后到达）：
+		//    新修订也只能走 pending 队列进来；upsert 的版本比较
+		//    (revision, finalized_at, fact_id) 必须选新修订而不是保留旧值。
+		//
+		// 先制造「水位已完全追平」的稳态：
+		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('watermark-pre','watermark-anchor',1,'2026-11-25 20:00Z','tenant-watermark','success',10,'llm');`)
+		for i := 0; i < 5; i++ {
+			if _, err := processor.ProcessBatch(ctx, 5); err != nil {
+				t.Fatalf("backfill to steady state failed: %v", err)
+			}
+		}
+		var complete bool
+		var pendingCount int
+		if err := pool.QueryRow(ctx, `SELECT backfill_complete,
+			(SELECT count(*) FROM request_metrics_pending) FROM request_metrics_projection_state WHERE singleton`).Scan(&complete, &pendingCount); err != nil || !complete || pendingCount != 0 {
+			t.Fatalf("steady state not reached before late-arrival probe: complete=%t pending=%d error=%v", complete, pendingCount, err)
+		}
+		// 稳态之后插入三组风险事实：晚到旧事实（时间更早）＋ 跨租户同号两条
+		// ＋ 已投影事实的高版本修订。
+		exec(`
+INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('late-old','late-old-request',1,'2026-11-20 08:00Z','tenant-watermark','success',77,'llm');
+INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('shared-a','same-request-both-tenants',1,'2026-11-25 21:00Z','tenant-wm-x','success',11,'llm'),
+       ('shared-b','same-request-both-tenants',1,'2026-11-25 21:00Z','tenant-wm-y','success',22,'llm');
+INSERT INTO public.usage_facts (event_id,request_id,revision,finalized_at,occurred_at,tenant_id,status,total_tokens,usage_source)
+VALUES ('anchor-rev2','watermark-anchor',2,'2026-11-25 22:00Z','2026-11-25 20:00Z','tenant-watermark','success',999,'corrected');`)
+		if _, err := processor.ProcessBatch(ctx, 100); err != nil {
+			t.Fatalf("late-arrival batch failed: %v", err)
+		}
+		// ① 晚到旧事实必须经 pending 队列进投影：
+		var lateTokens int
+		err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
+WHERE tenant_id='tenant-watermark' AND fact_request_id='late-old-request' AND source_fact_id IS NOT NULL`).Scan(&lateTokens)
+		if err != nil || lateTokens != 77 {
+			t.Fatalf("late-arriving old fact below the cursor was silently dropped: tokens=%d error=%v", lateTokens, err)
+		}
+		// ② 跨租户同号必须各出一行、互不合并：
+		var sharedRows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics
+WHERE fact_request_id='same-request-both-tenants' AND source_fact_id IS NOT NULL`).Scan(&sharedRows); err != nil || sharedRows != 2 {
+			t.Fatalf("same request_id across tenants merged into %d rows (want 2): error=%v", sharedRows, err)
+		}
+		var xTokens, yTokens int
+		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
+WHERE tenant_id='tenant-wm-x' AND fact_request_id='same-request-both-tenants' AND source_fact_id IS NOT NULL`).Scan(&xTokens); err != nil || xTokens != 11 {
+			t.Fatalf("tenant X row lost its own tokens: %d error=%v", xTokens, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
+WHERE tenant_id='tenant-wm-y' AND fact_request_id='same-request-both-tenants' AND source_fact_id IS NOT NULL`).Scan(&yTokens); err != nil || yTokens != 22 {
+			t.Fatalf("tenant Y row lost its own tokens: %d error=%v", yTokens, err)
+		}
+		// ③ 已过游标的事实的高版本修订必须覆盖旧投影：
+		var anchorTokens int
+		var anchorSource string
+		if err := pool.QueryRow(ctx, `SELECT total_tokens,usage_source FROM request_metrics
+WHERE tenant_id='tenant-watermark' AND fact_request_id='watermark-anchor' AND source_fact_id IS NOT NULL`).Scan(&anchorTokens, &anchorSource); err != nil ||
+			anchorTokens != 999 || anchorSource != "corrected" {
+			t.Fatalf("revision beyond cursor did not replace the projected row: tokens=%d source=%s error=%v", anchorTokens, anchorSource, err)
+		}
+		// 队列消化干净：三条晚到事实各确认一次，不得残留。
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics_pending`).Scan(&pendingCount); err != nil || pendingCount != 0 {
+			t.Fatalf("pending queue leaked after acknowledgement: pending=%d error=%v", pendingCount, err)
+		}
+	})
+
 	t.Run("closed_natural_day_report", func(t *testing.T) {
 		exec(`
 ALTER TABLE public.providers ADD COLUMN deleted_at timestamptz;
