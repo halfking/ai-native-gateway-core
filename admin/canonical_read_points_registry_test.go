@@ -1063,9 +1063,10 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	"domains/attachments/handler.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "附件正文读取（attachments 列走 details 腿）",
+		Note:  "附件正文读取（attachments 列走 details 腿）＋ 附件属主校验（2026-11-26 附件租户隔离轮新增 verifyAttachmentOwnership：按 tenant_id + attachments JSONB 包含谓词点查 ⇒ 与第一条同形状，attachments 列仍走 details 腿）",
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"attachments:detail", "request_id:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "附件正文读取（attachments 列走 details 腿）；本读点读 attachments:detail,request_id:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"attachments:detail", "tenant_id:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "附件属主校验（verifyAttachmentOwnership）：SELECT EXISTS(… WHERE tenant_id=$1 AND attachments @> $2::jsonb) ⇒ 读 tenant_id:base 与 attachments:detail ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN；按租户点查、无 ts 谓词（租户隔离校验、有界单请求）"},
 		},
 	},
 	"domains/promptinjection/error_discovery.go": {
