@@ -92,7 +92,17 @@ var routeLedger = map[string]struct {
 	"audioSpeechHandler":              {classRegisteredGap, "TTS 文本入音频出，输入侧未挂＝登记另案"},
 	"audioMCPHandler":                 {classRegisteredGap, "音频 MCP 工具面，登记另案"},
 	"audioTransformHandler":           {classRegisteredGap, "音频 refine/analyze 面，登记另案"},
-	"audioConverseHandler":            {classRegisteredGap, "语音会话面（文本/音频入）：★ 不经 chat 管道、★ 也不成对 SetSanitizeGuard（★ 实测 domains/streaming/audio_converse.go 内 chatHandler / SetSanitizeGuard 均零命中 ★）⇒ ★ 输入侧未挂＝★ 与 §704 轮音频族四条同案、★ 登记另案（★ 2026-11-26 审计轮收口复核轮代上游按同族口径归类 ★）"},
+	// ★ 2026-11-26（上游 audio 会话端点提交 4f5b0be72c 带入）：★ /v1/audio/converse
+	// 是**级联语音会话面**（ASR → 环回 chat 的 LLM 步 → TTS）。
+	// ★ 归类依据（★ 逐条读实现、★ 不是照抄同族 ★）：
+	//   ① ConverseHandler **只持 ConverseService**（audio_converse.go:159-165）
+	//      ⇒ **不携带 chatHandler** ⇒ 声称 chatPipeline 会被门判「分类造假」
+	//      （该类的证据是「表达式/闭包携带 chatHandler」）⇒ 不能选它；
+	//   ② LLM 步经 **HTTP 环回** /v1/chat/completions（loopbackChatCompletions）
+	//      ⇒ 那一步的输入由 chat 面入洗 ⇒ 但**本面自带**的 base64 音频与历史
+	//      文本**未挂** sanitize 守卫 ⇒ 与 audioTransformHandler 同形状
+	//      ⇒ 按 §704 轮口径登记为 registeredGap（登记裁决面、附理由）。
+	"audioConverseHandler": {classRegisteredGap, "音频级联会话面（ASR→环回 chat 的 LLM 步→TTS）：LLM 步经 HTTP 环回 chat 面入洗；本面自带 base64 音频与历史文本未挂 sanitize 守卫＝登记裁决面（同 audioTransformHandler 家族，§704 轮口径）"},
 }
 
 // muxRoute 是一条从 main.go 注册面扫出的路由。
