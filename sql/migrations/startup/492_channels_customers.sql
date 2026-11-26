@@ -14,13 +14,20 @@
 --   * channel 不引入新身份系统：渠道商登录复用 users 表（role='channel'），
 --     users.username 即渠道商标识（W4.3 v1 不做渠道商自助注册）。
 --
--- ★ 2026-11-26（代上游收口）：本迁移是 27 条多语句的建表+注释迁移，此前**未事务包裹**
---   ⇒ 门 scripts/ursmcheck/multi_statement_migration_transaction_gate_test.go 判红
---   （且门明确：新写的迁移不能靠往台账里加一行来豁免 ⇒ 只能加包裹）。
---   ⇒ 按仓内标准形态（参照 490/491）用 BEGIN; … COMMIT; 包起来：
---   三张 CREATE TABLE + 三条 COMMENT 原子生效 ⇒ 中途失败不留半套表。
+-- ★ 2026-11-26 审计轮代上游收口（★ 零已应用字节变更：★ 本迁移在本轮之前【从未被任何通道应用过】
+--   —— 154 生产库 public.schema_migrations 无 '492' 行、public.channels 与 public.channel_users
+--   均不存在（2026-11-26 只读实测）★ ⇒ ★ 改它不触及任何环境的已应用字节 ★★）：
+--   ① 加事务包裹（★ BEGIN; … COMMIT; ★）——★ 仓内增量口径要求「基线之后新增的启动迁移必须事务包裹」，
+--      判据见 scripts/audit/asset/multi_statement_migration_baseline.ref 的文件头 ★★；
+--   ② 加台账自登记（★ INSERT INTO public.schema_migrations … ★）——★ 仓内「≥952 双账本纪律」：
+--      迁移必须自己把行写进 public.schema_migrations，★ 否则任何通道应用后运行时台账无行 ⇒
+--      连续性门／漂移报告假红 ★★。
+--   ★ 未动 DDL 本体（★ 表／索引／注释逐字保留 ★）。
 
+\set ON_ERROR_STOP on
 BEGIN;
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
 
 CREATE TABLE IF NOT EXISTS public.channels (
     id           BIGSERIAL PRIMARY KEY,
@@ -55,5 +62,10 @@ CREATE TABLE IF NOT EXISTS public.channel_users (
 COMMENT ON TABLE public.channels IS 'W4.3 渠道商（S2 门户）：销售代理层级，拥有若干客户';
 COMMENT ON TABLE public.customers IS 'W4.3 客户：渠道商名下的最终客户；applications.customer_id 指向本表';
 COMMENT ON TABLE public.channel_users IS 'W4.3 渠道商登录用户 → 渠道归属（users.role=channel）';
+
+-- 台账自登记（★ ≥952 双账本纪律：★ 迁移必须自己把行写进 public.schema_migrations ★★）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('492', 'W4.3 channels/customers/channel_users: 渠道商 → 客户 → 租户/应用归属层级')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

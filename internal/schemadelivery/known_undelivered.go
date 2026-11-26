@@ -57,7 +57,8 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 				"★ 出路：把 492 搬进投递通道并登记（这是 schema 交付决策，owner 决定），或读端改读已有形状。" +
 				"★ **该修法属 W4.3 车道的产品口径，本车道只登记不代决策**。" +
 				"★ 处置：本条登记不阻断部署（scripts/deploy-test-gate.sh 的包清单不含 scripts/ursmcheck ⇒ 交付门不在部署闸门内；" +
-				"且 211 本轮部署已实测通过）。",
+				"且 211 本轮部署已实测通过）。" +
+				"★ 补充证据（2026-11-26 审计轮、154 生产库只读实测）：public.schema_migrations 无 492 行、public.customers 不存在 ⇒ 部署与新装都不会建出该表；★ 且 internal/sqlguard 的两道投递通道覆盖门只断言最大编号附近的近邻窗口（当前最大号 999）⇒ 492 远在窗口外 ⇒ 门根本没看它 ⇒「拿旧编号当新迁移的编号」会绕过门。★ 本轮读点侧已把 request_logs 改指 canonical 视图（created_at → ts），但 customers/channel_users 的投递面仍缺 ⇒ 本条登记保留。",
 			// ★ 空串 = **整表**登记：本文件有 4 处是整表引用（SELECT 1 FROM customers /
 			//   SELECT id FROM customers / FROM customers），不带列名 ⇒ 逐列登记匹配不上
 			//   ⇒ 台账按「文件⇒表⇒列」匹配（knownEntry），整表引用需要空串这一项。
@@ -67,22 +68,9 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 			Since: "2026-11-26",
 			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：同 492_channels_customers.sql 建出的渠道-用户关联表，" +
 				"同样不在投递通道里 ⇒ 部署后读端 42P01。出路与 customers 同条：把 492 搬进投递通道并登记，或读端改读已有形状。" +
-				"★ 本车道只登记不代决策。",
+				"★ 本车道只登记不代决策。" +
+				"★ 补充证据（2026-11-26 审计轮、154 生产库只读实测）：public.channel_users 不存在 ⇒ 部署与新装都不会建出该表 ⇒ admin/channels.go 的权限判定端点恒 42703。",
 			Cols: []string{"", "channel_id", "user_id"},
-		},
-		"request_logs": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：本文件的渠道统计与客户会话两个读端 SQL 读 request_logs，" +
-				"而定义它的 sql/migrations/startup/000_base_tables.sql **不在两条投递通道里**（仓内 grep 无任何通道点名它）" +
-				"⇒ ★ 实测（2026-11-26，211 生产库 acc-pg17/llm_gateway）：information_schema 里 request_logs **表不存在**，" +
-				"只有视图 request_logs_with_current_month ⇒ ⇒ 这两个端点在部署后会报 **42P01（表不存在）**。" +
-				"★ 注意：请求日志的真实表由 341_hot_table_independence.sql 的架构改造承载（热表 request_logs_hot ＋ 分区表 request_logs 异步承接），" +
-				"而 request_logs 本身正是那次改造要淘汰的旧家 ⇒ **出路不是「把 000_base_tables 搬进通道」（那会把已淘汰的形状重新投递）」，" +
-				"而是**读端改读 request_logs_hot / 已有视图**（并按 651_provider_quality_hot_rollup.sql 已固化的列映射口径对齐：" +
-				"created_at → ts、status_code → upstream_status_code 等）⇒ ★ **该修法属 W4.3 车道的产品口径，本车道只登记不代决策**。" +
-				"★ 处置：本条登记不阻断部署（scripts/deploy-test-gate.sh 的包清单不含 scripts/ursmcheck ⇒ 交付门不在部署闸门内；" +
-				"且 211 本轮部署已实测通过）。",
-			Cols: []string{"created_at"},
 		},
 	},
 	// ── 存量缺口三组（2026-11-26 存量缺口收口轮 · 第 31 轮已修 ⇒ 登记已删）──────

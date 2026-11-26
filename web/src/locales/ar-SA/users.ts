@@ -29,11 +29,13 @@ export default {
     enable: 'تمكين',
 
     resetPassword: 'Reset Password',
+    changeRole: 'تغيير الدور',
     delete: 'Delete',
   },
   role: {
     super_admin: 'Super Admin',
     tenant_admin: 'Tenant Admin',
+    user: 'مستخدم عادي',
   },
   mustChangePassword: {
     pending: 'Pending',
@@ -43,6 +45,12 @@ export default {
     disabled: 'Disabled',
   },
   modal: {
+    role: {
+      title: 'تغيير الدور: {name}',
+      current: 'الدور الحالي',
+      label: 'الدور الجديد',
+      hint: 'لا يمكن للمستأجرين غير الافتراضي سوى مسؤولي المستأجر أو المستخدمين العاديين',
+    },
     create: {
       title: 'Create User',
       username: 'Username',
@@ -55,6 +63,7 @@ export default {
       email: 'Email',
       tenant: 'Tenant',
       role: 'Role',
+      roleHint: 'لا يمكن للمستأجرين غير الافتراضي امتلاك مسؤول أعلى — فقط مسؤولو المستأجر أو المستخدمون العاديون',
       cancel: 'Cancel',
       submit: 'Create',
     },
@@ -82,6 +91,7 @@ export default {
     resetPasswordComplexity: 'كلمة المرور لا تستوفي متطلبات التعقيد',
     toggleFailed: 'تعذّر تبديل حالة المستخدم. أعد المحاولة.',
     changePasswordFailed: 'تعذّر تغيير كلمة المرور. أعد المحاولة.',
+    roleChangeFailed: 'تعذر تغيير دور المستخدم. يرجى المحاولة مرة أخرى.',
   },
   passwordMatch: {
     matched: '✓ Passwords match',
