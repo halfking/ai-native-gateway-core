@@ -155,6 +155,9 @@
       <tr><td>D-6~D-13</td><td>投递门环境口径 / 文件名当表名 / 能力授权语义 / fail-closed / boot 失败 / 冷却不执行 / 子插件族 / 探针无开关</td><td>中-轻</td><td><span class="tag risk">沿用待 owner</span></td></tr>
       <tr><td>本轮新增</td><td>死代码：<code>writer.go</code> / <code>writer.go.bak</code> / <code>query.go</code> 四个旧查询函数（零生产调用点）</td><td>轻</td><td><span class="tag info">登记待排期</span></td></tr>
       <tr><td>结构项</td><td>V2 两分支后续 / 父仓结构件 / web-mobile 豁免 / 扫描器 BLOCK 32 / capability 迁移通道安置</td><td>—</td><td><span class="tag info">沿用</span></td></tr>
+      <tr><td>⑦ 新增 · 部署口径</td><td>211/245 是否追平 <code>origin/main</code>（落后 31 / 51 笔）；追平会把 W4.3 的 4 条渠道商端点带上线而它们<b>必然 42703</b>（三台真库实测）</td><td>中-轻</td><td><span class="tag risk">待 owner 拍（未执行）</span></td></tr>
+      <tr><td>⑦ 新增 · schema 变更</td><td>把 <code>492_channels_customers.sql</code> 搬进四条投递通道（＝生产 schema 变更）；<b>须先定编号棘轮</b>：接续最大号重编号为 1000，还是按缺口棘轮登记豁免</td><td>中</td><td><span class="tag risk">待 owner 拍（未执行）</span></td></tr>
+      <tr><td>⑦ 新增 · 运维</td><td>245 的 <code>disk-check.sh</code> ＋ 两个 cron 补丁（flock / find timeout / 归档脱离 80% 阈值）；16:2x 复查仍在复发（iowait 44.22%、vda util 98.70%）</td><td>中</td><td><span class="tag risk">待 owner 拍（未落机器）</span></td></tr>
     </table>
   </div>
 
@@ -271,7 +274,114 @@
     </ul>
   </div>
 
-  <footer>生成于 2026-11-26 · 批判式审计轮（V2 统计面合并）· ①②③④⑤ 读数现跑取自 HEAD c5cb70f7fc/b56206bc83 · ⑥ 收口补记读数现跑取自并上游后合并笔 ec43c1c9c8（origin/main 5a94acb7ca 并入）· ④⑤⑥ 三台只做只读探测</footer>
+  <h2>⑦ 现跑复核与「追平与否」的量化论证（2026-11-26 15:5x–16:3x）</h2>
+  <div class="card">
+    <h3>⑦.1 交接单第 ① 件事<b>闭环且稳定</b>（154 的 backfill：不是一次性瞬时值）</h3>
+    <table>
+      <tr><th>读数时刻</th><th>观测面</th><th>读数</th></tr>
+      <tr><td>15:53:06（库内）</td><td><code>request_metrics_projection_state</code></td>
+          <td><code>backfill_complete=<b>t</b></code>、<code>cursor_fact_id=2,036,549</code>、
+              <code>updated_at=15:53:06.75358+08</code></td></tr>
+      <tr><td>15:53（库内）</td><td><code>usage_facts</code> / <code>request_metrics_pending</code></td>
+          <td>1,158,080 行 / <code>max(fact_id)=2,038,120</code>；pending = <b>1</b>（单条增量，<b>不是积压</b>）</td></tr>
+      <tr><td>16:27:33（行为面）</td><td><code>/readyz/request-metrics</code></td>
+          <td><code>backfill_complete=<b>true</b></code>、<code>updated_at=16:27:30.765475+08</code>、<code>pending_since=null</code></td></tr>
+      <tr><td>16:27（行为面）</td><td><code>/api/admin/stats/v2/summary?days=1</code></td>
+          <td>200、<code>ready=<b>true</b></code>、<code>source=request_metrics</code>、<code>items</code> <b>1 条</b>
+              （failed 1828 / success_rate 0.7173 / total_tokens 6,355,491 / avg_ttft 4388.63ms）</td></tr>
+    </table>
+    <ul>
+      <li><b>为什么比 ⑥.1 的终点读数更强</b>：⑥.1 是<b>首次转真</b>（12:35:00）；本轮是<b>相隔 3 小时 52 分后再次读到真</b>
+          （库内 <code>t</code> ＋ 行为面 <code>true</code> ＋ <code>items</code> 非空）
+          ⇒ <b>不是回退、不是瞬时值、不是投影器停摆后的残留</b> ⇒ 交接单第 ① 件事闭环。</li>
+    </ul>
+    <h3>⑦.2 三台版本矩阵（★ <b>落后笔数是快照量，不是常量</b> ★）</h3>
+    <table>
+      <tr><th>机器</th><th>角色</th><th>在役版本（16:0x–16:2x 现跑）</th><th>落后 <code>origin/main@67d878a446</code></th><th>健康度</th></tr>
+      <tr><td>211</td><td>集成</td><td>3289-a88cee62</td><td><b>31 笔</b></td><td>readyz 200</td></tr>
+      <tr><td>245</td><td>预发</td><td>3178-6bbc51f5</td><td><b>51 笔</b></td><td>readyz 200</td></tr>
+      <tr><td>154</td><td>生产</td><td>3177-b56206bc</td><td><b>53 笔</b></td><td>readyz 200</td></tr>
+    </table>
+    <ul>
+      <li><b>口径纠正</b>：⑥.2 记的是 4 / 24 / 26 笔，本轮同样是现跑却算出 31 / 51 / 53
+          ⇒ <b>三台现役 SHA 一个字节没动</b>，<b>是「相对的那个尖端自己前进了」</b>
+          （我方 §6 推 4 笔 ＋ 并行车道本轮内又推 4 笔：<code>4f5b0be72c</code> 级联语音端点 /
+           <code>3e045acff7</code> sanitize r1060 / <code>97f5e2caa9</code> / <code>67d878a446</code>）
+          ⇒ <b>「落后 N 笔」必须带「相对哪个尖端的 SHA ＋ 读数时刻」两个限定才是有效读数</b>。</li>
+    </ul>
+    <h3>⑦.3 ★★ 本轮最重的一条：<b>「追平后 W4.3 端点必 42703」从预测升级为三方实测坐实</b> ★★</h3>
+    <ul>
+      <li><b>（a）清单面（渠道点没点名）—— 四处投递位逐条实测</b>：
+          <ul>
+            <li>部署通道 <code>scripts/apply-db-revision-sequence.sh</code> 的 <code>files=()</code>
+                ⇒ <b>不含 492</b>（实测该数组共 <b>407</b> 条点名，032 → 999a）。</li>
+            <li>安装器通道 <code>sql/schema/installed_startup_migrations.tsv</code>
+                ⇒ <b>不含 492</b>（407 行，末条 407→973）。</li>
+            <li>离线安装器 <code>installer/cmd/llm-gw-installer/embeddata/startup/</code>
+                ⇒ <b>不含 492</b>（逐文件扫 ⇒ 0 命中）。</li>
+            <li>认可投递位 <code>sql/schema</code> ＋ <code>installer/migrations</code> ⇒ <b>不含 492</b>。</li>
+          </ul></li>
+      <li><b>（b）机制面（判据代码）——「落在 <code>sql/migrations/startup/</code> 目录里」≠「会被执行」</b>：
+          <code>internal/schemadelivery/schemadelivery.go:20-24</code> 定义 5 处认可来源；
+          <code>RecognizedDirs</code>（101-104 行）只有 <code>sql/schema</code> ＋ <code>installer/migrations</code>，
+          且注释明写「两条通道自己的目录不在此列——那里只有点名的部分才算（目录里还躺着大量没投递的历史件）」
+          ⇒ 该目录下 <b>1382 个文件</b>，<b>只有被点名的才执行</b>。</li>
+      <li><b>（c）真库面（三台各自实测，全 NULL）</b>：
+          <table>
+            <tr><th>机器</th><th>channels</th><th>customers</th><th>channel_users</th><th>schema_migrations 有 '492%'</th><th>canonical 视图</th><th>v1 底表</th></tr>
+            <tr><td>211</td><td>NULL</td><td>NULL</td><td>NULL</td><td>0</td><td>在</td><td>不在</td></tr>
+            <tr><td>245</td><td>NULL</td><td>NULL</td><td>NULL</td><td>0</td><td>在</td><td>不在</td></tr>
+            <tr><td>154</td><td>NULL</td><td>NULL</td><td>NULL</td><td>0</td><td>在</td><td>不在</td></tr>
+          </table></li>
+      <li><b>⇒ 结论</b>：三台全部处在「W4.3 不可用」的态 ⇒
+          <b>追平 <code>origin/main</code> 会把那 4 条渠道商端点带上线，而它们必然 42703</b>
+          —— 从「可能出错」变成「<b>必然出错</b>」（三段证据互相独立，任一段都足以支撑结论）。</li>
+    </ul>
+    <h3>⑦.4 追平与否的<b>量化损益</b>（供 owner 决策）</h3>
+    <ul>
+      <li><b>追平得到的</b>：
+          <ul>
+            <li><b>★ <code>66db5c5577</code> PI 分析读端点租户过滤 = 本轮唯一的安全收益项 ★</b>：
+                <code>super_admin</code> 看全平台、<code>tenant_admin</code> 只看本租户；
+                <code>input_text</code> <b>包含用户提示词</b> ⇒ 修复前是<b>跨租户可见的数据泄漏</b>
+                ⇒ <b>追平即受益，优先级高于其余所有项</b>。</li>
+            <li>角色治理（<code>2094ff2955</code> ＋ 其真机 flow）、级联语音端点 <code>/v1/audio/converse</code>
+                （<code>4f5b0be72c</code>）、sanitize r1060 强凭据误判收紧（<code>3e045acff7</code>）。</li>
+            <li>我方代收口三笔：纯机械收口，部署后<b>不产生</b>新的 schema 变化（492 仍未投递）。</li>
+          </ul></li>
+      <li><b>追平带来的代价</b>：W4.3 的 4 条端点<b>上线即 42703</b> ⇒ 表现为「端点存在但报错」
+          ⇒ <b>对现有业务面零影响</b>（无端点被替换、无数据路径被改），但会给运维制造一条<b>可解释</b>的红噪声。
+          <br>★ 我方那部分<b>已经就绪</b>：三处读点已改指 canonical 视图（<code>request_logs_with_current_month</code> ＋ 时间列 <code>ts</code>）
+          ⇒ <b>上游补上投递面即可用，不需要再改代码</b>。</li>
+      <li><b>154（生产）为什么本轮不动</b>：<b>生产追平的前置条件 ＝ 投递面闭合</b>，否则生产面会新增 4 条红端点
+          ⇒ 正确顺序是「先补投递面 → 再追平」，而补投递面本身是 schema 变更 ⇒ <b>须 owner 先拍</b>。</li>
+    </ul>
+    <h3>⑦.5 245 的 IO 风暴：16:2x 复查（<b>仍在复发、未恶化</b>）</h3>
+    <ul>
+      <li><code>loadavg 1.76/1.62/1.70</code>；<code>%iowait 44.22</code>；<code>vda %util 98.70</code>、<code>aqu-sz 1.15</code>。</li>
+      <li>磁盘仍 <b>76%</b>（71G/99G）⇒ 仍低于 80% 阈值 ⇒ ⑥.3 判定的「归档只写 pending、永不删除」的
+          <b>自反馈环未被打断</b>。</li>
+      <li>在跑的 find：pid <code>2169077</code> 已跑 <b>36:02</b>（同一形态：单实例、尚未重叠）。</li>
+      <li>两个 cron <b>仍是原样</b>：<code>disk-check</code> = <code>17 * * * *</code>、<code>cleanup-known-junk</code> = <code>*/30 * * * *</code>
+          ⇒ 根因判定依然成立，<b>补丁仍未落机器</b>（等 owner 明确）。</li>
+    </ul>
+    <h3>⑦.6 本轮通用式（三条）＋ 诚实边界</h3>
+    <ul>
+      <li><b>①「相对落后的笔数」是快照量，不是常量</b>：尖端自己前进会让落后数变大
+          ⇒ 登记矩阵必须带「相对哪个尖端的 SHA ＋ 读数时刻」两个限定。</li>
+      <li><b>②「这个迁移会不会被执行」不能靠「它放在哪个目录」判断</b>：本仓投递是<b>点名制</b>
+          ⇒ 判据要落到<b>渠道清单</b>，而不是目录位置。</li>
+      <li><b>③「上线后会不会报错」可以在不部署的前提下坐实</b>：把
+          「<b>清单面</b>（渠道点没点名）＋ <b>机制面</b>（判据代码怎么定义投递）＋ <b>真库面</b>（对象在不在）」
+          三段拼起来，就得到一条<b>必然性</b>结论 ⇒ 比「部署后看报错」快一个数量级，且<b>零生产写</b>。</li>
+      <li><b>诚实边界</b>：本节<b>零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署</b>；
+          三台只做只读探测；154 的登录口令走 <b>stdin、不进 argv、不落盘</b>；
+          245 的 <code>disk-check.sh</code> 与两个 cron <b>未修改</b>；<b>492 未搬进任何投递通道</b>；
+          写盘基线 ＝ <code>origin/main@67d878a446</code>，并行车道在本工作树的 25 个在途改动<b>一个字节没碰</b>。</li>
+    </ul>
+  </div>
+
+  <footer>生成于 2026-11-26 · 批判式审计轮（V2 统计面合并）· ①②③④⑤ 读数现跑取自 HEAD c5cb70f7fc/b56206bc83 · ⑥ 收口补记读数现跑取自并上游后合并笔 ec43c1c9c8（origin/main 5a94acb7ca 并入）· ⑦ 现跑复核读数取自 origin/main@67d878a446（2026-11-26 15:5x–16:3x）· ④⑤⑥⑦ 三台只做只读探测、零部署</footer>
 </div>
 
 <script>

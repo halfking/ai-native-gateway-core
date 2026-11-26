@@ -1139,6 +1139,13 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_usd:base", "error_kind:base", "latency_ms:base", "outbound_model:base", "prompt_tokens:base", "provider_id:detail", "stream_first_chunk_ms:base", "success:base", "ts:base", "upstream_status_code:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: true, ExemptReason: exemptAuditOrToolingFace, Note: "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；本读点读 client_model:detail,completion_tokens:base,cost_usd:base,error_kind:base,latency_ms:base,outbound_model:base,prompt_tokens:base,provider_id:detail,stream_first_chunk_ms:base,success:base,ts:base,upstream_status_code:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
+	"internal/schemadelivery/known_undelivered.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "投递面欠账登记台账（★ 它登记【哪些对象没被投递、谁在引用它们】⇒ ★ 是一张说明表、★ 不是读面 ★）：★ 本文件只在【注释与登记理由的散文】里提及 canonical 视图（★ 2026-11-26 审计轮：request_logs 那条登记按「防免死金牌」纪律删除、理由写明三处读点已改指 canonical 视图 ★）⇒ ⇒ 无 FROM 子句、无 SQL 形态的字面量 ⇒ 本文件没有 canonical 读点；★ 真正的读点登记在 admin/channels.go 一条",
+	},
 	"internal/sessionv2mirror/synthetic_session.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,

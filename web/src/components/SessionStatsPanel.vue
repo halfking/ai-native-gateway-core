@@ -570,7 +570,7 @@ defineExpose({
           <div v-if="overview?.session_attribution?.totals.length" data-testid="session-attribution">
             <div class="detail-card__header">{{ t('sessions.stats.attribution.title') }}</div>
             <dl class="kv-list">
-              <div v-for="row in overview.session_attribution.totals" :key="row.reason" class="kv-row" :data-testid="'session-attribution-' + row.reason">
+              <div v-for="row in overview.session_attribution.totals" :key="row.reason" class="kv-row" :data-testid="`session-attribution-${row.reason}`">
                 <dt>{{ attributionLabels[row.reason] }}</dt>
                 <dd>{{ t('sessions.stats.attribution.measures', { requests: row.requests.toLocaleString(), usd: formatUsd(row.cost_usd) }) }}</dd>
               </div>
