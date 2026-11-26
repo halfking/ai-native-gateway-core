@@ -11,6 +11,8 @@ import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime } from '../utils/datetime'
 import { getMySessions, type MySession } from '../api/admin'
 import { getUserRole } from '../store'
+// el-* 组件显式注册（element-import-audit 门要求；写法同 ClientAnalyticsView）
+import { ElAlert, ElCard, ElEmpty, ElTable, ElTableColumn, ElTag } from 'element-plus'
 
 const { t } = useI18n()
 

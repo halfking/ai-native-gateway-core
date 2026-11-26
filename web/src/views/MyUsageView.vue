@@ -10,6 +10,8 @@ import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { getMyUsage, type MyUsageStats } from '../api/admin'
 import { getUserRole } from '../store'
+// el-* 组件显式注册（element-import-audit 门要求；写法同 ClientAnalyticsView）
+import { ElAlert, ElCard, ElCol, ElEmpty, ElRow, ElTag } from 'element-plus'
 
 const { t } = useI18n()
 
