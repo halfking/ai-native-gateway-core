@@ -20,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:9204-9223`（2026-11-26 合并轮重钉：codex/211-statistics-v2-release 20 笔并入后合并树逐锚点实测 Recovery :9204、Auth :9220、SecurityHeaders :9223 ⇒ 窗口 9204-9223；前值 9219-9238 为上游并线前读数）：
+`cmd/gateway/main.go:9217-9237`（2026-11-26 审计轮重钉：并行车道的音频端点笔在链体之前净增 14 行 ⇒ 合并树逐锚点实测 Recovery :9218、Auth :9234、SecurityHeaders :9237 ⇒ 窗口 9217-9237；前值 9204-9223 为并入前读数）：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
@@ -31,9 +31,9 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 两处顺序是踩坑后改的，有注释自陈：
 
 - **Logging 必须在 Auth 之外** —— 否则 401 不落日志，客户端拿 `X-Request-Id` 去查命中 0 次
-  （`cmd/gateway/main.go:9206-9213`）。
+  （`cmd/gateway/main.go:9220-9227`）。
 - **maintain/mobile 必须组合在链内**（`publicSurface`）—— 否则运维面不带安全响应头
-  （`cmd/gateway/main.go:9159-9164`）。
+  （`cmd/gateway/main.go:9173-9178`）。
 
 ### 2.2 数据面：v1（生产默认）与 v2（默认关）
 
@@ -56,7 +56,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 
 | 机制 | 位置 | 裁决 | 生产 | 阶段 |
 |---|---|---|---|---|
-| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:9204-9223` | **主链** | ✅ | — |
+| HTTP 中间件链 | `middleware/` + `cmd/gateway/main.go:9217-9237` | **主链** | ✅ | — |
 | Request Pipeline | `domains/pipeline/` | **骨架**（阶段词表的唯一事实源，16 个 phase） | ❌（v2 默认关） | — |
 | `HookRegistry` | `domains/hooks/registry.go:36` | **判死** | ❌（生产零调用方） | — |
 | Hook 阶段词表（5 个旧名） | `domains/hooks/types.go:13-23` | **别名视图** | ❌ | 映射到骨架的同名 phase |

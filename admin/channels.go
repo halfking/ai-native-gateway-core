@@ -112,6 +112,13 @@ func (h *Handler) listChannelCustomers(w http.ResponseWriter, r *http.Request) {
 		}
 		customers = append(customers, c)
 	}
+	// ★ 2026-11-26 审计轮代上游收口：★ 补 rows 迭代终检（★ 同 admin/credential_models.go 的既有范式 ★）
+	//   —— 上游原写法在迭代中途失败（连接断开／服务端错误）时**静默返回 200 + 截断列表**，
+	//   ★ 而 rowsguard 门判的就是「循环旁有没有 X.Err() 终检」⇒ ⇒ 迭代失败必须显式报出去。
+	if err := rows.Err(); err != nil {
+		writeInternalErr(w, "scan failed", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, customers)
 }
@@ -309,6 +316,11 @@ func (h *Handler) listChannelCustomerSessions(w http.ResponseWriter, r *http.Req
 			return
 		}
 		sessions = append(sessions, s)
+	}
+	// ★ 2026-11-26 审计轮代上游收口：★ 补 rows 迭代终检（★ 同上、★ 同 admin/credential_models.go 的既有范式 ★）
+	if err := rows.Err(); err != nil {
+		writeInternalErr(w, "scan failed", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, sessions)
