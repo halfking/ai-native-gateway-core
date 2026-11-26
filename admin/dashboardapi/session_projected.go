@@ -88,11 +88,25 @@ func HandleProjectedSessionDashboard(w http.ResponseWriter, r *http.Request, db 
 	// 见 SessionOverviewHandler 的 turns 对拍 errgroup 腿）。
 	// 注意 data 的生命周期：cost_stats 的解码在 Commit 之后，所以这里只取
 	// turns 计数，alignment 的合成放在解码后（下方）。
+	// ★ 对拍腿必须跑在 SAVEPOINT 里（2026-11-26 修复）：PG 里一条语句失败
+	//   会把整个事务置为 aborted，仅「吞掉错误」不回滚 ⇒ 后续 tx.Commit
+	//   必报 "commit unexpectedly resulted in rollback" ⇒ 整个面板 500，
+	//   soft-fail 名存实亡（隔离夹具上实测：夹具无 turns 家族表 ⇒ 42P01
+	//   ⇒ 直接复现）。pgx 的 tx.Begin() 就是 SAVEPOINT（pseudo nested
+	//   transaction）：在 savepoint 里跑对拍、失败 ROLLBACK TO SAVEPOINT
+	//   ⇒ 外层事务保持可用 ⇒ soft-fail 真正成立（turns 表缺失/瞬时错误
+	//   都只降级对拍腿，不再拖垮 KPI 主查询）。
 	var turnsCount int64
 	var turnsCountOK bool
 	if section == metrics.SessionDashboardOverview {
-		if n, err := queryBusinessTurnsCountWindowed(ctx, tx, query.Start, query.End, tenant); err == nil {
-			turnsCount, turnsCountOK = n, true
+		sp, spErr := tx.Begin(ctx)
+		if spErr == nil {
+			if n, err := queryBusinessTurnsCountWindowed(ctx, sp, query.Start, query.End, tenant); err == nil {
+				turnsCount, turnsCountOK = n, true
+				_ = sp.Commit(ctx)
+			} else {
+				_ = sp.Rollback(ctx)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

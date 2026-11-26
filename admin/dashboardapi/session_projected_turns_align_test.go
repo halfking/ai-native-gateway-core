@@ -15,6 +15,14 @@ package dashboardapi
 //     轮次腿失败/cost_stats 缺席 ⇒ 键缺席（soft-fail，缺席比假绿诚实）；
 //  4. 轮次查询必须发生在 tx.Commit 之前（pgx 事务提交后连接归还）——
 //     该时序是静态审查项，由约定注释钉住，运行期测不了（见文件尾注）。
+//     ★ 2026-11-26 savepoint 修复轮补充：契约 3 的 soft-fail 在 PG 语义下
+//     还要求轮次腿跑在 SAVEPOINT 里——同一事务里一条语句失败会把整个事务
+//     置为 aborted，仅吞错不回滚 ⇒ tx.Commit 必报
+//     "commit unexpectedly resulted in rollback" ⇒ 面板 500。该项已由
+//     internal/metricsstore 的真 PG 集成夹具
+//     （TestRequestMetricsProjectionPostgres/session_dashboard_calendar，
+//     夹具无 turns 家族表 ⇒ 42P01 ⇒ 未修版必 500）在运行期钉死：撤掉
+//     savepoint 该用例红、恢复则绿。
 
 import (
 	"context"
