@@ -298,7 +298,13 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★（feat(audio): 级联语音会话端点 /v1/audio/converse）在 `func main()` 里
 		// ★ 插入了 14 行 ⇒ ★ ⇒ 我方只改对拍表与文档引用、★ 不动上游代码
 		// ★（★ 与历次同款处置 ★★）。
-		file: "cmd/gateway/main.go", from: 9233, to: 9253,
+		// ★★ 2026-11-27 第二十九次重钉（★ 合并轮三十三）：★ 上游 casdoor 模式闭环 P0
+		// ★ （`842f53987`）在 `cmd/gateway/main.go` 链体**之前**净增 **13 行** ⇒
+		// ★ 合并树逐锚点实测（★ 不是按位移量推算 ★）：Recovery **:9247**、
+		// ★ Auth **:9263**、SecurityHeaders **:9266** ⇒ 链体 **9246-9266**。
+		// ★ ★ 2026-11-27 补记：本轮只重钉了 Logging/maintain 两个锚点（见下两处），
+		// ★ **链体这一处漏钉** ⇒ 设计页与认证表仍写 9233-9253（与代码不符）⇒ 本次补齐。
+		file: "cmd/gateway/main.go", from: 9246, to: 9266,
 		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
 		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
 		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
