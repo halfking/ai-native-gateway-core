@@ -751,8 +751,10 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			noCandCause := h.chatHandler.diagnoseNoCandidateCause(r.Context(), clientModel, tenantID)
 			attemptErrMsg = noCandCause.logMessage(clientModel)
 			latency := int(time.Since(startTime).Milliseconds())
-			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			// 2026-11-26：归因**进请求日志明细码**（只覆盖 failure_detail_code
+			// ⇒ error_kind / request_status / 既有计数零变化）。
+			h.chatHandler.recordFailedRequestWithDetail(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, noCandCause.detailCode(), latency, bodyBytes, keyInfo, r)
 			*attemptLogged = true
 			releaseDurableBeforeSurvival(durableStream, "no_candidate")
 			clientMsg := attemptErrMsg
