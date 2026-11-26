@@ -1,0 +1,88 @@
+# 20-user-role-governance.yaml —— 用户管理「变更角色」＋ 非 default 租户不得是超级管理员
+#
+# ★ 本 flow 的存在理由（2026-11-26 角色治理轮）：
+#   诉求＝「用户管理里要能变更用户角色；非 default 租户不得创建超级管理员，
+#   只能创建租户管理员或普通用户」，页面＝`/tenants/chenb` 及其它。
+#   ⇒ 能力必须**逐页可操作**：租户详情页有「变更角色」入口、角色下拉按租户收敛、
+#     普通用户这一档存在。
+#
+# ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（与 12/13 flow 头注同源）：
+#   ① `text:` 是全匹配正则 ⇒ 读数会变的元素一律 `.*….*`；
+#   ② `id:` 选的是 **data-testid**（不是 DOM id）⇒ 本 flow 用
+#      `data-testid="tenant-create-user-role"` / `tenant-user-change-role-btn` /
+#      `tenant-user-role-select` / `tenant-user-role-save` 四个锚点；
+#   ③ element-plus 的下拉是 **popper**（挂在 body 下）⇒ 打开后选项才进可访问树；
+#   ④ 视口必须 1440x1400（表格列多，窄视口会把右侧列横向吃掉）。
+#
+# ★ 关键取舍：**「非 default 租户不给超级管理员」这条为什么在 acme 上验**：
+#   `/tenants/chenb` 页面上可能**本来就有**一个超级管理员账号（存量违规），
+#   那时页面上「超级管理员」四个字是可见的（表格徽章）⇒
+#   `assertNotVisible: 超级管理员` 会**误判成产品红**。
+#   ⇒ 用一个**全租户都是租户管理员**的租户（acme）来验「下拉里没有超级管理员」，
+#     页面本身没有「超级管理员」字样 ⇒ 断言干净。
+#   ⇒ 而 chenb 上验的是「变更角色入口 + 变更真能生效」。
+#
+# ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
+#   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── ② 租户详情页（普通租户 acme）：建号对话框的角色下拉只有两档 ──────────
+#    （非 default 租户 ⇒ 不得出现「超级管理员」）
+- openLink: ${BASE_URL}/tenants/acme
+- extendedWaitUntil:
+    visible: "新增用户"
+    timeout: 30000
+- tapOn:
+    text: "新增用户"
+- extendedWaitUntil:
+    visible:
+      id: "tenant-create-user-role"
+    timeout: 20000
+- tapOn:
+    id: "tenant-create-user-role"
+- extendedWaitUntil:
+    visible: "普通用户"
+    timeout: 20000
+- assertVisible: "普通用户"
+- assertVisible: "租户管理员"
+# ★ 页面本身没有「超级管理员」字样（acme 的账号都是租户管理员）⇒ 这条断言干净
+- assertNotVisible: "超级管理员"
+
+# ── ③ 租户详情页（用户点名的 chenb）：用户行有「变更角色」入口 ─────────────
+- openLink: ${BASE_URL}/tenants/chenb
+- extendedWaitUntil:
+    visible:
+      id: "tenant-user-change-role-btn"
+    timeout: 30000
+
+# ── ④ 变更角色弹窗：新角色下拉只有租户管理员 / 普通用户 ──────────────────
+- tapOn:
+    id: "tenant-user-change-role-btn"
+- extendedWaitUntil:
+    visible:
+      id: "tenant-user-role-select"
+    timeout: 20000
+- tapOn:
+    id: "tenant-user-role-select"
+- extendedWaitUntil:
+    visible: "普通用户"
+    timeout: 20000
+- assertVisible: "普通用户"
+- assertVisible: "租户管理员"

@@ -747,7 +747,7 @@ watch(() => route.params.tenantId, loadTenant)
                 <button class="btn btn-ghost btn-sm" @click="toggleUserEnabled(u)">
                   {{ u.enabled ? $t('common.status.disabled') : $t('common.status.enabled') }}
                 </button>
-                <button class="btn btn-ghost btn-sm" @click="openRoleDialog(u)">
+                <button class="btn btn-ghost btn-sm" data-testid="tenant-user-change-role-btn" @click="openRoleDialog(u)">
                   {{ $t('tenants.detail.changeRoleBtn') }}
                 </button>
               </td>
@@ -1115,7 +1115,7 @@ watch(() => route.params.tenantId, loadTenant)
         </el-form-item>
         <el-form-item :label="$t('tenants.detail.roleLabel')">
           <!-- role options are tenant-scoped: no super_admin outside the default tenant -->
-          <el-select v-model="newUser.role" style="width: 100%">
+          <el-select v-model="newUser.role" style="width: 100%" data-testid="tenant-create-user-role">
             <el-option v-for="r in roleOptions" :key="r" :label="roleLabel(r)" :value="r" />
           </el-select>
         </el-form-item>
@@ -1135,7 +1135,7 @@ watch(() => route.params.tenantId, loadTenant)
           <span>{{ roleTarget ? roleLabel(roleTarget.role) : '-' }}</span>
         </el-form-item>
         <el-form-item :label="$t('tenants.detail.roleLabel')">
-          <el-select v-model="roleDraft" style="width: 100%">
+          <el-select v-model="roleDraft" style="width: 100%" data-testid="tenant-user-role-select">
             <el-option v-for="r in roleOptions" :key="r" :label="roleLabel(r)" :value="r" />
           </el-select>
         </el-form-item>
@@ -1144,7 +1144,7 @@ watch(() => route.params.tenantId, loadTenant)
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showRoleDialog = false">{{ $t('common.cancel') }}</el-button>
-          <el-button type="primary" @click="submitRoleChange" :loading="roleSaving">{{ $t('common.save') }}</el-button>
+          <el-button type="primary" data-testid="tenant-user-role-save" @click="submitRoleChange" :loading="roleSaving">{{ $t('common.save') }}</el-button>
         </span>
       </template>
     </el-dialog>
