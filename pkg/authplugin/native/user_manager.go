@@ -188,6 +188,12 @@ func (m *NativeUserManager) CreateUser(ctx context.Context, req *authplugin.Crea
 	if req.Role == "" {
 		req.Role = "tenant_admin"
 	}
+	// ★ 角色口径与 admin/users.go 同源（2026-11-26 角色治理轮）：
+	//   非 default 租户不得创建 super_admin，角色必须在闭集内。
+	//   本入口此前**零角色校验** ⇒ 是 admin 建号路径之外的一条绕过。
+	if err := admin.ValidateAssignableRole(req.Role, req.TenantID); err != nil {
+		return nil, err
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {

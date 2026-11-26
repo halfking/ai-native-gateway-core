@@ -29,11 +29,13 @@ export default {
     enable: '启用',
 
     resetPassword: '重置密码',
+    changeRole: '变更角色',
     delete: '删除',
   },
   role: {
     super_admin: '超级管理员',
     tenant_admin: '租户管理员',
+    user: '普通用户',
   },
   mustChangePassword: {
     pending: '待改密',
@@ -43,6 +45,12 @@ export default {
     disabled: '禁用',
   },
   modal: {
+    role: {
+      title: '变更角色 — {name}',
+      current: '当前角色',
+      label: '新角色',
+      hint: '非 default 租户只能是租户管理员或普通用户',
+    },
     create: {
       title: '新建用户',
       username: '用户名',
@@ -55,6 +63,7 @@ export default {
       email: '邮箱',
       tenant: '租户',
       role: '角色',
+      roleHint: '非 default 租户不能拥有超级管理员，只能创建租户管理员或普通用户',
       cancel: '取消',
       submit: '创建',
     },
@@ -82,6 +91,7 @@ export default {
     resetPasswordComplexity: '密码不符合复杂度要求',
     toggleFailed: '用户状态没能切换，请重试',
     changePasswordFailed: '密码没能修改，请重试',
+    roleChangeFailed: '用户角色没能变更，请重试',
   },
   passwordMatch: {
     matched: '✓ 两次输入一致',
