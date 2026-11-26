@@ -49,6 +49,8 @@ export default {
     keys: "مفاتيح API",
     keyApplications: "طلب المفتاح",
     auditLogs: "سجلات التدقيق",
+    mySessions: "جلساتي",
+    myUsage: "استخدامي (عرضي)",
     requestLogs: "سجلات الطلبات",
     dispatchWaterfall: "شلال قائمة الانتظار",
     requestRegistry: "سجل الطلبات",

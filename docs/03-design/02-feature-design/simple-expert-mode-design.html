@@ -455,7 +455,7 @@ details[open] > summary::before { transform: rotate(45deg); }
           <div>
             <span class="badge badge-primary">默认状态过重</span>
             <p style="font-size:var(--kx-text-sm);margin-top:var(--kx-space-3);margin-bottom:0">
-              <span class="num">463</span> 个设置项、<span class="num">129</span> 个布尔开关（其中 <span class="num">79</span> 项默认开启）、<span class="num">68</span> 个导航入口、<span class="num">93</span> 个后台 worker、<span class="num">8</span> 套探针默认同时运转。个人用户真正要做的只有五件事。
+              <span class="num">463</span> 个设置项、<span class="num">129</span> 个布尔开关（其中 <span class="num">79</span> 项默认开启）、<span class="num">70</span> 个导航入口、<span class="num">93</span> 个后台 worker、<span class="num">8</span> 套探针默认同时运转。个人用户真正要做的只有五件事。
             </p>
           </div>
           <div>
@@ -510,7 +510,7 @@ details[open] > summary::before { transform: rotate(45deg); }
             </tr>
             <tr>
               <td>控制台</td>
-              <td><span class="num">68</span> 个导航入口（<span class="num">8</span> 个分组 <span class="num">65</span>项 +顶层 <span class="num">3</span>项，落地路径 <span class="num">67</span> 个），<span class="num">118</span> 条生产路由</td>
+              <td><span class="num">70</span> 个导航入口（<span class="num">8</span> 个分组 <span class="num">67</span>项 +顶层 <span class="num">3</span>项，落地路径 <span class="num">69</span> 个），<span class="num">118</span> 条生产路由</td>
               <td><span class="mono">web/src/config/appNav.ts</span>、<span class="mono">router.ts</span></td>
             </tr>
             <tr>
@@ -752,7 +752,7 @@ details[open] > summary::before { transform: rotate(45deg); }
             模式只有一个注册项 <code>gateway.mode</code>。可见性判定只有一处实现 <code>canShowNavItem()</code>（<span class="mono">web/src/config/appNav.ts:291-300</span>）。运行时裁剪只有一处判定 <code>OperatingMode()</code>。
           </p>
           <p>
-            仓库里已经踩过这条的边：<span class="mono">web/src/components/ui/AppBottomNav.vue:30-32</span> 明文写着「不要在这里重新推导可见性——复制一遍过滤逻辑，底栏与侧栏就会在角色变更后不一致」。同理，不允许在68 个导航入口各写一个 <code>if (simple)</code>。
+            仓库里已经踩过这条的边：<span class="mono">web/src/components/ui/AppBottomNav.vue:30-32</span> 明文写着「不要在这里重新推导可见性——复制一遍过滤逻辑，底栏与侧栏就会在角色变更后不一致」。同理，不允许在70 个导航入口各写一个 <code>if (simple)</code>。
           </p>
         </div>
       </div>
@@ -1029,10 +1029,10 @@ var simplePreset = map[string]PresetEntry{
         </table>
       </div>
       <p>
-        折叠后简易模式从 <span class="num">68</span> 个入口降到 <span class="num">14</span> 个可见页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），另外 <span class="num">54</span> 条收进一个「高级」折叠组。分组按简易模式重新命名（供应商与模型、密钥与用户、请求、接入指南、对话、设置），专家面的原有分组在折叠组内保持原归属。
+        折叠后简易模式从 <span class="num">70</span> 个入口降到 <span class="num">14</span> 个可见页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），另外 <span class="num">56</span> 条收进一个「高级」折叠组。分组按简易模式重新命名（供应商与模型、密钥与用户、请求、接入指南、对话、设置），专家面的原有分组在折叠组内保持原归属。
       </p>
       <p>
-        台账按结构记 <span class="num">68</span> 条，可见性另算：运营管理组里 <span class="num">5</span> 项带 <code>tenantOnly</code>，只在租户登录时露出，default 租户的个人用户在「高级」里看不到它们。逐条归属由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从 <span class="mono">appNav.ts</span> 生成，行数与真源对不齐就是红的。
+        台账按结构记 <span class="num">70</span> 条，可见性另算：运营管理组里 <span class="num">5</span> 项带 <code>tenantOnly</code>，只在租户登录时露出，default 租户的个人用户在「高级」里看不到它们。逐条归属由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从 <span class="mono">appNav.ts</span> 生成，行数与真源对不齐就是红的。
       </p>
 
       <h3>按菜单分组隐藏会漏掉的两处</h3>
@@ -1059,7 +1059,7 @@ var simplePreset = map[string]PresetEntry{
             </tr>
             <tr>
               <td><span class="mono">web/src/config/navCounts.test.ts</span></td>
-              <td>专家面 <span class="num">68</span>项 / <span class="num">67 个落地路径 / <span class="num">54</span> 条收进「高级」折叠组，三档口径锁死。<span class="mono">appNav.ts</span> 加一条菜单，或三份方案文档改一个数，门都转红</td>
+              <td>专家面 <span class="num">70</span>项 / <span class="num">69 个落地路径 / <span class="num">56</span> 条收进「高级」折叠组，三档口径锁死。<span class="mono">appNav.ts</span> 加一条菜单，或三份方案文档改一个数，门都转红</td>
             </tr>
             <tr>
               <td><span class="mono">web/src/i18n/localeKeyParity*</span></td>
@@ -1244,7 +1244,7 @@ var simplePreset = map[string]PresetEntry{
             <tr><td>密钥概念</td><td><span class="num">4</span> 种</td><td><span class="num">2</span> 种：上游 key、网关 key</td></tr>
             <tr><td>网关密钥表单</td><td><span class="num">9</span> 个字段</td><td><span class="num">2</span> 个：别名、预算</td></tr>
             <tr><td>上游接入</td><td>两道网络门串行阻塞</td><td>探测后台跑，不阻塞提交</td></tr>
-            <tr><td>导航入口</td><td><span class="num">68</span> 个</td><td><span class="num">14</span> 个可见页面，专家面进折叠组</td></tr>
+            <tr><td>导航入口</td><td><span class="num">70</span> 个</td><td><span class="num">14</span> 个可见页面，专家面进折叠组</td></tr>
           </tbody>
         </table>
       </div>
@@ -1269,7 +1269,7 @@ var simplePreset = map[string]PresetEntry{
               <td><span class="num">1</span></td>
               <td>表面投影</td>
               <td>新增 <code>gateway.mode</code> 注册项；<code>canShowNavItem</code> 加第五维；导航折叠组；设置页分组折叠</td>
-              <td>简易模式导航可见页面降到 14，54 条收进高级折叠组；专家模式渲染逐像素不变；<span class="mono">navCoverage.test.ts</span> 绿</td>
+              <td>简易模式导航可见页面降到 14，56 条收进高级折叠组；专家模式渲染逐像素不变；<span class="mono">navCoverage.test.ts</span> 绿</td>
             </tr>
             <tr>
               <td><span class="num">2</span></td>
@@ -1296,7 +1296,7 @@ var simplePreset = map[string]PresetEntry{
       <div class="note note-success">
         <div class="note-head"><svg aria-hidden="true"><use href="#i-check"/></svg>第 1 期的性价比</div>
         <p>
-          第 1 期不碰运行时装配，风险面只有前端导航与设置页渲染，但它已经能把「打开控制台面对 68 个入口」这件事变成「面对 14 个页面加 1 个高级折叠组」。建议先落第 1 期验证用户是否真的需要折叠组这种形态，再决定第 3 期裁掉多少子系统。
+          第 1 期不碰运行时装配，风险面只有前端导航与设置页渲染，但它已经能把「打开控制台面对 70 个入口」这件事变成「面对 14 个页面加 1 个高级折叠组」。建议先落第 1 期验证用户是否真的需要折叠组这种形态，再决定第 3 期裁掉多少子系统。
         </p>
       </div>
     </section>

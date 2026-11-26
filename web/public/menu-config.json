@@ -273,6 +273,20 @@
       "labelKey": "nav.group.requestsSessions",
       "items": [
         {
+          "path": "/my/sessions",
+          "labelKey": "nav.item.mySessions",
+          "icon": "🗂️",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/my/usage",
+          "labelKey": "nav.item.myUsage",
+          "icon": "📈",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
           "path": "/request-logs",
           "labelKey": "nav.item.requestLogs",
           "icon": "📋",
@@ -670,5 +684,5 @@
       "pluginScope": "*"
     }
   ],
-  "exported_fingerprint": "sha256:bea5dd4f304a9023"
+  "exported_fingerprint": "sha256:7005fbdf6ed2d466"
 }

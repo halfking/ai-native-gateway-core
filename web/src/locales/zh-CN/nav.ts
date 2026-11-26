@@ -61,6 +61,8 @@ export default {
     keys: 'API 密钥',
     keyApplications: '密钥申请',
     auditLogs: '审计日志',
+    mySessions: '我的会话',
+    myUsage: '我的用量（统一入口）',
     requestLogs: '请求日志',
     dispatchWaterfall: '队列瀑布图',
     requestRegistry: '请求注册表',

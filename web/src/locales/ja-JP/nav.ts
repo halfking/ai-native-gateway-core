@@ -49,6 +49,8 @@ export default {
     keys: "API キー",
     keyApplications: "キー申請",
     auditLogs: "監査ログ",
+    mySessions: "マイセッション",
+    myUsage: "マイ使用量（統一）",
     requestLogs: "リクエストログ",
     dispatchWaterfall: "キューウォーターフォール",
     requestRegistry: "リクエストレジストリ",

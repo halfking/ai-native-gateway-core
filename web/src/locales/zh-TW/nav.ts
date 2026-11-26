@@ -51,6 +51,8 @@ export default {
     keys: "API 金鑰",
     keyApplications: "金鑰申請",
     auditLogs: "稽核記錄",
+    mySessions: '我的會話',
+    myUsage: '我的用量（統一入口）',
     requestLogs: "請求記錄",
     dispatchWaterfall: "佇列瀑布圖",
     requestRegistry: "請求註冊表",

@@ -224,6 +224,10 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'requests-sessions',
     labelKey: 'nav.group.requestsSessions',
     items: [
+      // 2026-11-26 数据权限审计 P2：用户级端点入口（所有已登录用户可见）。
+      // 数据范围由后端按角色收窄（user→自己 / tenant_admin→本租户 / super_admin→全平台）。
+      { path: '/my/sessions', labelKey: 'nav.item.mySessions', icon: '🗂️' },
+      { path: '/my/usage', labelKey: 'nav.item.myUsage', icon: '📈' },
       { path: '/request-logs', labelKey: 'nav.item.requestLogs', icon: '📋' },
       { path: '/dispatch/waterfall', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
       { path: '/admin/turns', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },

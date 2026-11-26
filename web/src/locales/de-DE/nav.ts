@@ -51,6 +51,8 @@ export default {
     keys: "API-Schlüssel",
     keyApplications: "Schlüssel-Anträge",
     auditLogs: "Audit-Logs",
+    mySessions: "Meine Sitzungen",
+    myUsage: "Nutzung (meine Ansicht)",
     requestLogs: "Anfrage-Logs",
     dispatchWaterfall: "Warteschlangen-Wasserfall",
     requestRegistry: "Anfragen-Registry",
