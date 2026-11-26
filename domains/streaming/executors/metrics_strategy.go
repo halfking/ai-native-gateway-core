@@ -88,8 +88,13 @@ func observeUnknownPricePool(cands []provider.Candidate) {
 		if blended <= 0 {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(c.Currency), "CNY") {
-			blended /= settings.CNYScoreFX()
+		// 多币种汇率转换：将非USD币种转换为USD进行比较
+		if c.Currency != "" && !strings.EqualFold(c.Currency, "USD") {
+			rate, err := settings.GetExchangeRateToUSD(c.Currency)
+			if err == nil && rate > 0 {
+				blended /= rate
+			}
+			// 如果转换失败，保持原值（保守处理）
 		}
 		prices = append(prices, blended)
 	}

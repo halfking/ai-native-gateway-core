@@ -577,7 +577,24 @@ func AssignRequestCost(in CostPriceInput) (costUSD, costDisplay *float64, costCu
 		currency = in.Currency
 	}
 	currencyCopy := currency
-	usd := math.Round((*native/CNYToUSDFX)*1e8) / 1e8
+	
+	// 使用新的多币种转换函数
+	usdValue, err := settings.ConvertToUSD(*native, currency)
+	if err != nil {
+		// Fallback: 如果币种不支持，尝试使用旧的CNY逻辑（向后兼容）
+		if strings.EqualFold(currency, "CNY") {
+			usdValue = *native / CNYToUSDFX
+		} else {
+			// 记录警告但不阻塞成本记录
+			slog.Warn("currency conversion failed, cost_usd will be nil",
+				"currency", currency,
+				"error", err,
+				"supported_currencies", settings.SupportedCurrencies())
+			return nil, display, &currencyCopy
+		}
+	}
+	
+	usd := math.Round(usdValue*1e8) / 1e8
 	return &usd, display, &currencyCopy
 }
 

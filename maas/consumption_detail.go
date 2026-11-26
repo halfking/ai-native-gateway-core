@@ -124,12 +124,22 @@ func (s *Service) QueryConsumptionDetail(ctx context.Context, tenantID, ownerUse
 		// 「分/积分（账单币种的分）」—— 这里此前把它当美分直除 100 折 USD，
 		// 而 bills.go 同值当 CNY 分记账单金额 ⇒ GrossMarginUSD 混币种
 		// （currency=CNY 时毛利虚大约 7.2 倍）。修法：先折账单币种元，
-		// CNY 再除记账锚点 FX 折 USD；USD 币种直除不变。
+		// 再通过汇率转换折 USD；USD 币种直除不变。
 		revenueBillMajor := float64(row.CreditsCharged) * centsPerCredit / 100
 		row.TenantRevenueUSD = revenueBillMajor
-		if strings.EqualFold(billCurrency, "CNY") {
-			row.TenantRevenueUSD = revenueBillMajor / settings.CNYToUSDFX
+		
+		// 多币种汇率转换
+		if billCurrency != "" && !strings.EqualFold(billCurrency, "USD") {
+			usdRevenue, err := settings.ConvertToUSD(revenueBillMajor, billCurrency)
+			if err == nil {
+				row.TenantRevenueUSD = usdRevenue
+			} else if strings.EqualFold(billCurrency, "CNY") {
+				// Fallback: 使用旧的CNY逻辑（向后兼容）
+				row.TenantRevenueUSD = revenueBillMajor / settings.CNYToUSDFX
+			}
+			// 其他币种转换失败时保持原值
 		}
+		
 		row.GrossMarginUSD = row.TenantRevenueUSD - row.UpstreamCostUSD
 		if row.TenantRevenueUSD != 0 {
 			row.GrossMarginRate = row.GrossMarginUSD / row.TenantRevenueUSD
