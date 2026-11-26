@@ -427,3 +427,6 @@
 409	999c_tool_usage_stats_columns.sql
 410	999d_tenant_ops_scope.sql
 411	633_tenant_attachment_quotas.sql
+412	1000_billing_status_and_credit_limit.sql
+413	1001_bill_payment_tracking.sql
+414	1002_billing_retry_queue.sql

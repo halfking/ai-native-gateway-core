@@ -6,6 +6,13 @@
 -- 影响：session_turns, session_turns_hot, tenant_credit_wallets
 -- ============================================================
 
+-- 锁守卫（installer 门 startup_ddl_lock_guard_gate_test.go：版本 > 870 且含强锁 DDL
+--   ⇒ 必须自带 lock_timeout）：本件含 ALTER TABLE ＋ CREATE INDEX ⇒ 声明
+--   5s lock_timeout / 10min statement_timeout（同 999a/999d 口径）。
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
+
+BEGIN;
 -- ──────────────────────────────────────────────────────────
 -- Part 1: session_turns 计费状态追踪
 -- ──────────────────────────────────────────────────────────
@@ -31,12 +38,12 @@ COMMENT ON COLUMN session_turns.billing_policy_applied IS
 
 -- 1.2 索引：快速查询待补扣费的请求
 CREATE INDEX IF NOT EXISTS idx_session_turns_billing_pending 
-  ON session_turns(billing_status, created_at) 
+  ON session_turns(billing_status, ts) 
   WHERE billing_status = 'pending_charge';
 
 -- 1.3 索引：快速查询计费失败的请求
 CREATE INDEX IF NOT EXISTS idx_session_turns_billing_failed 
-  ON session_turns(billing_status, created_at) 
+  ON session_turns(billing_status, ts) 
   WHERE billing_status = 'failed';
 
 -- 1.4 session_turns_hot 同步添加（热表）
@@ -128,8 +135,8 @@ SELECT
         WHEN w.balance_credits < 0 THEN 'in_debt'
         ELSE 'healthy'
     END AS debt_status,
-    COUNT(st.id) FILTER (WHERE st.created_at > NOW() - INTERVAL '24 hours') AS requests_last_24h,
-    SUM(st.credits_charged) FILTER (WHERE st.created_at > NOW() - INTERVAL '24 hours') AS credits_used_24h
+    COUNT(st.id) FILTER (WHERE st.ts > NOW() - INTERVAL '24 hours') AS requests_last_24h,
+    SUM(st.credits_charged) FILTER (WHERE st.ts > NOW() - INTERVAL '24 hours') AS credits_used_24h
 FROM tenant_credit_wallets w
 LEFT JOIN session_turns st ON st.tenant_id = w.tenant_id
 WHERE w.balance_credits < 0
@@ -162,7 +169,7 @@ SET billing_status = CASE
     ELSE 'charged'
 END
 WHERE billing_status IS NULL 
-  AND created_at > NOW() - INTERVAL '30 days';
+  AND ts > NOW() - INTERVAL '30 days';
 
 -- ──────────────────────────────────────────────────────────
 -- Part 6: 触发器：余额变为负数时自动记录日志
@@ -264,3 +271,5 @@ UNION ALL
 SELECT format('Tenants over credit limit: %s', COUNT(*))
 FROM tenant_credit_wallets
 WHERE balance_credits + credit_limit_credits < 0;
+
+COMMIT;

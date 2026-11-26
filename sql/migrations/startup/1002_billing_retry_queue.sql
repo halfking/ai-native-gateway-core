@@ -5,6 +5,13 @@
 -- 影响：新增 billing_retry_queue 表
 -- ============================================================
 
+-- 锁守卫（installer 门 startup_ddl_lock_guard_gate_test.go：版本 > 870 且含强锁 DDL
+--   ⇒ 必须自带 lock_timeout）：本件含 ALTER TABLE ＋ CREATE INDEX ⇒ 声明
+--   5s lock_timeout / 10min statement_timeout（同 999a/999d 口径）。
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
+
+BEGIN;
 -- 计费重试队列表
 CREATE TABLE IF NOT EXISTS billing_retry_queue (
     id bigserial PRIMARY KEY,
@@ -96,3 +103,5 @@ SELECT format('Billing retry queue table created: %s',
         WHERE table_name = 'billing_retry_queue'
     ) THEN 'YES' ELSE 'NO' END
 );
+
+COMMIT;

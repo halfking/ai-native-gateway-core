@@ -1980,6 +1980,37 @@ var tenantOpsScope999d []byte
 //go:embed embeddata/startup/999d_tenant_ops_scope.down.sql
 var tenantOpsScope999dDown []byte
 
+// ★ 633（2026-11-27 一周审计轮投递收口的安装器五点补全）：tenant_attachment_quotas。
+//   ★ 幂等 DDL（CREATE TABLE/INDEX IF NOT EXISTS）⇒ 重放无害；633 从未在任何
+//   ★ 环境应用过（schema_migrations 无 '633' 行）⇒ 零已应用字节变更。
+//go:embed embeddata/startup/633_tenant_attachment_quotas.sql
+var tenantAttachmentQuotas633 []byte
+
+//go:embed embeddata/startup/633_tenant_attachment_quotas.down.sql
+var tenantAttachmentQuotas633Down []byte
+
+// ★ 1000-1002（2026-11-26 上游计费 P0 轮）：计费状态追踪/账单付款追踪/重试队列。
+//   ★ 上游已把三条登记进安装器 TSV 清单（manifest 411 → 412）⇒ 五点同步补全：
+//   embeddata 副本 ＋ go:embed ＋ embeddedSQLFiles ＋ StartupFiles ＋ parity 豁免。
+//   ★ 三条自带 BEGIN/COMMIT 事务包裹 ＋ 5s lock_timeout 守卫（999a/999d 口径）。
+//go:embed embeddata/startup/1000_billing_status_and_credit_limit.sql
+var billingStatusCreditLimit1000 []byte
+
+//go:embed embeddata/startup/1000_billing_status_and_credit_limit.down.sql
+var billingStatusCreditLimit1000Down []byte
+
+//go:embed embeddata/startup/1001_bill_payment_tracking.sql
+var billPaymentTracking1001 []byte
+
+//go:embed embeddata/startup/1001_bill_payment_tracking.down.sql
+var billPaymentTracking1001Down []byte
+
+//go:embed embeddata/startup/1002_billing_retry_queue.sql
+var billingRetryQueue1002 []byte
+
+//go:embed embeddata/startup/1002_billing_retry_queue.down.sql
+var billingRetryQueue1002Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2793,6 +2824,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999c_tool_usage_stats_columns.down.sql": toolUsageStatsColumns999cDown,
 	"startup/999d_tenant_ops_scope.sql":              tenantOpsScope999d,
 	"startup/999d_tenant_ops_scope.down.sql":         tenantOpsScope999dDown,
+	"startup/633_tenant_attachment_quotas.sql":       tenantAttachmentQuotas633,
+	"startup/633_tenant_attachment_quotas.down.sql":  tenantAttachmentQuotas633Down,
+	"startup/1000_billing_status_and_credit_limit.sql":      billingStatusCreditLimit1000,
+	"startup/1000_billing_status_and_credit_limit.down.sql": billingStatusCreditLimit1000Down,
+	"startup/1001_bill_payment_tracking.sql":                billPaymentTracking1001,
+	"startup/1001_bill_payment_tracking.down.sql":           billPaymentTracking1001Down,
+	"startup/1002_billing_retry_queue.sql":                  billingRetryQueue1002,
+	"startup/1002_billing_retry_queue.down.sql":             billingRetryQueue1002Down,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
 	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
