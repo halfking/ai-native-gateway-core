@@ -3407,6 +3407,22 @@ func main() {
 					"error", err)
 			}
 		}()
+
+		// P0-3: Start billing retry worker for async credit deduction
+		// This worker processes failed billing attempts from the retry queue.
+		if maasSvc != nil && maasSvc.Enabled() {
+			worker := bg.NewBillingRetryWorker(
+				maasSvc,
+				5*time.Minute, // scan interval
+				100,           // batch size
+			)
+
+			go worker.Start(context.Background())
+
+			slog.Info("billing retry worker started",
+				"interval", 5*time.Minute,
+				"batch_size", 100)
+		}
 	}
 
 	// ── Attachment Extractor (2026-07-01) ───────────────────────────────
