@@ -9273,13 +9273,13 @@ func main() {
 	// ★ **为什么接线放在这里（而不是 credProbeV2 块旁边）**：
 	//   `cmd/gateway/main.go` 有一批**按行号钉**的权威坐标
 	//   （对拍表 `scripts/ursmcheck/request_surface_doc_currency_test.go`
-	//   的 9159-9164 / 9204-9223 / 9206-9213 三窗口、设计页
+	//   的 9173-9178 / 9217-9237 / 9220-9227 三窗口、设计页
 	//   `docs/subsystems/request-surface.md`、认证表 A1
 	//   `docs/audit/2026-10-24-magpie-v0.1.1367-改造落地审计.md`，
 	//   以及 admin 路由快照 `scripts/audit/asset/admin-routes.txt` 里
-	//   main.go 最大行 9138）⇒ 在这些坐标**之前**插一行就要重钉四面文档。
-	//   ★ 本块放在最后一个窗口（9223）之后 ⇒ **零位移** ⇒ 不触碰他人
-	//   在途修改的三份共享文档 ⇒ 也不需要第二十八次重钉。
+	//   main.go 最大行 9152）⇒ 在这些坐标**之前**插一行就要重钉四面文档。
+	//   ★ 本块放在最后一个窗口（9237）之后 ⇒ **零位移** ⇒ 不触碰他人
+	//   在途修改的三份共享文档 ⇒ 也不需要为它再重钉一次。
 	//   ★ 约束：位置仍在 `srv := &http.Server{` 之前 ⇒ 接线必然早于
 	//   服务开始收流量 ⇒ 不会有"先来请求后接线"的空窗。
 	if credProbeV2 != nil && chatHandler != nil && dbConn != nil {

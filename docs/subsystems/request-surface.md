@@ -20,7 +20,7 @@
 
 ### 2.1 HTTP 中间件链（外向内）
 
-`cmd/gateway/main.go:9217-9237`（2026-11-26 第二十八次重钉：上游 audio 会话端点提交 `4f5b0be72c` 在链前净增 14 行 ⇒ 合并树逐锚点实测 NewBuilder :9217、Recovery :9218、Auth :9234、SecurityHeaders :9237 ⇒ 窗口 9217-9237；前值 9204-9223 为并线前读数）：
+`cmd/gateway/main.go:9217-9237`（2026-11-26 审计轮重钉：并行车道的音频端点笔在链体之前净增 14 行 ⇒ 合并树逐锚点实测 Recovery :9218、Auth :9234、SecurityHeaders :9237 ⇒ 窗口 9217-9237；前值 9204-9223 为并入前读数）：
 
 ```
 Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → Tracing
