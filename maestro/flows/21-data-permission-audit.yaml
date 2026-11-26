@@ -1,0 +1,215 @@
+name: 数据权限审计流程
+description: |
+  系统化审计所有 admin 端点的数据权限控制，确保：
+  1. 系统级端点仅 super_admin 可访问
+  2. 租户级端点有正确的 tenant_id 过滤
+  3. 用户级端点有正确的 user_id 过滤
+  4. 写操作有归属检查
+
+steps:
+  - id: audit_start
+    action: message
+    text: |
+      开始数据权限审计流程
+      
+      审计范围：
+      - 364 个 admin 端点
+      - 1177 个 handler 方法
+      - 重点关注：写操作（27 DELETE + 276 UPDATE + 109 INSERT）
+
+  - id: check_new_helpers
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "检查新增权限辅助函数..."
+      grep -n "func Effective\|func CanAccess\|func Require" admin/context_enhanced.go
+    expected_exit_code: 0
+
+  - id: compile_new_code
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "编译新增代码..."
+      go build ./admin/context_enhanced.go admin/context.go admin/handler.go
+    expected_exit_code: 0
+
+  - id: run_permission_tests
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "运行权限测试..."
+      go test -v ./admin -run TestContextEnhanced
+    validation:
+      - type: exit_code
+        expected: 0
+      - type: output_contains
+        text: "PASS"
+
+  - id: audit_sessions_endpoints
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "审计 sessions 相关端点..."
+      grep -n "func.*Session" admin/*.go | grep -v "_test.go" | head -20
+    expected_exit_code: 0
+
+  - id: check_tenant_filtering_usage
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "检查租户过滤使用情况..."
+      echo "EffectiveTenantIDAll 使用次数:"
+      grep -r "EffectiveTenantIDAll" admin/*.go | grep -v "_test.go" | wc -l
+      echo ""
+      echo "EffectiveTenantID 使用次数:"
+      grep -r "EffectiveTenantID\(" admin/*.go | grep -v "_test.go" | wc -l
+    expected_exit_code: 0
+
+  - id: identify_missing_tenant_filters
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "识别缺少租户过滤的端点（高风险）..."
+      
+      # 查找所有 SELECT ... FROM sessions 但不含 tenant_id 的查询
+      echo "=== sessions 表查询（可能缺少过滤）==="
+      grep -n "FROM sessions" admin/*.go | grep -v "_test.go" | grep -v "tenant_id" | head -10
+      
+      echo ""
+      echo "=== request_logs 表查询（可能缺少过滤）==="
+      grep -n "FROM request_logs" admin/*.go | grep -v "_test.go" | grep -v "tenant_id" | head -10
+      
+      echo ""
+      echo "=== api_keys 表查询（可能缺少过滤）==="
+      grep -n "FROM api_keys" admin/*.go | grep -v "_test.go" | grep -v "tenant_id" | head -10
+    expected_exit_code: 0
+
+  - id: identify_write_operations
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "识别写操作端点（需优先修复）..."
+      
+      echo "=== DELETE 操作 ==="
+      grep -n "DELETE FROM" admin/*.go | grep -v "_test.go" | wc -l
+      grep -n "DELETE FROM" admin/*.go | grep -v "_test.go" | head -10
+      
+      echo ""
+      echo "=== UPDATE 操作（高频表）==="
+      grep -n "UPDATE sessions\|UPDATE api_keys\|UPDATE credentials" admin/*.go | grep -v "_test.go" | head -10
+      
+      echo ""
+      echo "=== INSERT 操作（高频表）==="
+      grep -n "INSERT INTO sessions\|INSERT INTO api_keys" admin/*.go | grep -v "_test.go" | head -10
+    expected_exit_code: 0
+
+  - id: check_user_level_endpoints
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "检查用户级端点支持情况..."
+      
+      echo "当前用户级端点："
+      grep -n "user_id.*WHERE\|WHERE.*user_id" admin/*.go | grep -v "_test.go" | wc -l
+      
+      echo ""
+      echo "需要新增的用户级端点："
+      echo "  - /api/sessions/my (用户自己的会话列表)"
+      echo "  - /api/usage/my (用户自己的用量统计)"
+      echo "  - /api/keys/my (用户个人 Key，如支持)"
+    expected_exit_code: 0
+
+  - id: generate_fix_priority_list
+    action: command
+    command: |
+      cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor
+      echo "生成修复优先级清单..."
+      
+      cat > /tmp/fix-priority.md << 'FIXLIST'
+      # 数据权限修复优先级清单
+      
+      ## P0 - 立即修复（安全漏洞）
+      
+      ### 写操作端点
+      - [ ] DELETE FROM sessions - 需加归属检查
+      - [ ] DELETE FROM api_keys - 需加归属检查
+      - [ ] UPDATE sessions SET ... - 需加归属检查
+      - [ ] UPDATE api_keys SET ... - 需加归属检查
+      - [ ] UPDATE credentials SET ... - 需加归属检查
+      
+      ### 敏感数据读取
+      - [ ] /api/admin/keys - 复核租户过滤
+      - [ ] /api/admin/credentials - 复核租户过滤
+      - [ ] /api/admin/audit-logs - 添加租户过滤选项
+      
+      ## P1 - 功能完整性
+      
+      ### 列表端点租户过滤
+      - [ ] /api/sessions - 添加 EffectiveTenantIDAll
+      - [ ] /api/admin/logs - 添加租户过滤
+      - [ ] /api/admin/session-analytics - 添加租户过滤
+      - [ ] /api/admin/usage/* - 添加租户过滤
+      - [ ] /api/routing/resolve - 添加租户参数过滤
+      - [ ] /api/routing/overview - 添加租户过滤
+      
+      ### 详情端点归属检查
+      - [ ] /api/sessions/{id} - 添加 CanAccessUserData
+      - [ ] /api/admin/keys/{id} - 添加归属检查
+      
+      ### 用户级端点实现
+      - [ ] 新增 /api/sessions/my
+      - [ ] 新增 /api/usage/my
+      - [ ] 修改 /api/sessions/{id} 支持用户访问
+      
+      ## P2 - 后续优化
+      
+      - [ ] /api/admin/compression/* - 判定数据作用域
+      - [ ] /api/admin/data-lifecycle/stats - 判定作用域
+      - [ ] 添加审计日志（记录权限拒绝事件）
+      - [ ] 性能优化（索引 tenant_id, user_id）
+      FIXLIST
+      
+      cat /tmp/fix-priority.md
+    expected_exit_code: 0
+
+  - id: audit_summary
+    action: message
+    text: |
+      数据权限审计完成
+      
+      📋 审计产物：
+      1. docs/security/data-permission-audit-2026-11-26.md - 完整审计报告
+      2. admin/context_enhanced.go - 增强权限辅助函数
+      3. admin/context_enhanced_test.go - 权限测试框架
+      4. admin/permission_fix_examples.go - 修复示例代码
+      5. /tmp/fix-priority.md - 修复优先级清单
+      
+      🎯 核心发现：
+      - 364 个端点需审计
+      - 76 处已有 EffectiveTenantID 使用
+      - 55 处已有 EffectiveTenantIDAll 使用
+      - 仅 4 处有 user_id 过滤（严重不足）
+      
+      ⚠️ 高风险项：
+      - 27 DELETE + 276 UPDATE + 109 INSERT 操作需归属检查
+      - 大量列表端点缺少租户过滤
+      - 普通用户（role=user）几乎无可用端点
+      
+      📅 建议时间表：
+      - Phase 1 (2天): 权限基础设施
+      - Phase 2 (5天): 租户级端点修复
+      - Phase 3 (3天): 用户级端点实现
+      - Phase 4 (3天): 测试覆盖
+      - Phase 5 (1天): 文档与监控
+      
+      总计：14 个工作日
+      
+      🚀 下一步：
+      1. Owner 确认修复优先级和时间表
+      2. 创建 GitHub Issues/Jira tickets
+      3. 分配开发任务
+      4. 开始 P0 修复（写操作 + 敏感数据）
+
+validation:
+  success_message: "数据权限审计流程执行成功"
+  failure_message: "审计流程执行失败，请检查错误日志"

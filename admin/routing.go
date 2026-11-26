@@ -2326,6 +2326,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	featuredOnly := queryBool(r, "featured_only")
+	tenantID := GetTenantID(r)
 
 	// For tenant_admin, hide credential routing details (which credentials route to which model).
 	// They see model names and availability, but NOT credential labels, provider IDs, pricing, etc.
@@ -2335,7 +2336,8 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1`).Scan(&featuredModels)
 
-	rows, err := h.db.Query(ctx, `
+	// Phase 2.1: Add tenant filtering - only show models with credentials available to this tenant
+	query := `
 		SELECT
 			COALESCE(mc.canonical_name, mo.raw_model_name) AS canonical_name,
 			COALESCE(mc.family, 'unknown') AS family,
@@ -2356,8 +2358,20 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') = 'active'
-		ORDER BY canonical_name, tier ASC, weight DESC, success_rate DESC
-	`)
+	`
+	args := []interface{}{}
+	argIdx := 1
+	
+	// Tenant filtering: non-super-admin only see models with credentials available to their tenant
+	if !IsSuperAdminOrLegacy(r) && tenantID != "" {
+		query += fmt.Sprintf(` AND (c.tenant_id = 'default' OR c.tenant_id = $%d)`, argIdx)
+		args = append(args, tenantID)
+		argIdx++
+	}
+	
+	query += ` ORDER BY canonical_name, tier ASC, weight DESC, success_rate DESC`
+	
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

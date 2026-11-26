@@ -54,7 +54,7 @@
     "other": "No hay un proveedor disponible para el modelo «{{.Model}}»: todos sus candidatos están bloqueados ({{.Causes}}). Reintentar la misma solicitud no ayudará; cambie a otro modelo o contacte con el administrador del gateway."
   },
   "no_candidate_cause_quota": {
-    "other": "cuota o saldo de la cuenta upstream agotados"
+    "other": "cuota o saldo de cuenta del proveedor upstream agotado (no sus límites de clave API)"
   },
   "no_candidate_cause_disabled": {
     "other": "proveedor o credencial deshabilitados por el administrador del gateway"

@@ -524,6 +524,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "success:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "模型状态统计；本读点读 client_model:detail,success:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
+	"admin/my_endpoints.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNarrowMigratable,
+		Note:  "用户级端点：我的用量统计（30 天窗口）",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"completion_tokens:base", "cost_usd:base", "prompt_tokens:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "用户级端点：我的用量统计（30 天窗口）；本读点读 completion_tokens:base,cost_usd:base,prompt_tokens:base,tenant_id:base,ts:base ⇒ 全部引用列都是底表直映列 ⇒ 底表两臂窄投影可等价供给"},
+		},
+	},
 	"admin/no_topic_session.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
@@ -533,6 +541,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "error_kind:base", "request_id:base", "request_preview:base", "response_preview:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；本读点读 client_model:detail,error_kind:base,request_id:base,request_preview:base,response_preview:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 			{Kind: "read", Columns: []string{"api_key_id:expr", "tenant_id:base", "ts:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；本读点读 api_key_id:expr,tenant_id:base,ts:base ⇒ 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
 			{Kind: "read", Columns: []string{"request_mode:base", "request_preview:base", "response_preview:base", "ts:base", "work_type:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；本读点读 request_mode:base,request_preview:base,response_preview:base,ts:base,work_type:base ⇒ 全部引用列都是底表直映列 ⇒ 底表两臂窄投影可等价供给"},
+		},
+	},
+	"admin/permission_fix_examples.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNarrowMigratable,
+		Note:  "权限修复示例文件：展示如何为端点添加租户/用户隔离；包含示例 SQL（读 request_logs_with_current_month）但不是真实生产代码",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"cost_usd:base", "tenant_id:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: true, ExemptReason: exemptAuditOrToolingFace, Note: "示例代码中的用量统计查询；读取的都是底表直映列 ⇒ 窄投影可等价供给"},
 		},
 	},
 	"admin/probe_history.go": {
@@ -915,13 +931,9 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	// ★ 第 50 增量（2026-11-07）补登：视图名只在文件头注释里出现（说明
 	//   自动范围门的用量臂与 canonical 视图的真 24h 口径「用途不同不互相冒充」）
 	//   ⇒ 不是 canonical 读点 ⇒ 归 classNoRead（同 bg/probe_policy.go 形态）。
-	"bg/probe_model_scope.go": {
-		Form:         formCommentOrStringOnly,
-		Class:        classNoRead,
-		Exempt:       true,
-		ExemptReason: exemptNoReadPoint,
-		Note:         "只在头注释里对比「自动范围门用量臂 vs canonical 视图真 24h 口径」；本文件是范围门纯判定逻辑，零 SQL 读面",
-	},
+	// ★ R181（2026-11-26）：`bg/probe_model_scope.go` 的条目**已删除** ——
+	//   该文件不再在注释中提及 canonical 视图（代码重构后清理了注释）⇒
+	//   「登记了但文件不再提及」= 登记簿腐烂 ⇒ 条目必须删除。
 	// ★ R170（2026-10-27）：`bg/shared_pick.go` 的条目**已删除** ——
 	//   它的 Priority 1 读点（探针选型「近 7 天最常用 client_model」）
 	//   改读会话族原生源（db.SessionFamilyMostUsedClientModelSourceSQL），
@@ -2680,6 +2692,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"internal/metricsstore/processor.go":         "V2 终态请求投影（2026-11-26 合并轮补登）：pending/history 双游标逐 fact 用 LATERAL 按 (tenant_id, request_id, ts ±1 天) 点查 canonical 视图补齐维度；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（★ 该窗口谓词就是为绕开逐分区扫描设的 ±1 天窄窗，实测逐 fact 点查走索引）",
 	"admin/model_routing_diagnostic.go":          "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/model_status.go":                      "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/my_endpoints.go":                      "用户级端点：我的用量统计（30 天窗口）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/no_topic_session.go":                  "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/probe_history.go":                     "探针历史；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/provider_models.go":                   "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

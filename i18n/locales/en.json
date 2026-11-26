@@ -54,7 +54,7 @@
     "other": "No available provider for model '{{.Model}}': every candidate for it is blocked ({{.Causes}}). Retrying the same request will not help — switch to another model, or contact the gateway operator."
   },
   "no_candidate_cause_quota": {
-    "other": "upstream account quota or balance exhausted"
+    "other": "upstream provider account quota or balance exhausted (not your API key limits)"
   },
   "no_candidate_cause_disabled": {
     "other": "provider or credential disabled by the gateway operator"

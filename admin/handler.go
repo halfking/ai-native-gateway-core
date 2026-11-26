@@ -1134,6 +1134,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/app-token", admin(h.handleAppToken))
 	mux.HandleFunc("/api/auth/change-password", admin(h.handleChangePassword))
 	mux.HandleFunc("/api/users", admin(h.handleUsers))
+	
+	// 用户级端点（2026-11-26 数据权限审计轮实施）
+	// 普通用户可访问自己的数据，admin 可看本租户/全平台
+	mux.HandleFunc("/api/sessions/my", admin(h.handleMySessions))
+	mux.HandleFunc("/api/usage/my", admin(h.handleMyUsage))
+	
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
 	// P1-4：ASM 影子对账报表转发（internal/shadow report；ASM_INTERNAL_ENDPOINT 未配 ⇒ 503）。

@@ -22,6 +22,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"log/slog"
 	"net/http"
@@ -447,8 +448,33 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
+	
+	// Phase 1.3: Add role-based filtering
+	auth := GetAuthContext(r)
+	tenantID := GetTenantID(r)
+	
+	// Build user filter for request_log_failures CTE
+	var userFilterClause string
+	var userFilterArgs []interface{}
+	argOffset := 1 // $1 is used for limit at the end
+	
+	if auth != nil && auth.Role == RoleUser {
+		// Regular user: only see failures from their own requests
+		userFilterClause = fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM sessions s
+			JOIN session_dimensions sd ON s.session_key = sd.session_key
+			WHERE s.session_key = request_logs_with_current_month.session_key
+			AND sd.owner_user = $%d
+		)`, argOffset+1)
+		userFilterArgs = append(userFilterArgs, auth.Username)
+	} else if !IsSuperAdminOrLegacy(r) && tenantID != "" {
+		// Tenant admin: only see failures from their tenant
+		userFilterClause = fmt.Sprintf(` AND tenant_id = $%d`, argOffset+1)
+		userFilterArgs = append(userFilterArgs, tenantID)
+	}
+	// Super admin: no filter (see everything)
 
-	rows, err := h.db.Query(ctx, `
+	querySQL := `
 		WITH active_failures AS (
 			SELECT raw_model_name,
 			       COUNT(DISTINCT credential_id) AS creds_affected,
@@ -489,7 +515,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			  )
 			  AND ts > NOW() - INTERVAL '6 hours'
 			  AND credential_id IS NOT NULL
-			  AND outbound_model IS NOT NULL
+			  AND outbound_model IS NOT NULL` + userFilterClause + `
 			GROUP BY outbound_model
 		),
 		all_failures AS (
@@ -544,7 +570,16 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		) mc ON TRUE
 		ORDER BY agg.total_failures DESC, agg.last_failed_at DESC
 		LIMIT $1
-	`, limit)
+	`
+	
+	// Build query arguments: user filter args + limit
+	queryArgs := make([]interface{}, 0, len(userFilterArgs)+1)
+	if len(userFilterArgs) > 0 {
+		queryArgs = append(queryArgs, userFilterArgs...)
+	}
+	queryArgs = append(queryArgs, limit)
+	
+	rows, err := h.db.Query(ctx, querySQL, queryArgs...)
 	if err != nil {
 		writeInternalErr(w, "query failed", err)
 		return

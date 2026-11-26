@@ -54,7 +54,7 @@
     "other": "没有可用于模型“{{.Model}}”的供应商：它的全部候选节点都被挡住（{{.Causes}}）。原样重试没有用——请改用其它模型，或联系网关管理员。"
   },
   "no_candidate_cause_quota": {
-    "other": "上游账户额度或余额已耗尽"
+    "other": "上游供应商账户配额或余额耗尽（不是您的 API 密钥限制）"
   },
   "no_candidate_cause_disabled": {
     "other": "供应商或凭据已被网关管理员停用"
