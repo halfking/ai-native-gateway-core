@@ -428,6 +428,20 @@ func (s *PostgresStore) ListStats(ctx context.Context, toolName string, startTim
 	args := []interface{}{}
 	// hot ∪ 母表联合读；NOT EXISTS 以 (tool_name, date) 去重 promote 残留
 	// 双行（promote ON CONFLICT DO NOTHING 时 hot 侧不删），优先 hot 最新值。
+	//
+	// ★ 2026-11-26（存量缺口收口轮 · 第 31 轮）：母表那条腿加了
+	//   `p.tool_name IS NOT NULL` —— 理由是**真库实测打出来的**：
+	//   母表 tool_usage_stats 原本装的是**旧口径**（tool_id / usage_date /
+	//   call_count 那一套，335/348 定的）⇒ 999c 补上 134 形状的 13 列之后，
+	//   **旧行的 tool_name 是 NULL**（新列，老行没值）⇒
+	//   ★ 而 Go 侧 ToolName 是 `string`（不是 sql.NullString）⇒ database/sql
+	//     扫 NULL 进 *string 会**直接报错**：
+	//     "converting NULL to string is unsupported"
+	//   ⇒ 不加这个过滤，母表只要有一行旧数据，ListStats 就整个失败。
+	//   ★ 旧口径的数据另有读面（按 tool_id / usage_date），不受影响；
+	//     本查询是**新口径**的读面 ⇒ 只取 tool_name 非空的行是正确口径。
+	//   ★ GetStats 那条不用改：它按 tool_name 精确查（NULL = $1 不成立）
+	//     ⇒ 天然只命中新口径行。
 	q := `
 		SELECT id, tool_name, date,
 		       total_calls, success_calls, failed_calls, timeout_calls,
@@ -446,6 +460,7 @@ func (s *PostgresStore) ListStats(ctx context.Context, toolName string, startTim
 		       COALESCE(top_users, '[]'::jsonb), created_at, updated_at
 		FROM tool_usage_stats p
 		WHERE p.date >= $1 AND p.date < $2
+		  AND p.tool_name IS NOT NULL
 		  AND NOT EXISTS (
 		      SELECT 1 FROM tool_usage_stats_hot h
 		      WHERE h.tool_name = p.tool_name AND h.date = p.date

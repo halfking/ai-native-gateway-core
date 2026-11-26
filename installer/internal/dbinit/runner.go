@@ -2147,6 +2147,26 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     内容指纹重放零冲突；零外部依赖 ⇒ 位置只受清单序约束。
 			"999a_data_maintenance_playbook.sql",
 			"973_request_metrics_projection.sql",
+			// ★ 999b/999c/999d（2026-11-26 存量缺口收口轮 · 第 31 轮）：★ 三条都是
+			//   「让生产 SQL 已经引用的列真的有投递来源」—— 来源是第 30 轮新立的
+			//   「生产 SQL 引用的表与列必须有投递来源创建」门（internal/schemadelivery）
+			//   第一次校准时抓出的存量缺口。
+			//   ★ 999b：system_probe_runs.total_tokens —— bg/systemmonitor/audit.go 的
+			//     INSERT 写这一列，而创建它的 346 那份件躺在 sql/migrations/domain/
+			//     （不被任何通道消费）⇒ 探针审计行静默丢失。读侧聚合同批恢复。
+			//   ★ 999c：tool_usage_stats / tool_usage_stats_hot 的 134 形状 13 列
+			//     （tool_name / date / total_calls / p50…）＋ tool_id、tenant_id 去
+			//     NOT NULL（代码的 INSERT 不提供这两个值）＋ (tool_name, date) 唯一
+			//     约束（供 UPSERT）＋ 分区子表同步补列。
+			//   ★ 999d：licenses / releases 的 tenant_id ＋ 两个索引 —— tenantops 的
+			//     两个租户运维接口读这一列，而 389 那份件躺在
+			//     sql/migrations/startup/up/（★ 那个目录整体不被任何通道消费）。
+			//   ★ 三条都排在**末尾**：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
+			//   ★ 三条都是幂等 DDL（ADD COLUMN IF NOT EXISTS / DROP NOT EXISTS）；
+			//     999c 的唯一约束用「先查 pg_constraint 再建」（PG 没有 IF NOT EXISTS）。
+			"999b_system_probe_run_tokens.sql",
+			"999c_tool_usage_stats_columns.sql",
+			"999d_tenant_ops_scope.sql",
 		},
 	}
 }

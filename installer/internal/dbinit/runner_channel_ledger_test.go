@@ -261,8 +261,14 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//   ★ 2026-11-24（数据维护手册轮）：999a 同时落两条通道（files=() +
 		//     StartupFiles 末尾）⇒ **交集 +1**（★ 343 → 344 ★★）；
 		//     两通道独有清单不变（25 / 63）。
-		//
-		wantBoth          = 345
+		//   ★ 2026-11-26（存量缺口收口轮 · 第 31 轮）：999b/999c/999d 三条同时落
+		//     【部署通道 files=()】与【安装器 StartupFiles 末尾】⇒ **交集 +3**
+		//     （★ 345 → 348 ★★）；两通道独有清单不变（25 / 63）—— ★ 三条都
+		//     是「生产 SQL 已经引用的列」补投递来源的迁移（system_probe_runs 的
+		//     total_tokens ／ tool_usage_stats 族的 134 形状列 ／ licenses 与
+		//     releases 的 tenant_id），来源是第 30 轮新立的
+		//     「生产 SQL 引用的表与列必须有投递来源创建」门第一次校准抓出的存量缺口。
+		wantBoth          = 348
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)

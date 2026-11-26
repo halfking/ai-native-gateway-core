@@ -1,0 +1,239 @@
+第 31 轮（本会话系列）证据档 —— 存量缺口收口轮（999b／999c／999d 三组缺口的投递修法）
+------------------------------------------------------------------------------------------------
+日期：2026-11-26 ｜ 仓：llm-gateway-go ｜ 工作树：llm-gateway-go-3-r31（同级私有检出，未碰共享主检出）
+基座：b56206bc8（上游 origin/main 的 2026-11-26 10:25 那笔）｜ 提交前 fetch 发现上游已前进到 102ee3629
+★ 上游那几笔（037aedf6c..102ee3629）**只碰文档**（AGENTS.md／AGENTS-archive／运维文档）⇒ **未碰本轮改动面**
+
+§0 一页结论
+------------------------------------------------------------------------------------------------
+1. 第 30 轮那道新门（「生产 SQL 引用的表与列必须有投递来源创建」）第一次校准抓出的**三组存量缺口**，
+   本轮全部按 owner 2026-11-26 的定案修完并**过了真库**：999b（system_probe_runs.total_tokens）、
+   999c（tool_usage_stats 族的 134 形状列）、999d（licenses／releases 的 tenant_id）。
+2. ★ **真库验证抓到三个只有真库能踩出来的坑**（静态核对只抓到两个）：§3.2 的「cannot add column to a
+   partition」、§3.3 的「usage_date 漏去 NOT NULL」、§3.4 的「读侧扫 NULL 进 string 会报错」。
+3. ★ 台的欠账从 **48 → 30**（三组的 18 条不再被命中），**失效登记 16 → 0**（两头核账：修好 ⇒ 必须删登记）。
+4. 三份迁移的**完整生命周期在真库上过**：up → 幂等重放 → down → 再 up，每一轮形状都对；
+   **被点名的 6 条生产 SQL 在真库上全绿**。
+5. 零生产写、零部署、零现役版本变更。三台现役版本本轮未动、未复核。
+6. ★ **两条红不是本轮引入的**（已用纯上游树对拍坐实）：安装器的
+   `TestDeployChannelSkipsOnlyByItsOwnLedger`（上游刻意留红，方案 A 的口径漂移登记）、
+   扫描门的 `web/src/views/UsersView.vue`（上游既有）。
+
+§1 任务与 owner 定案
+------------------------------------------------------------------------------------------------
+1.1 owner 2026-11-26 的定案（三组都走**投递迁移**，不是改代码回避）
+  A（system_probe_runs.total_tokens）⇒ 投递 999b ＋ **同批恢复读侧聚合**（admin 的 SUM(total_tokens)）
+  B（tool_usage_stats 的 13 列）      ⇒ 投递 999c ＋ **tool_id／tenant_id／usage_date 去 NOT NULL**
+  C（licenses／releases 的 tenant_id）⇒ 投递 999d（**不改读面的租户隔离语义**）
+
+1.2 取号
+  startup 序列的三位数已用满 ⇒ 沿 983b／983c／999a 的字母后缀先例取 999b／999c／999d。
+  ★ 与 999a 同款：**文件名解析不出纯三位数字前缀** ⇒ 对【投递路径契约门】与【installer 强制 embed 门】
+  两道门都隐形 ⇒ ⇒ 必须进 `sql/schema/startup_migration_nonplain.tsv` 登记册（★ 999a 那次漏登记就是
+  「静默漏登记」⇒ 本轮一开始就登记了，没有重蹈）。
+
+§2 三份迁移的内容与登记面
+------------------------------------------------------------------------------------------------
+2.1 999b_system_probe_run_tokens.sql（sha256 89e853cc9501e69d7aca39ad84aa5ece2ea64c97ef9e2cbf53a3f3132e7511e9）
+  内容：system_probe_runs 补 total_tokens 列（ADD COLUMN IF NOT EXISTS）＋ 锁守卫 ＋ down 件。
+  ★ 来源：创建这一列的 346 那份件躺在 sql/migrations/domain/（★ 不被任何通道消费）⇒ 列从来没到过库。
+  ★ 读侧聚合同批恢复（admin/systemmonitor_handlers.go）：★ 当时删掉聚合的原因是「真库实测 42703」
+    ⇒ 现在的因果链是「列不存在 → 聚合删掉 → 删了聚合也没人读」⇒ ⇒ 列投递进来 ⇒ 聚合加回来
+    （★ 不加回来 = 列建了没人读 = 功能等于没修）。★ 口径边界不变：探针运行口径的 token，
+    不是请求口径（usage_ledger／session_turns 的事）。
+
+2.2 999c_tool_usage_stats_columns.sql（sha256 11751f96cf7bc9ba06a1b4b260de01b4b4616f7b9a6851afad52a13afa0221d8）
+  内容：两张表各加 13 列（tool_name／date／total_calls／success_calls／failed_calls／timeout_calls／
+  avg_duration_ms／p50／p95／p99_duration_ms／unique_users／unique_sessions／top_users）
+  ＋ tool_id／tenant_id／usage_date 去 NOT NULL ＋ hot 表 UNIQUE (tool_name, date)
+  ＋ 旧行按 usage_date 回填 date ＋ 锁守卫 ＋ down 件。
+  ★ ★ 关键设计（★ 只在真库验过之后才敢这么写）：
+    ① 唯一约束**只建在 hot 表**：★ 父表 tool_usage_stats 是**分区表**（基线 PARTITION BY RANGE (created_at)；
+       生产上 335 那份件建的可能是 RANGE (usage_date)）⇒ PostgreSQL 要求分区表上的唯一约束**必须包含
+       全部分区键** ⇒ 建 UNIQUE (tool_name, date) 在父表上会直接报错 ⇒ ⇒ 只能建在非分区表 hot 上。
+       而写侧的 UPSERT 目标正是 hot ⇒ 约束落在 hot 才有用。
+    ② 三个 NOT NULL 都要去（含 usage_date）：★ 代码的 INSERT 给的是 `date`（134 形状），不给 usage_date
+       ⇒ 不去就会因 NOT NULL 违反而失败。★ 这是静态核对抓到的第三个坑（真库又抓到 usage_date 那个）。
+    ③ ★ 两套键并存：库里此后同时有 tool_id 形状（335/348 定的旧口径）与 tool_name 形状（134 口径）。
+       本迁移**不删旧列、不动旧数据** ⇒ 旧口径历史数据仍在，既有读面不受影响；
+       tool_name 的取值来源是同仓的 session_tools.tool_name（706 建、在通道里）⇒ 两套键指向同一批工具，可对账。
+
+2.3 999d_tenant_ops_scope.sql（sha256 d382e79ae276d5fb190b1e77f1eb4b78291492c3760e91aa8211e544ea76876e）
+  内容：licenses／releases 各加 tenant_id 列 ＋ 两个索引（idx_licenses_tenant_created /
+  idx_releases_tenant_published）＋ 锁守卫 ＋ down 件。
+  ★ 来源：加列件 389_tenant_ops_scope.sql 躺在 sql/migrations/startup/up/ ⇒ ★ **那个目录整体不被任何
+    通道消费**（里面 13 个件的编号都已被 startup 根层占用）⇒ tenantops 的两个接口（已在 main.go 接线）
+    在生产上恒 500。★ 不改读面的租户隔离语义（owner 决定）。
+
+2.4 登记面（11 个，逐个点名）
+  sql/migrations/startup/{999b,999c,999d}_*.sql ＋ .down.sql（6 个新文件）
+  installer/cmd/llm-gw-installer/embeddata/startup/ 逐字节副本 ×6
+  installer/cmd/llm-gw-installer/main.go（go:embed ＋ map）
+  installer/internal/dbinit/runner.go 的 StartupFiles（末尾追加 ⇒ ★ tsv 首列是序号 ⇒ 中间插行会把
+    后面所有序号整体 +1 ⇒ 既有下标一个都不动）
+  sql/schema/installed_startup_migrations.tsv（由 TestStartupManifest -update 生成）⇒ 末尾三行
+  scripts/apply-db-revision-sequence.sh 的 files=() ＋ ledger_artifact_probe（999c 的探针按 §2.2①
+    改成「一个约束 ＋ 三列 NOT NULL 已去掉」的断言）
+  installer/internal/dbinit/runner_channel_ledger_test.go 的 wantBoth 345 → 348
+  sql/schema/startup_migration_nonplain.tsv（六行：canonical 三行 leg=both ＋ embeddata 三行 leg=installer）
+  docs/db-changelog.md（三行，带 sha256 的条目）
+  ★ 副本一致性：canonical／embeddata 两份 up ＋ down 逐字节相同（§4 复核）
+
+§3 真库验证（211 上的一次性容器，用完即删）
+------------------------------------------------------------------------------------------------
+3.1 环境与建造
+  ★ 本机 Docker 守护进程不响应 ⇒ 改走 ssh 211（★ 211 上 Docker 正常）⇒ 起一次性容器
+    r31-verify-pg（kx-citus-pg17:amd64 ⇒ PostgreSQL 17.10）⇒ **不碰任何现役容器或生产库**。
+  ★ 用仓内建造器 scripts/audit/build-fresh-install-db.sh 造库（★ 严格复刻安装器路径：基线三件
+    00-prereqs／01-schema／02-seed ＋ 按 installed_startup_migrations.tsv 的 apply-order 逐条应用
+    embeddata/startup 的 411 件 ＋ 从 runner.go 抽取的 modelsCanonicalSeedSQL 补种）。
+  读数：★ 启动迁移链 411 条 ⇒ **成功 411 / 共 411（失败 0）** ⇒ 三份新迁移在真实安装路径上跑得通。
+  ★ 第一轮建造是 410/411（999c 失败）⇒ ★ §3.2 的修正后才是 411/411。
+
+3.2 ★ 真库抓到的坑之一：cannot add column to a partition
+  现象：999c 的第 6 段（用 DO 块遍历 pg_inherits 给每个分区子表 ADD COLUMN）报
+        ERROR:  cannot add column to a partition
+  根因：★ PostgreSQL **不允许**直接对分区子表 ALTER TABLE … ADD COLUMN；★ 而**父表加列本来就会
+        自动传播到全部分区子表** ⇒ ⇒ 我那一整段是**多余且有害**的 ⇒ 删掉。
+  ★ 静态核对抓不到这个（它读起来完全合理）；★ 只有真库能抓。
+  ★ 保留那段注释（写明「为什么这里曾经有一段遍历 pg_inherits 的 DO 块，而它被删了」），免得有人按
+    「父表加列不传播」的旧认知再写回来。
+
+3.3 ★ 真库抓到的坑之二：usage_date 漏去 NOT NULL
+  现象：写侧的 INSERT（domains/toolexecution）不提供 usage_date，而目标表 usage_date 是 NOT NULL。
+  ★ 静态对拍抓到过 tool_id／tenant_id，★ 但 usage_date 是第三个（写侧给的是 `date`）⇒ 三列都要去。
+  真库确认：去 NOT NULL 后写侧 INSERT 成功（INSERT 0 1）。
+
+3.4 ★ 真库抓到的坑之三：读侧扫 NULL 进 string 会报错
+  现象：999c 补列后，父表里**旧口径的行 tool_name 是 NULL**（新列，老行没值）⇒ 读侧 list 查询
+        （hot ∪ 父表 UNION ALL）会把这些行带出来 ⇒ ★ Go 侧 ToolName 是 `string`（不是 sql.NullString）
+        ⇒ database/sql 扫 NULL 进 *string 会**直接报错**："converting NULL to string is unsupported"
+        ⇒ ⇒ 只要父表里有一行旧数据，ListStats 就整个失败。
+  修法：读侧 list 查询的父表腿加 `p.tool_name IS NOT NULL`（★ GetStats 那条不用改：它按 tool_name 精确查，
+        NULL = $1 不成立 ⇒ 天然只命中新口径行）。
+  真库验证：★ 造了一行旧口径数据后对比 ⇒ 修好的查询只返回 tool_name 非空的行；未修的对照会把 NULL 行带出来。
+
+3.5 完整生命周期（每一轮形状都对）
+  up（建造器内）      ⇒ 形状对（system_probe_runs.total_tokens 在 / licenses+releases.tenant_id 在 /
+                          两表 13 列在 / 三列 NOT NULL 已去掉 / hot 表唯一约束在）
+  幂等重放（三件各再跑一遍）⇒ 全 OK，形状不变
+  down（三件各跑一遍） ⇒ 全 OK，列消失（1|1|1 → 0|0|0）
+  再 up（三件再跑一遍）⇒ 全 OK，形状恢复（0|0|0 → 1|1|1）
+
+3.6 ★ 被点名的 6 条生产 SQL 在真库上全绿
+  A 组写侧：INSERT INTO system_probe_runs（22 列，含 total_tokens）        ⇒ INSERT 0 1，total_tokens=4242
+  A 组读侧：systemMonitorProbeRunCountersSQL（逐字）                       ⇒ 1|0|0|4242
+      （★ 修复前这一条是 42703 ⇒ 四个计数恒 0 ⇒ 页面上的「近 1 小时 Token」永远是 0）
+  B 组写侧：INSERT INTO tool_usage_stats_hot（15 列）… ON CONFLICT (tool_name, date) DO UPDATE
+                                                                    ⇒ INSERT 0 1；重放后值更新（10→11）、
+                                                                      行数仍是 1 ⇒ UPSERT 真的生效
+  B 组读侧：GetStats 的 hot 腿（逐字 16 列）                                ⇒ 返回完整行
+  B 组读侧：listStats 的 UNION ALL 骨架（带 §3.4 的修正）                    ⇒ 只返回新口径行
+  C 组读侧：licenseStatus 的查询（逐字）                                    ⇒ 返回 1 行
+  C 组读侧：updateCheck 的查询（逐字）                                      ⇒ 返回 2|9.9.9|999|stable|r31
+  ★ 测试数据的两处坑（★ 是我测试数据的问题、不是迁移问题、如实记）：system_probe_runs 的
+    task_id／credential_id／provider_id 是 bigint（我先给了 't1'）＋ automaticity 有 CHECK 约束
+    （合法值 mandatory／automatic）；releases 的 image_tag／created_by 是 NOT NULL。
+
+3.7 清理
+  211 上的临时容器 r31-verify-pg 与临时目录 /tmp/r31v、/tmp/r30 **已删**（复核：残留容器数 0）。
+  ★ 本机没留任何临时文件；★ 本机 Docker 不响应这件事另记（§5）。
+
+§4 门族读数（同一棵树、同一批字节）
+------------------------------------------------------------------------------------------------
+4.1 本轮新门（第 30 轮那道）
+  internal/schemadelivery 判据面：通道文件 837（点名但读不到 0）／认可目录 53／嵌入 552／
+  候选 SQL 2491 件／已投递对象 9780／未投递对象 2557／含 SQL 的生产 Go 文件 1160
+  ⇒ ★ **未登记的引用 0 处、已知欠账 30 处（原 48）、失效登记 0 条（原 16）**
+  三道门（scripts/ursmcheck ＋ admin ＋ domains/authentication）⇒ 全 PASS
+  ★ 两头核账：修好 ⇒ 必须删登记 ⇒ 本轮把 known_undelivered.go 里那三条（1 + 13 + 2 = 16 列）删了，
+    并在原处留下历史注释（为什么有过这三条、怎么修的、为什么删）。
+
+4.2 迁移形态门
+  installer 的 startup_ddl_lock_guard_gate（★ 版本 > 870 且含强锁 DDL ⇒ 必须自带 lock_timeout）：
+  ★ 第一轮红 ⇒ 三份 up/down 件各补 `SET lock_timeout = '5s'; SET statement_timeout = '10min';`（★ 同 999a 口径）⇒ 绿。
+  sqlguard 全包 ⇒ PASS（★ 12.9s）
+  ★ 通道账基线：wantBoth 345 → 348（★ 交集 +3 ＝ 我加的三份件，两条腿都在；两通道独有清单不变 25／63）
+
+4.3 对象普查三张台账（★ 本轮新增的登记面）
+  ★ 起因：999d 的两个索引进了 Go 侧的期望集 ⇒ 期望集从 986 变 988 ⇒ 三张台账必须跟着重算：
+    db-object-expect.tsv（988 行）、db-object-gap-ledger.tsv（988 行）、installer-reachability.tsv（988 行）
+    —— 三张都由 scripts/audit/db-object-census.py 的 expect／reconcile／reachability 三个子命令生成
+    （★ 工具生成、不手拼）。
+  ★ census 台账（db-object-census.tsv）只做**增量**：★ 在 211 上用一次性容器重建新装库并重采 fresh 段
+    （2879 行）⇒ 逐对象键（kind,schema,name）对拍 ⇒ **只多出 3 个索引**（我加的）⇒ ★ 只插入这 3 行，
+    其余原样不动。★ 为什么不做整段替换：① 旧段的 owner 是 llm_gateway，我采的容器用 postgres
+    （逐字段对拍后确认**只有 owner 一个字段不同**）⇒ 新增 3 行的 owner 对齐成 llm_gateway；
+    ② mock_probe_history／usage_facts 的日分区从 20261125 滚到了 20261127 ⇒ **那是时间推移、不是本轮
+    改动** ⇒ 整段替换会把几千行时间噪声混进结构账。
+  ★ census 头部的自述值同步更新（fresh 行数 2876→2879、sha256、bundled_at）⇒ 与三张台账互相 pin。
+  ★ admin 路由快照：★ 我在 admin/systemmonitor_handlers.go 里加了注释与几行 ⇒ 12 条路由的行号漂移
+    ⇒ 重新跑 scripts/audit/extract-admin-routes.sh（★ 保留口径说明头 —— 直接 > 快照会把头丢掉）⇒ 绿。
+  ★ 新鲜度审计文档：docs/audit/2026-10-27-R164-底账新鲜度与漂移判据.md 追加一节「2026-11-26 存量缺口
+    收口轮新装复验」⇒ 写出当前的 `fresh=2879`（★ 门逐条对拍这个数字）⇒ ★ 11-25 那节的历史数字不改
+    （★ 那是当时的真实读数）。
+
+4.4 全套读数
+  go build（改动涉及的包）⇒ EXIT=0；go vet（三个包）⇒ EXIT=0
+  go test ./admin/                        ⇒ ok（107.2s）
+  go test ./domains/toolexecution/        ⇒ ok
+  go test ./internal/schemadelivery/      ⇒ ok
+  go test ./internal/sqlguard/            ⇒ ok（8.1s）
+  go test ./tenantops/                    ⇒ ok
+  go test ./licensing/                    ⇒ ok（20.5s）
+  go test ./cmd/gateway/                  ⇒ ok（16.2s）
+  ★ 全量 go test ./scripts/ursmcheck/     ⇒ **ok（315.9s；941 条 PASS、0 FAIL）**
+  ★ 安装器全包 go test ./...              ⇒ 除 1 条既有红外全绿（§5）
+  ★ 扫描门 tests/scan_secrets_placeholder_privilege_test.sh ⇒ 除 1 条既有红外全绿（§5）
+
+§5 两条红：归属与证据（★ 不是本轮引入的，纯上游树对拍坐实）
+------------------------------------------------------------------------------------------------
+5.1 TestDeployChannelSkipsOnlyByItsOwnLedger（installer/internal/dbinit）
+  ★ 纯上游树（origin/main）上同样红、同样消息 ⇒ 既有红。
+  ★ 门自己的注释写着「若这是**刻意**落地的方案 A（部署通道改读 schema_migrations）⇒ 请连同本门与报告
+    §7.31 一起更新（★ 刻意留红、★ 别让口径漂掉）」⇒ ★ 是上游刻意留红、待口径统一，不是缺陷。
+
+5.2 扫描门：web/src/views/UsersView.vue onDrawerResetPassword
+  ★ 纯上游树上同样红（PASS=9 FAIL=1，同一个文件同一行）⇒ 既有红。★ 本轮改动不碰 web/。
+
+5.3 ★ 本机环境的两个坑（★ 与产品无关、★ 影响读数口径、如实记）
+  ① 本机 Docker 守护进程不响应 ⇒ ⇒ 任何走 `docker exec` 的路径都会等到超时。
+     ★ 表现：全量 ursmcheck 在带 PATH 的环境下 600s 超时（卡在
+       TestMonitorScriptsConvergeOnAContractExitCode/pg-table-bloat-check.sh）⇒ 该脚本用
+       `docker exec -i "$CONTAINER" psql` ⇒ 脚本自己有降级路径（★ check_toolchain：找不到 PSQL_CMD 的
+       首词 ⇒ 打印一句人话并 exit 3 ⇒ ★ exit 3 是契约里的「量具不可用」而不是崩溃）⇒ ⇒
+       **跑门时把 docker 从 PATH 里排除**（0.07s 通过）。
+     ★ 同理，本机 ~/.local/bin/psql 是个 shell shim（转发到容器），★ 它的 connect_timeout 不生效 ⇒
+       TestV1FamilyRetirementProbeDoesNotEchoPassword（★ 故意用不可达端口 1 做负控）会一直等
+       ⇒ 该门按设计在「PATH 里没有 psql」时 t.Skip（★ 门里写明了这条分支）⇒ ⇒ 干净 PATH 下 0.00s 跳过。
+  ② ★ 那 12 条跳过的门是「应急删表」族（TestEmergencyL1／L3／DefaultPartition…）⇒ 需要真库才能验
+     ⇒ 本机跳过；★ 本轮的真库验证在 211 上做，★ 但那 12 条门本轮**没有**在真库上补跑（★ 诚实边界）。
+  ③ ★ 机器负载：本轮中段负载曾到 296（★ 别的会话起��� Android 模拟器占 342% CPU）⇒ 早期的超时红
+     有机器因素；★ 清理残留进程后（★ 我自己工作树里的 check-v1-family-retirement 残留也清了）负载降到 17。
+
+§6 改动面清单（16 改 ＋ 12 新增）
+------------------------------------------------------------------------------------------------
+  新增：sql/migrations/startup/{999b,999c,999d}_*.sql ＋ .down.sql（6）
+        installer/cmd/llm-gw-installer/embeddata/startup/{999b,999c,999d}_*.sql ＋ .down.sql（6）
+  改：  admin/systemmonitor_handlers.go（读侧聚合恢复 ＋ total_tokens_1h 不再硬编码 0）
+        domains/toolexecution/postgres_store.go（list 查询的父表腿加 tool_name IS NOT NULL）
+        internal/schemadelivery/known_undelivered.go（三条登记删除 ＋ 历史注释）
+        installer/cmd/llm-gw-installer/main.go（go:embed ＋ map）
+        installer/internal/dbinit/runner.go（StartupFiles 末尾追加三条）
+        installer/internal/dbinit/runner_channel_ledger_test.go（wantBoth 345 → 348）
+        scripts/apply-db-revision-sequence.sh（files=() ＋ 999c 产物探针按 §2.2① 改断言）
+        scripts/audit/asset/admin-routes.txt（重生成）
+        scripts/audit/asset/db-object-census.tsv（增量 3 行 ＋ 头部自述值）
+        scripts/audit/asset/db-object-expect.tsv / db-object-gap-ledger.tsv / installer-reachability.tsv（重生成）
+        sql/schema/installed_startup_migrations.tsv（末尾三行）
+        sql/schema/startup_migration_nonplain.tsv（六行）
+        docs/db-changelog.md（三行条目）
+        docs/audit/2026-10-27-R164-底账新鲜度与漂移判据.md（追加一节）
+
+§7 零边界（★ 本轮做到的事，一句一句对照）
+------------------------------------------------------------------------------------------------
+  零生产写、零部署、零现役版本变更（三台版本本轮未动、未复核）
+  零迁移**已应用**字节变更（★ 三份都是新件，不是改已应用的迁移）
+  零真库持久影响（★ 211 上的临时容器与临时目录已删；★ 生产库 acc-pg17 与 252 未碰）
+  零手改生成产物（★ census／expect／gap／reachability 四张台账与 admin 路由快照都由工具重新生成）
+  零手拼采集数据（★ 采集 SQL 由 db-object-census.py census-sql 自己生成）

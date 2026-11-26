@@ -1953,6 +1953,33 @@ var dataMaintenancePlaybook999a []byte
 //go:embed embeddata/startup/999a_data_maintenance_playbook.down.sql
 var dataMaintenancePlaybook999aDown []byte
 
+// ★ 999b/999c/999d（2026-11-26 存量缺口收口轮 · 第 31 轮）：★ 三条都是
+// 「让生产 SQL 已经引用的列真的有投递来源」—— 来源是第 30 轮新立的
+// 「生产 SQL 引用的表与列必须有投递来源创建」门第一次校准时抓出的存量缺口。
+//
+//	999b：system_probe_runs.total_tokens（探针运行的 token 计量）
+//	999c：tool_usage_stats / tool_usage_stats_hot 的 134 形状 13 列
+//	      ＋ tool_id、tenant_id 去 NOT NULL ＋ (tool_name, date) 唯一约束
+//	999d：licenses / releases 的 tenant_id ＋ 两个查询索引
+//
+//go:embed embeddata/startup/999b_system_probe_run_tokens.sql
+var systemProbeRunTokens999b []byte
+
+//go:embed embeddata/startup/999b_system_probe_run_tokens.down.sql
+var systemProbeRunTokens999bDown []byte
+
+//go:embed embeddata/startup/999c_tool_usage_stats_columns.sql
+var toolUsageStatsColumns999c []byte
+
+//go:embed embeddata/startup/999c_tool_usage_stats_columns.down.sql
+var toolUsageStatsColumns999cDown []byte
+
+//go:embed embeddata/startup/999d_tenant_ops_scope.sql
+var tenantOpsScope999d []byte
+
+//go:embed embeddata/startup/999d_tenant_ops_scope.down.sql
+var tenantOpsScope999dDown []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2757,6 +2784,15 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/973_request_metrics_projection.down.sql": requestMetricsProjection973Down,
 	"startup/999a_data_maintenance_playbook.sql":      dataMaintenancePlaybook999a,
 	"startup/999a_data_maintenance_playbook.down.sql": dataMaintenancePlaybook999aDown,
+	// ★ 999b/999c/999d（2026-11-26 存量缺口收口轮 · 第 31 轮）：★ 三条都是
+	// 「让生产 SQL 已经引用的列真的有投递来源」—— 来源是第 30 轮新立的
+	// 「生产 SQL 引用的表与列必须有投递来源创建」门第一次校准时抓出的存量缺口。
+	"startup/999b_system_probe_run_tokens.sql":      systemProbeRunTokens999b,
+	"startup/999b_system_probe_run_tokens.down.sql": systemProbeRunTokens999bDown,
+	"startup/999c_tool_usage_stats_columns.sql":      toolUsageStatsColumns999c,
+	"startup/999c_tool_usage_stats_columns.down.sql": toolUsageStatsColumns999cDown,
+	"startup/999d_tenant_ops_scope.sql":              tenantOpsScope999d,
+	"startup/999d_tenant_ops_scope.down.sql":         tenantOpsScope999dDown,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
 	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。

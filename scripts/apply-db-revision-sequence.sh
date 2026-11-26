@@ -2918,6 +2918,28 @@ files=(
   #   ★ 编号取字母后缀空号 999a（三位数惯例：sqlguard migrationNumPrefix
   #     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；983b/983c 先例）。
   "$ROOT_DIR/sql/migrations/startup/999a_data_maintenance_playbook.sql"
+  # ★ 999b/999c/999d（2026-11-26 存量缺口收口轮 · 第 31 轮）：★ 三条都是
+  #   「让生产 SQL 已经引用的列真的有投递来源」—— 来源是第 30 轮新立的
+  #   「生产 SQL 引用的表与列必须有投递来源创建」门（internal/schemadelivery）
+  #   第一次校准时抓出的存量缺口（那三条在台账 known_undelivered.go 里逐条登记过）。
+  #
+  #   ★ 999b：system_probe_runs.total_tokens —— bg/systemmonitor/audit.go 的 INSERT
+  #     写这一列，创建它的 346 那份件躺在 sql/migrations/domain/（不被任何通道消费）
+  #     ⇒ 探针审计行静默丢失。读侧聚合同批恢复（admin/systemmonitor_handlers.go）。
+  #   ★ 999c：tool_usage_stats / tool_usage_stats_hot 的 134 形状 13 列
+  #     （tool_name / date / total_calls / p50…）＋ tool_id、tenant_id 去 NOT NULL
+  #     （代码的 INSERT 不提供这两个值）＋ (tool_name, date) 唯一约束（供 UPSERT）
+  #     ＋ 分区子表同步补列（父表加列不会自动传播到子表）。
+  #   ★ 999d：licenses / releases 的 tenant_id ＋ 两个查询索引 —— tenantops 的两个
+  #     租户运维接口读这一列，而 389 那份件躺在 sql/migrations/startup/up/
+  #     （★ 那个目录整体不被任何通道消费：它的编号都已被根层占用）。
+  #
+  #   ★ 三条都排在 999a 之后（编号序）。
+  #   ★ 幂等：ADD COLUMN IF NOT EXISTS / DROP NOT EXISTS ⇒ 重放无害；
+  #     999c 的唯一约束用「先查 pg_constraint 再建」（PG 没有 IF NOT EXISTS）。
+  "$ROOT_DIR/sql/migrations/startup/999b_system_probe_run_tokens.sql"
+  "$ROOT_DIR/sql/migrations/startup/999c_tool_usage_stats_columns.sql"
+  "$ROOT_DIR/sql/migrations/startup/999d_tenant_ops_scope.sql"
   # ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件
   #   **缺 schema_migrations 自登记行** ⇒ 211 的记账链在 980 与 990 之间
   #   **断一格**（实测：211 的 public.schema_migrations 有 '980' 与 '990'、
@@ -4000,6 +4022,23 @@ ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
 #   ★ 999a_data_maintenance_playbook.sql
 ledger_artifact_probe "999a_data_maintenance_playbook.sql" \
   "(SELECT count(*) FROM public.error_playbook_entries WHERE created_by='seed:999a' AND error_type LIKE 'data_maintenance:%') = 6"
+# ★ 999b/999c/999d 的产物探针（2026-11-26 存量缺口收口轮 · 第 31 轮）：
+#   三条都是「补列」型迁移 ⇒ 产物 = 列在 + 索引在 + 唯一约束在。
+#   ★ 999b：system_probe_runs.total_tokens 列在（bg/systemmonitor/audit.go 写它、
+#     admin/systemmonitor_handlers.go 读它 ⇒ 列不在 ⇒ 那两条路径 42703）。
+ledger_artifact_probe "999b_system_probe_run_tokens.sql" \
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.system_probe_runs'::regclass AND attname='total_tokens' AND NOT attisdropped) = 1"
+#   ★ 999c：tool_usage_stats 的 13 列在 ＋ hot 表上那个唯一约束在（供
+#     domains/toolexecution 的 UPSERT 用）＋ tool_id / tenant_id / usage_date
+#     已去 NOT NULL（代码的 INSERT 不提供这三个值）。
+#     ★ 唯一约束**只在 hot 表上**：父表是分区表，PG 不允许在分区表上建不含
+#       分区键的唯一约束（★ up 件里写明了这个理由）。
+ledger_artifact_probe "999c_tool_usage_stats_columns.sql" \
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.tool_usage_stats'::regclass AND attname IN ('tool_name','date','total_calls','success_calls','failed_calls','timeout_calls','avg_duration_ms','p50_duration_ms','p95_duration_ms','p99_duration_ms','unique_users','unique_sessions','top_users') AND NOT attisdropped) = 13 AND (SELECT count(*) FROM pg_constraint WHERE conname = 'tool_usage_stats_hot_tool_name_date_key') = 1 AND (SELECT count(*) FROM pg_attribute WHERE attrelid IN ('public.tool_usage_stats'::regclass,'public.tool_usage_stats_hot'::regclass) AND attname IN ('tool_id','tenant_id','usage_date') AND attnotnull) = 0"
+#   ★ 999d：licenses / releases 的 tenant_id 列在 ＋ 两个索引在（tenantops 的两个
+#     租户运维接口读这两列 ⇒ 列不在 ⇒ 那两个接口 500）。
+ledger_artifact_probe "999d_tenant_ops_scope.sql" \
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid IN ('public.licenses'::regclass,'public.releases'::regclass) AND attname='tenant_id' AND NOT attisdropped) = 2 AND to_regclass('public.idx_licenses_tenant_created') IS NOT NULL AND to_regclass('public.idx_releases_tenant_published') IS NOT NULL"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
 # ★★ 2026-11-24（第四轮 L15）：★ 本段四条判据**加严**为「表在 ＋ 台账行 ＋ 索引 ＋ 唯一约束」。
