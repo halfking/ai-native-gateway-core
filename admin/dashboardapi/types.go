@@ -94,15 +94,16 @@ const (
 
 // QueryParams 标准查询参数
 type QueryParams struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	Days     int    `json:"days,omitempty"`
-	Page     int    `json:"page,omitempty"`
-	Size     int    `json:"size,omitempty"`
-	SortBy   string `json:"sort_by,omitempty"`
-	SortDir  string `json:"sort_dir,omitempty"`
-	Search   string `json:"search,omitempty"`
-	Refresh  bool   `json:"refresh,omitempty"`
-	auth     AuthInfo
+	TenantID  string `json:"tenant_id,omitempty"`
+	Days      int    `json:"days,omitempty"`
+	Page      int    `json:"page,omitempty"`
+	Size      int    `json:"size,omitempty"`
+	SortBy    string `json:"sort_by,omitempty"`
+	SortDir   string `json:"sort_dir,omitempty"`
+	Search    string `json:"search,omitempty"`
+	Refresh   bool   `json:"refresh,omitempty"`
+	OwnerUser string `json:"owner_user,omitempty"` // 用户级过滤（2026-11-26）
+	auth      AuthInfo
 }
 
 // AuthInfo 认证信息，由上层 admin 包注入
