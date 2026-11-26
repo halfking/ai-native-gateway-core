@@ -713,9 +713,12 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				candidates[i].ConcurrencyLimit = nil
 				candidates[i].EffectiveConcurrency = nil
 			} else if auth.Role == RoleTenantAdmin {
-				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID和密钥
+				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID/标签/余额
+				// 2026-11-26 E2E 轮修正：balance_usd 此前漏脱敏（实测泄露 1000），
+				// 权限模型钉的是「配额状态 + 可用性 + 健康分」三样，余额属凭据财务面。
 				candidates[i].CredentialID = 0
 				candidates[i].CredentialLabel = ""
+				candidates[i].BalanceUSD = nil
 				// 保留：QuotaState, SuccessRate, P95LatencyMs, Available, RuntimeRoutable
 			}
 			// super_admin 和 admin_key：看全部（不修改）
@@ -2339,9 +2342,11 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 				outRows[i]["effective_at"] = nil
 				outRows[i]["expires_at"] = nil
 			} else if auth.Role == RoleTenantAdmin {
-				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID和标签
+				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID/标签/余额
+				// 2026-11-26 E2E 轮修正：balance_usd 此前漏脱敏（实测泄露 1000）。
 				outRows[i]["credential_id"] = 0
 				outRows[i]["credential_label"] = ""
+				outRows[i]["balance_usd"] = nil
 				// 保留：quota_state, availability_state, success_rate, p95_latency_ms, available, runtime_routable
 			}
 			// super_admin 和 admin_key：看全部（不修改）
