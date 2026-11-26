@@ -154,6 +154,14 @@ func (h *Handler) getChannelCustomerStats(w http.ResponseWriter, r *http.Request
 	}
 
 	// 统计查询：从 request_logs 聚合（407迁移已有 customer_id）
+	// ★ 2026-11-26 审计轮代上游收口：★ 读点从【已退役的 v1 底表】改指到【890 之后仍存在的
+	// canonical 视图】，★ 时间列从 created_at 改成视图里真实存在的 ts ——
+	// ① v1 底表 public.request_logs 被迁移 890 **物理删除**（★ 真库实测：154 生产库没有这张表、
+	//    只有视图 request_logs_with_current_month ⇒ 原写法运行时 **42P01** ★★）；
+	// ② canonical 视图 request_logs_with_current_month 的数据源是会话族两臂
+	//    （FROM session_turns ∪ session_turns_hot）⇒ 它才是 890 之后的存活源；
+	// ③ 该视图的列是 ts（★ 没有 created_at ★）⇒ 时间过滤改用 ts（★ 实测该视图列集：
+	//    ts / customer_id / cost_usd / identity_hash 齐备 ★★）。
 	type stats struct {
 		TotalSessions int     `json:"total_sessions"`
 		ActiveUsers   int     `json:"active_users"`
@@ -165,9 +173,9 @@ func (h *Handler) getChannelCustomerStats(w http.ResponseWriter, r *http.Request
 			COUNT(DISTINCT COALESCE(identity_hash, '')),
 			COUNT(DISTINCT COALESCE(end_user_id, '')),
 			COALESCE(SUM(cost_usd), 0)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE customer_id = $1
-		  AND created_at >= NOW() - INTERVAL '30 days'
+		  AND ts >= NOW() - INTERVAL '30 days'
 	`, customerID).Scan(&s.TotalSessions, &s.ActiveUsers, &s.MonthlyCost)
 	if err != nil {
 		http.Error(w, "Query error", http.StatusInternalServerError)
@@ -217,9 +225,9 @@ func (h *Handler) getChannelStats(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM channel_customers),
 			COUNT(DISTINCT COALESCE(rl.identity_hash, '')),
 			COALESCE(SUM(rl.cost_usd), 0)
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		WHERE rl.customer_id IN (SELECT id FROM channel_customers)
-		  AND rl.created_at >= NOW() - INTERVAL '30 days'
+		  AND rl.ts >= NOW() - INTERVAL '30 days'
 	`, channelID).Scan(&s.TotalCustomers, &s.TotalSessions, &s.MonthlyCost)
 	if err != nil {
 		http.Error(w, "Query error", http.StatusInternalServerError)
@@ -264,17 +272,19 @@ func (h *Handler) listChannelCustomerSessions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 查询会话列表（简化版：从 request_logs 取最近会话，分页默认50）
+	// 查询会话列表（简化版：从 request_logs_with_current_month 取最近会话，分页默认50）
+	// ★ 2026-11-26 审计轮代上游收口：★ 同上（v1 底表 request_logs 已被 890 物理删除 ⇒ 改指
+	// canonical 视图 request_logs_with_current_month；★ 时间列 created_at → ts ★）。
 	limit := 50
 	rows, err := h.db.Query(r.Context(), `
 		SELECT DISTINCT ON (identity_hash)
 			identity_hash,
-			MAX(created_at) as last_activity,
+			MAX(ts) as last_activity,
 			COUNT(*) as request_count,
 			SUM(cost_usd) as total_cost
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE customer_id = $1
-		  AND created_at >= NOW() - INTERVAL '30 days'
+		  AND ts >= NOW() - INTERVAL '30 days'
 		GROUP BY identity_hash
 		ORDER BY identity_hash, last_activity DESC
 		LIMIT $2

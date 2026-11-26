@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-25T14:11:05+00:00
-# ★ expected=986 envs=local,fresh,252,211 gaps_by_env={"211": 51, "252": 58, "fresh": 49, "local": 59} production_gaps=68
+# ★ generated_at=2026-11-26T04:35:12+00:00
+# ★ expected=987 envs=local,fresh,252,211 gaps_by_env={"211": 51, "252": 58, "fresh": 49, "local": 59} production_gaps=68
 395b	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 478p2	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 478p2	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -464,6 +464,7 @@
 490	idx_credential_probe_queue_running_lease_token	credential_probe_queue	present	present	present	present	complete	none
 491	idx_request_logs_hot_t0_arrived	request_logs_hot	retired	retired	retired	retired	complete	none
 491	idx_wtmr_tier	work_type_model_route	present	present	present	present	complete	none
+492	idx_customers_channel	customers	retired	retired	retired	retired	complete	none
 510	idx_request_logs_hot_request_type	request_logs_hot	retired	retired	retired	retired	complete	none
 511	idx_state_transitions_created	request_state_transitions	missing	present	present	present	gap	local-only-gap
 511	idx_state_transitions_request	request_state_transitions	missing	present	missing	missing	gap	prod-full-gap

@@ -323,6 +323,18 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"request_id:base", "tenant_id:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "附件路由的存在性检查（按 request_id + tenant_id 判附件是否已挂）；本读点读 request_id:base,tenant_id:base ⇒ 全部引用列都是底表直映列 ⇒ 底表两臂窄投影可等价供给"},
 		},
 	},
+	"admin/channels.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNarrowMigratable,
+		Note: "W4.3 渠道商/客户视角（2026-11-26 审计轮代上游收口后新增的 canonical 读点）：" +
+			"① 客户维度的会话数/活跃用户/30 天成本；② 渠道下全部客户的汇总；③ 客户最近会话列表；" +
+			"三处读点都直接读 canonical 视图 request_logs_with_current_month（★ 改指前读的是已被迁移 890 物理删除的 v1 底表 request_logs ⇒ 运行时 42P01 ★）",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "end_user_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户维度的会话数/活跃用户/30 天成本聚合（COUNT(DISTINCT identity_hash) / COUNT(DISTINCT end_user_id) / SUM(cost_usd)）；★ 本读点引用 cost_usd / customer_id / end_user_id / identity_hash / ts 五列，★ 按 db 权威投影文本（dbpkg.CanonicalSessionOnlyProjectionForTest()）实测五列**全部**是 t.* 底表直映（base）⇒ ⇒ 底表两臂窄投影可等价供给 ⇒ 不需要 details 腿、也不读任何恒 NULL 的 v1 遗留列"},
+			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "渠道下全部客户的汇总（CTE 取该渠道的客户，再按 customer_id 聚合会话数与成本）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
+			{Kind: "read", Columns: []string{"cost_usd:base", "customer_id:base", "identity_hash:base", "ts:base"}, Holder: "", Class: classNarrowMigratable, Exempt: false, ExemptReason: "", Note: "客户最近会话列表（DISTINCT ON (identity_hash) + MAX(ts) + COUNT(*) + SUM(cost_usd)）；★ 引用 cost_usd / customer_id / identity_hash / ts 四列，★ 权威投影实测**全部**是 base ⇒ 底表两臂窄投影可等价供给"},
+		},
+	},
 	"admin/auto_title_generator.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
@@ -2649,6 +2661,7 @@ func canonicalTimeWindowedReadPointFiles(t *testing.T, root string) map[string]b
 // ★   ⇒ 那是**登记错误**（★ 口径是文件级）⇒ ⇒ 要么改口径、要么把它移出清单 ⇒
 // ★   ⇒ ★★ **不许用「例外」把它藏起来**：★ 藏起来就等于门看不见它。★★
 var canonicalTimeWindowedReadPoints = map[string]string{
+	"admin/channels.go":                           "W4.3 渠道商/客户视角：① 客户维度 30 天聚合；② 渠道下全部客户汇总；③ 客户最近会话列表；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（★ 2026-11-26 审计轮代上游收口：★ 读点从已被 890 物理删除的 v1 底表改指到 canonical 视图 ⇒ ★ 本文件因此进入本簿 ★）",
 	"admin/compression_stats.go":                 "压缩带统计（token_band / success / ts）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/credential_monitor.go":                "凭据监控：① live P95 回退；② 按凭据统计行数；③ 滑窗明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/credential_monitor_heatmap.go":        "凭据 × 模型热力图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
