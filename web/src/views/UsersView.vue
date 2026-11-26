@@ -2,8 +2,9 @@
 // UsersView.vue — 用户管理（2026-09-30 统计 UI 优化轮增强）
 // 新增：顶部统计条 / 搜索+角色+状态筛选 / 近 30 天用量列（请求·Token·积分，
 // 占比条） / 点击行打开用户详情抽屉（UserDetailDrawer）。
-// 用量数据 GET /api/admin/users/usage-summary（usage_facts × api_keys.owner_user，
-// 与对账快照同源）；无用量账号显示 —，列表加载不被用量失败阻塞。
+// 用量数据 GET /api/admin/users/v2/usage-summary（request_metrics 投影，
+// 2026-11 统计 V2 轮起；旧 usage_facts 口径已退役）；无用量账号显示 —，
+// 列表加载不被用量失败阻塞。
 import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTime24h } from '../i18n/useFormat'
