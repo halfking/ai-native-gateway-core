@@ -810,7 +810,16 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	//
 	// 展开失败**不阻断**报表，但必须降级成「只用原值精确匹配」——
 	// 静默丢掉模型过滤会让页面显示全量数据，用户以为筛过了。
-	if projection == nil && filter.Model != "" && len(filter.ModelNames) == 0 {
+	//
+	// ★ 2026-11-26 12h 审计轮（P1 根修）：V2 投影路径（projection != nil）
+	//   **同样**需要展开——投影行的 raw_model_name 存的是外发/客户端 raw 名
+	//   （usage_facts.outbound_model = 供应商侧 raw 名或 client model），
+	//   canonical 名（如 minimax-m2.5）在 fallback 的
+	//   `raw_model_name=$1 OR outbound_model=$1` 上**两头都不命中** ⇒
+	//   前端用 canonical 名筛选时 V2 报表恒空、V1 有数据 ⇒ 静默数据缺失。
+	//   （本车道 11dc125c4 曾给展开加了 projection == nil 前置条件 ⇒
+	//   投影路径的 canonical 过滤整体失效 ⇒ 本轮去掉该前置并如实留痕。）
+	if filter.Model != "" && len(filter.ModelNames) == 0 {
 		if names, nerr := ResolveModelRawNames(ctx, q, filter.Model); nerr == nil && len(names) > 0 {
 			filter.ModelNames = names
 		} else if nerr != nil {

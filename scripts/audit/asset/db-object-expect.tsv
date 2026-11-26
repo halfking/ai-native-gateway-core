@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-26T05:05:36+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 988, "indexes_created": 1040, "indexes_dropped_somewhere": 93, "migration_files": 680, "non_numeric_prefix_files": 19, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-26T07:25:28+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 989, "indexes_created": 1041, "indexes_dropped_somewhere": 93, "migration_files": 681, "non_numeric_prefix_files": 19, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 0	idx_request_logs_session	request_logs	000_base_tables.sql	session_id,ts	
 1	idx_users_tenant	users	001_users_table.sql	tenant_id	
 1	idx_users_username	users	001_users_table.sql	username	
@@ -461,6 +461,7 @@
 490	idx_credential_probe_queue_running_lease_token	credential_probe_queue	490_credential_probe_queue_runtime_columns.sql	id,lease_token	
 491	idx_request_logs_hot_t0_arrived	request_logs_hot	491_request_logs_queue_timestamps.sql	t0_arrived_at	
 491	idx_wtmr_tier	work_type_model_route	491_work_type_default_routes.sql	work_type_key,tier,weight	
+492	idx_customers_channel	customers	492_channels_customers.sql	channel_id	
 510	idx_request_logs_hot_request_type	request_logs_hot	510_request_type.sql	request_type	
 511	idx_state_transitions_created	request_state_transitions	511_state_transitions_table.sql	created_at	
 511	idx_state_transitions_request	request_state_transitions	511_state_transitions_table.sql	request_id,created_at	

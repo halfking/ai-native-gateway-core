@@ -315,26 +315,45 @@ func (c *CredentialProbeV2) Stop() {
 // At most one immediate probe may run for a credential at once so webhook
 // replays and overlapping recovery paths cannot multiply billable probes.
 func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
+	c.probeNowAsync(credID)
+}
+
+// ProbeNowAsyncIfIdle 与 ProbeNowAsync 同语义（立即执行、无 5 分钟延迟），
+// 但**回报是否真的排上了队**。
+//
+// ★ 为什么需要回报（2026-11-26 需求驱动复探轮）：调用方是
+//
+//	bg.ExhaustedNodeDemandProbe —— 它按「发出去的探测次数」推进回退曲线。
+//	若本次提交被同凭据的在跑探针去重掉（immediateProbePending 命中），
+//	实际一次探都没发，而调用方却把回退计数 +1 ⇒ 回退虚增 ⇒ 间隔越拖越长
+//	（极端情况会拖回「1 小时才发现」的老坑）。
+//	⇒ 回报「排上队了吗」让调用方只对**真正发出去的探测**计次。
+func (c *CredentialProbeV2) ProbeNowAsyncIfIdle(credID int) bool {
+	return c.probeNowAsync(credID)
+}
+
+// probeNowAsync 是两者的共同实现；返回值 = 是否真的排上了队。
+func (c *CredentialProbeV2) probeNowAsync(credID int) bool {
 	if c == nil || credID <= 0 {
-		return
+		return false
 	}
 	c.lifecycleMu.Lock()
 	if !c.started || c.stopped {
 		c.lifecycleMu.Unlock()
-		return
+		return false
 	}
 	c.probeCtxMu.RLock()
 	ctx := c.probeCtx
 	c.probeCtxMu.RUnlock()
 	if ctx == nil {
 		c.lifecycleMu.Unlock()
-		return
+		return false
 	}
 	c.immediateProbeMu.Lock()
 	if _, pending := c.immediateProbePending[credID]; pending {
 		c.immediateProbeMu.Unlock()
 		c.lifecycleMu.Unlock()
-		return
+		return false
 	}
 	c.immediateProbePending[credID] = struct{}{}
 	c.immediateProbeMu.Unlock()
@@ -349,6 +368,7 @@ func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
 		}()
 		c.ProbeNow(ctx, credID)
 	})
+	return true
 }
 
 func (c *CredentialProbeV2) run(ctx context.Context, legacyCycle bool) {

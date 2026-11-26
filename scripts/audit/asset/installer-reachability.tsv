@@ -6,10 +6,10 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-26T05:07:24+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=411 package_up=411 rows=988
+# ★ generated_at=2026-11-26T07:26:18+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=411 package_up=411 rows=989
 # ★ ★★ census_bundled_at=2026-11-26T05:03:00+00:00 census_env_sha256=local:559365e9e5901efec87e929de2efaa4a02b84a129399f0abe6da83e5152f5764,fresh:6bb0a871a3d8937d633c3d72eb87fe71a6edfb616cd765fc37743483f53ed532,252:994d74cd168c2f19b914a86b71baca3ded4bcfdc804b01646d0551f38a8f0430,211:1f53201fd6928b0bf6dad190420876401d8c669b73e64f84d4b5406c7ac764a5
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 74, "reachable-and-present": 523, "unreachable-and-missing": 49}
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 75, "reachable-and-present": 523, "unreachable-and-missing": 49}
 idx_licenses_tenant_created	licenses	999d	999d_tenant_ops_scope.sql	yes	fresh		reachable-and-present	none	
 idx_provider_models_canonical_raw_name	provider_models	395b	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_releases_tenant_published	releases	999d	999d_tenant_ops_scope.sql	yes	fresh	local,252,211	reachable-and-present	none	
@@ -469,6 +469,7 @@ uq_credential_probe_queue_source_event	credential_probe_queue	489	489_credential
 idx_credential_probe_queue_running_lease_token	credential_probe_queue	490	490_credential_probe_queue_runtime_columns.sql	yes	local,fresh,252,211		reachable-and-present	none	
 idx_request_logs_hot_t0_arrived	request_logs_hot	491	491_request_logs_queue_timestamps.sql	yes			reachable-and-legitimately-retired	none	
 idx_wtmr_tier	work_type_model_route	491	491_work_type_default_routes.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
+idx_customers_channel	customers	492	492_channels_customers.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_request_type	request_logs_hot	510	510_request_type.sql	yes			reachable-and-legitimately-retired	none	
 idx_state_transitions_created	request_state_transitions	511	511_state_transitions_table.sql	yes	fresh,252,211	local	reachable-and-present	none	
 idx_state_transitions_request	request_state_transitions	511	511_state_transitions_table.sql	yes	fresh	local,252,211	reachable-and-present	none	

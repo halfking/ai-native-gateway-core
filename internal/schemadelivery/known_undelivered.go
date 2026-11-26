@@ -47,22 +47,59 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 			Cols: []string{"detection_layers", "detection_score", "matched_rules", "matched_rules_count"},
 		},
 	},
-	// ── 存量缺口三组（2026-11-26 存量缺口收口轮 · 第 31 轮已修 ⇒ 本轮删掉登记）──
-	// ★ 历史（本轮之前的三条登记）：
+	// ── 存量缺口（待 owner：投递迁移，或改代码）─────────────────────────────────
+	"admin/channels.go": {
+		"customers": {
+			Since: "2026-11-26",
+			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：本文件的渠道/客户读端 SQL 读 customers 表，" +
+				"而定义它的 sql/migrations/startup/492_channels_customers.sql **不在两条投递通道里**（仓内 grep 无任何通道点名它）" +
+				"⇒ ★ 实测（2026-11-26，211 生产库 acc-pg17/llm_gateway）：表不存在 ⇒ ⇒ 这些端点在部署后会报 **42P01（表不存在）**。" +
+				"★ 出路：把 492 搬进投递通道并登记（这是 schema 交付决策，owner 决定），或读端改读已有形状。" +
+				"★ **该修法属 W4.3 车道的产品口径，本车道只登记不代决策**。" +
+				"★ 处置：本条登记不阻断部署（scripts/deploy-test-gate.sh 的包清单不含 scripts/ursmcheck ⇒ 交付门不在部署闸门内；" +
+				"且 211 本轮部署已实测通过）。",
+			// ★ 空串 = **整表**登记：本文件有 4 处是整表引用（SELECT 1 FROM customers /
+			//   SELECT id FROM customers / FROM customers），不带列名 ⇒ 逐列登记匹配不上
+			//   ⇒ 台账按「文件⇒表⇒列」匹配（knownEntry），整表引用需要空串这一项。
+			Cols: []string{"", "channel_id", "code", "created_at", "enabled", "id", "name"},
+		},
+		"channel_users": {
+			Since: "2026-11-26",
+			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：同 492_channels_customers.sql 建出的渠道-用户关联表，" +
+				"同样不在投递通道里 ⇒ 部署后读端 42P01。出路与 customers 同条：把 492 搬进投递通道并登记，或读端改读已有形状。" +
+				"★ 本车道只登记不代决策。",
+			Cols: []string{"", "channel_id", "user_id"},
+		},
+		"request_logs": {
+			Since: "2026-11-26",
+			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：本文件的渠道统计与客户会话两个读端 SQL 读 request_logs，" +
+				"而定义它的 sql/migrations/startup/000_base_tables.sql **不在两条投递通道里**（仓内 grep 无任何通道点名它）" +
+				"⇒ ★ 实测（2026-11-26，211 生产库 acc-pg17/llm_gateway）：information_schema 里 request_logs **表不存在**，" +
+				"只有视图 request_logs_with_current_month ⇒ ⇒ 这两个端点在部署后会报 **42P01（表不存在）**。" +
+				"★ 注意：请求日志的真实表由 341_hot_table_independence.sql 的架构改造承载（热表 request_logs_hot ＋ 分区表 request_logs 异步承接），" +
+				"而 request_logs 本身正是那次改造要淘汰的旧家 ⇒ **出路不是「把 000_base_tables 搬进通道」（那会把已淘汰的形状重新投递）」，" +
+				"而是**读端改读 request_logs_hot / 已有视图**（并按 651_provider_quality_hot_rollup.sql 已固化的列映射口径对齐：" +
+				"created_at → ts、status_code → upstream_status_code 等）⇒ ★ **该修法属 W4.3 车道的产品口径，本车道只登记不代决策**。" +
+				"★ 处置：本条登记不阻断部署（scripts/deploy-test-gate.sh 的包清单不含 scripts/ursmcheck ⇒ 交付门不在部署闸门内；" +
+				"且 211 本轮部署已实测通过）。",
+			Cols: []string{"created_at"},
+		},
+	},
+	// ── 存量缺口三组（2026-11-26 存量缺口收口轮 · 第 31 轮已修 ⇒ 登记已删）──────
+	// ★ 历史（本轮之前的三条登记，★ 本轮修完 ⇒ 按「两头核账」的规则删掉登记）：
 	//   ① bg/systemmonitor/audit.go → system_probe_runs.total_tokens
-	//      （346 那份件躺在 sql/migrations/domain/ 不被任何通道消费）
+	//      （346 那份件躺在 sql/migrations/domain/ ⇒ 不被任何通道消费 ⇒ 列从没到过库）
 	//   ② domains/toolexecution/postgres_store.go → tool_usage_stats 的 13 列
-	//      （134 那份件不在任何通道里；仓内权威形状是 335/348 那套）
+	//      （134 那份件不在任何通道里；仓内权威形状是 335/348 那套 tool_id 口径）
 	//   ③ tenantops/handler.go → licenses.tenant_id / releases.tenant_id
-	//      （389 那份件躺在 sql/migrations/startup/up/ 那个整体不被消费的目录）
-	// ★ 本轮修法（owner 2026-11-26 决定：都走投递迁移）：
+	//      （389 那份件躺在 sql/migrations/startup/up/ ⇒ ★ 那个目录整体不被任何通道消费）
+	// ★ 本轮的修法（owner 2026-11-26 决定：都走投递迁移）：
 	//   ① → 999b_system_probe_run_tokens.sql（列 ＋ 读侧聚合同批恢复）
-	//   ② → 999c_tool_usage_stats_columns.sql（13 列 ＋ tool_id/tenant_id 去 NOT NULL
-	//        ＋ (tool_name,date) 唯一约束 ＋ 分区子表同步补列）
+	//   ② → 999c_tool_usage_stats_columns.sql（13 列 ＋ tool_id/tenant_id/usage_date 去 NOT NULL
+	//        ＋ hot 表 UNIQUE (tool_name, date)）
 	//   ③ → 999d_tenant_ops_scope.sql（两列 ＋ 两索引）
-	// ★ 三条都已进两条投递通道（部署 files=() ＋ 安装器 StartupFiles）⇒
-	//   「已投递对象」里就有这些列 ⇒ 门不再命中 ⇒ **按两头核账的规则删登记**
-	//   （登记了却不再被命中＝失效登记，门会红）。
+	// ★ 三条都已进两条投递通道 ⇒ 「已投递对象」里就有这些列 ⇒ 门不再命中
+	//   ⇒ **按两头核账的规则删登记**（登记了却不再被命中＝失效登记，门会红）。
 	// ★ 保留这段历史注释，是为了让下一个读的人知道「这里曾经有过三条欠账、
 	//   怎么修的、为什么删」—— 免得同一个缺口再被当成新发现。
 }

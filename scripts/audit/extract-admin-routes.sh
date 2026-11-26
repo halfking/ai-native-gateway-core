@@ -320,11 +320,25 @@ BEGIN { inblock = 0 }
 		m = substr(code, RSTART, RLENGTH)
 		q = substr(m, index(m, "\"") + 1)
 		q = substr(q, 1, length(q) - 1)
+		# ★★ 第 27 轮代上游收口：★ 「字面量方法前缀 ＋ 拼接路径」这一类**整条排除**。
+		#   ★★ 上游口径（★ 由门 `TestAdminRoutesGeneratorSkipsEmptyPathConcatenations` 钉住 ★★）：
+		#   · `"GET /pure/literal"`      ⇒ 登记（path=/pure/literal、method=GET）
+		#   · `"GET "+manifest.Runtime.HealthPath` ⇒ **排除**（★ 方法前缀是字面量、★ 路径是拼接
+		#     ⇒ 路径抽不出来 ⇒ path 为空 ⇒ 「行格式良好」门会判红 ★★）
+		#   · `"/debug/pprof/"+name`    ⇒ **照样登记**（★ 路径的字面量部分本身是完整路径 ⇒
+		#     ⇒ path 取 `/debug/pprof/` ★★）★ ★ 上游的门明确把它列在期望输出里 ★★
+		#   · `"/plain"`                ⇒ 登记
+		#   ⇒ ⇒ **判据＝「剥掉方法前缀之后、path 是不是空的」** ⇒ ★ 空 ⇒ 排除；★ 非空 ⇒ 登记 ★★
+		#   ⇒ ★★ 早先我方按「字面量之后不是逗号就整条跳过」实现 ⇒ **过宽**（★ 会把
+		#   ★★ `"/debug/pprof/"+name` 这种合法登记也丢掉 ★★）⇒ ★ 被上游那道门判红 ⇒ ★ 已改正 ★★
 		meth = "ANY"
 		path = q
 		if (match(q, /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE) /)) {
 			meth = substr(q, 1, RLENGTH - 1)
 			path = substr(q, RLENGTH + 1)
+		}
+		if (path == "") {
+			next
 		}
 		# ★ 剥掉方法前缀后 path 为空 ⇒ 这不是一条完整登记（多半是 "GET "+表达式 这种
 		#   拼接：只匹配到了字面量前缀）⇒ 整条跳过（头部 ① 与 ③；2026-11-25 订正：
