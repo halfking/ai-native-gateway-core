@@ -523,7 +523,7 @@ onMounted(() => { load(); loadTenants() })
           </td>
           <td @click.stop>
             <button class="btn btn-ghost btn-sm" @click="openDetail(u)">{{ t('users.action.detail', $t('common.button.detail')) }}</button>
-            <button v-if="canChangeRoles" class="btn btn-ghost btn-sm" @click="openRoleModal(u)">{{ t('users.action.changeRole') }}</button>
+            <button v-if="canChangeRoles" class="btn btn-ghost btn-sm" data-testid="user-change-role-btn" @click="openRoleModal(u)">{{ t('users.action.changeRole') }}</button>
             <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
             <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>
           </td>
@@ -622,13 +622,13 @@ onMounted(() => { load(); loadTenants() })
         </div>
         <div class="form-group">
           <label>{{ t('users.modal.role.label') }}</label>
-          <select v-model="roleDraft">
+          <select v-model="roleDraft" data-testid="user-role-select">
             <option v-for="r in roleOptions" :key="r" :value="r">{{ roleLabel(r) }}</option>
           </select>
           <p v-if="roleTarget.tenant_id !== DEFAULT_TENANT_CODE" class="form-hint">{{ t('users.modal.role.hint') }}</p>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-primary" :disabled="roleSaving || roleDraft === roleTarget.role" @click="submitRoleChange">{{ t('common.save') }}</button>
+          <button class="btn btn-primary" data-testid="user-role-save" :disabled="roleSaving || roleDraft === roleTarget.role" @click="submitRoleChange">{{ t('common.save') }}</button>
           <button class="btn btn-ghost" @click="showRoleModal = false">{{ t('common.cancel') }}</button>
         </div>
       </div>
