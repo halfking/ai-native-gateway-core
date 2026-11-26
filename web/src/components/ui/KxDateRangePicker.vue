@@ -8,7 +8,9 @@
 // - 预设点击 = 立即生效（提交 + 关闭面板），无需再点应用（2026-11-20 owner 口径：
 //   今天/昨天/近7天等预设本身就是确定范围，二次确认是多余一步）；
 //   自定义起止仍走「应用」。守卫（maxSpanDays/notAfter）不过时保持展开供调整。
-import { computed, ref, watch } from 'vue'
+// - 面板展开期间，内嵌 ElDatePicker 的日历弹层挂载在本组件面板 DOM 内部
+//   （2026-11-26 修复，见 calAppendTo 注释）。
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElDatePicker, ElPopover } from 'element-plus'
 import type { KxDatePrecision, KxDateRange, KxDateRangePreset } from './kx-date-types'
@@ -63,6 +65,36 @@ const panelOpen = ref(false)
 const draftStart = ref('')
 const draftEnd = ref('')
 
+// ── 2026-11-26 修复：「选第一个日期，浮层整体就关闭」─────────────────
+// ★ 根因（EP 2.14.3 源码逐层取证，非猜测）：本组件的面板是 ElPopover(trigger="click")，
+//   它的自动关闭来自 tooltip content 里 vueuse 的 onClickOutside(popperContentRef)
+//   （tooltip/src/content.vue：点击不落在 popper DOM 内 ⇒ onClose）；而面板里两个
+//   ElDatePicker 的日历弹层默认 teleport 到 body ⇒ 点日历里的日期格 = 对 popover
+//   而言的「外部点击」⇒ 刚选完开始日期，整个面板被关掉。
+// ★ 修法（为什么不是 :teleported="false"）：EP 2.14.3 的 time-picker picker.vue 在
+//   模板里把 `teleported` 硬编码在 v-bind="$attrs" 之后 ⇒ 外部传入被覆盖、无效；
+//   而 `append-to` 不在硬编码名单里 ⇒ 经 $attrs 一路透传到 tooltip content 的
+//   Teleport `to`。落点选「本组件面板容器」：日历弹层 DOM 落进 popover 的
+//   popperContentRef 子树 ⇒ onClickOutside 判「内部点击」⇒ 面板不再被误关；
+//   侧收益：日历样式继承 .kx-dr-popper 的主题令牌桥（与面板同源）。
+//   picker 日历自身弹出/收起由它自己的 onClickOutside(inputRef) 管（看 composedPath
+//   是否含日历 popper）⇒ 不受本改动影响。
+const calAppendTo = ref<HTMLElement | null>(null)
+const panelRef = ref<HTMLElement | null>(null)
+
+watch(panelOpen, async (open) => {
+  if (open) {
+    draftStart.value = props.modelValue?.start ?? ''
+    draftEnd.value = props.modelValue?.end ?? ''
+    // 等面板 DOM 挂上再让日历弹层 teleport 进来（Teleport 的 to 支持动态更新）。
+    await nextTick()
+    calAppendTo.value = panelRef.value
+  } else {
+    // 面板收起时弹层随 ElPopover 内容卸载；清引用，避免悬挂到已卸载节点。
+    calAppendTo.value = null
+  }
+})
+
 const presets = computed(() => props.presets ?? makeDateRangePresets(props.precision))
 
 const valueFormat = computed(() => (props.precision === 'datetime' ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD'))
@@ -115,13 +147,6 @@ const canApply = computed(
 function disableAfterLatest(cell: Date): boolean {
   return !!props.notAfter && isAfterDay(calendarDayKey(cell), props.notAfter)
 }
-
-watch(panelOpen, (open) => {
-  if (open) {
-    draftStart.value = props.modelValue?.start ?? ''
-    draftEnd.value = props.modelValue?.end ?? ''
-  }
-})
 
 function isPresetActive(preset: KxDateRangePreset): boolean {
   if (!draftStart.value || !draftEnd.value) return false
@@ -218,7 +243,7 @@ function applyDraft() {
       </button>
     </template>
 
-    <div class="kx-dr-panel" data-testid="kx-dr-panel">
+    <div ref="panelRef" class="kx-dr-panel" data-testid="kx-dr-panel">
       <div class="kx-dr-panel__head">
         <span class="kx-dr-panel__title">{{ t('common.dateRange.title') }}</span>
       </div>
@@ -240,6 +265,9 @@ function applyDraft() {
       <div v-if="!presetsOnly" class="kx-dr-inputs" data-testid="kx-dr-inputs">
         <div class="kx-dr-input" data-testid="kx-dr-input-start">
           <label class="kx-dr-input__label">{{ t('common.dateRange.startDate') }}</label>
+          <!-- append-to=面板容器（2026-11-26 修复）：日历弹层必须落在 popover 内容 DOM
+               内部，否则点日历格会被 popover 的 onClickOutside 当成外部点击而整面板
+               关闭。teleported 由 EP 2.14.3 picker.vue 硬编码为 true，无需传。 -->
           <ElDatePicker
             v-model="draftStart"
             :type="precision === 'datetime' ? 'datetime' : 'date'"
@@ -247,6 +275,7 @@ function applyDraft() {
             :format="displayFormat"
             :clearable="false"
             :disabled-date="disableAfterLatest"
+            :append-to="calAppendTo"
             :aria-label="t('common.dateRange.startDate')"
             style="width: 100%"
             @change="onDraftChange"
@@ -261,6 +290,7 @@ function applyDraft() {
             :format="displayFormat"
             :clearable="false"
             :disabled-date="disableAfterLatest"
+            :append-to="calAppendTo"
             :aria-label="t('common.dateRange.endDate')"
             style="width: 100%"
             @change="onDraftChange"
