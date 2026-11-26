@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -95,6 +96,10 @@ type Storage struct {
 	baseDir string
 	// dirMu 保护 baseDir 的并发读写
 	dirMu sync.RWMutex
+	// quotaManager 可选的配额管理器（P0 安全修复 2026-11-26）
+	quotaManager *QuotaManager
+	// quotaMu 保护 quotaManager 的并发读写
+	quotaMu sync.RWMutex
 }
 
 // NewStorage 构造一个 Storage，使用本地文件系统作为默认存储后端。
@@ -129,6 +134,29 @@ func NewStorageWithBackend(backend StorageBackend) *Storage {
 		backend: backend,
 		MaxSize: DefaultMaxSize,
 	}
+}
+
+// SetQuotaManager 设置配额管理器（可选）。
+//
+// P0 安全修复 (2026-11-26): 启用每租户存储配额限制。
+// 配额管理器为 nil 时跳过配额检查（向后兼容）。
+func (s *Storage) SetQuotaManager(qm *QuotaManager) {
+	if s == nil {
+		return
+	}
+	s.quotaMu.Lock()
+	s.quotaManager = qm
+	s.quotaMu.Unlock()
+}
+
+// GetQuotaManager 返回当前配额管理器。
+func (s *Storage) GetQuotaManager() *QuotaManager {
+	if s == nil {
+		return nil
+	}
+	s.quotaMu.RLock()
+	defer s.quotaMu.RUnlock()
+	return s.quotaManager
 }
 
 // SetBackend 热切换存储后端。写锁，与并发的 SaveBase64Image/Load 互斥。
@@ -258,12 +286,18 @@ type SaveResult struct {
 //   - 存储后端错误 → 写入失败
 //
 // 调用方应在收到 error 时记录 warning 但不要阻塞请求转发。
-func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx int) (*SaveResult, error) {
+func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx int, tenantID ...string) (*SaveResult, error) {
 	if s == nil {
 		return nil, errors.New("attachments: storage is nil")
 	}
 	if requestID == "" {
 		requestID = "unknown"
+	}
+
+	// Extract optional tenantID for quota enforcement (P0 安全修复 2026-11-26)
+	var tenant string
+	if len(tenantID) > 0 {
+		tenant = tenantID[0]
 	}
 
 	contentType, b64Payload, err := parseDataURI(dataURI)
@@ -298,6 +332,16 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		return nil, fmt.Errorf("attachments: file too large (%d > %d)", counter.n, maxSize)
 	}
 
+	// P0 安全修复 (2026-11-26): 配额检查
+	// 在解码后、保存前进行，确保我们知道实际大小
+	quotaManager := s.GetQuotaManager()
+	if tenant != "" && quotaManager != nil {
+		ctx := context.Background()
+		if err := quotaManager.CheckAndReserve(ctx, tenant, counter.n); err != nil {
+			return nil, err // 配额超限，返回错误
+		}
+	}
+
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	ext := mimeTypeToExt(contentType)
 	// ★ 存储键统一正斜杠（path.Join 而非 filepath.Join）：relPath 既是存储键
@@ -323,6 +367,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	}
 
 	deduped := false
+	actuallyWrote := false
 	if exists {
 		// 文件已存在，跳过写入
 		deduped = true
@@ -330,6 +375,20 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		// 保存文件到存储后端
 		if err := backend.Save(ctx, relPath, content); err != nil {
 			return nil, fmt.Errorf("attachments: save: %w", err)
+		}
+		actuallyWrote = true
+	}
+
+	// P0 安全修复 (2026-11-26): 确认配额使用
+	// 仅在实际写入新文件时更新配额（去重命中不计入）
+	if actuallyWrote && tenant != "" && quotaManager != nil {
+		if err := quotaManager.CommitUsage(ctx, tenant, counter.n); err != nil {
+			// 配额提交失败：记录日志但不阻塞（文件已保存）
+			slog.Warn("attachments: failed to commit quota usage",
+				"tenant_id", tenant,
+				"size", counter.n,
+				"path", relPath,
+				"error", err)
 		}
 	}
 

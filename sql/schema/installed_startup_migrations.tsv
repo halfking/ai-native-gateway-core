@@ -426,3 +426,4 @@
 408	999b_system_probe_run_tokens.sql
 409	999c_tool_usage_stats_columns.sql
 410	999d_tenant_ops_scope.sql
+411	633_tenant_attachment_quotas.sql

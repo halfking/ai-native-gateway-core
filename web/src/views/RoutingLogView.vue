@@ -12,9 +12,15 @@ import { parseLocalMinute } from '../utils/datetime'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { isSuperAdmin, isRegularUser } from '../store'
 
 // RoutingLogView — 路由记录 tab (docs/FEATURE-REQ-credential-heatmap-routing-log.md §5)
 // Unified timeline of routing decisions / self-test runs / status changes.
+
+// 2026-11-26: 权限控制
+// - super_admin: 看凭据ID和标签
+// - tenant_admin 和 user: 凭据详情已隐藏
+const canSeeCredentialDetails = computed(() => isSuperAdmin())
 
 type TimePreset = '24h' | 'today' | '7d' | 'month' | 'custom'
 
@@ -333,9 +339,15 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
               </td>
               <td class="mono model-cell">{{ e.model }}</td>
               <td>
-                <span v-if="e.credential_id != null">{{ e.credential_label || `#${e.credential_id}` }}</span>
+                <!-- 2026-11-26: 凭据脱敏 - super_admin看全部，tenant_admin和user看隐藏 -->
+                <span v-if="canSeeCredentialDetails && e.credential_id != null">
+                  {{ e.credential_label || `#${e.credential_id}` }}
+                </span>
+                <span v-else-if="e.credential_id != null" class="muted">
+                  {{ $t('routing.credentialHidden') }}
+                </span>
                 <span v-else class="muted">—</span>
-                <span v-if="e.provider_name" class="muted"> · {{ e.provider_name }}</span>
+                <span v-if="canSeeCredentialDetails && e.provider_name" class="muted"> · {{ e.provider_name }}</span>
               </td>
               <td class="col-status">
                 <span class="status-pill" :class="statusClass(e)">{{ statusText(e) }}</span>

@@ -13,6 +13,7 @@ export default {
   filterAll: 'All',
   filterProviderKeyFailed: "Provider / key filter options failed to load. An empty dropdown does not mean there are none",
   filterTenantFailed: 'Tenant filter options failed to load',
+  totalRow: 'Total',
   shareByMetric: 'Share (metric)',
   sourceDetail: 'Request detail',
   // 2026-10-02 multi-select / clear-all / auto-refresh round

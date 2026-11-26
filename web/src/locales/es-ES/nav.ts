@@ -50,6 +50,8 @@ export default {
     keys: "Claves API",
     keyApplications: "Solicitudes de claves",
     auditLogs: "Registros de auditoría",
+    mySessions: "Mis sesiones",
+    myUsage: "Uso (mi vista)",
     requestLogs: "Registros de solicitudes",
     dispatchWaterfall: "Cascada de colas",
     requestRegistry: "Registro de solicitudes",

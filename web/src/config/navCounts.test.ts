@@ -48,10 +48,10 @@ const DOC_DIR = join(REPO, 'docs/03-design/02-feature-design')
 // 锁定的口径（硬编码常量 —— 不从任何被断言对象派生）
 // ─────────────────────────────────────────────────────────────
 
-/** 专家面菜单条目总数。 */
-const EXPECTED_ITEMS =68
+/** 专家面菜单条目总数。2026-11-26 数据权限审计 P2：+2（/my/sessions、/my/usage）⇒ 68→70。 */
+const EXPECTED_ITEMS =70
 /** 落地路径数。比条目少 1：「自动更新」跨两组重复挂载，算两条目一条路径。 */
-const EXPECTED_PATHS =67
+const EXPECTED_PATHS =69
 /** 顶栏分组数。 */
 const EXPECTED_GROUPS = 8
 /** 顶层主链接数（不进分组，直接挂顶栏）。 */
@@ -65,8 +65,10 @@ const EXPECTED_EXPOSED = 14
  *  2026-11-23 审计轮取消「/admin/session-analytics」总览页菜单项（内容已重组迁入
  *  /admin/session-analytics/users）后 54→53；
  *  ★ 2026-11-23 L14 落地轮：整合页（/admin/session-analytics/users/overview）另立菜单项后 53→54）。
+ *  ★ 2026-11-26 数据权限审计 P2：用户级端点入口 /my/sessions、/my/usage 落地
+ *    （requests-sessions 组头部，全员可见；简易模式规格未收 ⇒ 落「高级折叠」）后 54→56。
  *  ★ 口径：FOLDED = ITEMS − EXPOSED（落在「高级折叠」桶的条目数）。 */
-const EXPECTED_FOLDED =54
+const EXPECTED_FOLDED =56
 /** 简易模式可见页面数（13 个既有入口 + 1 个新建简化页 `/usage`）。 */
 const EXPECTED_VISIBLE_PAGES = 14
 
@@ -344,7 +346,7 @@ const DECOMPOSITION_RULE = {
   // 「= 总数」可有可无（文档头不带、页脚带）。
   re: /(\d+)\s*(?:个分组|组)\s*(\d+)\s*项\s*\+\s*顶层\s*(\d+)\s*项(?:\s*=\s*(\d+))?/g,
   groups: EXPECTED_GROUPS,
-  groupItems: 65,
+  groupItems: 67, // 2026-11-26 P2：+2（/my/sessions、/my/usage）⇒ 65→67
   primaryItems: EXPECTED_PRIMARY,
   total: EXPECTED_ITEMS,
 }

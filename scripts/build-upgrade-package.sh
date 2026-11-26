@@ -24,7 +24,6 @@ fi
 #   bash scripts/build-upgrade-package.sh [v2.4.6] [--out /path/to/output] [--build-seq 10]
 #
 # Env:
-#   GOPROXY            default https://goproxy.cn,direct
 #   DOCKER_IMAGE_TAG   default kx-llm-gateway-go:${VERSION}
 set -euo pipefail
 
@@ -64,7 +63,6 @@ fi
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -72,7 +70,7 @@ echo "[upgrade-package] Building for version ${GIT_TAG} (build_seq=${BUILD_SEQ})
 
 # 1. 构建 Gateway 二进制（Linux amd64，升级包默认只构建主平台）
 echo "[1/5] Building kx-gateway binary..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod \
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor \
   -ldflags "-X main.version=${GIT_TAG} -X main.buildSeq=${BUILD_SEQ}" \
   -o "$WORK/kx-gateway" ./cmd/gateway
 chmod +x "$WORK/kx-gateway"

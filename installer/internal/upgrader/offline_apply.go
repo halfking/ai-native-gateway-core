@@ -19,10 +19,11 @@ import (
 
 // OfflineApplier 离线升级包应用器
 type OfflineApplier struct {
-	dataDir       string
-	backupDir     string
-	composeFile   string
-	containerName string
+	dataDir        string
+	backupDir      string
+	composeFile    string
+	containerName  string
+	composeProject string
 
 	// UpgradeStartup executes the verified startup plan on the target database.
 	UpgradeStartup func(sqlDir string, files []string) error
@@ -30,11 +31,16 @@ type OfflineApplier struct {
 
 // NewOfflineApplier 创建离线升级应用器
 func NewOfflineApplier(dataDir, backupDir, composeFile, containerName string) *OfflineApplier {
+	project := os.Getenv("COMPOSE_PROJECT_NAME")
+	if project == "" {
+		project = "llm-gateway-go"
+	}
 	return &OfflineApplier{
-		dataDir:       dataDir,
-		backupDir:     backupDir,
-		composeFile:   composeFile,
-		containerName: containerName,
+		dataDir:        dataDir,
+		backupDir:      backupDir,
+		composeFile:    composeFile,
+		containerName:  containerName,
+		composeProject: project,
 	}
 }
 

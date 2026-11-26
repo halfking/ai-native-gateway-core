@@ -60,6 +60,8 @@ export default {
     keys: 'API Keys',
     keyApplications: 'Key Applications',
     auditLogs: 'Audit Logs',
+    mySessions: 'My Sessions',
+    myUsage: 'My Usage (unified)',
     requestLogs: 'Request Logs',
     dispatchWaterfall: 'Queue Waterfall',
     requestRegistry: 'Request Registry',

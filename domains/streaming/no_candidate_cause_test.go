@@ -82,7 +82,7 @@ func TestDiagnoseNoCandidateCause_SpeaksTheActualCause(t *testing.T) {
 	}
 	for _, want := range []string{
 		"claude-sonnet-5-5",
-		"上游账户额度或余额已耗尽",    // 真因
+		"上游供应商账户配额或余额耗尽",    // 真因（2026-11-26 69aec60492 澄清文案：+「供应商账户」「不是您的 API 密钥限制」）
 		"供应商或凭据已被网关管理员停用", // 次因也要如实列出
 		"原样重试没有用",
 	} {
@@ -98,7 +98,7 @@ func TestDiagnoseNoCandidateCause_SpeaksTheActualCause(t *testing.T) {
 	}
 	// 英文（缺省 locale）同一结论。
 	en := h.diagnoseNoCandidateCause(context.Background(), "claude-sonnet-5-5", "default")
-	for _, want := range []string{"No available provider for model 'claude-sonnet-5-5'", "upstream account quota or balance exhausted", "Retrying the same request will not help"} {
+	for _, want := range []string{"No available provider for model 'claude-sonnet-5-5'", "upstream provider account quota or balance exhausted", "Retrying the same request will not help"} {
 		if !strings.Contains(en.Message, want) {
 			t.Errorf("en 文案缺少 %q\n实际：%s", want, en.Message)
 		}
@@ -109,7 +109,7 @@ func TestDiagnoseNoCandidateCause_SpeaksTheActualCause(t *testing.T) {
 		t.Errorf("extras = %v", extras)
 	}
 	// 多因并列的分隔符随语言走：中文用全角分号（211 活体验证时的半角分号读起来割裂）。
-	if !strings.Contains(got.Message, "上游账户额度或余额已耗尽；供应商或凭据已被网关管理员停用") {
+	if !strings.Contains(got.Message, "上游供应商账户配额或余额耗尽（不是您的 API 密钥限制）；供应商或凭据已被网关管理员停用") {
 		t.Errorf("中文原因列表应使用全角分号：%s", got.Message)
 	}
 	// 请求日志：既有英文前缀逐字保留，归因附在后面。
@@ -127,7 +127,7 @@ func TestDiagnoseNoCandidateCause_SingleGate(t *testing.T) {
 		cause    string
 		contains string
 	}{
-		{"仅额度耗尽", provider.EmptyCandidateBreakdown{OffersTotal: 3, BlockedByCredentialQuota: 3}, provider.ClientCauseQuota, "上游账户额度或余额已耗尽"},
+		{"仅额度耗尽", provider.EmptyCandidateBreakdown{OffersTotal: 3, BlockedByCredentialQuota: 3}, provider.ClientCauseQuota, "上游供应商账户配额或余额耗尽"},
 		{"仅供应商停用", provider.EmptyCandidateBreakdown{OffersTotal: 3, BlockedByProviderDisabled: 3}, provider.ClientCauseDisabled, "已被网关管理员停用"},
 		{"凭据人工停用", provider.EmptyCandidateBreakdown{OffersTotal: 2, BlockedByCredentialManualDisabled: 1}, provider.ClientCauseDisabled, "已被网关管理员停用"},
 		{"凭据缺失", provider.EmptyCandidateBreakdown{OffersTotal: 2, BlockedByCredentialMissing: 1}, provider.ClientCauseCredentialMissing, "凭据记录缺失"},
@@ -321,7 +321,7 @@ func TestNoCandidateCause_BehaviouralWiring(t *testing.T) {
 		if w.Code != http.StatusTooManyRequests {
 			t.Fatalf("status = %d, want 429（主因=上游配额耗尽 ⇒ 4xx 契约）\nbody: %s", w.Code, w.Body.String())
 		}
-		if !strings.Contains(w.Body.String(), "upstream account quota or balance exhausted") {
+		if !strings.Contains(w.Body.String(), "upstream provider account quota or balance exhausted") {
 			t.Errorf("响应没有说出真实原因\nbody: %s", w.Body.String())
 		}
 		if !strings.Contains(w.Body.String(), "Retrying the same request will not help") {

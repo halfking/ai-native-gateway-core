@@ -16,6 +16,9 @@ import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
 const MaintainUnavailableView = () => import('./views/MaintainUnavailableView.vue')
+// 2026-11-26 数据权限审计 P2：用户级端点页面（我的会话 / 我的用量）。
+const MySessionsView = () => import('./views/MySessionsView.vue')
+const MyUsageView = () => import('./views/MyUsageView.vue')
 // 2026-11-17：简易/专家同路径包装（ProvidersModeView），避免 /providers 与
 // /providers-simple 双路由分裂深链。
 const ProvidersView = () => import('./views/ProvidersModeView.vue')
@@ -252,6 +255,11 @@ export const router = createRouter({
     // 过滤条件常驻顶层、统计点开是全页浮层、逐段显示请求走过的管线。
     // 权限与 /live 同级（requiresAuth），可回退到 /live。
     { path: '/live2',              component: LiveStageTreeView, meta: { requiresAuth: true } },
+    // 2026-11-26 数据权限审计 P2：用户级端点页面（/api/sessions/my、/api/usage/my）。
+    // 权限真源在后端（admin/my_endpoints.go：user→自己 / tenant_admin→本租户 /
+    // super_admin→全平台）；前端 requiresAuth 即可，不做粗粒度角色闸。
+    { path: '/my/sessions',        component: MySessionsView, meta: { requiresAuth: true } },
+    { path: '/my/usage',           component: MyUsageView, meta: { requiresAuth: true } },
     // 2026-10-18: 请求详情**全页**（owner 要求：面板可整页打开某条请求的
     // 详情）。非导航项（navCoverage 按孤儿登记）；数据来自实时滚动窗口，
     // 直链/刷新时可能已滚出（页面如实说明，不冒充空详情）。

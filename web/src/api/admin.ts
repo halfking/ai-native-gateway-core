@@ -442,6 +442,60 @@ export function changeMyPassword(old_password: string, new_password: string) {
   return req<{ status: string }>('PUT', '/api/auth/change-password', { old_password, new_password })
 }
 
+// ── User-Level Endpoints (P2 Permission System, 2026-11-26) ──
+
+export interface MySession {
+  session_key: string
+  tenant_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  request_count: number
+  total_cost_usd: number
+}
+
+export interface MySessionsResponse {
+  sessions: MySession[]
+  total: number
+  user_id: number
+  role: string
+}
+
+export interface MyUsageStats {
+  request_count: number
+  total_cost_usd: number
+  total_prompt_tokens: number
+  total_completion_tokens: number
+}
+
+export interface MyUsageResponse {
+  usage: MyUsageStats
+  period: string
+  user_id: number
+  role: string
+}
+
+/**
+ * Get current user's sessions (last 50, ordered by updated_at DESC)
+ * 
+ * Permission model:
+ * - role=user: only own sessions
+ * - role=tenant_admin: all sessions in tenant
+ * - role=super_admin: all sessions platform-wide
+ */
+export function getMySessions() {
+  return req<MySessionsResponse>('GET', '/api/sessions/my')
+}
+
+/**
+ * Get current user's usage statistics (last 30 days)
+ * 
+ * Permission model: same as getMySessions
+ */
+export function getMyUsage() {
+  return req<MyUsageResponse>('GET', '/api/usage/my')
+}
+
 // ── Audit Logs (super_admin only) ──────────────────────────────────────────
 
 export interface AuditLogEntry {

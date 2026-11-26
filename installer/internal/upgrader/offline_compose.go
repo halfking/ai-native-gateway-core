@@ -44,7 +44,7 @@ func (a *OfflineApplier) applyInstallerStartupPackage(ctx context.Context, manif
 	if _, err := os.Stat(versionPath); err != nil {
 		return fmt.Errorf("find installed app/VERSION: %w", err)
 	}
-	oldImageID, err := offlineDocker(ctx, "inspect", "--format", "{{.Image}}", "kx-llm-gateway-go")
+	oldImageID, err := a.gatewayImageID(ctx)
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,7 @@ func (a *OfflineApplier) applyInstallerStartupPackage(ctx context.Context, manif
 	if err := a.recreateOfflineGateway(ctx, tag); err != nil {
 		return err
 	}
-	runningID, err := offlineDocker(ctx, "inspect", "--format", "{{.Image}}", "kx-llm-gateway-go")
+	runningID, err := a.gatewayImageID(ctx)
 	if err != nil {
 		return err
 	}
@@ -119,15 +119,48 @@ func (a *OfflineApplier) applyInstallerStartupPackage(ctx context.Context, manif
 }
 
 func (a *OfflineApplier) recreateOfflineGateway(ctx context.Context, tag string) error {
+	_, err := a.offlineCompose(ctx, tag, "up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "--wait", "--wait-timeout", "120", offlineGatewayService)
+	return err
+}
+
+func (a *OfflineApplier) gatewayImageID(ctx context.Context) (string, error) {
+	container, err := a.ComposeServiceContainer(ctx, offlineGatewayService)
+	if err != nil {
+		return "", err
+	}
+	return offlineDocker(ctx, "inspect", "--format", "{{.Image}}", container)
+}
+
+// ComposeServiceContainer locates exactly one running service in the upgrade's project.
+func (a *OfflineApplier) ComposeServiceContainer(ctx context.Context, service string) (string, error) {
+	output, err := a.offlineCompose(ctx, "", "ps", "--status", "running", "-q", service)
+	if err != nil {
+		return "", err
+	}
+	containers := strings.Fields(output)
+	if len(containers) != 1 {
+		return "", fmt.Errorf("expected one running Compose service %q in project %q, got %d", service, a.composeProject, len(containers))
+	}
+	return containers[0], nil
+}
+
+func (a *OfflineApplier) offlineCompose(ctx context.Context, tag string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-p", "llm-gateway-go", "-f", a.composeFile,
-		"up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "--wait", "--wait-timeout", "120", offlineGatewayService)
-	cmd.Env = append(os.Environ(), "APP_IMAGE_TAG="+tag)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("recreate Compose gateway: %w: %s", err, out)
+	options := []string{"compose", "-p", a.composeProject, "--env-file", filepath.Join(filepath.Dir(a.composeFile), ".env"), "-f", a.composeFile}
+	cmd := exec.CommandContext(ctx, "docker", append(options, args...)...)
+	if tag != "" {
+		cmd.Env = append(os.Environ(), "APP_IMAGE_TAG="+tag)
 	}
-	return nil
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", fmt.Errorf("docker compose %s: %w: %s", args[0], err, exit.Stderr)
+		}
+		return "", fmt.Errorf("docker compose %s: %w", args[0], err)
+	}
+	return string(out), nil
 }
 
 func offlineDocker(ctx context.Context, args ...string) (string, error) {

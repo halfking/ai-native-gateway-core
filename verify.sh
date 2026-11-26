@@ -431,6 +431,13 @@ bash scripts/guards/check-shell-vacuous-assertion.sh
 echo "[verify] maestro flow anchor existence gate (fast gate: python3 only, no external deps)"
 bash scripts/checks/maestro-flow-anchor-gate.sh
 
+# ★ 2026-11-26 L135 补真机覆盖轮（2026-11-27 一周审计轮从 gw-rolegov worktree 收口并合入）：
+#   用户管理页（/users）角色治理资产的离线契约门。守的是那条【容易被照搬坏的契约】：
+#   /users 用原生 <select> ⇒ option 始终在 DOM ⇒ 在该页写 assertNotVisible「超级管理员」
+#   ＝恒红的假门。判据全用 python3/node ⇒ 离线可跑。
+echo "[verify] maestro users-role governance contract gate (fast gate: python3 only)"
+bash scripts/checks/maestro-users-role-gate.sh
+
 echo "[verify] session storage audit gate decision contracts"
 bash tests/session_storage_audit_gate_test.sh
 echo "[verify] session storage audit integration suite (required coherence)"

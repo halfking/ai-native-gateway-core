@@ -151,6 +151,21 @@ func isPasswordChangeAllowedPath(path string) bool {
 	return false
 }
 
+// isLocallyIssuedToken 判断 provider 的 AuthResult.Token 是否本地 HS256 JWT。
+//
+// native provider 走 admin.SignToken 同一条签发链（LLM_GATEWAY_JWT_SECRET →
+// secretKey），能过 AdminMiddleware → identity.Verify 的 legacy 路径。
+// casdoor（以及未来任何外部 IdP）返回的是外部签发 token，必须换发。
+// 新 provider 接入时默认按「外部签发」处理（白名单 = 本地签发者集合）。
+func isLocallyIssuedToken(providerName string) bool {
+	switch providerName {
+	case "native":
+		return true
+	default:
+		return false
+	}
+}
+
 // enforceMustChangePassword applies rule 20 §6.2 — users with
 // MustChangePassword=true can only hit whitelisted paths (me,
 // change-password, logout). All other requests return 403. Returns
@@ -173,9 +188,9 @@ func enforceMustChangePassword(w http.ResponseWriter, r *http.Request, claims *J
 }
 
 // authDB返回 handleLogin 的读写面：显式注入的窄口优先，否则回落到
-//具体连接池 h.db。单测可注入 pgxmock（*pgxpool.Pool 无法承载它）。
-//注意：h.db 是具体指针，typed-nil装进接口后 != nil（Go 经典坑），
-//所以 nil判定必须在具体类型上做，不能在返回的接口值上做。
+// 具体连接池 h.db。单测可注入 pgxmock（*pgxpool.Pool 无法承载它）。
+// 注意：h.db 是具体指针，typed-nil装进接口后 != nil（Go 经典坑），
+// 所以 nil判定必须在具体类型上做，不能在返回的接口值上做。
 func (h *Handler) authDB() loginDB {
 	if h.loginDB != nil {
 		return h.loginDB
@@ -268,12 +283,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				// Check if user exists in database to determine if we should fall back to legacy admin
 				var userExists bool
 				checkErr := h.authDB().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, req.Username).Scan(&userExists)
-				
+
 				if checkErr == nil && userExists {
 					// User exists in DB, don't fall back to legacy admin (2026-07-09 policy)
 					var userID int
 					_ = h.authDB().QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, req.Username).Scan(&userID)
-					
+
 					switch {
 					case errors.Is(authErr, authplugin.ErrUserDisabled):
 						h.auditLog(req.Username, "authentication.login_failed", "user", userID, fmt.Sprintf("method=plugin reason=user_disabled ip=%s", clientIP))
@@ -300,26 +315,49 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				// User doesn't exist, continue to legacy admin fallback
 			} else if result != nil && result.Success {
 				// ── Successful authentication via plugin ──
-				
+
 				// Shadow mapping (provider=llm-gateway, subject=userID) into
 				// identity_shadow — used by cross-project trust to resolve
 				// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
 				identity.RecordShadow("llm-gateway", result.UserID, result.TenantID, result.DisplayName, result.Email)
 
 				h.auditLog(result.Username, "authentication.login", "user", result.UserID, fmt.Sprintf("method=plugin provider=%s role=%s tenant=%s ip=%s", authProvider.Name(), result.Role, result.TenantID, clientIP))
-				
+
 				// Reset rate limiter and clear failures (2026-10-17 fix)
 				loginLimiter.Reset(clientIP)
 				clearLoginFailures(clientIP)
-				
+
+				// ★ 2026-11-27 L135 轮（断点①修复）：provider 下发的 token 只有
+				//   native provider 的才是本地 HS256 JWT（能过 AdminMiddleware →
+				//   identity.Verify）。casdoor provider 返回的是 casdoor 证书签名
+				//   JWT —— issuer 白名单与验签通道都不含它，直接下发 ⇒ 下一个请求
+				//   即 401（登录成功但会话保持断链）。
+				//   ⇒ 非本地签发一律**换发**本地 JWT：admin.SignToken(同一把
+				//   jwtSecret 链: LLM_GATEWAY_JWT_SECRET → cfg.SecretKey)，claims
+				//   取自 provider 的 AuthResult。provider token 只作登录凭证，
+				//   不出网关。
+				sessionToken, expiresAt := result.Token, result.ExpiresAt
+				tokenSource := "provider"
+				if !isLocallyIssuedToken(authProvider.Name()) {
+					local, exp, signErr := SignToken(result.UserID, result.TenantID, result.Username, result.Role, h.secret, result.MustChangePassword)
+					if signErr != nil {
+						slog.Error("handleLogin: re-sign plugin token failed", "provider", authProvider.Name(), "error", signErr)
+						writeError(w, http.StatusInternalServerError, "token generation failed")
+						return
+					}
+					sessionToken, expiresAt = local, exp
+					tokenSource = "re-signed"
+				}
+
 				// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
 				// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
-				setSessionCookieRemember(w, r, result.Token, result.ExpiresAt, req.RememberMe)
-				
+				setSessionCookieRemember(w, r, sessionToken, expiresAt, req.RememberMe)
+
 				writeJSON(w, http.StatusOK, map[string]any{
-					"access_token": result.Token,
+					"access_token": sessionToken,
 					"token_type":   result.TokenType,
-					"expires_at":   result.ExpiresAt.Format(time.RFC3339),
+					"expires_at":   expiresAt.Format(time.RFC3339),
+					"token_source": tokenSource,
 					"user": map[string]any{
 						"id":                   result.UserID,
 						"tenant_id":            result.TenantID,

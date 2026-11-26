@@ -292,9 +292,21 @@ export function getCurrentTenantId(): string {
   return store.userInfo?.tenant_id || 'default'
 }
 
+// Returns true if current user is 不显示任何凭据信息 user (role='user')
+export function isRegularUser(): boolean {
+  if (!store.jwtToken && store.apiKey) return false // legacy API key is super_admin
+  return store.userInfo?.role === 'user'
+}
+
 // Platform ops UI: super_admin on default tenant (整站运维视图)
 export function isPlatformOpsView(): boolean {
   return isSuperAdmin() && isDefaultTenant()
+}
+
+// Returns current user role for display/debugging
+export function getUserRole(): string {
+  if (!store.jwtToken && store.apiKey) return 'super_admin' // legacy API key
+  return store.userInfo?.role || 'guest'
 }
 
 // 2026-09-04: 供应商控制台视图 —— super_admin，或 default 租户的

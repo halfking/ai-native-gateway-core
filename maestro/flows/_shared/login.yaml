@@ -83,10 +83,30 @@ url: ${BASE_URL}
 #     见 README §6.2。）
 - pressKey: Enter
 # ── ① 弹窗关闭（handleLogin 成功）────────────────────────────────────────
-- extendedWaitUntil:
-    notVisible:
-      id: "login-modal-title"
-    timeout: 30000
+# ★ 2026-11-26 L135 轮加固：★ **retry 只包「等弹窗关闭」这一步**，★ 不包输入段。
+#   ★ 为什么（★ 实测撞出来的，★ 不是预防性设计 ★）：
+#     ★ 失败现场的层级里 ★ **页面已登录**（顶栏「系统管理员 · 超级管理员」、
+#       `app-user-menu-name` 可见、★ **登录弹窗根本不在**）
+#       ⇒ ★★ **登录其实是成功的**、★ 而「弹窗关闭」这条判据因**前端关得慢**而超时
+#       ⇒ ★★ 若把「输入 ＋ 等待」整段包进 retry ⇒ ★ retry 的第一步
+#         `tapOn login-username` ★ **必然扑空**（★ 弹窗已经关了 ★）
+#         ⇒ ★★ **retry 把「成功」变成了「失败」**（★ 这正是本轮第一次改法的失败 ★）。
+#   ★ 所以：**只重试「等」** ⇒ ① 已关闭 ⇒ 立即过；② 关得慢 ⇒ 继续等；
+#     ③ 真登录失败 ⇒ 弹窗不关 ⇒ 等满仍红 ⇒ ★ 判据语义**完全不变**。
+#   ★ 另记一种**已知间歇性量具故障**（★ 2026-11-26 17:18 实测 ★）：
+#     ★ 有一次失败现场是 ★ **弹窗仍在、无错误横幅、无验证码输入框**
+#       ⇒ ★★ **后端根本没收到请求** ⇒ ★ **不是口令错、也不是 captcha 闸门**
+#       ⇒ ★★ 而是 Maestro 的「键入/提交」没生效（★ SPA 尚未 hydrate 时
+#          `inputText` 写进 DOM 但 v-model 没收到事件 ★）
+#       ⇒ ★ 本 flow 此刻只能判红 ⇒ ★ **这类红由调用方按「量具失效」归类**
+#         （★ 见 maestro/run-users-role-governance.sh 的「登录段红 ⇒ 量具失效」 ★）。
+- retry:
+    maxRetries: "2"
+    commands:
+      - extendedWaitUntil:
+          notVisible:
+            id: "login-modal-title"
+          timeout: 20000
 # ── ② SPA 内存态已更新（顶栏用户菜单）────────────────────────────────────
 - extendedWaitUntil:
     visible:

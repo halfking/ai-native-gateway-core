@@ -99,6 +99,7 @@ import sessionAnalytics from './sessionAnalytics'
 import errorPlaybook from './errorPlaybook'
 import pageHelp from './pageHelp'
 import teams from './teams'
+import my from './my'
 
 export default {
   sanitizeRules,
@@ -199,4 +200,5 @@ export default {
   errorPlaybook,
   pageHelp,
   teams,
+  my,
 }

@@ -12,6 +12,9 @@ func (h *Handler) registerMaasBillingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/coupons", h.superAdmin(h.handleAdminMaasCoupons))
 	mux.HandleFunc("/api/admin/maas/bills/issue", h.superAdmin(h.handleAdminMaasBillsIssue))
 	mux.HandleFunc("/api/admin/maas/bills/reconcile", h.superAdmin(h.handleAdminMaasBillsReconcile))
+	// ★ 2026-11-27（一周审计轮）：账单支付跟踪路由接线（routemount 门抓出：
+	//   registerBillPaymentRoutes 此前零调用点 ⇒ 5 条路由生产 404）。
+	h.registerBillPaymentRoutes(mux)
 
 	mux.HandleFunc("/api/maas/bills", h.admin(h.handleMaasBills))
 	mux.HandleFunc("/api/maas/bills/export", h.admin(h.handleMaasBillsExport))

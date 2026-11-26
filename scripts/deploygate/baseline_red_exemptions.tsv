@@ -23,3 +23,14 @@
 #
 # 例（格式示例，勿直接照抄）：
 # TestSomeKnownBaselineRed	张三	2026-12-31	原因写清楚：为什么现在不能修、修复计划在哪
+
+# 2026-11-26 数据权限审计部署临时豁免
+TestCanonicalViewCannotExpressPartitionPruning	AI会话-权限审计	2026-11-30	中间提交233c14a2bc遗漏时间窗口登记，当前提交706297b758已修复
+TestHeavyDDLModernMigrationsDeclareMeasuredBudget	AI会话-权限审计	2026-11-30	基线测试红（与权限审计无关），需单独修复DDL预算声明
+# ★ 2026-11-27 一周审计轮按「豁免只许收窄」纪律删除 11 条已修复条目：
+#   69aec60492 改了 quota 文案但没改测试 ⇒ 一周审计轮把 4 个测试对齐到已交付契约
+#   （commit 10b6d049ce）⇒ 下列豁免不再被命中 ⇒ 留着就是失效豁免：
+#   TestDiagnoseNoCandidateCause_SingleGate（＋/仅额度耗尽）
+#   TestDiagnoseNoCandidateCause_SpeaksTheActualCause
+#   TestNoCandidateCause_BehaviouralWiring（＋3 子测试）
+#   TestNoCandidateCause_FailureDetailCode_AllFaces（＋3 子测试）

@@ -379,17 +379,20 @@ func (s *SQLStore) RecordHit(ctx context.Context, entryID int64) error {
 //	★ entry_id > 0 时同时回写条目的执行计数与 last_status / last_executed_at
 //	（一条执行 = 一次回写，计数口径永远与留痕一致）。
 func (s *SQLStore) RecordExecution(ctx context.Context, rec Execution) error {
+	// ★ 2026-11-27（一周审计轮）：[]byte 直传 jsonb 在转义引号形态下会触发
+	//   22P02（invalid input syntax for type json）—— publisher.go 先例同款。
+	//   改为 string(...) + ::text::jsonb（dbx 静态扫描门的认可形态）。
 	var steps, execCtx interface{}
 	if len(rec.Steps) > 0 {
-		steps = []byte(rec.Steps)
+		steps = rec.Steps
 	}
 	if len(rec.Context) > 0 {
-		execCtx = []byte(rec.Context)
+		execCtx = rec.Context
 	}
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO error_playbook_executions
 			(entry_id, error_type, match_pattern, trigger_source, context, status, steps, error_message, duration_ms, executed_by)
-		VALUES (NULLIF($1,0)::bigint, $2, NULLIF($3,''), $4, $5::jsonb, $6, $7::jsonb, NULLIF($8,''), $9, $10)
+		VALUES (NULLIF($1,0)::bigint, $2, NULLIF($3,''), $4, $5::text::jsonb, $6, $7::text::jsonb, NULLIF($8,''), $9, $10)
 		RETURNING id, created_at`,
 		rec.EntryID, rec.ErrorType, rec.MatchPattern, rec.TriggerSource, execCtx,
 		rec.Status, steps, rec.ErrorMessage, rec.DurationMS, rec.ExecutedBy,
@@ -481,11 +484,11 @@ func (s *SQLStore) UpdatePlanFromRefinement(ctx context.Context, entryID int64, 
 	var errorType string
 	err = s.db.QueryRowContext(ctx, `
 		UPDATE error_playbook_entries SET
-			title = COALESCE(NULLIF($2,'')::text, title), root_cause = $3, plan_kind = $4, plan_payload = $5::jsonb,
+			title = COALESCE(NULLIF($2,'')::text, title), root_cause = $3, plan_kind = $4, plan_payload = $5::text::jsonb,
 			confidence = $6, source = 'refinement', refinement_count = refinement_count + 1,
 			updated_at = NOW()
 		WHERE id = $1
-		RETURNING error_type`, entryID, title, rootCause, plan.Kind, payload, confidence,
+		RETURNING error_type`, entryID, title, rootCause, plan.Kind, string(payload), confidence,
 	).Scan(&errorType)
 	if err != nil {
 		return fmt.Errorf("update refinement failed: %w", err)
@@ -497,8 +500,8 @@ func (s *SQLStore) UpdatePlanFromRefinement(ctx context.Context, entryID int64, 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO error_playbook_executions
 			(entry_id, error_type, trigger_source, status, steps, executed_by)
-		VALUES ($1, $2, 'refinement', 'succeeded', $3::jsonb, 'error_playbook:refine')`,
-		entryID, errorType, []byte(`{"note":"plan refined after failed execution"}`))
+		VALUES ($1, $2, 'refinement', 'succeeded', $3::text::jsonb, 'error_playbook:refine')`,
+		entryID, errorType, `{"note":"plan refined after failed execution"}`)
 	if err != nil {
 		return fmt.Errorf("record refinement marker failed: %w", err)
 	}
