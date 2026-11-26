@@ -80,6 +80,35 @@ func (d noCandidateCause) retryable() bool { return false }
 // causeToken 是进错误信封旁键的机器可读值：多因按主因优先用 "+" 连接。
 func (d noCandidateCause) causeToken() string { return strings.Join(d.Causes, "+") }
 
+// detailCode 是这条归因在 **request_logs.failure_detail_code** 上的取值。
+//
+// ★ 为什么此前「看不到详情」（2026-11-26，211 事故复盘）：归因令牌此前只进了
+//   **响应体**（extras 的 cause 旁键）⇒ 落库路径拿不到它 ⇒
+//   mapGatewayErrorToDetail("no_candidate") 恒返回泛化码 "gw_no_candidate"
+//   ⇒ 库里 164 笔/24h（openai-responses 66 / openai-chat 55 / anthropic 43）
+//   的 no_candidate 行**全部**同码 ⇒ 运维既分不出「上游额度耗尽」与
+//   「供应商被停用」，也点不出「哪一个成因在拖后腿」。
+//
+// ★ 只取**主因**（Causes[0]）：明细码是**单值**列，运维要能「按成因分组 /
+//   精确过滤」⇒ 主因 = 命中 offer 数最多的那道闸（provider 侧 rankedGates 的
+//   排序口径：命中数降序 ⇒ 处理它能恢复最多 offer）⇒ 取值集合有界
+//   （provider.ClientCause* 那 5 个令牌）⇒ GROUP BY 有意义、WHERE 能命中。
+//   ★ 次因不丢：完整令牌（"a+b"）进服务端日志一行（见调用点）＋ 客户端响应体
+//   的 cause 字段。
+//
+// ★ 词表单一事实源：取值**不是新造的字符串**，就是 provider.ClientCause* 这组
+//   **既有**令牌 ⇒ 与客户端响应体的 cause 字段同源 ⇒ 运维拿客户端报的 cause
+//   去库里比对，拿到的是同一套词。
+//
+// ★ 只覆盖 failure_detail_code ⇒ error_kind / request_status / 既有计数
+//   **零变化**（与限流闸的分型口径一致，见 FailureDetailOverride 的字段注释）。
+func (d noCandidateCause) detailCode() string {
+	if d.empty() {
+		return ""
+	}
+	return d.Causes[0]
+}
+
 // extras 是并入错误对象的旁键。**只在这笔确实有归因时才非空**——没有归因
 // 的空候选保持既有信封形状逐字节不变。
 func (d noCandidateCause) extras() map[string]any {

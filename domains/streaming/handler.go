@@ -4629,6 +4629,21 @@ func (h *ChatHandler) serveWithExecutor(
 			// 「没有可用的供应商」读起来是「等一会儿」，而真相是重试没用。
 			// 诊断失败或解释不了（闸全开）⇒ cause 为空 ⇒ 文案与信封逐字不变。
 			noCandCause := h.diagnoseNoCandidateCause(r.Context(), clientModel, tenantID)
+			// 2026-11-26（211 事故复盘·「看不到详情」）：把归因**带进请求日志的
+			// 明细码**。此前 cause 令牌只进了**响应体**（extras 的 cause 旁键）
+			// ⇒ 落库路径拿不到 ⇒ mapGatewayErrorToDetail("no_candidate") 恒返回
+			// 泛化码 "gw_no_candidate" ⇒ 库里所有 no_candidate 行同码 ⇒ 运维
+			// 既分不出「上游额度耗尽」与「供应商被停用」，也点不出主因。
+			// ★ 覆盖值由 noCandidateCause.detailCode() 产出（provider.ClientCause*
+			//   **既有**令牌）⇒ 只覆盖 failure_detail_code ⇒ error_kind /
+			//   request_status / 既有计数**零变化**（与限流闸分型同一口径）。
+			// ★ 完整令牌（含次因）在这里落一行服务端日志，不丢信息。
+			if detailCode := noCandCause.detailCode(); detailCode != "" {
+				logCtx.SetFailureDetailOverride(detailCode)
+				slog.Info("no_candidate cause attributed", "request_id", requestID,
+					"model", clientModel, "detail_code", detailCode,
+					"cause", noCandCause.causeToken())
+			}
 			// 2026-11-23：根据归因令牌返回对应的状态码（404/403/429/503），
 			// 请求日志里记录的状态码应与实际返回给客户端的一致。
 			logCtx.failAndMark("no_candidate",
@@ -8739,6 +8754,19 @@ func buildRequestPreview(body map[string]any) string {
 
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
+	h.recordFailedRequestWithDetail(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, "", latencyMs, requestBody, keyInfo, r)
+}
+
+// recordFailedRequestWithDetail 与 recordFailedRequestWithKey 同一出口，但额外
+// 允许调用方钉住 failure_detail_code（**只**覆盖明细码 ⇒ error_kind /
+// request_status / 既有计数零变化，见 FailureDetailOverride 的字段注释）。
+//
+// ★ 为什么需要这一条（2026-11-26）：/v1/messages 与 /v1/responses 两个协议面
+//   的零候选出口走的是 recordFailedRequestWithKey（自建 RequestLogContext），
+//   **拿不到** chat 面那条 logCtx ⇒ 归因令牌在那两个面上同样进不了落库路径
+//   ⇒ 库里 24h 内 anthropic-messages 43 笔 + openai-responses 66 笔的
+//   no_candidate 行也全是泛化码 gw_no_candidate。
+func (h *ChatHandler) recordFailedRequestWithDetail(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage, detailCode string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
 	markRequestJourneyFailure(r, keyInfo, errCode)
 	ctx := &RequestLogContext{
 		handler:       h,
@@ -8749,6 +8777,9 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 		Body:          requestBody,
 		ClientModel:   clientModel,
 		OutboundModel: outboundModel,
+	}
+	if detailCode != "" {
+		ctx.SetFailureDetailOverride(detailCode)
 	}
 	if r != nil {
 		if session := session.SessionFromContext(r.Context()); session != nil {
