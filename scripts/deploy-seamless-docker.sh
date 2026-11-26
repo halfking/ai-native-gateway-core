@@ -3436,6 +3436,19 @@ if [[ "${DD_REQUIRE_REQUEST_METRICS:-0}" == "1" ]]; then
   fi
 fi
 
+dd_admin_login_body() {
+  local user="${DD_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
+  local pass="${DD_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-}}"
+  [[ -n "$pass" ]] || return 1
+  printf '%s\n%s' "$user" "$pass" | python3 -c 'import json,sys; u,p=sys.stdin.read().split("\n",1); print(json.dumps({"username":u,"password":p}))'
+}
+
+if [[ "$DD_TARGET" == "211" ]]; then
+  if ! dd_admin_login_body | python3 "$DD_REPO_ROOT/scripts/ops/check-reconciliation-v2.py" "$DD_CANDIDATE_PORT"; then
+    dd_fail "候选槽 V2 日对账验收失败"
+  fi
+fi
+
 # 版本戳与前端：部署成功后必须能读到本次构建痕迹（有 DD_BUILD_SHA 时）
 if ver_body="$(curl -fsS "http://127.0.0.1:${DD_CANDIDATE_PORT}/version" 2>/dev/null || true)"; then
   log "version: $(printf '%s' "$ver_body" | python3 -c 'import sys,json
@@ -3713,7 +3726,7 @@ dd_smoke_admin_login() {
   # ★ 响应体落在【私有】临时文件（★ /tmp 下的固定名文件是全局可读的 ⇒ 里面装着 access_token）。
   resp="$(mktemp "${TMPDIR:-/tmp}/dd-login.XXXXXX.json")"
   # ★ 请求体走 stdin：★ 口令既不进 python 的 argv，也不进 curl 的 argv。
-  body="$(printf '%s\n%s' "$user" "$pass" | python3 -c 'import json,sys; u,p=sys.stdin.read().split("\n",1); print(json.dumps({"username":u,"password":p}))')"
+  body="$(dd_admin_login_body)"
   code="$(printf '%s' "$body" | curl -sS -o "$resp" -w '%{http_code}' -X POST "$url" \
     -H 'Content-Type: application/json' --data-binary @- || echo 000)"
   if [[ "$code" != "200" ]]; then

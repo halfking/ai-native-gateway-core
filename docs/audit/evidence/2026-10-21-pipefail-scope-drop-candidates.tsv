@@ -101,8 +101,8 @@ scripts/checks/install-entrypoints-test.sh	33	absent	var-write	judgment	unknown	
 scripts/configure-journald.sh	316	do_verify	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then
 scripts/deploy-local-lib.sh	1247	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
 scripts/deploy-local-lib.sh	1250	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
-scripts/deploy-seamless-docker.sh	3445	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
-scripts/deploy-seamless-docker.sh	3446	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
+scripts/deploy-seamless-docker.sh	3458	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
+scripts/deploy-seamless-docker.sh	3459	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
 scripts/deploy-seamless-goacos_test.sh	335	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s\n' "$forwarded" | grep -qx "$v" \
 scripts/deploy-seamless-goacos_test.sh	343	gate_body	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$forwarded" | grep -qx "$v"; then
 scripts/deploy-seamless-goacos_test.sh	346	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s' "$register_block" | grep -q "${v}:-" \
