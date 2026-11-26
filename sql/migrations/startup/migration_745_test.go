@@ -60,7 +60,22 @@ func TestMigration745ReportSnapshotsContract(t *testing.T) {
 	}
 	lastPos := -1
 	for _, required := range channelEntries {
-		pos := strings.Index(seqBody, required)
+		// ★ 2026-11-26 审计轮判据订正：★ 判据要问的是【**通道登记**的先后】——
+		//   ★ 门自己的 C1 标题写的就是 "revision-sequence channel registration (745 + 800, ordered)"
+		//   ★ ⇒ ⇒ 锚点必须取 files=() 里的**登记条目原文**，而不是【全文件里第一次出现的裸文件名】★★。
+		//
+		// ★ 为什么必须订正（★ 实测证据，不是推测 ★）：
+		//   原写法用 strings.Index(全文件, 裸文件名) ⇒ ★ 而文件正文里有一段**注释**
+		//   （★ 2026-11-26 12h 审计轮那段讲「同键文件重复登记」的说明 ★）在第 313 行
+		//   就提到了 800_provider_endpoint_protocols.sql ⇒ ★★ 于是**数组里的真实顺序**
+		//   （★ 745 在 1232 行、★ 800 在 1282 行 ⇒ **本来就是对的** ★）被完全遮蔽
+		//   ⇒ ★★ 门报「800 appears out of sequence」是**假红**（★ 数组顺序没有任何问题 ★★）。
+		//
+		// ★★ 方向性安全（★ 判据没有变松 ★★）：★ 改后判据**只认登记条目** ⇒
+		//   若数组里真把 800 排到 745 之前 ⇒ 门照样红（★ 已做变异自证：★ 临时对调两条登记、
+		//   ★ 门如期判红、★ 随即还原 ★★）⇒ ⇒ 这不是「让门变绿」的放松，是让门问对问题。
+		entry := `"$ROOT_DIR/sql/migrations/startup/` + required + `"`
+		pos := strings.Index(seqBody, entry)
 		if pos < 0 {
 			t.Fatalf("apply-db-revision-sequence.sh does not carry migration %s — upgrade-database deployments would never apply it", required)
 		}
