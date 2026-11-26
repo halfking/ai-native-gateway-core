@@ -8,6 +8,10 @@
 -- 锁守卫（installer 门 startup_ddl_lock_guard_gate_test.go：版本 > 870 且含强锁 DDL
 --   ⇒ 必须自带 lock_timeout）：本件含 ALTER TABLE ＋ CREATE INDEX ⇒ 声明
 --   5s lock_timeout / 10min statement_timeout（同 999a/999d 口径）。
+-- ★ 实测（2026-11-27 部署轮，PG17.10 本机一次性容器 kx-citus-pg17:13.3.0）：★
+--   首跑墙钟 0.055s、幂等重放 0.056s（全部 DDL 建在【本文件刚 CREATE 的新表】
+--   billing_retry_queue 上 ⇒ 无存量可扫）
+--   ⇒ 与 10min 预算差五个数量级，无 914 型「拍小了中止部署」风险。
 SET lock_timeout = '5s';
 SET statement_timeout = '10min';
 

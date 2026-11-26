@@ -8,6 +8,10 @@
 -- 锁守卫（installer 门 startup_ddl_lock_guard_gate_test.go：版本 > 870 且含强锁 DDL
 --   ⇒ 必须自带 lock_timeout）：本件含 ALTER TABLE ＋ CREATE INDEX ⇒ 声明
 --   5s lock_timeout / 10min statement_timeout（同 999a/999d 口径）。
+-- ★ 实测（2026-11-27 部署轮，PG17.10 本机一次性容器 kx-citus-pg17:13.3.0）：★
+--   maas_monthly_bills 前置基底建好后首跑墙钟 0.063s、幂等重放 0.060s
+--   （账单表每租户每月一行、量级极小；三个非并发部分索引建在空表/近空表上）
+--   ⇒ 与 10min 预算差五个数量级，无 914 型「拍小了中止部署」风险。
 SET lock_timeout = '5s';
 SET statement_timeout = '10min';
 
