@@ -30,35 +30,36 @@ func (h *Handler) handleMySessions(w http.ResponseWriter, r *http.Request) {
 	tenantID := GetTenantID(r)         // 当前用户的租户
 
 	// 3. 构造查询
+	// 2026-11-26 E2E 轮订正：改用 sessions 分区表真 schema（生产实测）——
+	//   · session_summaries 没有 deleted_at 列（42703，部署后首条 E2E 即暴露），
+	//     软删除语义由 session_status CHECK（active/completed/abandoned）承担；
+	//   · owner_user 落在 sessions 表本体（不是 session_dimensions——该表不存在）；
+	//   · 会话标题列是 topic（title 在 summaries 表）。
 	query := `
-		SELECT 
-			ss.session_key,
-			ss.tenant_id,
-			COALESCE(ss.title, '') as title,
-			ss.created_at,
-			ss.updated_at,
-			ss.request_count,
-			ss.total_cost_usd
-		FROM session_summaries ss
-		WHERE ss.tenant_id = $1
-		  AND ss.deleted_at IS NULL`
+		SELECT
+			s.session_id,
+			s.tenant_id,
+			COALESCE(s.topic, '') as title,
+			s.created_at,
+			s.updated_at,
+			s.total_turns,
+			s.total_cost_usd
+		FROM sessions s
+		WHERE s.tenant_id = $1
+		  AND s.agent_role = 'main'`
 
 	args := []interface{}{tenantID}
 
 	// 4. 用户级过滤
 	if userID != 0 {
-		// 普通用户只看自己的会话
-		query += ` AND EXISTS (
-			SELECT 1 FROM session_dimensions sd 
-			WHERE sd.session_key = ss.session_key 
-			AND sd.owner_user = $2
-		)`
+		// 普通用户只看自己的会话（owner_user 记录的是用户名）
+		query += ` AND s.owner_user = $2`
 		args = append(args, GetAuthContext(r).Username)
 	}
 
 	// 5. 排序和限制
 	query += `
-		ORDER BY ss.updated_at DESC
+		ORDER BY s.updated_at DESC
 		LIMIT 50`
 
 	// 6. 执行查询
@@ -136,28 +137,27 @@ func (h *Handler) handleMyUsage(w http.ResponseWriter, r *http.Request) {
 	auth := GetAuthContext(r)
 
 	// 3. 构造查询
+	// 2026-11-26 E2E 轮订正（生产实测绘得真列名）：request_metrics 的
+	//   时间列是 occurred_at（不是 ts）、成本列是 cost_amount+cost_currency
+	//   （不是 cost_usd）、归属列是 owner_user（表本体，不是关联查询）。
+	//   owner_user 空值率高（历史行未回填）⇒ 用户过滤天然只命中自己的行。
 	query := `
-		SELECT 
+		SELECT
 			COUNT(*) as request_count,
-			COALESCE(SUM(cost_usd), 0) as total_cost,
+			COALESCE(SUM(cost_amount), 0) as total_cost,
 			COALESCE(SUM(prompt_tokens), 0) as total_prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) as total_completion_tokens
-		FROM request_logs_with_current_month
+		FROM request_metrics
 		WHERE tenant_id = $1
-		  AND ts >= NOW() - INTERVAL '30 days'`
+		  AND cost_currency = 'USD'
+		  AND occurred_at >= NOW() - INTERVAL '30 days'`
 
 	args := []interface{}{tenantID}
 
 	// 4. 用户级过滤
 	if userID != 0 {
-		// 普通用户只看自己的用量
-		// 注意：request_logs 可能没有直接的 user_id，需要通过 session 关联
-		query += ` AND EXISTS (
-			SELECT 1 FROM sessions s
-			JOIN session_dimensions sd ON s.session_key = sd.session_key
-			WHERE s.session_key = request_logs_with_current_month.session_key
-			AND sd.owner_user = $2
-		)`
+		// 普通用户只看自己的用量：request_metrics.owner_user 记录用户名
+		query += ` AND owner_user = $2`
 		args = append(args, auth.Username)
 	}
 
