@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>周审计 R2 总结 · 2026-11-26</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:#f5f7fa; color:#1f2937; padding:32px 20px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:26px; margin-bottom:6px; }
+  .sub { color:#6b7280; font-size:14px; margin-bottom:28px; }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:28px; }
+  .card { background:#fff; border-radius:12px; padding:18px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .card .n { font-size:30px; font-weight:700; }
+  .card .t { font-size:13px; color:#6b7280; margin-top:4px; }
+  .green .n{color:#059669}.blue .n{color:#2563eb}.amber .n{color:#d97706}.gray .n{color:#6b7280}
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:28px; }
+  .panel { background:#fff; border-radius:12px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .panel h2 { font-size:16px; margin-bottom:14px; border-left:4px solid #2563eb; padding-left:10px; }
+  .bar-item { margin-bottom:10px; }
+  .bar-label { display:flex; justify-content:space-between; font-size:13px; margin-bottom:3px; }
+  .bar-track { background:#e5e7eb; border-radius:6px; height:18px; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:6px; display:flex; align-items:center; justify-content:flex-end; padding-right:6px; color:#fff; font-size:11px; font-weight:600; min-width:28px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:8px 10px; background:#f3f4f6; border-bottom:2px solid #e5e7eb; font-size:12px; color:#4b5563; }
+  td { padding:8px 10px; border-bottom:1px solid #f3f4f6; vertical-align:top; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .tag.ok { background:#d1fae5; color:#065f46; }
+  .tag.warn { background:#fef3c7; color:#92400e; }
+  .tag.skip { background:#e5e7eb; color:#4b5563; }
+  .tag.err { background:#fee2e2; color:#991b1b; }
+  .concl { background:#fff; border-radius:12px; padding:22px; box-shadow:0 1px 3px rgba(0,0,0,.06); margin-bottom:28px; }
+  .concl h2 { font-size:16px; margin-bottom:12px; border-left:4px solid #059669; padding-left:10px; }
+  .concl li { margin:6px 0 6px 18px; font-size:14px; line-height:1.6; }
+  code { background:#f3f4f6; padding:1px 6px; border-radius:4px; font-size:12px; }
+  @media(max-width:760px){ .cards{grid-template-columns:repeat(2,1fr)} .row{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>周审计 R2 总结 — 修正任务审计与完善</h1>
+  <div class="sub">审计窗口 2026-11-20 ~ 11-26 ｜ 本轮执行 22:32–23:0x ｜ 主 checkout @ <code>a6feb506a3</code>（双远端已推）</div>
+
+  <div class="cards">
+    <div class="card green"><div class="n">4</div><div class="t">远端/本地分支删除<br>（1 个合并后删）</div></div>
+    <div class="card blue"><div class="n">2</div><div class="t">worktree 清理<br>（+1 自身临时）</div></div>
+    <div class="card amber"><div class="n">3</div><div class="t">本轮推送提交<br>（双远端）</div></div>
+    <div class="card gray"><div class="n">4</div><div class="t">遗留风险登记<br>（owner 决策）</div></div>
+  </div>
+
+  <div class="row">
+    <div class="panel">
+      <h2>本周提交分布（981 笔，no-merges）</h2>
+      <div class="bar-item"><div class="bar-label"><span>docs</span><span>433</span></div><div class="bar-track"><div class="bar-fill" style="width:100%;background:#3b82f6">44%</div></div></div>
+      <div class="bar-item"><div class="bar-label"><span>fix</span><span>327</span></div><div class="bar-track"><div class="bar-fill" style="width:75%;background:#059669">33%</div></div></div>
+      <div class="bar-item"><div class="bar-label"><span>feat</span><span>115</span></div><div class="bar-track"><div class="bar-fill" style="width:27%;background:#f59e0b">12%</div></div></div>
+      <div class="bar-item"><div class="bar-label"><span>test</span><span>61</span></div><div class="bar-track"><div class="bar-fill" style="width:14%;background:#8b5cf6">6%</div></div></div>
+      <div class="bar-item"><div class="bar-label"><span>chore/refactor/perf/其他</span><span>45</span></div><div class="bar-track"><div class="bar-fill" style="width:10%;background:#6b7280">5%</div></div></div>
+    </div>
+    <div class="panel">
+      <h2>本轮处置矩阵（审计动作）</h2>
+      <table>
+        <tr><th>对象</th><th>判定依据</th><th>处置</th></tr>
+        <tr><td><code>codex/s5-gateway-pricing</code></td><td>patch 与 main <code>40af488cc6</code> 逐字相同</td><td><span class="tag ok">删 ✓</span></td></tr>
+        <tr><td><code>feature/routing-v2-user-filter</code></td><td>ahead=0，cherry 全空</td><td><span class="tag ok">删 ✓</span></td></tr>
+        <tr><td><code>users-page-role-verify</code></td><td>444 行测试资产有独有价值</td><td><span class="tag ok">合并→删 ✓</span></td></tr>
+        <tr><td>worktree l1l5 / reqlogs</td><td>快照收口等价落地 / 零未提交</td><td><span class="tag ok">删 ✓</span></td></tr>
+        <tr><td>worktree gw-rm-fix</td><td>22:46 活跃 + main 缺失的真修</td><td><span class="tag skip">保留</span></td></tr>
+        <tr><td>worktree codex-reaudit</td><td>22:38 活跃，3 文件 staged</td><td><span class="tag skip">保留</span></td></tr>
+        <tr><td>分支 request-metrics-v2 等 2 个</td><td>&lt;1h 活跃（并行车道）</td><td><span class="tag skip">保留</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="panel">
+      <h2>前一份周报 5 条结论的复核</h2>
+      <table>
+        <tr><th>声称</th><th>复核</th></tr>
+        <tr><td>编译/测试通过</td><td><span class="tag ok">成立</span> build ✓ · admin ok 164.551s</td></tr>
+        <tr><td>statistics-v2 测试修复已 pick</td><td><span class="tag warn">半成立</span> 另有 1 笔 installer 修复仍在分支</td></tr>
+        <tr><td>s5-pricing 待评估</td><td><span class="tag err">已推翻</span> 内容早经 8b9ff1540b 入 main → 删</td></tr>
+        <tr><td>users-page-role-verify 待评估</td><td><span class="tag err">已过时</span> 本轮合并 4c03813758 → 删</td></tr>
+        <tr><td>routing-v2-filter 已合并</td><td><span class="tag ok">成立</span> → 删</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>门禁读数（本轮现跑）</h2>
+      <table>
+        <tr><th>门</th><th>结果</th></tr>
+        <tr><td><code>go build ./...</code></td><td><span class="tag ok">ok</span>（仅 vendor cgo 警告）</td></tr>
+        <tr><td><code>go test ./admin/</code></td><td><span class="tag ok">ok 164.551s</span></td></tr>
+        <tr><td><code>go test ./internal/schemadelivery/</code></td><td><span class="tag ok">ok 0.527s</span>（42 条登记与磁盘一致）</td></tr>
+        <tr><td><code>go test ./internal/sqlguard/ -run 055|996</code></td><td><span class="tag ok">ok 0.022s</span></td></tr>
+        <tr><td>go-5 快照门 <code>TestAdminRoutes</code></td><td><span class="tag ok">ok 14.215s</span>（重生成 790 行 + 口径头）</td></tr>
+        <tr><td>bash -n / py ast（maestro 资产）</td><td><span class="tag ok">通过</span></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="concl">
+    <h2>遗留风险（owner 决策 / 待并行车道）</h2>
+    <ul>
+      <li><b>R1</b>　<code>abc372a371</code>（installer 离线升级 scope 修复）仍在活跃分支 <code>211-statistics-v2-release</code>，未进 main —— 若该分支被丢弃此修复丢失。</li>
+      <li><b>R2</b>　gw-rm-fix 未提交的 SAVEPOINT 修复（turns 对拍腿 aborted 事务 ⇒ 面板 500）是 main 缺失的真缺陷修 —— 已登记 <code>docs/audit/2026-11-26-weekly-audit-r2-goals.md</code> §G2。</li>
+      <li><b>R3</b>　P0-3 文档引用的 <code>2552f8890</code> 不在 main（断链）—— 索引已加警告，以代码为准。</li>
+      <li><b>R4</b>　schema 投递缺口（492 渠道表 / 1000-1002 计费表）+ i18n 219 键翻译 + 两个活跃功能分支是否合并 —— 均在 <code>2026-11-26-待owner裁决清单.md</code>。</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
