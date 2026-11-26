@@ -308,13 +308,20 @@ func (h *Handler) handleSystemMonitorByModel(w http.ResponseWriter, r *http.Requ
 // （2026-10-20 实测：正是这么发现的 —— 那个不存在的 total_tokens 列让
 // 整条查询 42703，错误又被 `_ =` 吞掉，四个计数全部停在 0）。
 //
-// ⚠ 这里**没有** token 聚合：system_probe_runs 没有 token 列（见
-// handleSystemMonitorStats 里的详细说明）。
+// ★ 2026-11-26（存量缺口收口轮）把 token 聚合**加回来**：★ 当时删掉它的原因是
+//
+//	「system_probe_runs 没有 total_tokens 列」（真库实测结论，42703）⇒ 而创建这一列的
+//	346 那份件躺在 sql/migrations/domain/（**不被任何投递通道消费**）⇒ 列从来没到过库。
+//	⇒ 本轮随 999b_system_probe_run_tokens.sql 把这一列**投递进通道** ⇒ 列现在真的存在
+//	⇒ ⇒ 聚合加回来（★ 不加回来 = 列建了没人读 = 功能等于没修）。
+//	★ 口径边界（不变）：这里的 token 是**探针运行**口径（来自 result.Result.TotalTokens），
+//	不是请求口径（那是 usage_ledger / session_turns 的事）。
 const systemMonitorProbeRunCountersSQL = `
 		SELECT
 			COUNT(*) FILTER (WHERE status = 'success'),
 			COUNT(*) FILTER (WHERE status IN ('failed', 'timeout', 'network_error')),
-			COUNT(*) FILTER (WHERE status = 'skipped')
+			COUNT(*) FILTER (WHERE status = 'skipped'),
+			COALESCE(SUM(total_tokens), 0)
 		FROM system_probe_runs
 		WHERE created_at >= NOW() - INTERVAL '1 hour'
 `
@@ -359,12 +366,14 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 	// 错误连同四个计数一起吞了）。
 	//
 	// ⚠ total_tokens_1h 这个响应键**保留**（web-mobile 的 SystemMonitorStats
-	// 类型与 SystemMonitorView 都在读它）⇒ 值恒为 0，并在下面注明原因：
-	// 探针运行表**不记录 token**（它只记状态与时延），要统计探针消耗的 token
-	// 需要另接计量表（usage_ledger / session_turns）按 request 维度聚合 ——
-	// 那是另一个口径问题，不在本轮擅自改语义。
+	// 类型与 SystemMonitorView 都在读它）⇒ ★ 2026-11-26 起它**不再是硬编码 0**：
+	// 随 999b_system_probe_run_tokens.sql 把 total_tokens 列投递进通道 ⇒
+	// 聚合恢复（见上面 systemMonitorProbeRunCountersSQL 的说明）⇒ 值是真值。
+	// ★ 口径边界（不变）：探针运行口径的 token（result.Result.TotalTokens），
+	// 不是请求口径（usage_ledger / session_turns 的事）——两个口径不要混。
+	var totalTokens int64
 	statsErr := h.db.QueryRow(r.Context(), systemMonitorProbeRunCountersSQL).
-		Scan(&completed, &failed, &skipped)
+		Scan(&completed, &failed, &skipped, &totalTokens)
 	if statsErr != nil {
 		slog.Warn("system monitor: probe-run counters query failed; counters stay 0", "error", statsErr)
 	}
@@ -376,10 +385,8 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 		"completed_total_1h":  completed,
 		"failed_total_1h":     failed,
 		"skipped_total_1h":    skipped,
-		// system_probe_runs 不记 token（见上）⇒ 恒 0；键保留是因为
-		// web-mobile 的 SystemMonitorStats 类型与视图都在读它。
-		"total_tokens_1h": 0,
-		"snapshot_at":     time.Now().UTC(),
+		"total_tokens_1h":     totalTokens,
+		"snapshot_at":         time.Now().UTC(),
 	})
 }
 

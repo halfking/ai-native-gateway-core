@@ -1043,7 +1043,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8781/metrics
 
 1. **request_id**：每个协议面的响应都带 `X-Request-Id` 头，它贯穿所有诊断表，是跨表追踪的主键。
 2. **错误信封**：错误响应体形如 `{"error": {"code", "type", "message", "request_id", "kind"?, "gateway_debug"?}}`。`code` 是机器码（查 11.3 的表），`type` 是兼容类型名；**真实原因在 `kind`**——但 `kind` 与 `gateway_debug` **只在特定层出现，不是每个错误都有**。
-3. **落库归因**：`request_logs_with_current_month` 视图里的 `error_kind`（失败归因主码）、`failure_detail_code`（失败细分码）、`failure_stage`（卡在哪一步）。实测取值样例：`invalid_model` / `invalid_model` / `upstream`、`no_candidate` / `gw_no_candidate` / `gateway`、`transient` / `transient` / `upstream`。
+3. **落库归因**：`request_logs_with_current_month` 视图里的 `error_kind`（失败归因主码）、`failure_detail_code`（失败细分码）、`failure_stage`（卡在哪一步）。实测取值样例：`invalid_model` / `invalid_model` / `upstream`、`no_candidate` / `upstream_quota_exhausted` / `gateway`、`transient` / `transient` / `upstream`。★ `no_candidate` 的细分码自 2026-11-26 起**带真实成因**（`upstream_quota_exhausted` 上游额度耗尽、`provider_disabled` 供应商或凭据被停用、`credential_missing` 凭据记录缺失、`provider_not_in_tenant` 供应商属于其它租户、`model_not_registered` 模型未登记；多因时取**主因**＝命中候选最多的那道闸）；**归因解释不了时**仍是泛化码 `gw_no_candidate`。
 
 **错误信封各层的字段对照**（2026-11-17 真实网关实测）：
 

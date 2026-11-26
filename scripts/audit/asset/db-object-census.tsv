@@ -1,9 +1,9 @@
 # db-object-census.tsv —— ★ 三环境【真实对象底账】（★ 只读采集）
 # ★ 生成器：scripts/audit/db-object-census.py collect | bundle
 # ★ 列：env	kind	schema	relkind	name	owner	ispartition	partition_bound	parent_table	reltuples	table_size	total_size	definition	flags	parent_index
-# ★ bundled_at=2026-11-25T14:11:03+00:00
+# ★ bundled_at=2026-11-26T05:03:00+00:00
 # ★ env=local rows=3257 sha256=559365e9e5901efec87e929de2efaa4a02b84a129399f0abe6da83e5152f5764 collected_at=2026-11-24T08:31:58+00:00
-# ★ env=fresh rows=2876 sha256=13bead0228173b994f7a2a0898251554087b7e1ec036ac8052092cd38c2614ee collected_at=2026-11-25T14:11:02+00:00
+# ★ env=fresh rows=2879 sha256=6bb0a871a3d8937d633c3d72eb87fe71a6edfb616cd765fc37743483f53ed532 collected_at=2026-11-26T05:01:33+00:00
 # ★ env=252 rows=4100 sha256=994d74cd168c2f19b914a86b71baca3ded4bcfdc804b01646d0551f38a8f0430 collected_at=2026-11-24T08:31:36+00:00
 # ★ env=211 rows=3832 sha256=1f53201fd6928b0bf6dad190420876401d8c669b73e64f84d4b5406c7ac764a5 collected_at=2026-11-24T08:30:20+00:00
 # ★ total_rows=14065 envs=local,fresh,252,211
@@ -4743,6 +4743,7 @@ fresh	idx	public	i	idx_license_holders_email_lower	llm_gateway			license_holders
 fresh	idx	public	i	idx_license_trial_consents_accepted_at	llm_gateway			license_trial_consents		8192	8192	CREATE INDEX idx_license_trial_consents_accepted_at ON public.license_trial_consents USING btree (accepted_at DESC)	true,true,true		accepted_at DESC	
 fresh	idx	public	i	idx_licenses_expires	llm_gateway			licenses		8192	8192	CREATE INDEX idx_licenses_expires ON public.licenses USING btree (expires_at) WHERE (expires_at IS NOT NULL)	true,true,true		expires_at	(expires_at IS NOT NULL)
 fresh	idx	public	i	idx_licenses_holder	llm_gateway			licenses		8192	8192	CREATE INDEX idx_licenses_holder ON public.licenses USING btree (holder_id) WHERE (holder_id IS NOT NULL)	true,true,true		holder_id	(holder_id IS NOT NULL)
+fresh	idx	public	i	idx_licenses_tenant_created	llm_gateway			licenses		8192	8192	CREATE INDEX idx_licenses_tenant_created ON public.licenses USING btree (tenant_id, created_at DESC)	true,true,true		tenant_id,created_at DESC	
 fresh	idx	public	i	idx_llm_engines_tenant	llm_gateway			prompt_injection_llm_engines		8192	8192	CREATE INDEX idx_llm_engines_tenant ON public.prompt_injection_llm_engines USING btree (tenant_id, enabled, priority DESC)	true,true,true		tenant_id,enabled,priority DESC	
 fresh	idx	public	i	idx_llm_hourly_stats_hour	llm_gateway			llm_hourly_stats		16384	16384	CREATE INDEX idx_llm_hourly_stats_hour ON public.llm_hourly_stats USING btree (hour DESC)	true,true,true		hour DESC	
 fresh	idx	public	i	idx_lm_license	llm_gateway			license_modules		8192	8192	CREATE INDEX idx_lm_license ON public.license_modules USING btree (license_id)	true,true,true		license_id	
@@ -4946,6 +4947,7 @@ fresh	idx	public	i	idx_reconciliation_links_parent	llm_gateway			request_reconci
 fresh	idx	public	i	idx_reconciliation_links_registered	llm_gateway			request_reconciliation_links		8192	8192	CREATE INDEX idx_reconciliation_links_registered ON public.request_reconciliation_links USING btree (registered_at)	true,true,true		registered_at	
 fresh	idx	public	i	idx_releases_channel	llm_gateway			releases		8192	8192	CREATE INDEX idx_releases_channel ON public.releases USING btree (channel, build_seq DESC)	true,true,true		channel,build_seq DESC	
 fresh	idx	public	i	idx_releases_published	llm_gateway			releases		8192	8192	CREATE INDEX idx_releases_published ON public.releases USING btree (published_at DESC) WHERE (published_at IS NOT NULL)	true,true,true		published_at DESC	(published_at IS NOT NULL)
+fresh	idx	public	i	idx_releases_tenant_published	llm_gateway			releases		8192	8192	CREATE INDEX idx_releases_tenant_published ON public.releases USING btree (tenant_id, published_at, build_seq DESC)	true,true,true		tenant_id,published_at,build_seq DESC	
 fresh	idx	public	i	idx_report_snapshots_api_key_date	llm_gateway			report_snapshots		8192	8192	CREATE INDEX idx_report_snapshots_api_key_date ON public.report_snapshots USING btree (api_key_id, report_date DESC) WHERE (scope = ANY (ARRAY['daily_grain'::text, 'internal_grain'::text]))	true,true,true		api_key_id,report_date DESC	(scope = ANY (ARRAY['daily_grain'::text, 'internal_grain'::text]))
 fresh	idx	public	i	idx_report_snapshots_credential_date	llm_gateway			report_snapshots		8192	8192	CREATE INDEX idx_report_snapshots_credential_date ON public.report_snapshots USING btree (credential_id, report_date DESC) WHERE (scope = ANY (ARRAY['daily_grain'::text, 'internal_grain'::text]))	true,true,true		credential_id,report_date DESC	(scope = ANY (ARRAY['daily_grain'::text, 'internal_grain'::text]))
 fresh	idx	public	i	idx_report_snapshots_grain_date	llm_gateway			report_snapshots		8192	8192	CREATE INDEX idx_report_snapshots_grain_date ON public.report_snapshots USING btree (report_date) WHERE (scope = 'daily_grain'::text)	true,true,true		report_date	(scope = 'daily_grain'::text)
@@ -6004,6 +6006,7 @@ fresh	idx	public	i	tool_usage_stats_hot_created_at_idx	llm_gateway			tool_usage_
 fresh	idx	public	i	tool_usage_stats_hot_date_idx	llm_gateway			tool_usage_stats_hot		8192	8192	CREATE INDEX tool_usage_stats_hot_date_idx ON public.tool_usage_stats_hot USING btree (usage_date DESC)	true,true,true		usage_date DESC	
 fresh	idx	public	i	tool_usage_stats_hot_tenant_date_idx	llm_gateway			tool_usage_stats_hot		8192	8192	CREATE INDEX tool_usage_stats_hot_tenant_date_idx ON public.tool_usage_stats_hot USING btree (tenant_id, usage_date DESC)	true,true,true		tenant_id,usage_date DESC	
 fresh	idx	public	i	tool_usage_stats_hot_tool_date_idx	llm_gateway			tool_usage_stats_hot		8192	8192	CREATE INDEX tool_usage_stats_hot_tool_date_idx ON public.tool_usage_stats_hot USING btree (tool_id, usage_date DESC)	true,true,true		tool_id,usage_date DESC	
+fresh	idx	public	i	tool_usage_stats_hot_tool_name_date_key	llm_gateway			tool_usage_stats_hot		8192	8192	CREATE UNIQUE INDEX tool_usage_stats_hot_tool_name_date_key ON public.tool_usage_stats_hot USING btree (tool_name, date)	true,true,true		tool_name,date	
 fresh	idx	public	i	tool_usage_stats_hot_tool_tenant_date_key	llm_gateway			tool_usage_stats_hot		8192	8192	CREATE UNIQUE INDEX tool_usage_stats_hot_tool_tenant_date_key ON public.tool_usage_stats_hot USING btree (tool_id, tenant_id, usage_date)	true,true,true		tool_id,tenant_id,usage_date	
 fresh	idx	public	i	topup_packages_code_key	llm_gateway			topup_packages		16384	16384	CREATE UNIQUE INDEX topup_packages_code_key ON public.topup_packages USING btree (code)	true,true,true		code	
 fresh	idx	public	i	toxic_keywords_pkey	llm_gateway			toxic_keywords		8192	8192	CREATE UNIQUE INDEX toxic_keywords_pkey ON public.toxic_keywords USING btree (id)	true,true,true		id	

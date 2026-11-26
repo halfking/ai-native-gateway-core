@@ -44,13 +44,15 @@ url: ${BASE_URL}
       ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── ② 租户详情页（普通租户 acme）：建号对话框的角色下拉只有两档 ──────────
+#    ★ 必须带 ?tab=users：★ 租户详情页默认停在「概览」tab ⇒ 用户表里的
+#      「新增用户」/「变更角色」按钮根本不在可访问树里 ⇒ 不带参数必然红。
 #    （非 default 租户 ⇒ 不得出现「超级管理员」）
-- openLink: ${BASE_URL}/tenants/acme
+- openLink: ${BASE_URL}/tenants/acme?tab=users
 - extendedWaitUntil:
-    visible: "新增用户"
+    visible: ".*新增用户.*"
     timeout: 30000
 - tapOn:
-    text: "新增用户"
+    text: ".*新增用户.*"
 - extendedWaitUntil:
     visible:
       id: "tenant-create-user-role"
@@ -58,15 +60,17 @@ url: ${BASE_URL}
 - tapOn:
     id: "tenant-create-user-role"
 - extendedWaitUntil:
-    visible: "普通用户"
+    visible: ".*普通用户.*"
     timeout: 20000
-- assertVisible: "普通用户"
-- assertVisible: "租户管理员"
+- assertVisible: ".*普通用户.*"
+- assertVisible: ".*租户管理员.*"
 # ★ 页面本身没有「超级管理员」字样（acme 的账号都是租户管理员）⇒ 这条断言干净
-- assertNotVisible: "超级管理员"
+# ★ text: 是**全匹配正则** ⇒ 这里必须用 .*….* ⇒ 否则「超级管理员」四个字的节点
+#   永远匹配不上 ⇒ 断言恒真（假强门）
+- assertNotVisible: ".*超级管理员.*"
 
 # ── ③ 租户详情页（用户点名的 chenb）：用户行有「变更角色」入口 ─────────────
-- openLink: ${BASE_URL}/tenants/chenb
+- openLink: ${BASE_URL}/tenants/chenb?tab=users
 - extendedWaitUntil:
     visible:
       id: "tenant-user-change-role-btn"
@@ -82,7 +86,7 @@ url: ${BASE_URL}
 - tapOn:
     id: "tenant-user-role-select"
 - extendedWaitUntil:
-    visible: "普通用户"
+    visible: ".*普通用户.*"
     timeout: 20000
-- assertVisible: "普通用户"
-- assertVisible: "租户管理员"
+- assertVisible: ".*普通用户.*"
+- assertVisible: ".*租户管理员.*"

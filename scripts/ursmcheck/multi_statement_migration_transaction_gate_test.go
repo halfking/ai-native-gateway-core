@@ -174,6 +174,36 @@ func multiStmtReadLegacyTable(t *testing.T, root string) map[string]int {
 	return table
 }
 
+// multiStmtUnwrappedMessage —— ★★ 判据【文案】的唯一来源（★ 2026-11-26 审计轮收口复核轮新增 ★★）。
+//
+// ★★ **为什么要把文案拆成两支**：★ 原来这条文案对【基线存量】与【基线之后新增】两种情形
+// 印的是【同一句话】⇒ ★★ 那句话里写着「而它在【基线 pin】里就已存在」⇒ ★★
+// 对一个【基线之后新增】的迁移来说，★ 这半句是【假的】⇒ ★★
+// 读的人会照着文案去【登记豁免】⇒ ★★ 而登记豁免对新增迁移【一定不成立】
+// （★ 另一道门 `TestMultiStatementLegacyTableEntriesStayValid` 要求台账项【必须在基线 pin 里存在】★★）
+// ⇒ ★★ **正确修法是给它加事务包裹** ⇒ ⇒ ★ **文案必须分两支**。
+//
+// ★ ★ **判据本身（红/绿条件）一个字没动**：★ 本函数只负责【怎么措辞】，
+// ★ 【什么时候判红】仍由调用点的 `if _, ok := table[name]; !ok` 决定 ★★。
+func multiStmtUnwrappedMessage(name string, statements int, inBase bool, pin string) string {
+	if !inBase {
+		// ★ ★ 【基线之后新增】：★ 不能登记豁免、★ 只能加事务包裹 ★ ★
+		return fmt.Sprintf("★ 迁移 `%s` 是【多语句（★ %d 条 ★）且【未事务包裹】】⇒ ★★ "+
+			"★ 它【不在基线 pin `%s` 里】⇒ ★★ 它是【基线之后新增的】★★ "+
+			"★ ⇒ ★★ 【不能】靠往存量豁免台账里加一行来豁免（★ 那样会让另一道门 "+
+			"`TestMultiStatementLegacyTableEntriesStayValid` 判红：★ 台账项必须【在基线 pin 里存在】★ ★）★★ "+
+			"★ ⇒ ★★ 正确修法是【给它加事务包裹】（★ `BEGIN; … COMMIT;` ★）★★ "+
+			"★ ⇒ ★★ 若你确信它【本就不该是多语句】⇒ ★★ 请把它拆成单语句迁移 ★★",
+			name, statements, pin)
+	}
+	// ★ ★ 【基线存量】：★ 登记豁免 ★ ★
+	return fmt.Sprintf("★ 迁移 `%s` 是【多语句（★ %d 条 ★）且【未事务包裹】】⇒ ★★ 它既不在存量豁免台账里、★ "+
+		"★ 而它在【基线 pin `%s`】里就已存在 ⇒ ★★ 按判据它应当登记在台账里 ★★ "+
+		"★ ⇒ 请【重跑官方生成器】（★ `python3 scripts/audit/measure-multi-statement-migrations.py --out %s` ★）★★ "+
+		"★ —— ★★ 【注意】★ 新写的迁移**不能**靠往台账里加一行来豁免（★ 那是基线之后新增的 ⇒ 门会抓 ★★）★★",
+		name, statements, pin, multiStmtLegacyTSV)
+}
+
 // TestMultiStatementStartupMigrationsAreTransactionWrapped —— ★★ 承重断言：★★
 //
 // ★★ **投递面里每个【多语句且未事务包裹】的启动迁移 ⇒ 必须在存量豁免台账里 ★★。
@@ -212,11 +242,7 @@ func TestMultiStatementStartupMigrationsAreTransactionWrapped(t *testing.T) {
 			legacyExpected++
 		}
 		if _, ok := table[name]; !ok {
-			t.Errorf("★ 迁移 `%s` 是【多语句（★ %d 条 ★）且【未事务包裹】】⇒ ★★ 它既不在存量豁免台账里、★ "+
-				"★ 而它在【基线 pin `%s`】里就已存在 ⇒ ★★ 按判据它应当登记在台账里 ★★ "+
-				"★ ⇒ 请【重跑官方生成器】（★ `python3 scripts/audit/measure-multi-statement-migrations.py --out %s` ★）★★ "+
-				"★ —— ★★ 【注意】★ 新写的迁移**不能**靠往台账里加一行来豁免（★ 那是基线之后新增的 ⇒ 门会抓 ★★）★★",
-				name, facts.Statements, pin, multiStmtLegacyTSV)
+			t.Error(multiStmtUnwrappedMessage(name, facts.Statements, baseSet[name], pin))
 		}
 	}
 
@@ -308,6 +334,41 @@ func TestMultiStatementDetectorRecognisesSyntheticSamples(t *testing.T) {
 		t.Fatalf("★ 自证臂红：★ 只有 BEGIN 没有 COMMIT 的半截事务被认成已包裹")
 	}
 	_ = fmt.Sprintf
+}
+
+// TestMultiStatementUnwrappedMessageSplitsBaselineFromNew —— ★★ 自证臂（★ 文案面 ★★）：
+//
+// ★★ **文案必须按【这个迁移在不在基线 pin 里】分两支** ⇒ ★★
+// 否则读的人会被【假的那半句】带去登记豁免 ⇒ ★★ 而登记豁免对新增迁移【一定不成立】★★
+// ⇒ ★★ 正确修法是加事务包裹 ⇒ ⇒ ★ **分错支＝把人带错路** ★★。
+func TestMultiStatementUnwrappedMessageSplitsBaselineFromNew(t *testing.T) {
+	const pin = "e044a916"
+
+	// ★ ★ 【基线存量】：★ 文案必须说【它在基线 pin 里就已存在】＋【应当登记在台账里】＋【重跑生成器】★★
+	legacy := multiStmtUnwrappedMessage("900_legacy.sql", 3, true, pin)
+	for _, want := range []string{"基线 pin", "登记在台账里", "重跑官方生成器"} {
+		if !strings.Contains(legacy, want) {
+			t.Fatalf("★ 自证臂红：★ 基线存量分支文案缺少 %q（★ 实际文案：%s ★）", want, legacy)
+		}
+	}
+
+	// ★ ★ 【基线之后新增】：★ 文案必须说【它不在基线 pin 里】＋【基线之后新增】＋【不能】＋【加事务包裹】★★
+	fresh := multiStmtUnwrappedMessage("492_channels_customers.sql", 27, false, pin)
+	for _, want := range []string{"不在基线 pin", "基线之后新增", "不能", "事务包裹"} {
+		if !strings.Contains(fresh, want) {
+			t.Fatalf("★ 自证臂红：★ 新增分支文案缺少 %q（★ 实际文案：%s ★）", want, fresh)
+		}
+	}
+
+	// ★ ★ 反向不误伤：★ 新增分支【不得】再说「应当登记在台账里」⇒ ★★ 否则还是会把人带去登记豁免 ★★
+	if strings.Contains(fresh, "应当登记在台账里") {
+		t.Fatalf("★ 自证臂红：★ 新增分支文案里仍出现「应当登记在台账里」（★ 会把人带去登记豁免 ★）")
+	}
+
+	// ★ ★ 两支必须不同（★ 否则等于没分 ★）
+	if legacy == fresh {
+		t.Fatalf("★ 自证臂红：★ 两支文案完全相同 ⇒ 分支没生效")
+	}
 }
 
 // repoRootForMultiStmt 定位仓根（★ 本门在 `scripts/ursmcheck` 下 ★）。

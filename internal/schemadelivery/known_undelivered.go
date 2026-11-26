@@ -87,44 +87,23 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 		//   （v1 底表 public.request_logs 已被迁移 890 物理删除 ⇒ 运行时 42P01）⇒
 		//   ⇒ 该登记不再被任何引用命中 ⇒ 留着就是「登记了却不再命中」⇒ 门会判 Stale 而红。
 	},
-	"bg/systemmonitor/audit.go": {
-		"system_probe_runs": {
-			Since: "2026-11-26",
-			Reason: "存量缺口：探针运行审计的写侧 INSERT 仍写 total_tokens；定义它的 sql/migrations/domain/346_system_probe_run_tokens.sql " +
-				"不在两条通道里 ⇒ 由仓内投递建出来的库上每次审计写入都 42703（2026-11-26 空库实测），而写侧是 best-effort" +
-				"（bg/systemmonitor/monitor.go 的 writeAudit）⇒ 探针审计行静默丢失。读侧的同一列 2026-10-20 已因 42703 改掉" +
-				"（admin/systemmonitor_handlers.go 的注释记着当时真库的列）。出路：把 346 搬进投递通道并登记，或写侧不再写这一列。",
-			Cols: []string{"total_tokens"},
-		},
-	},
-	"domains/toolexecution/postgres_store.go": {
-		"tool_usage_stats": {
-			Since: "2026-11-26",
-			Reason: "存量缺口：本文件按 sql/migrations/domain/134_tool_execution.sql 的形状读写（tool_name／date／total_calls…），" +
-				"而投递出来的表是新装基线的形状（tool_id／usage_date／call_count…，sql/schema/01-schema.sql）；134 不在两条通道里" +
-				"⇒ 空库实测 42703（column \"tool_name\" does not exist）。出路：二选一——把 134 的列变更搬进投递通道并登记，" +
-				"或把本文件改回基线形状。",
-			Cols: []string{
-				"avg_duration_ms", "date", "failed_calls", "p50_duration_ms", "p95_duration_ms", "p99_duration_ms",
-				"success_calls", "timeout_calls", "tool_name", "top_users", "total_calls", "unique_sessions", "unique_users",
-			},
-		},
-	},
-	"tenantops/handler.go": {
-		"licenses": {
-			Since: "2026-11-26",
-			Reason: "存量缺口：加列件 sql/migrations/startup/up/389_tenant_ops_scope.sql 不在两条通道里，新装基线的 licenses 也没有 tenant_id" +
-				"⇒ 空库实测 42703；licenseStatus 已在 cmd/gateway/main.go 接线（GET /api/tenant/license/status）。" +
-				"出路：把 389 搬进投递通道并登记，或下线这条查询。",
-			Cols: []string{"tenant_id"},
-		},
-		"releases": {
-			Since: "2026-11-26",
-			Reason: "存量缺口：同上一条（389_tenant_ops_scope.sql 未投递，新装基线的 releases 没有 tenant_id）⇒ 空库实测 42703；" +
-				"updateCheck 已在 cmd/gateway/main.go 接线（GET /api/tenant/autoupdate/check）。出路同上。",
-			Cols: []string{"tenant_id"},
-		},
-	},
+	// ── 存量缺口三组（2026-11-26 存量缺口收口轮 · 第 31 轮已修 ⇒ 登记已删）──────
+	// ★ 历史（本轮之前的三条登记，★ 本轮修完 ⇒ 按「两头核账」的规则删掉登记）：
+	//   ① bg/systemmonitor/audit.go → system_probe_runs.total_tokens
+	//      （346 那份件躺在 sql/migrations/domain/ ⇒ 不被任何通道消费 ⇒ 列从没到过库）
+	//   ② domains/toolexecution/postgres_store.go → tool_usage_stats 的 13 列
+	//      （134 那份件不在任何通道里；仓内权威形状是 335/348 那套 tool_id 口径）
+	//   ③ tenantops/handler.go → licenses.tenant_id / releases.tenant_id
+	//      （389 那份件躺在 sql/migrations/startup/up/ ⇒ ★ 那个目录整体不被任何通道消费）
+	// ★ 本轮的修法（owner 2026-11-26 决定：都走投递迁移）：
+	//   ① → 999b_system_probe_run_tokens.sql（列 ＋ 读侧聚合同批恢复）
+	//   ② → 999c_tool_usage_stats_columns.sql（13 列 ＋ tool_id/tenant_id/usage_date 去 NOT NULL
+	//        ＋ hot 表 UNIQUE (tool_name, date)）
+	//   ③ → 999d_tenant_ops_scope.sql（两列 ＋ 两索引）
+	// ★ 三条都已进两条投递通道 ⇒ 「已投递对象」里就有这些列 ⇒ 门不再命中
+	//   ⇒ **按两头核账的规则删登记**（登记了却不再被命中＝失效登记，门会红）。
+	// ★ 保留这段历史注释，是为了让下一个读的人知道「这里曾经有过三条欠账、
+	//   怎么修的、为什么删」—— 免得同一个缺口再被当成新发现。
 }
 
 // knownEntry 查一处引用是否在台账里（精确到列）。

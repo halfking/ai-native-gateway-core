@@ -303,6 +303,10 @@
       <tr><td>154</td><td>生产</td><td>3177-b56206bc</td><td><b>53 笔</b></td><td>readyz 200</td></tr>
     </table>
     <ul>
+      <li><b>★ 最新一次重算（17:1x，相对 <code>origin/main@4fd4c53411</code>）</b>：
+          <b>211 落后 60 笔 / 245 落后 80 笔 / 154 落后 82 笔</b>（三台现役 SHA 仍未动）
+          ⇒ <b>同一台机器、同一个 SHA，落后数从 4 → 31 → 60</b>
+          ⇒ 再次印证「落后 N 笔是快照量」这条通用式。</li>
       <li><b>口径纠正</b>：⑥.2 记的是 4 / 24 / 26 笔，本轮同样是现跑却算出 31 / 51 / 53
           ⇒ <b>三台现役 SHA 一个字节没动</b>，<b>是「相对的那个尖端自己前进了」</b>
           （我方 §6 推 4 笔 ＋ 并行车道本轮内又推 4 笔：<code>4f5b0be72c</code> 级联语音端点 /
@@ -374,6 +378,52 @@
       <li><b>③「上线后会不会报错」可以在不部署的前提下坐实</b>：把
           「<b>清单面</b>（渠道点没点名）＋ <b>机制面</b>（判据代码怎么定义投递）＋ <b>真库面</b>（对象在不在）」
           三段拼起来，就得到一条<b>必然性</b>结论 ⇒ 比「部署后看报错」快一个数量级，且<b>零生产写</b>。</li>
+    <h3>⑦.7 本轮自主收口两件（★ 零生产语义、★ 纯门禁面与文档面 ★）</h3>
+    <ul>
+      <li><b>★ 量具面：★ 消除「多语句迁移」那道门的误导文案 ★</b>：
+          原来那条失败文案对【基线存量】与【基线之后新增】印的是<b>同一句话</b>，
+          而句子里写着「而它在<b>基线 pin</b> 里就已存在」⇒ 对<b>新增</b>迁移这半句是<b>假的</b>
+          ⇒ 读的人会照着去<b>登记豁免</b> ⇒ 而登记豁免对新增迁移<b>一定不成立</b>
+          （另一道门要求台账项必须在基线 pin 里存在）⇒ <b>正确修法是加事务包裹</b>。
+          <br>修法：失败文案抽成纯函数 <code>multiStmtUnwrappedMessage(name, statements, inBase, pin)</code>
+          ⇒ <b>两支</b>（基线存量 ⇒ 登记豁免；基线之后新增 ⇒ 明确「不能登记豁免、应加事务包裹」）；
+          <b>判据红/绿条件一个字没动</b>（读数仍是 244 / 244 / 244）。
+          <br><b>自证一</b>：新增自证臂断言两支各自的关键字、<b>反向断言</b>新增分支不得再出现
+          「应当登记在台账里」、并断言两支文案不相同。
+          <br><b>自证二（变异自证）</b>：临时造一个「多语句、未包裹、不在基线 pin」的迁移 ⇒
+          判据<b>当场判红</b>且文案落在新增分支 ⇒ 撤掉样本后<b>转绿</b>
+          ⇒ <b>分支接线确实生效</b>，不是只有纯函数正确。</li>
+      <li><b>★ 代并行车道收口：★ 中间件链行号钉的第二十七次重钉 ★</b>：
+          本轮全量 <code>ursmcheck</code> 红 2 条 ⇒ <code>git log --numstat</code> 实测
+          <code>4f5b0be72c</code>（并行车道 <code>feat(audio)</code>）对 <code>cmd/gateway/main.go</code> 是
+          <code>14 0</code>（<b>纯增 14 行</b>）⇒ 与三处锚点位移量<b>逐字一致</b> ⇒ 归因坐实。
+          <br>实测锚点：Recovery <b>9218</b>（原 9204）｜Auth <b>9234</b>（原 9220）｜
+          SecurityHeaders <b>9237</b>（原 9223）｜Logging 自陈注释块 <b>9220-9227</b>｜
+          maintain 自陈注释块 <b>9173-9178</b>。
+          <br>修法＝<b>三面同钉</b>（对拍表 ＋ 设计页 <b>四处</b>引用 ＋ 认证表 A1 两行）、
+          <b>只平移、窗口宽度不变</b>；另同步 <code>main.go</code> 自陈注释的数字（<b>只改数字、不增删行 ⇒ 零位移</b>）。
+          <br>admin 路由快照用<b>官方生成器</b>重生成：<b>777 → 778 条</b>，头里「数据行数=778」与实际逐字一致，
+          main.go 最大行 <b>9138 → 9152</b>。
+          <br>POST 面台账同样用官方生成器补进 1 条（<code>/v1/audio/converse</code>，裁决
+          <code>not-probed-unresolved</code>）⇒ 台账 778 行、门转绿。
+          <br><b>第三条同源红</b>（<code>cmd/gateway</code> 包内）：
+          <code>TestDataplaneGuardSurfaceParity</code> 判红「<code>/v1/audio/converse</code> 不在守卫分类台账」
+          ⇒ 按<b>同族先例</b>归类：读 <code>domains/streaming/audio_converse.go</code> 实测
+          <code>chatHandler</code> 与 <code>SetSanitizeGuard</code> <b>均零命中</b>（⇒ 不是 chatPipeline、也不是 mediaPaired）
+          且<b>有内容往返</b>（⇒ 不是 exempt）⇒ 唯一成立类是 <code>registeredGap</code>
+          ⇒ 与台账里<b>音频族既有四条同族同口径</b>（<b>套用既有口径，不是替上游做新的产品裁决</b>）。
+          <br><b>三处红同源</b>：① admin 路由快照 777 vs 778；② POST 面台账 777 vs 778；
+          ③ 守卫分类台账缺 <code>/v1/audio/converse</code>
+          ⇒ <b>同一条上游新特性 ⇒ 一次性冲刷三本与代码对拍的产物</b>
+          ⇒ <b>教训：上游新增一条路由，要同步的不止路由快照，还有 POST 面台账与守卫分类台账</b>。
+          <br><b>★ 撞号事实（本轮新增的一条协作事实）</b>：★ 我方与并行车道<b>对同一个锚点各自做了重钉</b>
+          —— 我方写 <b>[9218,9237]</b>（从 <code>Recovery</code> 起）、
+          并行车道写 <b>[9217,9237]</b>（把链体起点 <code>middleware.NewBuilder()</code> 那行也计入）
+          ⇒ 按 <b>L116「保留已推送方的编号、改自己的号」</b> ⇒ <b>最终取并行车道已推的 [9217,9237]</b>
+          ⇒ 合并后再实测一次（并上游 3 笔、<code>main.go</code> 又变了）：
+          <code>NewBuilder</code> <b>9217</b>、Recovery <b>9218</b>、Auth <b>9234</b>、
+          SecurityHeaders <b>9237</b> ⇒ 与已推口径<b>逐字一致</b> ⇒ <b>三面最终同口径</b>。</li>
+    </ul>
       <li><b>诚实边界</b>：本节<b>零生产写、零 schema 变更、零在役切换、零迁移字节变更、零部署</b>；
           三台只做只读探测；154 的登录口令走 <b>stdin、不进 argv、不落盘</b>；
           245 的 <code>disk-check.sh</code> 与两个 cron <b>未修改</b>；<b>492 未搬进任何投递通道</b>；
