@@ -31,22 +31,29 @@
 #      （这三个元素都**不带** title/aria-label ⇒ 不会被遮蔽、id: 命中得了）；
 #   ③ 视口必须 1440x1400（表格列多，窄视口会把右侧列横向吃掉）。
 #
-# 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
-# -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+# 登录：CDP 预置会话（2026-11-26 改写，根治 captcha 死锁）。
+# ★ runner 在 Maestro 启动后、第一次导航前用 CDP 注入会话（seed-session.mjs）
+#   ⇒ 完全不走 /api/auth/token ⇒ 不受 captcha 闸门约束。
 url: ${BASE_URL}
 ---
-# ── 0. 起点归零：若上一轮留下登录态，先退出 ──────────────────────────────
-- openLink: ${BASE_URL}/dashboard
-- tapOn:
-    text: "系统管理员"
+# ── 0. 起点：会话分流（CDP 预置会话 ⇄ 真实 UI 登录）────────────────────
+# ★ 判据：登录弹窗出不出现（与 flow 18 同款范式）。
+# ⓪ 先等「预置会话」落地（optional ⇒ 预置成功时提前结束；没预置时等满也不判红）：
+- extendedWaitUntil:
+    visible:
+      id: "app-user-menu-name"
+    timeout: 20000
     optional: true
-- tapOn:
-    text: "退出登录"
-    optional: true
+- openLink: ${BASE_URL}/?login=admin
 
-# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+# ── ① UI 登录（共享 flow；只在预置失败时走）─────────────────────────────
+# ★ `when` 语义：条件为假 ⇒ 整段 runFlow 记为 SKIPPED（不是 FAILED）
+#   ⇒ 预置会话下这一步被跳过，flow 仍然全绿。
 - runFlow:
     file: _shared/login.yaml
+    when:
+      visible:
+        id: "login-modal-title"
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
