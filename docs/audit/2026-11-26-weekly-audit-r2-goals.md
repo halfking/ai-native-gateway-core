@@ -63,6 +63,21 @@
 3. P0-3 文档引用的提交 `2552f8890` 不在 main —— 说明该文档描述的「实施」与 main 现状存在断链，读文档者须以代码为准。
 4. request-metrics-v2（74 笔）与 211-statistics-v2-release（2 笔）为活跃功能分支，是否合并属 owner 决策。
 
+## 五、子项目逐一审计（§G2 补遗，23:1x 执行）
+
+首轮循环只覆盖了 4 个仓，漏了 `salesdecorate`；client / cursor 只跑了 worktree list 未核 status 与陈旧分支。本轮补齐全量 5 仓（同一父目录下全部 GIT_REPO）：
+
+| 仓库 | worktree | 未提交变更 | 分支审计 | 处置 |
+|---|---|---|---|---|
+| **salesdecorate** | 仅自身（无额外） | **0**（干净） | 3 个陈旧本地分支 `audit/docs-round84/85/86`（最晚 11-20）：全部 ahead=0 且 `git cherry main` 为空 ⇒ 内容已在 main | **删 3 分支** |
+| **llm-gateway-client** | 仅自身 | **0**（干净） | 3 个陈旧 `audit/docs-round83/85/86`（最晚 11-19）：全部 ahead=0 且 cherry 空 | **删 3 分支** |
+| **llm-gateway-go-cursor** | 仅自身 | **0**（干净） | 本地 main 落后 origin/main **116 笔**、领先 0 | **FF 同步至 `9ef6dbd99a`**（与本轮推送尖端一致） |
+| llm-gateway-go-3 | +2（gw-rm-fix、codex-reaudit） | gw-rm-fix 1 文件（SAVEPOINT 修复，22:46 活跃）；reaudit 3 文件 staged（22:38 活跃） | 首轮已审 | 保留（活跃窗口内，§G2） |
+| llm-gateway-go-5 | 仅自身 | 0 | 首轮已审并处置 | 已收口（§一） |
+
+**补审计判据**：`git rev-list --count main..<branch>` = 0 且 `git cherry main <branch>` 输出为空 ⇒ 内容已在 main，分支可安全删（6 个删除全部满足两条判据）。
+**一轮补遗教训**：`ls` 枚举出了 5 个 GIT_REPO，审计循环只写了 4 个 ⇒ 「逐一检查」要以枚举清单为对拍表，循环结束必须核对清单覆盖率。
+
 ---
 
 **复核命令存档**：
