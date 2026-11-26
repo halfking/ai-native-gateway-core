@@ -92,6 +92,7 @@ var routeLedger = map[string]struct {
 	"audioSpeechHandler":              {classRegisteredGap, "TTS 文本入音频出，输入侧未挂＝登记另案"},
 	"audioMCPHandler":                 {classRegisteredGap, "音频 MCP 工具面，登记另案"},
 	"audioTransformHandler":           {classRegisteredGap, "音频 refine/analyze 面，登记另案"},
+	"audioConverseHandler":            {classRegisteredGap, "语音会话面（文本/音频入）：★ 不经 chat 管道、★ 也不成对 SetSanitizeGuard（★ 实测 domains/streaming/audio_converse.go 内 chatHandler / SetSanitizeGuard 均零命中 ★）⇒ ★ 输入侧未挂＝★ 与 §704 轮音频族四条同案、★ 登记另案（★ 2026-11-26 审计轮收口复核轮代上游按同族口径归类 ★）"},
 }
 
 // muxRoute 是一条从 main.go 注册面扫出的路由。
