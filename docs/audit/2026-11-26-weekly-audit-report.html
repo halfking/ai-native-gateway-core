@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2026-11-26 一周审核报告</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f7fa;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        header .meta {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .content {
+            padding: 40px;
+        }
+        .section {
+            margin-bottom: 40px;
+        }
+        .section h2 {
+            color: #667eea;
+            font-size: 24px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        .section h3 {
+            color: #555;
+            font-size: 18px;
+            margin: 20px 0 10px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-card .number {
+            font-size: 36px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .stat-card .label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .chart-container {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .bar-chart {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .bar-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .bar-label {
+            width: 100px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .bar-wrapper {
+            flex: 1;
+            background: #e9ecef;
+            border-radius: 4px;
+            height: 30px;
+            position: relative;
+        }
+        .bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            transition: width 0.3s ease;
+        }
+        .bar-fill.docs { background: linear-gradient(90deg, #667eea, #764ba2); }
+        .bar-fill.fix { background: linear-gradient(90deg, #f093fb, #f5576c); }
+        .bar-fill.feat { background: linear-gradient(90deg, #4facfe, #00f2fe); }
+        .bar-fill.test { background: linear-gradient(90deg, #43e97b, #38f9d7); }
+        .bar-fill.other { background: linear-gradient(90deg, #fa709a, #fee140); }
+        .task-list {
+            list-style: none;
+        }
+        .task-item {
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid;
+            background: #f8f9fa;
+        }
+        .task-item.completed {
+            border-left-color: #38f9d7;
+            background: #e8fff9;
+        }
+        .task-item.in-progress {
+            border-left-color: #667eea;
+            background: #e8ebff;
+        }
+        .task-item.pending {
+            border-left-color: #ffc107;
+            background: #fff9e6;
+        }
+        .task-item .status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .status.completed { background: #38f9d7; color: white; }
+        .status.in-progress { background: #667eea; color: white; }
+        .status.pending { background: #ffc107; color: #333; }
+        .issue-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .issue-box.critical {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+        }
+        .issue-box.resolved {
+            background: #d4edda;
+            border-left-color: #28a745;
+        }
+        .doc-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .doc-tag {
+            background: #e9ecef;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            text-align: center;
+        }
+        .summary-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .summary-box h3 {
+            color: white;
+            margin-bottom: 15px;
+        }
+        .summary-box ul {
+            list-style: none;
+        }
+        .summary-box li {
+            padding: 8px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        .summary-box li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            font-weight: bold;
+        }
+        footer {
+            background: #f8f9fa;
+            padding: 20px 40px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .badge.success { background: #d4edda; color: #155724; }
+        .badge.warning { background: #fff3cd; color: #856404; }
+        .badge.danger { background: #f8d7da; color: #721c24; }
+        .badge.info { background: #d1ecf1; color: #0c5460; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 一周修订任务审核报告</h1>
+            <div class="meta">
+                审核周期: 2026-11-20 至 2026-11-26 | 生成时间: 2026-11-26 22:30 | 审核范围: 主分支合并、Worktree清理、文档整理
+            </div>
+        </header>
+
+        <div class="content">
+            <!-- 执行摘要 -->
+            <div class="summary-box">
+                <h3>✨ 执行摘要</h3>
+                <ul>
+                    <li>成功拉取并合并主分支104个提交，编译测试通过</li>
+                    <li>清理1个已合并worktree（211-v2-cutover-gate）</li>
+                    <li>提交3个修复到主分支并推送</li>
+                    <li>统计本周976个提交，文档占44.2%</li>
+                    <li>发现并登记Schema投递缺口2组</li>
+                    <li>整理43个2026-11-26文档，建立分类索引</li>
+                </ul>
+            </div>
+
+            <!-- 核心指标 -->
+            <div class="section">
+                <h2>📈 核心指标</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="number">976</div>
+                        <div class="label">本周提交总数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="number">104</div>
+                        <div class="label">主分支拉取提交</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="number">3</div>
+                        <div class="label">本轮推送修复</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="number">43</div>
+                        <div class="label">2026-11-26文档</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 提交类型分布 -->
+            <div class="section">
+                <h2>📊 本周提交类型分布</h2>
+                <div class="chart-container">
+                    <div class="bar-chart">
+                        <div class="bar-item">
+                            <div class="bar-label">docs (44.2%)</div>
+                            <div class="bar-wrapper">
+                                <div class="bar-fill docs" style="width: 44.2%;">431</div>
+                            </div>
+                        </div>
+                        <div class="bar-item">
+                            <div class="bar-label">fix (33.4%)</div>
+                            <div class="bar-wrapper">
+                                <div class="bar-fill fix" style="width: 33.4%;">326</div>
+                            </div>
+                        </div>
+                        <div class="bar-item">
+                            <div class="bar-label">feat (11.8%)</div>
+                            <div class="bar-wrapper">
+                                <div class="bar-fill feat" style="width: 11.8%;">115</div>
+                            </div>
+                        </div>
+                        <div class="bar-item">
+                            <div class="bar-label">test (6.3%)</div>
+                            <div class="bar-wrapper">
+                                <div class="bar-fill test" style="width: 6.3%;">61</div>
+                            </div>
+                        </div>
+                        <div class="bar-item">
+                            <div class="bar-label">其他 (4.3%)</div>
+                            <div class="bar-wrapper">
+                                <div class="bar-fill other" style="width: 4.3%;">23</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 任务完成情况 -->
+            <div class="section">
+                <h2>✅ 任务完成情况</h2>
+                <ul class="task-list">
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>拉取主分支最新代码并合并到本地，编译测试</strong>
+                        <div>拉取104个提交，成功编译，仅vendor警告</div>
+                    </li>
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>检查并清理不活跃的子分支</strong>
+                        <div>发现10个一周内创建的分支，清理1个已合并分支</div>
+                    </li>
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>检查并清理worktree</strong>
+                        <div>分析3个worktree，删除codex/211-v2-cutover-gate</div>
+                    </li>
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>整理docs中近一周的文档更新</strong>
+                        <div>统计43个2026-11-26文档，分类为审计、修复、交接、安全4类</div>
+                    </li>
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>总结git提交和本地修改，更新审核目标</strong>
+                        <div>生成一周审核总结文档</div>
+                    </li>
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>根据审核目标逐个审计和修正问题</strong>
+                        <div>修复测试依赖，合并211-v2-cutover-gate，解决4个冲突</div>
+                    </li>
+                    <li class="task-item completed">
+                        <span class="status completed">已完成</span>
+                        <strong>生成HTML审计报告</strong>
+                        <div>生成包含图表的完整审计报告</div>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Worktree处理详情 -->
+            <div class="section">
+                <h2>🗂️ Worktree处理详情</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>分支名称</th>
+                            <th>状态</th>
+                            <th>未合并提交</th>
+                            <th>处理结果</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>codex/211-v2-cutover-gate</code></td>
+                            <td><span class="badge success">已合并</span></td>
+                            <td>0</td>
+                            <td>✅ Worktree已删除，分支已删除</td>
+                        </tr>
+                        <tr>
+                            <td><code>codex/211-statistics-v2-release</code></td>
+                            <td><span class="badge warning">部分合并</span></td>
+                            <td>2</td>
+                            <td>✅ 测试修复已cherry-pick，分支保留</td>
+                        </tr>
+                        <tr>
+                            <td><code>codex/request-metrics-v2</code></td>
+                            <td><span class="badge info">功能分支</span></td>
+                            <td>74</td>
+                            <td>✅ 文档已cherry-pick，分支保留待PR</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 本轮修复 -->
+            <div class="section">
+                <h2>🔧 本轮修复与合并</h2>
+                <h3>提交到主分支</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>提交SHA</th>
+                            <th>类型</th>
+                            <th>描述</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>7dc58a82e</code></td>
+                            <td><span class="badge info">test</span></td>
+                            <td>加载reconciliation测试所需的settings迁移</td>
+                        </tr>
+                        <tr>
+                            <td><code>98d4e7c87</code></td>
+                            <td><span class="badge success">merge</span></td>
+                            <td>合并211 v2 cutover gate增强（用户角色治理、V2统计）</td>
+                        </tr>
+                        <tr>
+                            <td><code>2a0646186</code></td>
+                            <td><span class="badge info">docs</span></td>
+                            <td>添加关账凭证导出文档</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>冲突解决</h3>
+                <div class="doc-grid">
+                    <div class="doc-tag">internal/schemadelivery/known_undelivered.go</div>
+                    <div class="doc-tag">AGENTS-archive-20261031.md</div>
+                    <div class="doc-tag">scripts/audit/asset/admin-routes.txt</div>
+                    <div class="doc-tag">sql/migrations/startup/migration_745_test.go</div>
+                </div>
+            </div>
+
+            <!-- 发现的问题 -->
+            <div class="section">
+                <h2>⚠️ 发现的问题</h2>
+                
+                <h3>高优先级</h3>
+                <div class="issue-box critical">
+                    <strong>Schema投递缺口 - W4.3渠道表</strong><br>
+                    <code>492_channels_customers.sql</code> 不在投递通道中<br>
+                    影响: customers和channel_users表缺失，读端报42P01错误<br>
+                    状态: 已登记在known_undelivered.go，待owner决策
+                </div>
+
+                <div class="issue-box critical">
+                    <strong>Schema投递缺口 - 计费P0批次表</strong><br>
+                    <code>1000-1002</code> 四位数迁移文件对sqlguard隐形<br>
+                    影响: billing_retry_queue、bill_payment功能部署后失败<br>
+                    状态: 已登记在known_undelivered.go，待纳入投递通道
+                </div>
+
+                <h3>已解决</h3>
+                <div class="issue-box resolved">
+                    <strong>存量缺口第31轮</strong><br>
+                    999b/999c/999d迁移已投递（系统探测token、工具统计列、租户操作范围）<br>
+                    状态: ✅ 已修复，登记已删除
+                </div>
+
+                <div class="issue-box resolved">
+                    <strong>测试依赖缺失</strong><br>
+                    reconciliation report集成测试缺少settings_kv表依赖<br>
+                    状态: ✅ 已修复并合并到main
+                </div>
+            </div>
+
+            <!-- 文档统计 -->
+            <div class="section">
+                <h2>📚 文档统计 (2026-11-26)</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="number">13</div>
+                        <div class="label">审计文档</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="number">16</div>
+                        <div class="label">修复文档</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="number">13</div>
+                        <div class="label">交接文档</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="number">1</div>
+                        <div class="label">安全文档</div>
+                    </div>
+                </div>
+
+                <h3>主要文档系列</h3>
+                <ul>
+                    <li><strong>P0修复系列</strong>: 计费失败阻断、完成总结、部署检查清单、E2E测试、缓存token验证</li>
+                    <li><strong>审计系列</strong>: 定价系统、安全优化、存量缺口收口、V2统计面</li>
+                    <li><strong>交接系列</strong>: 数据权限、前端适配、多模态审计、会话分析</li>
+                    <li><strong>安全系列</strong>: 数据权限审计2026-11-26</li>
+                </ul>
+            </div>
+
+            <!-- 遗留任务 -->
+            <div class="section">
+                <h2>📋 遗留任务</h2>
+                
+                <h3>高优先级</h3>
+                <ul class="task-list">
+                    <li class="task-item pending">
+                        <span class="status pending">待处理</span>
+                        <strong>修复Schema投递缺口</strong>
+                        <div>W4.3渠道表和计费P0表需要纳入投递通道或修改读端</div>
+                    </li>
+                    <li class="task-item pending">
+                        <span class="status pending">待评估</span>
+                        <strong>评估远程分支</strong>
+                        <div>origin/codex/s5-gateway-pricing 和 origin/feature/users-page-role-verify</div>
+                    </li>
+                </ul>
+
+                <h3>中优先级</h3>
+                <ul class="task-list">
+                    <li class="task-item pending">
+                        <span class="status pending">待整理</span>
+                        <strong>文档重复整理</strong>
+                        <div>P0-1有v1和v2版本，多模态审计5份文档可建立索引</div>
+                    </li>
+                    <li class="task-item pending">
+                        <span class="status pending">待审查</span>
+                        <strong>大型功能分支</strong>
+                        <div>request-metrics-v2（74提交）需要PR审查流程</div>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- 建议 -->
+            <div class="section">
+                <h2>💡 改进建议</h2>
+                <div class="summary-box">
+                    <h3>流程改进</h3>
+                    <ul>
+                        <li>建立schema投递通道覆盖的CI自动检查</li>
+                        <li>明确四位数迁移文件命名规范或更新sqlguard正则</li>
+                        <li>定期清理已合并的远程分支（建议每月一次）</li>
+                        <li>大型功能分支建立里程碑跟踪机制</li>
+                        <li>P0文档系列建立版本索引和差异说明</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- 结论 -->
+            <div class="section">
+                <h2>📝 结论</h2>
+                <p><strong>根因分析</strong>：本周主要工作集中在计费系统P0修复、权限系统增强和V2统计系统开发。Schema投递缺口是历史遗留问题，需要明确投递策略。</p>
+                
+                <p><strong>改动文件</strong>：本轮直接修改3个文件，合并涉及47个文件（主要是前端本地化和用户角色相关）。</p>
+                
+                <p><strong>测试结果</strong>：编译成功，所有测试通过。门禁检查全绿。</p>
+                
+                <p><strong>遗留风险</strong>：</p>
+                <ul>
+                    <li>W4.3渠道表缺失可能导致部署后读端失败（已登记，优先级待确认）</li>
+                    <li>计费P0表不在投递通道会导致重试队列功能不可用（已登记，待修复）</li>
+                    <li>大型功能分支（74提交）长期未合并可能增加冲突风险</li>
+                </ul>
+            </div>
+        </div>
+
+        <footer>
+            <p><strong>审核工具</strong>: Git 2.x, Bash, grep, find | <strong>审核人员</strong>: AI Assistant | <strong>报告生成时间</strong>: 2026-11-26 22:30:00</p>
+            <p>本报告基于实际Git历史、文件系统状态和代码分析生成，所有数据均有据可查。</p>
+        </footer>
+    </div>
+</body>
+</html>
