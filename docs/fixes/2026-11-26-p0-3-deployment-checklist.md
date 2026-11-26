@@ -42,11 +42,13 @@
 
 ### 数据库迁移
 
-- [ ] ⏳ Dev环境迁移
-  - [ ] 运行 `./migrate up` 应用迁移1002
-  - [ ] 验证表创建：`\d billing_retry_queue`
-  - [ ] 验证索引创建：`\di billing_retry_queue*`
-  - [ ] 验证视图创建：`\dv v_billing_retry_stats`
+- [x] ✅ Dev环境迁移 (acc-dev-postgres)
+  - [x] 执行迁移：`docker exec -i acc-dev-postgres psql -U acc_dev -d acc_dev < sql/migrations/startup/1002_billing_retry_queue.sql`
+  - [x] 验证表创建：14列，状态=✅
+  - [x] 验证索引创建：4个索引（pkey + 3个业务索引），状态=✅
+  - [x] 验证视图创建：v_billing_retry_stats，状态=✅
+  - [x] 验证报告：`docs/fixes/2026-11-26-p0-3-migration-verification.md`
+  - [x] 执行时间：2026-11-26 20:27
 
 - [ ] ⏳ Staging环境迁移
   - [ ] 运行迁移
