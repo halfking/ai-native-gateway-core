@@ -13,6 +13,14 @@
 --     channels_customers 对 customers 的 FK（新表新约束）兜住「渠道挂载」面。
 --   * channel 不引入新身份系统：渠道商登录复用 users 表（role='channel'），
 --     users.username 即渠道商标识（W4.3 v1 不做渠道商自助注册）。
+--
+-- ★ 2026-11-26（代上游收口）：本迁移是 27 条多语句的建表+注释迁移，此前**未事务包裹**
+--   ⇒ 门 scripts/ursmcheck/multi_statement_migration_transaction_gate_test.go 判红
+--   （且门明确：新写的迁移不能靠往台账里加一行来豁免 ⇒ 只能加包裹）。
+--   ⇒ 按仓内标准形态（参照 490/491）用 BEGIN; … COMMIT; 包起来：
+--   三张 CREATE TABLE + 三条 COMMENT 原子生效 ⇒ 中途失败不留半套表。
+
+BEGIN;
 
 CREATE TABLE IF NOT EXISTS public.channels (
     id           BIGSERIAL PRIMARY KEY,
@@ -47,3 +55,5 @@ CREATE TABLE IF NOT EXISTS public.channel_users (
 COMMENT ON TABLE public.channels IS 'W4.3 渠道商（S2 门户）：销售代理层级，拥有若干客户';
 COMMENT ON TABLE public.customers IS 'W4.3 客户：渠道商名下的最终客户；applications.customer_id 指向本表';
 COMMENT ON TABLE public.channel_users IS 'W4.3 渠道商登录用户 → 渠道归属（users.role=channel）';
+
+COMMIT;
