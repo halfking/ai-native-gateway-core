@@ -100,6 +100,26 @@ const presets = computed(() => props.presets ?? makeDateRangePresets(props.preci
 const valueFormat = computed(() => (props.precision === 'datetime' ? 'YYYY-MM-DD HH:mm' : 'YYYY-MM-DD'))
 const displayFormat = computed(() => (props.precision === 'datetime' ? 'YYYY/MM/DD HH:mm' : 'YYYY/MM/DD'))
 
+// ★ 2026-11-26 修「日期控制选择日期无效」（211 报障：请求日志页手选 2026-11-24
+// 被弹回旧范围）：precision='datetime' 时给两个日期输入挂 default-time——
+// 开始 00:00、结束 23:59。★ 为什么必须有、且是两个**单值** Date：本组件的两个
+// 输入是两个独立的单值 datetime 面板（panel-date-pick），EP（实装 2.14.3 实测）
+// 里它消费的 default-time 是单个 Date（`dayjs(defaultTime)`），数组形态只有
+// range 面板认。★ 没有它时的缺口：面板**无已有值或已有值的时刻是整日界**
+// 时，「只点日历格、不动时间」产出当天 00:00 ⇒ 开始=结束=00:00 零长窗 ⇒
+// 下游（requestLogsWindow.pickerRangeToQueryWindow → 页面 e<=s 守卫）判无效
+// 丢弃 ⇒ 「选了日期却被弹回」。挂上后，点格即产出 00:00–23:59 整日窗。
+// ★ 生效边界（探针实测）：面板已有值的时刻**保留**（点新格继承旧时刻，EP
+//   defaultTime 只在可见时间未定夺时生效）⇒ 本修覆盖「预设/回显整日界 +
+//   手选新日」与「空草稿手选」两条主路径；用户显式输入过时刻的自选值原样保留。
+// date 精度不带时刻概念，必须不传。
+const startTimeDefault = computed(() =>
+  props.precision === 'datetime' ? new Date(2000, 0, 1, 0, 0, 0) : undefined,
+)
+const endTimeDefault = computed(() =>
+  props.precision === 'datetime' ? new Date(2000, 0, 1, 23, 59, 0) : undefined,
+)
+
 const matchedPreset = computed<KxDateRangePreset | null>(() => {
   const value = props.modelValue
   if (!value) return null
@@ -179,8 +199,24 @@ function commit(range: KxDateRange) {
   emit('apply', range)
 }
 
+// ★ 2026-11-26 第三层修复：datetime 精度下「同一天、起止时刻相同（零长窗）」的
+// 草稿在应用时归一化成整日窗（起 00:00 / 止 23:59）。★ 为什么需要：面板已有值
+// 的时刻会被点新格**继承**（探针实测：初始 10:30 点 11 日 ⇒ 产出 11 日 10:30，
+// EP defaultTime 只在可见时间未定夺时生效）⇒ 用户在 h24 这类滚动窗（两端时刻
+// 相同）上手选同一天时，两端时刻相等 ⇒ 跨度为零 ⇒ 请求日志页的 e<=s 守卫把
+// 选择静默丢弃 ⇒「选了日期却被弹回」。仅 datetime 精度且 e===s 时触发；用户
+// 显式选的 10:30–10:30 本来就无意义，归一化为整日窗是唯一有用的解释。
 function applyDraft() {
   if (!canApply.value) return
+  if (
+    props.precision === 'datetime' &&
+    draftStart.value.slice(0, 10) === draftEnd.value.slice(0, 10) &&
+    draftStart.value.slice(11) === draftEnd.value.slice(11)
+  ) {
+    commit({ start: `${draftStart.value.slice(0, 10)} 00:00`, end: `${draftEnd.value.slice(0, 10)} 23:59` })
+    panelOpen.value = false
+    return
+  }
   commit({ start: draftStart.value, end: draftEnd.value })
   panelOpen.value = false
 }
@@ -271,6 +307,7 @@ function applyDraft() {
           <ElDatePicker
             v-model="draftStart"
             :type="precision === 'datetime' ? 'datetime' : 'date'"
+            :default-time="startTimeDefault"
             :value-format="valueFormat"
             :format="displayFormat"
             :clearable="false"
@@ -286,6 +323,7 @@ function applyDraft() {
           <ElDatePicker
             v-model="draftEnd"
             :type="precision === 'datetime' ? 'datetime' : 'date'"
+            :default-time="endTimeDefault"
             :value-format="valueFormat"
             :format="displayFormat"
             :clearable="false"

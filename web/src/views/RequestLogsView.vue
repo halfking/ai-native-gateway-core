@@ -1533,9 +1533,18 @@ onMounted(async () => {
       <div style="display:flex;gap:8px;align-items:center">
         <!-- 2026-11-19 时间范围统一轮：时间选择放页面右上角，与普通筛选条件
              分开；统一使用全站 KxDateRangePicker。 -->
+        <!-- ★ 2026-11-26 修「手选日期被弹回」（211 报障：选 2026-11-24 无效、
+             点刷新还原）：本页整条时间状态链（预设 kxPresets、回显 kxRangeValue、
+             应用 onHeaderRangeApply→parseLocalMinute）都是**分钟级**
+             'YYYY-MM-DD HH:mm'，组件却没传 precision ⇒ 按 date 精度渲染 ⇒
+             手选产出纯日期串 'YYYY-MM-DD' ⇒ parseLocalMinute 按 UTC 解析
+             （10 字符串补 T00:00:00Z）⇒ UTC+8 下起=止=08:00 ⇒ e<=s 判无效 ⇒
+             选择被静默丢弃、面板弹回旧值。precision="datetime" 与 TurnsListView
+             页头（同轮改造）同款；契约钉在 RequestLogsView.window.contract.spec.ts。 -->
         <KxDateRangePicker
           :model-value="kxRangeValue"
           :presets="kxPresets"
+          precision="datetime"
           :max-span-days="isDefaultTenant() ? 0 : 3"
           data-testid="request-logs-header-range"
           @apply="onHeaderRangeApply"
