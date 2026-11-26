@@ -298,7 +298,7 @@ func (h *PerformanceHandler) querySlowQueries(ctx context.Context, params QueryP
 	query := fmt.Sprintf(`
 		SELECT
 			COALESCE(r.gw_session_id, '') as gw_session_id,
-			COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), 'unknown') as module_name,
+			COALESCE(NULLIF(NULLIF(TRIM(r.outbound_model), ''), '<unknown>'), NULLIF(NULLIF(TRIM(r.client_model), ''), '<unknown>'), 'unknown') as module_name,
 			r.latency_ms,
 			r.ts as executed_at,
 			COALESCE(NULLIF(r.error_kind, ''), '') as error_message

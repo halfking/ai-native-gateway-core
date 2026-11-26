@@ -2940,6 +2940,16 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/999b_system_probe_run_tokens.sql"
   "$ROOT_DIR/sql/migrations/startup/999c_tool_usage_stats_columns.sql"
   "$ROOT_DIR/sql/migrations/startup/999d_tenant_ops_scope.sql"
+  # ★ 633（2026-11-27 一周审计轮投递收口）：tenant_attachment_quotas ——
+  #   P0.2 附件管线轮（2026-11-26）写的配额表，使用方 domains/attachments/quota.go
+  #   （INSERT/SELECT 全打它）。缺口本体：该迁移最初落在 sql/migrations/startup/up/
+  #   ⇒ ★ 该目录整体不被任何通道消费（389 同款先例，known_undelivered.go 记过）⇒
+  #   部署与新装都不建表 ⇒ 附件配额链恒 42P01。
+  #   ★ 修法＝搬到 canonical 目录 ＋ 自带 BEGIN/COMMIT ＋ lock_timeout/statement_timeout
+  #   ＋ schema_migrations 自登记（695-704 定式）＋ 通道补条目即闭环。
+  #   ★ 幂等：CREATE TABLE/INDEX IF NOT EXISTS ⇒ 重放无害；633 号段双账本空闲
+  #   （schema_migrations 无 '633' 行 ⇒ 从未在任何环境应用过 ⇒ 零已应用字节变更）。
+  "$ROOT_DIR/sql/migrations/startup/633_tenant_attachment_quotas.sql"
   # ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件
   #   **缺 schema_migrations 自登记行** ⇒ 211 的记账链在 980 与 990 之间
   #   **断一格**（实测：211 的 public.schema_migrations 有 '980' 与 '990'、

@@ -114,7 +114,17 @@ var allowedParentDML = []struct {
 	{"admin/session_trash.go", "sessions", 2,
 		"★ 回收站把会话标记为 deleted（:124）与恢复为 active（:192）—— 两处成对。★ sessions 是**分区父表**，且本仓既有登记（admin/session_turns_v2.go / cmd/gateway/turn_logs_aggregator.go / domains/session/v2/session_aggregator.go / internal/titlestore/store.go）都已在写它 ⇒ 本条是同一族的新站点，登记而不改代码。★ 门要求**条数**也相等（★ 只比集合的话，第二处会被第一处吸收掉 ⇒ 这就是「同文件同表再加一条」被抓的机制）。"},
 	{"admin/recording_consent.go", "session_bodies", 1,
-		"★ 关闭录制同意时的正文清空（:139-140）：hot 与**分区父表**各删一份。★ 与 admin/session_trash.go 同构 —— 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ 只删 hot 会让「已关闭录制」名存实亡（★ 且这正是「默认关闭录制」的隐私承诺所在）。"},
+		"★ 关闭录制同意时的正文清空（:139-140）：hot 与**分区父表**各删一份。★ 与 admin/session_trash.go 同构 —— 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ 只删 hot 会让「已关闭录制」名实存亡（★ 且这正是「默认关闭录制」的隐私承诺所在）。"},
+	// ★ 2026-11-27（一周审计轮补登）：admin/permission_fix_examples.go 的 3 处
+	//   sessions 父表写（UPDATE ×2 + DELETE ×1，:184/:231/:279）。★ 该文件是
+	//   **教学示例代码**（文件头自陈「展示如何修复缺少租户/用户隔离的端点…模板」），
+	//   Before/After 六个 handler **零路由接线**（逐符号全仓 grep 外部引用 = 0）
+	//   ⇒ 不在请求路径上。★ 先例：233c14a2bc / 706297b758 对同一文件选了
+	//   「登记进 canonical 读点登记簿」而不是删文件 ⇒ 本门同口径：登记而不改代码。
+	//   ★ 门要求条数相等：文件里 3 处 DML 打在同表（2 UPDATE + 1 DELETE 被
+	//   scan.go 归并为同 (file,table) 对）⇒ Count=3。
+	{"admin/permission_fix_examples.go", "sessions", 3,
+		"教学示例代码（文件头自陈「修复案例的模板」）：Before/After 成对展示租户隔离修复的 3 处 sessions 父表写（UPDATE 标题 ×2 + DELETE ×1）。零路由接线（逐符号外部引用=0）⇒ 不在请求路径；真实修复已落在 admin/context_enhanced.go + admin/my_endpoints.go。先例 233c14a2bc/706297b758 对同一文件选「登记不删」⇒ 本门同口径。"},
 	// ★ 2026-11-24（迁移 983，统计专用表 request_metrics）：**不**在此登记。
 	//   本门的红线是「★ 更新/删除只能在 hot 表进行 ★」（scan.go 的 stmtPatterns
 	//   只认 UPDATE / DELETE / TRUNCATE，**没有 INSERT**）⇒ 对父表的 INSERT

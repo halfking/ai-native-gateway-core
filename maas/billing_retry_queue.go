@@ -156,6 +156,12 @@ func (s *Service) ProcessRetryQueue(ctx context.Context, batchSize int) (process
 
 		items = append(items, item)
 	}
+	// ★ rowsguard：循环后必须有 rows.Err() 终检（2026-11-27 一周审计轮补）。
+	//   迭代中途的网络/驱动错误此前会被静默吞掉 ⇒ 批次半截仍按全量处理。
+	if err := rows.Err(); err != nil {
+		slog.Error("retry queue iteration error", "error", err)
+		return 0, 0, 0
+	}
 
 	// 逐个处理
 	for _, item := range items {
