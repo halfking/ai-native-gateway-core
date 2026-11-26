@@ -318,8 +318,12 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		logCtx.OutboundProvenance = prov
 	}
 	if h.chatHandler.attachmentExtractor != nil {
-		// P0 安全修复 (2026-11-26): 附件提取（租户隔离已在extractor内部实现）
-		extractResult := h.chatHandler.attachmentExtractor.ExtractFromAnthropicBody(requestID, bodyBytes)
+		// P0 安全修复 (2026-11-26): 传递 tenantID 用于配额检查
+		var tenantID string
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		extractResult := h.chatHandler.attachmentExtractor.ExtractFromAnthropicBody(requestID, bodyBytes, tenantID)
 		if applyAttachmentResult(logCtx, extractResult) && attachmentStrictMode() {
 			attemptErrCode = "attachment_store_failed"
 			attemptErrMsg = "attachment storage failed"
