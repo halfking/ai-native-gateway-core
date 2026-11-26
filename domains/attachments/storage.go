@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -366,6 +367,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	}
 
 	deduped := false
+	actuallyWrote := false
 	if exists {
 		// 文件已存在，跳过写入
 		deduped = true
@@ -373,6 +375,20 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		// 保存文件到存储后端
 		if err := backend.Save(ctx, relPath, content); err != nil {
 			return nil, fmt.Errorf("attachments: save: %w", err)
+		}
+		actuallyWrote = true
+	}
+
+	// P0 安全修复 (2026-11-26): 确认配额使用
+	// 仅在实际写入新文件时更新配额（去重命中不计入）
+	if actuallyWrote && tenant != "" && quotaManager != nil {
+		if err := quotaManager.CommitUsage(ctx, tenant, counter.n); err != nil {
+			// 配额提交失败：记录日志但不阻塞（文件已保存）
+			slog.Warn("attachments: failed to commit quota usage",
+				"tenant_id", tenant,
+				"size", counter.n,
+				"path", relPath,
+				"error", err)
 		}
 	}
 
