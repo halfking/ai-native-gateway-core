@@ -125,7 +125,13 @@ func TestR1059SecretCoPresentStillRejected(t *testing.T) {
 // secret 类型上必须进 strong（强拒面），挂在非凭据类型（account/email 等）
 // 上必须进 weak（放行面）——钉住「类型作用域」这一判据本身。
 func TestR1059ClassifyTypeScope(t *testing.T) {
-	shaped := "kaixuan_deploy_user_2024_prod" // strongCredentialCandidate 必真的形状
+	// ★ 2026-11-26（r1060 收紧 strongCredentialCandidate 之后同步）：
+	//   旧夹具 "kaixuan_deploy_user_2024_prod"（31 字符 / 全小写）在新判据下
+	//   **不再是**强凭据形状（不透明令牌档已收紧为 ≥32 字符 + 含数字 + 大小写混合）
+	//   ⇒ 它的前置断言必然红 ⇒ 那是**夹具陈旧**，不是判据坏了。
+	//   ⇒ 本轮只把夹具换成新判据下**确实成立**的形状（35 字符 / 含数字 / 大小写混合），
+	//   **判据本身一个字没动** ⇒ 本测试要钉的仍是「类型作用域」这一条。
+	shaped := "kaixuan_deploy_user_2024_PROD_KEY" // strongCredentialCandidate 必真的形状
 	if !strongCredentialCandidate(shaped) {
 		t.Fatalf("前置失效：%q 应被强凭据形状判据判真（否则测试失去对照意义）", shaped)
 	}
