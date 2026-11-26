@@ -292,16 +292,15 @@ export function getCurrentTenantId(): string {
   return store.userInfo?.tenant_id || 'default'
 }
 
-// Platform ops UI: super_admin on default tenant (整站运维视图)
-export function isPlatformOpsView(): boolean {
-  return isSuperAdmin() && isDefaultTenant()
-}
-
-// Returns true if current user is regular user (not admin)
-// 2026-11-26: P2 permission system - user role check for routing permissions
+// Returns true if current user is 不显示任何凭据信息 user (role='user')
 export function isRegularUser(): boolean {
   if (!store.jwtToken && store.apiKey) return false // legacy API key is super_admin
   return store.userInfo?.role === 'user'
+}
+
+// Platform ops UI: super_admin on default tenant (整站运维视图)
+export function isPlatformOpsView(): boolean {
+  return isSuperAdmin() && isDefaultTenant()
 }
 
 // Returns current user role for display/debugging

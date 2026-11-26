@@ -11,7 +11,7 @@ import {
   type RoutingTreeCredential,
   type FeaturedModel,
 } from '../api'
-import { isReadOnlyMode, isSuperAdmin } from '../store'
+import { isReadOnlyMode, isSuperAdmin, isRegularUser } from '../store'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { Lightning, Reading, Refresh, Setting, StarFilled } from '@element-plus/icons-vue'
 
@@ -20,6 +20,14 @@ const { t } = useI18n()
 // keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
 // to "凭据 #ID" if the label is missing.
 const { credentialDisplayName } = useCredentialLabels()
+
+// 2026-11-26: 权限控制
+// - super_admin: 看全部凭据详情
+// - tenant_admin: 看配额和健康分数，但不看凭据ID/标签
+// - user: 完全隐藏凭据信息
+const readOnly = computed(() => isReadOnlyMode())
+const hideCredentialDetails = computed(() => isReadOnlyMode() || isRegularUser())
+const canSeeCredentialId = computed(() => isSuperAdmin())
 
 
 interface FlatVariant {
@@ -41,7 +49,6 @@ const search = ref('')
 const featuredOnly = ref(false)
 const selectedSeries = ref('')
 const selectedVariantId = ref('')
-const readOnly = computed(() => isReadOnlyMode())
 const router = useRouter()
 const canManageFeatured = computed(() => isSuperAdmin())
 const recommendLoading = ref(false)
@@ -120,7 +127,8 @@ const heroChips = computed(() => {
     { label: t('routing.seriesLabel'), value: String(seriesList.value.length) },
     { label: t('routing.variantsLabel'), value: String(total) },
     { label: t('routing.routable'), value: String(routable) },
-    { label: t('routing.credential'), value: readOnly.value ? '—' : String(creds) },
+    // 2026-11-26: tenant_admin和user不显示凭据数量
+    { label: t('routing.credential'), value: hideCredentialDetails.value ? '—' : String(creds) },
   ]
 })
 
@@ -357,13 +365,47 @@ onMounted(load)
           </div>
         </div>
 
-        <div v-if="readOnly" class="readonly-summary">
+        <!-- 2026-11-26: 普通用户 - 只看可用性摘要 -->
+        <div v-if="isRegularUser()" class="readonly-summary">
           <span :class="selectedVariant.routableCount > 0 ? 'status-ok' : 'status-bad'">
             {{ selectedVariant.routableCount > 0 ? t('routing.readonlySummaryRoutable') : t('routing.readonlySummaryUnroutable') }}
           </span>
-          <span class="text-muted">凭据 {{ selectedVariant.credentials.length }} 条（详情已隐藏）</span>
+          <span class="text-muted">{{ $t('routing.credentialDetailsHiddenForUser') }}</span>
         </div>
 
+        <!-- 2026-11-26: Tenant Admin - 看配额和健康分数，不看凭据ID/标签 -->
+        <div v-else-if="readOnly && selectedVariant.credentials.length" class="table-wrap">
+          <table class="dense-table">
+            <thead>
+              <tr>
+                <th>{{ $t('common.terms.provider') }}</th><th>Tier</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.successRate') }}</th><th>P95</th><th>{{ $t('common.terms.upstreamModel') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(cred, idx) in selectedVariant.credentials"
+                :key="`${cred.provider_id}-${idx}-${cred.raw_model_name}`"
+                :style="cred.runtime_routable ? '' : 'opacity:0.55'"
+              >
+                <td>{{ cred.provider_name }}</td>
+                <td><span class="badge" :class="statusClass(cred)">T{{ cred.tier }} · w{{ cred.weight }}</span></td>
+                <td>
+                  <span :class="cred.runtime_routable ? 'badge badge-green' : 'badge badge-red'">
+                    {{ cred.runtime_routable ? t('routing.routable') : reasonLabel(cred.runtime_block_reason) }}
+                  </span>
+                </td>
+                <td>{{ rateLabel(cred.success_rate) }}</td>
+                <td>{{ latencyLabel(cred.p95_latency_ms) }}</td>
+                <td><code class="mono-sm">{{ cred.raw_model_name }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="text-muted" style="font-size: 11px; margin-top: 4px;">
+            {{ $t('routing.credentialIdHiddenForTenantAdmin') }}
+          </div>
+        </div>
+
+        <!-- Super Admin - 看全部详情 -->
         <div v-else-if="selectedVariant.credentials.length" class="table-wrap">
           <table class="dense-table">
             <thead>
