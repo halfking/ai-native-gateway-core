@@ -8838,7 +8838,6 @@ func main() {
 			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
 			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
-			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))
 			mux.HandleFunc("/api/admin/session-clusters/", wrapSessionAnalytics(adminHandler.RouteSessionClusters))
 			// Task T1.1: 时间序列分析端点 (2026-07-06)
