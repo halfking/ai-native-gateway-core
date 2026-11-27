@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,10 @@ type HookHost interface {
 type PipelineIntegrator struct {
 	host HookHost
 
+	// circuit 熔断器（可选；nil 表示不熔断）。
+	// 连续失败达阈值后跳过钩子调用，原样直通（W3.2 fail-open 延伸）。
+	circuit *CircuitBreaker
+
 	// Metrics for monitoring
 	mu              sync.Mutex
 	requestTotal    int64
@@ -49,6 +54,15 @@ func NewPipelineIntegrator(host HookHost) *PipelineIntegrator {
 		panic("externalhost: pipeline integrator requires non-nil host")
 	}
 	return &PipelineIntegrator{host: host}
+}
+
+// NewPipelineIntegratorWithCircuit 构造带熔断器的整合器。
+//
+// threshold <= 0 用默认 5 次连续失败；openWindow <= 0 用默认 30s。
+func NewPipelineIntegratorWithCircuit(host HookHost, threshold int, openWindow time.Duration) *PipelineIntegrator {
+	p := NewPipelineIntegrator(host)
+	p.circuit = NewCircuitBreaker(threshold, openWindow)
+	return p
 }
 
 // RequestContext holds state that flows from onRequest to onResponse.
@@ -88,11 +102,23 @@ func (p *PipelineIntegrator) InterceptRequest(
 		OnRequestSkipped:   false,
 	}
 
+	// 熔断检查（W3 上线前必修项③）：熔断打开时跳过钩子调用，原样直通。
+	if !p.circuit.Allow("on_request") {
+		recordCall("on_request", "circuit_open", 0)
+		reqCtx.OnRequestSkipped = true
+		// 熔断跳过不视为失败——本请求仍允许收 onResponse（钩子本身健康，只是被暂时摘除）。
+		reqCtx.OnRequestSucceeded = true
+		return nil, reqCtx, nil
+	}
+
 	// Call onRequest hook
+	start := time.Now()
 	outcome := p.host.OnRequest(ctx, hookCtx, req)
+	elapsed := time.Since(start)
 
 	// Track skipped hooks
 	if outcome.Skipped {
+		recordCall("on_request", "skipped", elapsed)
 		reqCtx.OnRequestSkipped = true
 		reqCtx.OnRequestSucceeded = true // Still allow onResponse
 		return nil, reqCtx, nil
@@ -100,6 +126,8 @@ func (p *PipelineIntegrator) InterceptRequest(
 
 	// Check block decision first (before failure handling)
 	if outcome.Decision == contract.DecisionBlock {
+		recordCall("on_request", "block", elapsed)
+		p.circuit.RecordSuccess("on_request")
 		return nil, reqCtx, fmt.Errorf("external hook blocked request: %s", outcome.Reason)
 	}
 
@@ -109,11 +137,17 @@ func (p *PipelineIntegrator) InterceptRequest(
 		p.requestFailed++
 		p.mu.Unlock()
 
+		recordCall("on_request", failureResultName(outcome.Failure), elapsed)
+		p.circuit.RecordFailure("on_request")
+
 		// W3.2: timeout/crash/protocol → pass through (fail-open)
 		// protected_field/hook → pass through but mark failed
 		// Pass through on failure, but don't call onResponse
 		return nil, reqCtx, nil
 	}
+
+	recordCall("on_request", string(outcome.Decision), elapsed)
+	p.circuit.RecordSuccess("on_request")
 
 	// Success: extract state for onResponse correlation
 	reqCtx.OnRequestSucceeded = true
@@ -159,6 +193,15 @@ func (p *PipelineIntegrator) CaptureResponse(
 	p.responseTotal++
 	p.mu.Unlock()
 
+	// 熔断检查（W3 上线前必修项③）。
+	if !p.circuit.Allow("on_response") {
+		recordCall("on_response", "circuit_open", 0)
+		p.mu.Lock()
+		p.responseSkipped++
+		p.mu.Unlock()
+		return
+	}
+
 	// Fire-and-forget goroutine (W3.3)
 	go func() {
 		// Use background context (not tied to client connection)
@@ -176,14 +219,39 @@ func (p *PipelineIntegrator) CaptureResponse(
 		}
 
 		// Call onResponse hook
+		start := time.Now()
 		outcome := p.host.OnResponse(ctx, hookCtx, resp)
+		elapsed := time.Since(start)
 
 		if outcome.Failed() {
 			p.mu.Lock()
 			p.responseFailed++
 			p.mu.Unlock()
+			recordCall("on_response", failureResultName(outcome.Failure), elapsed)
+			p.circuit.RecordFailure("on_response")
+			return
 		}
+		recordCall("on_response", string(outcome.Decision), elapsed)
+		p.circuit.RecordSuccess("on_response")
 	}()
+}
+
+// failureResultName 把失败归因映射为指标 label 值（低基数枚举）。
+func failureResultName(kind contract.FailureKind) string {
+	switch kind {
+	case contract.FailureTimeout:
+		return "timeout"
+	case contract.FailureCrash:
+		return "crash"
+	case contract.FailureProtocol:
+		return "protocol"
+	case contract.FailureProtectedField:
+		return "protected_field"
+	case contract.FailureHook:
+		return "hook_error"
+	default:
+		return "error"
+	}
 }
 
 // CaptureResponseFromStream reads response body, creates bounded copy, and captures.
@@ -280,6 +348,52 @@ func BuildHookContext(r *http.Request, requestID, sessionID, tenantID string) *c
 	return ctx
 }
 
+// sensitiveRequestHeaders 是绝不外传给外部钩子的请求头（大小写不敏感）。
+//
+// W3.1 合同红线：钩子不得依赖任何鉴权/凭据头。2026-11-27 修订——
+// 原实现只过滤 Authorization/Cookie/X-Api-Key 三项，漏掉了网关自身的
+// 内部凭据头（X-Gateway-Key / X-Internal-Token 等），等于把内部凭据
+// 送给了进程外插件。现改为「精确黑名单 + 凭据语义后缀」双保险：
+// 凡头名含 key/token/secret/credential/password/session-cookie 语义的一律剔除。
+var sensitiveRequestHeaders = map[string]bool{
+	"authorization":        true,
+	"proxy-authorization":  true,
+	"cookie":               true,
+	"set-cookie":           true,
+	"x-api-key":            true,
+	"apikey":               true,
+	"api-key":              true,
+	"x-gateway-key":        true,
+	"x-internal-token":     true,
+	"x-session-token":      true,
+	"x-auth-token":         true,
+	"x-access-token":       true,
+	"x-refresh-token":      true,
+	"x-amz-security-token": true,
+	"x-goog-api-key":       true,
+}
+
+// isSensitiveHeader 判断请求头是否含凭据语义。
+//
+// 命中精确黑名单直接剔除；否则看头名是否带凭据语义词根（key/token/secret/
+// credential/password/auth），命中即剔除——保守方向是"宁可多剔"，
+// 因为漏一个就等于把凭据送出了进程边界。
+func isSensitiveHeader(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return true
+	}
+	if sensitiveRequestHeaders[lower] {
+		return true
+	}
+	for _, marker := range []string{"key", "token", "secret", "credential", "password", "authorization", "auth-"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildRequestPayload constructs a contract.RequestPayload from HTTP request.
 //
 // Body should be the raw request body bytes (caller is responsible for reading).
@@ -300,8 +414,7 @@ func BuildRequestPayload(r *http.Request, body []byte, model string, stream bool
 			continue
 		}
 		// Skip sensitive headers (W3.1 contract)
-		lower := http.CanonicalHeaderKey(k)
-		if lower == "Authorization" || lower == "Cookie" || lower == "X-Api-Key" {
+		if isSensitiveHeader(k) {
 			continue
 		}
 		payload.Headers[k] = vals[0]

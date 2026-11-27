@@ -1,8 +1,33 @@
 # W3 External Hooks - Production Integration Guide
 
-**Status**: Infrastructure Complete ✅ | Production Integration: Ready for Review
+**Status**: Production Wiring Complete ✅ (2026-11-27) | Enable via env, default OFF
 
-> **现状声明（2026-11-25 第 28 轮 24h 审计订正 —— 先读这一段，再照下文操作）**
+> **✅ 生产装配已落地（2026-11-27 修订 —— 本段取代下面 2026-11-25 的现状声明）**
+>
+> 1. **装配面已接通**：`cmd/gateway/external_hook_init.go` 完成 loader→host→integrator→`chatHandler.SetExternalHooks` 全链装配（main.go 在 plugin canon 路由之后调用）。**默认关**——`LLM_GATEWAY_EXTERNAL_HOOK_ENABLED=1` 显式开启，未开启时零装配、零外部调用。
+> 2. **上线前必修项已修**（下面旧声明列出的缺陷逐条处置）：
+>    - 来源判定：`isLocalNetwork`（RFC1918 一律 local）已替换为 `isLoopbackAddr`（只认 127/8 与 ::1）——私网客户端按 remote 走隐私路径。★ 反向代理场景仍需注意：来源仍取 TCP 对端地址，nginx 之后所有请求的对端都是代理自身（若代理跑在同机即 loopback）——X-Forwarded-For 信任链属后续演进，当前以"部署位置"控制来源分类。
+>    - 凭据头脱敏：`BuildRequestPayload` 改为「精确黑名单 + 凭据语义词根（key/token/secret/credential/password/auth）」双保险（`pipeline_integration.go` 的 `isSensitiveHeader`），`x-goog-api-key`、内部凭据头等全部剔除。
+>    - 熔断与观测：新增 `metrics.go`——连续 5 次失败开熔断 30s（半开探测恢复）+ Prometheus 指标 `external_hook_calls_total{hook_point,result}` / `external_hook_duration_seconds` / `external_hook_circuit_open`。
+>    - 流式空正文：onResponse 对空 `result.ResponseBody` 用 `reassembleStreamBody(streamCapture)` 兜底重组成 assistant 正文。
+>    - 改写体校验：`host.go` 送出侧强制 `contract.BoundedCopy`（8MiB 上限兑现，`boundedRequest`/`boundedResponse`）。
+> 3. **仍未实现**（照抄旧文会失败的部分保持如实标注）：配置热 reload（需重启进程）、停钩子进程在线摘除（熔断器已兜底：连续失败后自动跳过）、X-Forwarded-For 信任链、钩子返回 reason 的截断。`config.ExternalHooks.Enabled` YAML 配置不存在——装配走环境变量（见下表）。
+>
+> **环境变量清单**（`cmd/gateway/external_hook_init.go`）：
+>
+> | 变量 | 默认 | 说明 |
+> |---|---|---|
+> | `LLM_GATEWAY_EXTERNAL_HOOK_ENABLED` | `false` | 总开关（默认关） |
+> | `LLM_GATEWAY_EXTERNAL_HOOK_MANIFEST` | — | 单个 hook manifest 路径 |
+> | `LLM_GATEWAY_EXTERNAL_HOOKS_DIR` | — | 目录扫描（*.json，与上一同使用） |
+> | `LLM_GATEWAY_EXTERNAL_HOOK_TIMEOUT_MS` | `1000` | 单次调用超时（合同区间 100-10000） |
+> | `LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_THRESHOLD` | `5` | 连续失败熔断阈值 |
+> | `LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_WINDOW_MS` | `30000` | 熔断打开时长 |
+> | `LLM_GATEWAY_EXTERNAL_HOOK_ALLOW_REMOTE_BODY` | `false` | 允许 remote 来源捕获正文（W3.4，默认禁） |
+>
+> 逐条历史证据（文件:行）见 `docs/operations/2026-11-23-211配置优化执行报告.md` §9.30 ㉓-44。
+
+> **现状声明（2026-11-25 第 28 轮 24h 审计订正 —— 已被上方 2026-11-27 修订取代，留档）**
 >
 > 1. **本管线目前是休眠的。** `ChatHandler.SetExternalHooks` 在生产代码里**没有任何调用方**（只有定义、测试与 demo）；仓内也不存在任何配置项、环境变量或部署产物能启用它。是否上线属 owner 决策（见 `docs/12小时内修订审计-2026-11-25-0400.md` 待决项 ⑤）。上面那行「Production Integration: Ready for Review」应读作「尚不可接」。
 > 2. **接线之前必须先修的缺陷**（一旦接线，它们就在请求主路径上生效）：

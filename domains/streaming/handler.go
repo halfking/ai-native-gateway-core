@@ -1717,32 +1717,40 @@ func (h *ChatHandler) emitTrace(ctx context.Context, requestID string, ev gwtrac
 }
 
 // determineOrigin (W3 External Hooks, 2026-11-25) classifies request origin
-// for external hook context. Returns OriginLocal for local network requests,
+// for external hook context. Returns OriginLocal for loopback requests,
 // OriginGatewayKey for requests with valid gateway keys, OriginRemote otherwise.
+//
+// W3.4 隐私原则（2026-11-27 修订）：只有**回环地址**算 local。
+// 原实现把整个私有网段（10./8、172.16-31./12、192.168./16）判为 local，
+// 等于让所有内网客户端的请求正文默认被外部钩子捕获——与"remote 默认不捕获正文"
+// 的隐私原则相悖。私有网段是"受信网络"，不是"本机"，一律按 remote 处理。
 func determineOrigin(r *http.Request, keyInfo *authentication.KeyInfo) contract.Origin {
-	// Check for local network first (highest precedence)
-	if isLocalNetwork(r.RemoteAddr) {
+	// Check for loopback first (highest precedence)
+	if isLoopbackAddr(r.RemoteAddr) {
 		return contract.OriginLocal
 	}
-	
+
 	// Check for gateway key authentication
 	if keyInfo != nil && keyInfo.IsInternal {
 		return contract.OriginGatewayKey
 	}
-	
+
 	// Default to remote origin
 	return contract.OriginRemote
 }
 
-// isLocalNetwork checks if the remote address is from local/private network.
-func isLocalNetwork(remoteAddr string) bool {
+// isLoopbackAddr checks if the remote address is a loopback address.
+//
+// 只认回环：127.0.0.0/8 与 ::1。私有网段（10./8、172.16-31./12、192.168./16）
+// 不算 loopback——它们是"受信网络内的远程客户端"，按 remote 走隐私路径。
+func isLoopbackAddr(remoteAddr string) bool {
 	// Extract IP from various formats:
 	// - IPv4: "1.2.3.4:5678" or "1.2.3.4"
 	// - IPv6 with port: "[::1]:5678"
 	// - IPv6 without port: "::1"
-	
+
 	host := remoteAddr
-	
+
 	// Handle IPv6 with brackets and port: [::1]:5678
 	if strings.HasPrefix(remoteAddr, "[") {
 		if idx := strings.Index(remoteAddr, "]"); idx != -1 {
@@ -1758,34 +1766,15 @@ func isLocalNetwork(remoteAddr string) bool {
 			host = remoteAddr[:idx]
 		}
 	}
-	
-	// Check for localhost patterns
-	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+
+	// Loopback patterns: 127.0.0.0/8 (any 127.x.y.z), ::1, localhost
+	if host == "::1" || host == "localhost" {
 		return true
 	}
-	
-	// Check for private network ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
-	if strings.HasPrefix(host, "10.") ||
-		strings.HasPrefix(host, "192.168.") ||
-		strings.HasPrefix(host, "172.16.") ||
-		strings.HasPrefix(host, "172.17.") ||
-		strings.HasPrefix(host, "172.18.") ||
-		strings.HasPrefix(host, "172.19.") ||
-		strings.HasPrefix(host, "172.20.") ||
-		strings.HasPrefix(host, "172.21.") ||
-		strings.HasPrefix(host, "172.22.") ||
-		strings.HasPrefix(host, "172.23.") ||
-		strings.HasPrefix(host, "172.24.") ||
-		strings.HasPrefix(host, "172.25.") ||
-		strings.HasPrefix(host, "172.26.") ||
-		strings.HasPrefix(host, "172.27.") ||
-		strings.HasPrefix(host, "172.28.") ||
-		strings.HasPrefix(host, "172.29.") ||
-		strings.HasPrefix(host, "172.30.") ||
-		strings.HasPrefix(host, "172.31.") {
+	if strings.HasPrefix(host, "127.") {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -3212,11 +3201,11 @@ func (h *ChatHandler) serveWithExecutor(
 		// 附件依然可追溯。提取失败不阻塞请求转发（best-effort）。
 		if h.attachmentExtractor != nil {
 			// P0 安全修复 (2026-11-26): 传递 tenantID 用于配额检查
-		var tenantID string
-		if keyInfo != nil {
-			tenantID = keyInfo.TenantID
-		}
-		extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes, tenantID)
+			var tenantID string
+			if keyInfo != nil {
+				tenantID = keyInfo.TenantID
+			}
+			extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes, tenantID)
 			if extractResult != nil {
 				failed := applyAttachmentResult(logCtx, extractResult)
 				slog.Debug("attachments: extracted from request",
@@ -4800,81 +4789,81 @@ func (h *ChatHandler) serveWithExecutor(
 	auditCtx.RequestID = requestID
 	auditCtx.GWSessionID = gwSessionID
 	auditCtx.GWTaskID = gwTaskID
-		outboundForLog := explicitOutbound
-		if len(candidates) > 0 {
-			outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	outboundForLog := explicitOutbound
+	if len(candidates) > 0 {
+		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
+
+	// ── W3 External Hook: onRequest (2026-11-25) ────────────────────────
+	// Called BEFORE meta-tool expansion and session compression to allow hooks to:
+	//   - Block requests (compliance/policy checks)
+	//   - Rewrite request bodies (content moderation)
+	//   - Set state for onResponse correlation
+	//
+	// Failure modes (W3.2):
+	//   - timeout/crash → pass through (logged but not blocked)
+	//   - block decision → return error to client
+	//   - protected field change → pass through (logged)
+	if h.externalHooks != nil {
+		// Build hook context from request metadata
+		tenantID := "default"
+		if keyInfo != nil && keyInfo.TenantID != "" {
+			tenantID = keyInfo.TenantID
 		}
 
-		// ── W3 External Hook: onRequest (2026-11-25) ────────────────────────
-		// Called BEFORE meta-tool expansion and session compression to allow hooks to:
-		//   - Block requests (compliance/policy checks)
-		//   - Rewrite request bodies (content moderation)
-		//   - Set state for onResponse correlation
-		//
-		// Failure modes (W3.2):
-		//   - timeout/crash → pass through (logged but not blocked)
-		//   - block decision → return error to client
-		//   - protected field change → pass through (logged)
-		if h.externalHooks != nil {
-			// Build hook context from request metadata
-			tenantID := "default"
-			if keyInfo != nil && keyInfo.TenantID != "" {
-				tenantID = keyInfo.TenantID
-			}
-			
-			hookCtx := externalhost.BuildHookContext(
-				r,
-				requestID,
-				gwSessionID,
-				tenantID,
-			)
-			hookCtx.Protocol = egressProtocol // resolved upstream protocol
-			hookCtx.Model = clientModel
-			hookCtx.Origin = determineOrigin(r, keyInfo)
-			
-			// Build request payload
-			reqPayload := externalhost.BuildRequestPayload(
-				r,
-				bodyBytes,
-				clientModel,
-				isStream,
-			)
-			
-			// Call onRequest hook
-			var rewrittenReq *contract.RequestPayload
-			var err error
-			rewrittenReq, reqContext, err = h.externalHooks.InterceptRequest(
-				r.Context(),
-				hookCtx,
-				reqPayload,
-			)
-			
-			// Handle block decision
-			if err != nil {
-				// Hook blocked request - return error to client
-				h.emitTrace(r.Context(), requestID,
-					gwtrace.ExternalHookBlock("onRequest", err.Error()))
-				captureAndEmitFailure("policy_violation", err.Error(), nil, nil, http.StatusForbidden)
-				writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "policy_violation",
-					fmt.Sprintf("Request blocked by policy: %s", err.Error()), nil)
-				return
-			}
-			
-			// Apply rewritten request if present
-			if rewrittenReq != nil && rewrittenReq.Body.Body != nil {
-				// Hook rewrote request - use modified body
-				bodyBytes = rewrittenReq.Body.Body
-				h.emitTrace(r.Context(), requestID,
-					gwtrace.ExternalHookRewrite("onRequest"))
-				slog.Info("external_hook_rewrote_request",
-					"request_id", requestID,
-					"original_bytes", reqPayload.Body.OriginalBytes,
-					"rewritten_bytes", len(bodyBytes))
-			}
-		}
-		// ── End External Hook: onRequest ─────────────────────────────────────
+		hookCtx := externalhost.BuildHookContext(
+			r,
+			requestID,
+			gwSessionID,
+			tenantID,
+		)
+		hookCtx.Protocol = egressProtocol // resolved upstream protocol
+		hookCtx.Model = clientModel
+		hookCtx.Origin = determineOrigin(r, keyInfo)
 
-		// ── Phase 2 Meta-tool expansion ────────────────────────────────────
+		// Build request payload
+		reqPayload := externalhost.BuildRequestPayload(
+			r,
+			bodyBytes,
+			clientModel,
+			isStream,
+		)
+
+		// Call onRequest hook
+		var rewrittenReq *contract.RequestPayload
+		var err error
+		rewrittenReq, reqContext, err = h.externalHooks.InterceptRequest(
+			r.Context(),
+			hookCtx,
+			reqPayload,
+		)
+
+		// Handle block decision
+		if err != nil {
+			// Hook blocked request - return error to client
+			h.emitTrace(r.Context(), requestID,
+				gwtrace.ExternalHookBlock("onRequest", err.Error()))
+			captureAndEmitFailure("policy_violation", err.Error(), nil, nil, http.StatusForbidden)
+			writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "policy_violation",
+				fmt.Sprintf("Request blocked by policy: %s", err.Error()), nil)
+			return
+		}
+
+		// Apply rewritten request if present
+		if rewrittenReq != nil && rewrittenReq.Body.Body != nil {
+			// Hook rewrote request - use modified body
+			bodyBytes = rewrittenReq.Body.Body
+			h.emitTrace(r.Context(), requestID,
+				gwtrace.ExternalHookRewrite("onRequest"))
+			slog.Info("external_hook_rewrote_request",
+				"request_id", requestID,
+				"original_bytes", reqPayload.Body.OriginalBytes,
+				"rewritten_bytes", len(bodyBytes))
+		}
+	}
+	// ── End External Hook: onRequest ─────────────────────────────────────
+
+	// ── Phase 2 Meta-tool expansion ────────────────────────────────────
 	// When the request's `tools` array contains the meta-tools
 	// (list_categories, load_tools), expand them in-place with the full
 	// tool set loaded from tool_registry. The expanded request is then
@@ -7216,20 +7205,28 @@ goalRetryLoopDone:
 		if result != nil && result.Response != nil && result.Response.StatusCode > 0 {
 			responseStatus = result.Response.StatusCode
 		}
-		
+
 		responseHeaders := make(http.Header)
 		if result != nil && result.Response != nil && result.Response.Header != nil {
 			responseHeaders = result.Response.Header
 		}
-		
-		// Use bounded copy of response body (already limited by result.ResponseBody)
+
+		// Use bounded copy of response body.
+		//
+		// W3 流式空正文修复（2026-11-27）：流式路径下 result.ResponseBody 恒为空
+		// （响应正文由 executor 直接写给客户端，见 executors/executor_chat.go 的
+		// 流式成功分支不填 ResponseBody）⇒ 外部钩子捕获到的响应正文永远是空的。
+		// 用 streamCapture 重组成的 assistant 正文兜底，让流式与非流式口径一致。
 		responseBody := result.ResponseBody
-		
+		if len(responseBody) == 0 && streamCapture != nil {
+			responseBody = reassembleStreamBody(streamCapture)
+		}
+
 		actualModel := clientModel
 		if result != nil && result.Candidate.RawModel != "" {
 			actualModel = result.Candidate.RawModel
 		}
-		
+
 		respPayload := externalhost.BuildResponsePayload(
 			responseStatus,
 			responseHeaders,
@@ -7237,13 +7234,13 @@ goalRetryLoopDone:
 			actualModel,
 			isStream,
 		)
-		
+
 		// Update hook context with final values
 		tenantID := "default"
 		if keyInfo != nil && keyInfo.TenantID != "" {
 			tenantID = keyInfo.TenantID
 		}
-		
+
 		finalHookCtx := externalhost.BuildHookContext(
 			r,
 			requestID,
@@ -7254,10 +7251,10 @@ goalRetryLoopDone:
 		finalHookCtx.Model = clientModel
 		finalHookCtx.Origin = determineOrigin(r, keyInfo)
 		finalHookCtx.Abort = false // Client did not disconnect (we reached success path)
-		
+
 		// Capture response in background (doesn't block)
 		h.externalHooks.CaptureResponse(reqContext, finalHookCtx, respPayload)
-		
+
 		h.emitTrace(r.Context(), requestID,
 			gwtrace.ExternalHookCapture("onResponse"))
 	}
@@ -8192,28 +8189,28 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			if canonical == "" {
 				canonical = evt.ClientModel
 			}
-			
+
 			// P0-3 方案C（2026-11-26）：分离"计算积分"和"扣减钱包"
-			// 
+			//
 			// 旧逻辑：ChargeRequestMultimodalWithMultiplier 在事务中同时完成：
 			//   1. 写入 credit_ledger
 			//   2. 更新 wallet 余额
 			//   3. 返回 charged 积分
-			// 
+			//
 			// 新逻辑：
 			//   1. 【同步】计算积分（快速，内存操作）→ 写入 reqLog.CreditsCharged
 			//   2. 【同步】telemetry 写入（cost_usd 和 credits_charged 在同一次写入）
 			//   3. 【异步】扣减钱包（goroutine，失败写入补扣费队列）
-			// 
+			//
 			// 好处：
 			//   - cost_usd 和 credits_charged 强一致性（同一代码路径）
 			//   - 钱包扣减失败不影响请求完成
 			//   - 性能更好（计算积分 ~1ms，不等待 DB 事务）
-			
+
 			calcCtx, calcCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			chargeStart := eventAt
 			multiplier := h.maasSvc.ResolveCurrentMultiplier(calcCtx, chargeStart)
-			
+
 			// 步骤1：同步计算积分（不扣减钱包）
 			result, err := h.maasSvc.CalculateCredits(calcCtx, maas.CalculateCreditsInput{
 				TenantID:      keyInfo.TenantID,
@@ -8227,7 +8224,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				RateMultiplier: multiplier,
 			})
 			calcCancel()
-			
+
 			if err != nil {
 				slog.Warn("maas calculate credits failed",
 					"request_id", evt.RequestID,
@@ -8237,7 +8234,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				// 步骤2：写入 telemetry（与 cost_usd 在同一次写入）
 				reqLog.CreditsCharged = &result.Credits
 				reqLog.RateMultiplier = &result.RateMultiplier
-				
+
 				// 步骤3：异步扣减钱包（不阻塞主流程）
 				go h.deductCreditsAsync(context.Background(), keyInfo.TenantID, keyOwner, evt.RequestID, result.Credits)
 			}
@@ -8862,10 +8859,11 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 // request_status / 既有计数零变化，见 FailureDetailOverride 的字段注释）。
 //
 // ★ 为什么需要这一条（2026-11-26）：/v1/messages 与 /v1/responses 两个协议面
-//   的零候选出口走的是 recordFailedRequestWithKey（自建 RequestLogContext），
-//   **拿不到** chat 面那条 logCtx ⇒ 归因令牌在那两个面上同样进不了落库路径
-//   ⇒ 库里 24h 内 anthropic-messages 43 笔 + openai-responses 66 笔的
-//   no_candidate 行也全是泛化码 gw_no_candidate。
+//
+//	的零候选出口走的是 recordFailedRequestWithKey（自建 RequestLogContext），
+//	**拿不到** chat 面那条 logCtx ⇒ 归因令牌在那两个面上同样进不了落库路径
+//	⇒ 库里 24h 内 anthropic-messages 43 笔 + openai-responses 66 笔的
+//	no_candidate 行也全是泛化码 gw_no_candidate。
 func (h *ChatHandler) recordFailedRequestWithDetail(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage, detailCode string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
 	markRequestJourneyFailure(r, keyInfo, errCode)
 	ctx := &RequestLogContext{
@@ -10577,14 +10575,14 @@ func writeNoCandidateWithCause(proto string, w http.ResponseWriter, requestID, m
 	if requestID != "" {
 		w.Header().Set("X-Request-Id", requestID)
 	}
-	
+
 	// 根据归因令牌返回对应的状态码（404/403/429/503）
 	status := statusCodeForNoCandidateCause(cause.Causes)
 	w.WriteHeader(status)
-	
+
 	// 根据归因令牌获取更精确的 error code
 	code := errorCodeForNoCandidateCause(cause.Causes)
-	
+
 	var body map[string]any
 	if proto == "anthropic" {
 		// Anthropic: type 由 anthropicErrorType 映射，优先看 code

@@ -180,12 +180,16 @@ func (h *Host) OnResponse(ctx context.Context, hookCtx *contract.Context, resp *
 func (h *Host) invoke(ctx context.Context, hookCtx *contract.Context, point contract.HookPoint,
 	req *contract.RequestPayload, resp *contract.ResponsePayload) *Outcome {
 
+	// W3.3 送出侧有界副本（2026-11-27 修订）：
+	// 原实现把调用方 payload 原样 marshal 送出，正文无 8MiB 上限 ⇒ 契约未兑现。
+	// 这里在送出前强制 BoundedCopy：调用方给的 body 可能是完整上游响应，
+	// 不设上限会让一次外部钩子调用搬运任意大的正文。
 	inv := &contract.Invocation{
 		ContractVersion: contract.ContractVersion,
 		HookPoint:       point,
 		Context:         hookCtx,
-		Request:         req,
-		Response:        resp,
+		Request:         boundedRequest(req),
+		Response:        boundedResponse(resp),
 	}
 	if err := contract.ValidateInvocation(inv); err != nil {
 		return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureProtocol, Err: err}
@@ -262,6 +266,38 @@ func (h *Host) invoke(ctx context.Context, hookCtx *contract.Context, point cont
 		}
 		return out
 	}
+}
+
+// boundedRequest 返回正文受 8MiB 上限约束的请求载荷副本。
+//
+// 语义（2026-11-27 修订，兑现 W3.3「8MiB 有界副本」契约）：
+// 只裁剪 Body；其余字段（method/path/headers/model/stream/工具声明）原样保留，
+// 因为受保护字段的变更检测依赖它们与原值逐项比对。
+func boundedRequest(req *contract.RequestPayload) *contract.RequestPayload {
+	if req == nil {
+		return nil
+	}
+	out := *req
+	if len(req.Body.Body) > contract.MaxBodyBytes {
+		out.Body = contract.BoundedCopy(req.Body.Body)
+	} else {
+		out.Body = req.Body
+	}
+	return &out
+}
+
+// boundedResponse 返回正文受 8MiB 上限约束的响应载荷副本。
+func boundedResponse(resp *contract.ResponsePayload) *contract.ResponsePayload {
+	if resp == nil {
+		return nil
+	}
+	out := *resp
+	if len(resp.Body.Body) > contract.MaxBodyBytes {
+		out.Body = contract.BoundedCopy(resp.Body.Body)
+	} else {
+		out.Body = resp.Body
+	}
+	return &out
 }
 
 // classifyTransportError 把传输层错误归因为超时或崩溃（W3.2：两者都原样直通）。

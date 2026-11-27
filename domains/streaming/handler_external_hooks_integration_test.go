@@ -86,32 +86,32 @@ func TestDetermineOrigin(t *testing.T) {
 			want:       contract.OriginLocal,
 		},
 		{
-			name:       "private network 10.x",
+			name:       "private network 10.x (treated as remote per W3.4 privacy)",
 			remoteAddr: "10.0.0.5:12345",
 			keyInfo:    nil,
-			want:       contract.OriginLocal,
+			want:       contract.OriginRemote,
 		},
 		{
-			name:       "private network 192.168.x",
+			name:       "private network 192.168.x (treated as remote per W3.4 privacy)",
 			remoteAddr: "192.168.1.100:12345",
 			keyInfo:    nil,
-			want:       contract.OriginLocal,
+			want:       contract.OriginRemote,
 		},
 		{
-			name:       "private network 172.16.x",
+			name:       "private network 172.16.x (treated as remote per W3.4 privacy)",
 			remoteAddr: "172.16.0.1:12345",
 			keyInfo:    nil,
-			want:       contract.OriginLocal,
+			want:       contract.OriginRemote,
 		},
 		{
-			name:       "private network 172.20.x",
-			remoteAddr: "172.20.0.1:12345",
-			keyInfo:    nil,
-			want:       contract.OriginLocal,
-		},
-		{
-			name:       "private network 172.31.x",
+			name:       "private network 172.31.x (treated as remote per W3.4 privacy)",
 			remoteAddr: "172.31.255.255:12345",
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+		{
+			name:       "loopback 127.x.y.z any address in 127/8",
+			remoteAddr: "127.5.6.7:12345",
 			keyInfo:    nil,
 			want:       contract.OriginLocal,
 		},
@@ -160,8 +160,9 @@ func TestDetermineOrigin(t *testing.T) {
 	}
 }
 
-// TestIsLocalNetwork verifies the local network detection helper
-func TestIsLocalNetwork(t *testing.T) {
+// TestIsLoopbackAddr verifies the loopback detection helper (2026-11-27 修订：
+// 只认回环 127/8 与 ::1；私有网段按 remote 走隐私路径).
+func TestIsLoopbackAddr(t *testing.T) {
 	tests := []struct {
 		name       string
 		remoteAddr string
@@ -169,25 +170,27 @@ func TestIsLocalNetwork(t *testing.T) {
 	}{
 		{"localhost", "127.0.0.1:8080", true},
 		{"localhost no port", "127.0.0.1", true},
+		{"127/8 any address", "127.5.6.7:8080", true},
+		{"127/8 edge", "127.255.255.255:8080", true},
 		{"IPv6 localhost", "::1", true},
-		{"10.x.x.x", "10.0.0.1:8080", true},
-		{"10.x.x.x edge", "10.255.255.255:8080", true},
-		{"192.168.x.x", "192.168.1.1:8080", true},
-		{"192.168.x.x edge", "192.168.255.255:8080", true},
-		{"172.16.x.x start", "172.16.0.0:8080", true},
-		{"172.31.x.x end", "172.31.255.255:8080", true},
-		{"172.20.x.x middle", "172.20.100.50:8080", true},
-		{"172.15.x.x before range", "172.15.255.255:8080", false},
-		{"172.32.x.x after range", "172.32.0.0:8080", false},
+		{"IPv6 localhost no port", "::1", true},
+		// 私有网段一律不算 loopback（W3.4 隐私原则：私网≠本机）
+		{"10.x.x.x", "10.0.0.1:8080", false},
+		{"10.x.x.x edge", "10.255.255.255:8080", false},
+		{"192.168.x.x", "192.168.1.1:8080", false},
+		{"192.168.x.x edge", "192.168.255.255:8080", false},
+		{"172.16.x.x start", "172.16.0.0:8080", false},
+		{"172.31.x.x end", "172.31.255.255:8080", false},
 		{"public IP", "203.0.113.1:8080", false},
 		{"public IP no port", "8.8.8.8", false},
+		{"empty", "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isLocalNetwork(tt.remoteAddr)
+			got := isLoopbackAddr(tt.remoteAddr)
 			if got != tt.want {
-				t.Errorf("isLocalNetwork(%q) = %v, want %v", tt.remoteAddr, got, tt.want)
+				t.Errorf("isLoopbackAddr(%q) = %v, want %v", tt.remoteAddr, got, tt.want)
 			}
 		})
 	}
