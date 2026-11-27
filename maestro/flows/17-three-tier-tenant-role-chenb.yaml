@@ -1,0 +1,64 @@
+# 三级配额制 chenb（tenant_admin）角色验证（2026-11-27）
+#
+# chenb 登录 → 验证租户侧页面可达（租户视角无 /orgs 管理入口属预期）。
+# 密码经 -e CHENB_PASSWORD 注入（不落盘，不进本文件）。
+#
+# 用法：
+#   maestro test maestro/flows/17-three-tier-tenant-role-chenb.yaml \
+#     -e BASE_URL=https://llm.itestu.cn -e CHENB_PASSWORD=***
+
+url: ${BASE_URL}
+---
+- launchApp:
+    clearState: true
+- openLink: ${BASE_URL}/?login=1
+# 落地页接管时点 CTA 进登录弹窗
+- runFlow:
+    when:
+      visible:
+        text: ".*安装激活.*"
+    commands:
+      - tapOn:
+          text: "登录控制面"
+      - extendedWaitUntil:
+          visible:
+            id: "login-modal-title"
+          timeout: 20000
+- runFlow:
+    when:
+      notVisible:
+        id: "login-modal-title"
+    commands:
+      - tapOn:
+          text: "登录"
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "chenb"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "${CHENB_PASSWORD}"
+- pressKey: Enter
+# 登录成功：弹窗关闭 + 顶栏出现 chenb
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+# 顶栏用户名是 chenb123（全匹配正则 ⇒ 用 .* 兜）；租户看板标头出现「租户: chenb」
+- extendedWaitUntil:
+    visible:
+      text: ".*chenb123.*"
+    timeout: 20000
+- extendedWaitUntil:
+    visible:
+      text: ".*租户: chenb.*"
+    timeout: 20000
