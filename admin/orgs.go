@@ -443,6 +443,22 @@ func (h *Handler) updateOrgWallet(w http.ResponseWriter, r *http.Request, id int
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// ★ 2026-11-28 12h 审计轮（F-1）：先做 organizations 存在性预检（GET 成员
+	//   列表 :317 同款惯例）。修复前 org 不存在时 ensure-wallet 的
+	//   INSERT（tenant_id 子查询为 NULL ⇒ NOT NULL / FK 违约）会以
+	//   500「ensure org wallet failed」漏出——内部错误信封泄漏存储细节；
+	//   更早版本则把别名 42P01 误报成 404。预检后不存在 org 稳定 404。
+	var exists bool
+	if err := h.policyDB().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM organizations WHERE id = $1)`, id).Scan(&exists); err != nil {
+		// 真存储故障 ≠ 行不存在：500（writeInternalErr），不伪装成 404。
+		writeInternalErr(w, "org precheck failed", err)
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "org not found")
+		return
+	}
+
 	// ★ 2026-11-28 审计轮：credit_limit 三态解析（及其 400）必须发生在**任何
 	//   写操作之前**——修复前非法 payload 会先把 ensure-wallet/balance/policy
 	//   落库、再在校验处返回 400（部分写副作用）。user 面（users.go）顺序
