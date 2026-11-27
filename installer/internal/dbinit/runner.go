@@ -2167,6 +2167,8 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"999b_system_probe_run_tokens.sql",
 			"999c_tool_usage_stats_columns.sql",
 			"999d_tenant_ops_scope.sql",
+			// Keep the attachment-quota migration in the installed startup manifest.
+			"633_tenant_attachment_quotas.sql",
 		},
 	}
 }

@@ -278,7 +278,8 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     total_tokens ／ tool_usage_stats 族的 134 形状列 ／ licenses 与
 		//     releases 的 tenant_id），来源是第 30 轮新立的
 		//     「生产 SQL 引用的表与列必须有投递来源创建」门第一次校准抓出的存量缺口。
-		wantBoth          = 348
+		// Migration 633 is delivered by the installer and the deployment channel.
+		wantBoth          = 349
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)

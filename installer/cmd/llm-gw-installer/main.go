@@ -1974,6 +1974,9 @@ var toolUsageStatsColumns999c []byte
 //go:embed embeddata/startup/999c_tool_usage_stats_columns.down.sql
 var toolUsageStatsColumns999cDown []byte
 
+//go:embed embeddata/startup/633_tenant_attachment_quotas.sql
+var tenantAttachmentQuotas633 []byte
+
 //go:embed embeddata/startup/999d_tenant_ops_scope.sql
 var tenantOpsScope999d []byte
 
@@ -2791,6 +2794,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999b_system_probe_run_tokens.down.sql": systemProbeRunTokens999bDown,
 	"startup/999c_tool_usage_stats_columns.sql":      toolUsageStatsColumns999c,
 	"startup/999c_tool_usage_stats_columns.down.sql": toolUsageStatsColumns999cDown,
+	"startup/633_tenant_attachment_quotas.sql":       tenantAttachmentQuotas633,
 	"startup/999d_tenant_ops_scope.sql":              tenantOpsScope999d,
 	"startup/999d_tenant_ops_scope.down.sql":         tenantOpsScope999dDown,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
