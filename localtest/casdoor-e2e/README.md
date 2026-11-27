@@ -9,12 +9,13 @@ cd localtest/casdoor-e2e
 ./start-e2e.sh                 # 生成密钥/配置 + 起栈（PG×2 + casdoor）
 ./migrate.sh                   # 重建 gateway_e2e 库 + 基线三件套 + 全量 startup 迁移
 set -a; source gateway.env; set +a
-go build -o runtime/gateway ./cmd/gateway   # （仓根执行也行，用绝对路径）
-tmux new-session -d -s casdoor-e2e-gw './runtime/gateway 2>&1 | tee runtime/gateway.log'
+go build -o runtime/gateway ../../cmd/gateway
+tmux new-session -d -s casdoor-e2e-gw 'cd '"$PWD"' && set -a && source gateway.env && set +a && exec ./runtime/gateway > runtime/gateway.log 2>&1'
 curl -s http://127.0.0.1:18781/healthz
+bash ./run-e2e-tests.sh        # 八判据 21 断言，幂等，期望 PASS=21 FAIL=0
 ```
 
-测试判据与脚本：见 ../casdoor-e2e-tests.md（若未生成，跑 `./tests/run-e2e-tests.sh`）。
+测试脚本 `run-e2e-tests.sh`（判据 C1–C8 写在文件头注释）；其 captcha 自动解题依赖同目录 `captcha_solver.py`（读 `admin/auth_captcha.go` 的字形表）。留证见 `evidence/final_green_run.log`。
 
 ## 拓扑
 
@@ -40,6 +41,9 @@ curl -s http://127.0.0.1:18781/healthz
 casdoor-e2e/
 ├── start-e2e.sh          # 密钥/配置生成 + compose up
 ├── migrate.sh            # gateway_e2e 库重建 + 全量迁移（r112 范式裁剪）
+├── run-e2e-tests.sh      # 八判据 21 断言测试套件
+├── captcha_solver.py     # 测试用 captcha 解题器（依赖 admin/auth_captcha.go 字形表）
+├── evidence/             # 全绿运行留证
 ├── docker-compose.yml    # pg + casdoor-db + casdoor
 ├── gateway.env           # 生成物（网关 source），0600，gitignore
 ├── casdoor/
