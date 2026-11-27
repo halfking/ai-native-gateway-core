@@ -13,10 +13,10 @@ func canManageCredentialSecrets(r *http.Request) bool {
 	if auth == nil {
 		return false
 	}
-	if auth.Role == "super_admin" || auth.Role == "admin_key" {
+	if auth.HasRole("super_admin") || auth.HasRole("admin_key") {
 		return true
 	}
-	return auth.Role == "tenant_admin" && auth.TenantID == "default"
+	return auth.HasRole("tenant_admin") && auth.TenantID == "default"
 }
 
 func (h *Handler) handleUnifiedCredentialSecrets(w http.ResponseWriter, r *http.Request) {

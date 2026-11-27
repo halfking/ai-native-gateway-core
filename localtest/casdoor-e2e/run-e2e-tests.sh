@@ -144,8 +144,8 @@ CT2=$(echo "$LOGIN2" | jq_get "d['access_token']")
 UID3=$(q "SELECT count(*) FROM users WHERE username='gwuser'")
 MAP3=$(q "SELECT count(*) FROM auth_id_mapping WHERE username='gwuser' AND provider='casdoor'")
 META3=$(q "SELECT metadata->>'users_id' FROM auth_id_mapping WHERE username='gwuser' AND provider='casdoor' LIMIT 1")
-[ "$UID2" = "1" ] && [ "$UID3" = "1" ] && ok_ "users 行数恒 1" || bad_ "users 行数 $UID2→$UID3"
-[ "$MAP2" = "1" ] && [ "$MAP3" = "1" ] && ok_ "映射恒 1 条" || bad_ "映射 $MAP2→$MAP3"
+[ "$UID2" = "1" ] && [ "$UID3" = "1" ] && ok_ "users 行数恒 1" || bad_ "users 行数 ${UID2}→${UID3}"
+[ "$MAP2" = "1" ] && [ "$MAP3" = "1" ] && ok_ "映射恒 1 条" || bad_ "映射 ${MAP2}→${MAP3}"
 [ "$META3" = "$GWUID" ] && ok_ "users_id 稳定" || bad_ "users_id $META → $META3"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 8 "$GW/api/auth/me" -H "Authorization: Bearer $CT2")
 [ "$CODE" = "200" ] && ok_ "二次换发 token 也能用" || bad_ "二次 token /me => $CODE"

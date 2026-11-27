@@ -10,15 +10,38 @@ type authContextKey struct{}
 
 // AuthContext holds the authenticated identity for the current request.
 type AuthContext struct {
-	UserID             int    // 0 for legacy admin key auth
-	TenantID           string // tenant_id from JWT or "default" for legacy
-	Username           string // username from JWT or "admin" for legacy
-	Role               string // super_admin | tenant_admin | admin_key
-	IsJWT              bool   // true if authenticated via JWT
+	UserID   int    // 0 for legacy admin key auth
+	TenantID string // tenant_id from JWT or "default" for legacy
+	Username string // username from JWT or "admin" for legacy
+	Role     string // super_admin | tenant_admin | admin_key
+	// Roles 多角色有效集（三级配额制 P1-b，2026-11-27）：含主角色在内的
+	// 全量角色。nil = 未携带（legacy/admin_key 形态）⇒ HasRole 回落判 Role。
+	Roles              []string
+	IsJWT              bool // true if authenticated via JWT
 	MustChangePassword bool
 	Issuer             string // original verified issuer
 	Subject            string // original issuer's subject
 	CanonicalUserID    string // explicit shared identity; empty for legacy
+}
+
+// HasRole 报告当前身份是否持有指定角色（多角色 P1-b）。
+//
+// 判定顺序：Roles 非空按集合判（含主角色）；Roles 空（legacy/admin_key）回落
+// Role 单值。主角色恒在 Roles 内（登录/签发侧维护）⇒ 既有 Role== 判断语义
+// 是本函数的子集。
+func (a *AuthContext) HasRole(role string) bool {
+	if a == nil {
+		return false
+	}
+	if len(a.Roles) > 0 {
+		for _, r := range a.Roles {
+			if r == role {
+				return true
+			}
+		}
+		return false
+	}
+	return a.Role == role
 }
 
 // SetAuthContext stores the AuthContext in the request context.
@@ -41,10 +64,11 @@ func GetTenantID(r *http.Request) string {
 	return "default"
 }
 
-// IsTenantAdmin returns true if the request is authenticated as a tenant_admin.
+// IsTenantAdmin returns true if the request is authenticated as a tenant_admin
+//（多角色 P1-b：经 HasRole 判——Roles 集合语义与 legacy 单值回落统一收口）。
 func IsTenantAdmin(r *http.Request) bool {
 	auth := GetAuthContext(r)
-	return auth != nil && auth.Role == "tenant_admin"
+	return auth != nil && auth.HasRole("tenant_admin")
 }
 
 // IsSuperAdminOrLegacy returns true if the request has full admin access.
@@ -53,13 +77,15 @@ func IsSuperAdminOrLegacy(r *http.Request) bool {
 	if auth == nil {
 		return false
 	}
-	return auth.Role == "super_admin" || auth.Role == "admin_key"
+	// P1-b：多角色时经 HasRole（集合判）；legacy（Roles 空）回落 Role 单值。
+	// HasRole 已覆盖 legacy 回落（Roles 空 ⇒ 判 Role 单值）⇒ 无需再显式判 Role。
+	return auth.HasRole("super_admin") || auth.HasRole("admin_key")
 }
 
 // IsChannelUser returns true if the request is authenticated as a channel user (W4.3).
 func IsChannelUser(r *http.Request) bool {
 	auth := GetAuthContext(r)
-	return auth != nil && auth.Role == "channel"
+	return auth != nil && auth.HasRole("channel")
 }
 
 // EffectiveTenantID returns the tenant_id to use in SQL queries.

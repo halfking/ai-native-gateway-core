@@ -561,6 +561,10 @@ func (r *ResourceLimiter) Stop() error {
 // unlinkat（EPERM）——这类环境性拒绝同样经重试后仍失败时如实返回错误，
 // 由调用方（Supervisor.Stop）WARN 降级，不影响插件服务。
 func (r *ResourceLimiter) removeCgroup() error {
+	// monitor 模式（cgroup 不可用）下 cgroupPath="" → 无目录需清理
+	if r.cgroupPath == "" {
+		return nil
+	}
 	var err error
 	for i := 0; i < 15; i++ { // ~3s：等进程组内线程退出（SIGTERM 优雅窗口内）
 		err = syscall.Rmdir(r.cgroupPath)

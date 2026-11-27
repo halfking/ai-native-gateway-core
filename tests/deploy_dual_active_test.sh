@@ -162,6 +162,9 @@ dd_secondary_derive_block() {
   awk '/^dd_start_secondary\(\) \{/,/^\}$/' "$ENGINE"
 }
 _dd_derive="$(dd_secondary_derive_block)"
+# SIGPIPE 判据（跨平台口径）：判据量 = **写端总量**（printf 单变量块，派生块文本
+# 数十字 ≪ 64 KiB 管道容量——Linux 4,096 B PIPE_BUF 起 / macOS 16–32 KiB 皆远不
+# 触及）⇒ grep -q 命中提前退出时写端早已写完，不触发 SIGPIPE。
 printf '%s' "$_dd_derive" | grep -q 'while IFS= read -r _line' \
   && printf '%s' "$_dd_derive" | grep -q '_line="\${_line#export }"' \
   && printf '%s' "$_dd_derive" | grep -q "printf 'export %s" \

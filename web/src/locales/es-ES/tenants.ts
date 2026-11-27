@@ -222,6 +222,15 @@ export default {
     createOrderFailed: 'No se pudo crear el pedido. Vuelva a intentarlo.'
   },
   usage: {
+    usageStatModels: 'Modelos',
+    usageStatRequests: 'Peticiones tot.',
+    usageStatTokens: 'Tokens tot.',
+    usageStatInput: 'Tokens entrada',
+    usageStatOutput: 'Tokens salida',
+    usageStatCached: 'Tokens caché',
+    usageStatCacheRate: 'Tasa caché',
+    usageStatSuccessRate: 'Tasa éxito',
+    usageStatCredits: 'Créditos',
     title: "Mi uso",
     adminTitle: "Estadísticas de consumo",
     refresh: "Actualizar",

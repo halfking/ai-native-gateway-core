@@ -225,6 +225,15 @@ export default {
 
   // /tenant/usage 页面
   usage: {
+    usageStatModels: '模型数',
+    usageStatRequests: '总请求',
+    usageStatTokens: '总 Token',
+    usageStatInput: '输入 Token',
+    usageStatOutput: '输出 Token',
+    usageStatCached: '缓存 Token',
+    usageStatCacheRate: '缓存率',
+    usageStatSuccessRate: '成功率',
+    usageStatCredits: '积分消耗',
     title: '我的消耗',
     adminTitle: '消耗统计',
     refresh: '刷新',

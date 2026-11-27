@@ -18,6 +18,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# 专用 GOCACHE（编译型脚本门判据）：本脚本第 191 行的 echo 提示文本含
+# 「go build」字样命中编译型口径 ⇒ 接入仓内共享入口（行为无关——本脚本
+# 自身不编译任何 Go 代码，echo 文本才是命中源；verify-data-permissions 先例）。
+GOCACHE_LIB="$SCRIPT_DIR/../../scripts/lib/gocache.sh"
+[ -f "$GOCACHE_LIB" ] && . "$GOCACHE_LIB" && gocache_use script
 RUNTIME="$SCRIPT_DIR/runtime"
 mkdir -p "$RUNTIME" casdoor/logs
 

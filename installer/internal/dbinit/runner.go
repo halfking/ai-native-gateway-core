@@ -2221,6 +2221,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   （024 范式：软删 + active 视图 + 审计触发器）。
 			//   自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；依赖 1003。
 			"1004_three_tier_model_policies.sql",
+			// ★ 1005（2026-11-27 三级配额制 P1-b）：users.roles 多角色数组。
+			//   role 保留为主角色；roles 空 = 有效集回落 [role]（存量兼容）。
+			"1005_user_roles_array.sql",
 		},
 	}
 }

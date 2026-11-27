@@ -3044,6 +3044,9 @@ files=(
   #   org_model_policies / user_model_policies（024 范式：软删+视图+审计）。
   #   自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；依赖 1003 organizations。
   "$ROOT_DIR/sql/migrations/startup/1004_three_tier_model_policies.sql"
+  # ★ 1005（2026-11-27 三级配额制 P1-b）：users.roles 多角色数组。
+  #   role 保留为主角色（存量兼容）；roles 空 = 有效集回落 [role]。
+  "$ROOT_DIR/sql/migrations/startup/1005_user_roles_array.sql"
 )
 
 

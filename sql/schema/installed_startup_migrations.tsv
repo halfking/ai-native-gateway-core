@@ -442,3 +442,4 @@
 424	983r_request_metrics_board_hour_distributions.sql
 425	1003_org_hierarchy_and_wallets.sql
 426	1004_three_tier_model_policies.sql
+427	1005_user_roles_array.sql

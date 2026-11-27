@@ -597,6 +597,8 @@ export interface TenantUser {
   display_name: string
   email: string
   role: string
+  /** 多角色有效集（P1-b）：undefined/空 = 回落 [role]（存量兼容）。 */
+  roles?: string[]
   enabled: boolean
   last_login_at: string | null
   created_at: string

@@ -144,3 +144,5 @@ canonical/1003_org_hierarchy_and_wallets.sql	both	-	组织层级 + 组织/用户
 embeddata/1003_org_hierarchy_and_wallets.sql	installer	-	同 canonical/1003 行：安装器 embeddata 副本的登记键（embeddata 宇宙按 embeddata/ 前缀单独成行）。
 canonical/1004_three_tier_model_policies.sql	both	-	三级模型过滤（2026-11-27 三级配额制轮）：tenant_model_policies.mode（allow/deny 双模，缺省 deny=既有黑名单语义零变化）＋ org_model_policies / user_model_policies（024 范式：软删 + active 视图 + 审计触发器；allow=白名单空名单全放行）。★ 四位数前缀对按文件名解析的门隐形 ⇒ 五点投递（embeddata 副本/go:embed/embeddedSQLFiles/StartupFiles/部署通道 files=()/本册）。★ 自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；依赖 1003 organizations。
 embeddata/1004_three_tier_model_policies.sql	installer	-	同 canonical/1004 行：安装器 embeddata 副本的登记键（embeddata 宇宙按 embeddata/ 前缀单独成行）。
+canonical/1005_user_roles_array.sql	both	-	users.roles 多角色数组（2026-11-27 三级配额制 P1-b 轮）：role 保留为主角色（存量兼容），roles 空 = 有效集回落 [role]。★ 四位数前缀对按文件名解析的门隐形 ⇒ 五点投递（embeddata 副本/go:embed/embeddedSQLFiles/StartupFiles/部署通道 files=()/本册）。★ 自带 5s lock_timeout 守卫；ADD COLUMN 元数据级。
+embeddata/1005_user_roles_array.sql	installer	-	同 canonical/1005 行：安装器 embeddata 副本的登记键。

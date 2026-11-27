@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-27T13:42:26+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 1012, "indexes_created": 1064, "indexes_dropped_somewhere": 93, "migration_files": 687, "non_numeric_prefix_files": 19, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-27T18:52:31+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 1018, "indexes_created": 1070, "indexes_dropped_somewhere": 93, "migration_files": 697, "non_numeric_prefix_files": 28, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 0	idx_request_logs_session	request_logs	000_base_tables.sql	session_id,ts	
 1	idx_users_tenant	users	001_users_table.sql	tenant_id	
 1	idx_users_username	users	001_users_table.sql	username	

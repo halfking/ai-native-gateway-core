@@ -28,10 +28,10 @@ func TestHandleLogin_DirectDB_Success(t *testing.T) {
 		WithArgs("testuser").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "username", "password_hash", "display_name",
-			"email", "role", "enabled", "must_change_password",
+			"email", "role", "roles", "enabled", "must_change_password",
 		}).AddRow(
 			1, "default", "testuser", string(passwordHash), "Test User",
-			"test@example.com", "user", true, false,
+			"test@example.com", "user", []string{"user"}, true, false,
 		))
 
 	// Mock last_login_at update
@@ -105,10 +105,10 @@ func TestHandleLogin_DirectDB_InvalidCredentials(t *testing.T) {
 		WithArgs("testuser").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "username", "password_hash", "display_name",
-			"email", "role", "enabled", "must_change_password",
+			"email", "role", "roles", "enabled", "must_change_password",
 		}).AddRow(
 			1, "default", "testuser", string(passwordHash), "Test User",
-			"test@example.com", "user", true, false,
+			"test@example.com", "user", []string{"user"}, true, false,
 		))
 
 	h := &Handler{
@@ -155,10 +155,10 @@ func TestHandleLogin_DirectDB_UserDisabled(t *testing.T) {
 		WithArgs("disableduser").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "username", "password_hash", "display_name",
-			"email", "role", "enabled", "must_change_password",
+			"email", "role", "roles", "enabled", "must_change_password",
 		}).AddRow(
 			2, "default", "disableduser", string(passwordHash), "Disabled User",
-			"disabled@example.com", "user", false, false, // enabled=false
+			"disabled@example.com", "user", []string{"user"}, false, false, // enabled=false
 		))
 
 	h := &Handler{

@@ -222,6 +222,15 @@ export default {
     createOrderFailed: '注文の作成に失敗しました。再試行してください。'
   },
   usage: {
+    usageStatModels: 'モデル数',
+    usageStatRequests: '総リクエスト',
+    usageStatTokens: '合計 Token',
+    usageStatInput: '入力 Token',
+    usageStatOutput: '出力 Token',
+    usageStatCached: 'キャッシュ Token',
+    usageStatCacheRate: 'キャッシュ率',
+    usageStatSuccessRate: '成功率',
+    usageStatCredits: 'クレジット消費',
     title: "消費状況",
     adminTitle: "消費統計",
     refresh: "更新",

@@ -25,6 +25,8 @@ type userInfo struct {
 	DisplayName        string     `json:"display_name"`
 	Email              string     `json:"email"`
 	Role               string     `json:"role"`
+	// Roles 多角色有效集（三级配额制 P1-b）：nil/空 = 回落 [Role]（存量兼容）。
+	Roles              []string   `json:"roles,omitempty"`
 	Enabled            bool       `json:"enabled"`
 	MustChangePassword bool       `json:"must_change_password"`
 	LastLoginAt        *time.Time `json:"last_login_at"`
@@ -44,20 +46,25 @@ type orgRef struct {
 }
 
 type createUserRequest struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	TenantID    string `json:"tenant_id"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
-	Role        string `json:"role"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password"`
+	TenantID    string   `json:"tenant_id"`
+	DisplayName string   `json:"display_name"`
+	Email       string   `json:"email"`
+	Role        string   `json:"role"`
+	// Roles 多角色数组（P1-b）：可选；主角色自动前置。
+	Roles       []string `json:"roles,omitempty"`
 }
 
 type updateUserRequest struct {
-	DisplayName *string `json:"display_name"`
-	Email       *string `json:"email"`
-	Role        *string `json:"role"`
-	Enabled     *bool   `json:"enabled"`
-	Password    *string `json:"password"`
+	DisplayName *string   `json:"display_name"`
+	Email       *string   `json:"email"`
+	Role        *string   `json:"role"`
+	// Roles 多角色数组（三级配额制 P1-b）：nil = 不改；空数组 = 清空（有效集
+	// 回落 [Role]）；非空 = 覆盖（必须含 Role 主角色，校验见 updateUser）。
+	Roles       *[]string `json:"roles,omitempty"`
+	Enabled     *bool     `json:"enabled"`
+	Password    *string   `json:"password"`
 }
 
 // ── 角色口径（2026-11-26 角色治理轮）────────────────────────────────
@@ -116,6 +123,27 @@ func roleOptionsForTenant(tenantID string) []string {
 //
 // ★ 这一份是**唯一口径**：admin 内部两条写路径（createUser / updateUser）与
 //   pkg/authplugin/native 共用它 ⇒ 不会因为多一条入口就漏掉规则。
+// normalizeUserRoles（P1-b，2026-11-27）：主角色前置 + 去重保序。
+//
+// 主角色（users.role）必须出现在数组首位——SignTokenWithRoles 的 Roles[0]=主角色
+// 契约由此保证；重复项去重（保留首个出现位置）。
+func normalizeUserRoles(primary string, roles []string) []string {
+	seen := make(map[string]bool, len(roles)+1)
+	out := make([]string, 0, len(roles)+1)
+	if primary != "" {
+		out = append(out, primary)
+		seen[primary] = true
+	}
+	for _, r := range roles {
+		if r == "" || seen[r] {
+			continue
+		}
+		out = append(out, r)
+		seen[r] = true
+	}
+	return out
+}
+
 func ValidateAssignableRole(role, tenantID string) error {
 	if !assignableRoles[role] {
 		return fmt.Errorf("role must be one of: super_admin, tenant_admin, user")
@@ -383,7 +411,7 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 策略管理是平台级配置（跨租户影响数据面），限 super_admin。
-		if auth := GetAuthContext(r); auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+		if auth := GetAuthContext(r); auth != nil && !auth.HasRole("super_admin") && !auth.HasRole("admin_key") {
 			writeError(w, http.StatusForbidden, "super_admin role required for model policy management")
 			return
 		}
@@ -428,11 +456,11 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 // does not enforce an administrative role.
 func requireUserManager(w http.ResponseWriter, r *http.Request) bool {
 	auth := GetAuthContext(r)
-	if auth != nil && auth.Role == "tenant_admin" && strings.TrimSpace(auth.TenantID) == "" {
+	if auth != nil && auth.HasRole("tenant_admin") && strings.TrimSpace(auth.TenantID) == "" {
 		writeError(w, http.StatusForbidden, "tenant scope unavailable")
 		return false
 	}
-	if auth != nil && (auth.Role == "super_admin" || auth.Role == "tenant_admin" || auth.Role == "admin_key") {
+	if auth != nil && (auth.Role == "super_admin" || auth.HasRole("tenant_admin") || auth.Role == "admin_key") {
 		return true
 	}
 	writeError(w, http.StatusForbidden, "administrator role required")
@@ -523,7 +551,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	// tenant_admin can only list users in their own tenant
-	query := `SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at FROM users`
+	query := `SELECT id, tenant_id, username, display_name, email, role, COALESCE(roles, '{}'), enabled, must_change_password, last_login_at, created_at FROM users`
 	args := []any{}
 	if IsTenantAdmin(r) {
 		query += ` WHERE tenant_id = $1`
@@ -539,7 +567,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	var users []userInfo
 	for rows.Next() {
 		var u userInfo
-		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Roles, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
 			warnRowSkip("users.list", err)
 			continue
 		}
@@ -610,6 +638,15 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Roles 多角色（P1-b）：可选；归一化（主角色前置+去重）后逐成员走同一份
+	// 闭集 + 租户不变量校验。
+	createRoles := effectiveLoginRoles(req.Role, req.Roles)
+	for _, r := range createRoles {
+		if err := ValidateAssignableRole(r, req.TenantID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "password hash failed")
@@ -619,11 +656,11 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var u userInfo
 	err = h.userDB().QueryRow(ctx, `
-		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, must_change_password)
-		VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-		RETURNING id, tenant_id, username, display_name, email, role, enabled, must_change_password, created_at
-	`, req.TenantID, req.Username, string(hash), req.DisplayName, req.Email, req.Role).Scan(
-		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.CreatedAt,
+		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, roles, must_change_password)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+		RETURNING id, tenant_id, username, display_name, email, role, roles, enabled, must_change_password, created_at
+	`, req.TenantID, req.Username, string(hash), req.DisplayName, req.Email, req.Role, createRoles).Scan(
+		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Roles, &u.Enabled, &u.MustChangePassword, &u.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -686,6 +723,19 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 			}
 		}
 	}
+	// Roles 多角色数组校验（P1-b）：主角色必须在集内（Roles[0] 契约在签发侧
+	// 强制 ⇒ 这里同样前置主角色保证首元素即主角色）；每个成员走同一份闭集 +
+	// 租户不变量（roleAllowedInTenant）。
+	if req.Roles != nil {
+		normalized := normalizeUserRoles(targetRole, *req.Roles)
+		for _, r := range normalized {
+			if err := ValidateAssignableRole(r, targetTenant); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		req.Roles = &normalized
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	var sets []string
@@ -705,6 +755,11 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		// 角色值本身已在上面校验过（闭集 + 租户不变量 + 最后一个超管保护）。
 		sets = append(sets, "role = $"+strconv.Itoa(argIdx))
 		args = append(args, *req.Role)
+		argIdx++
+	}
+	if req.Roles != nil {
+		sets = append(sets, "roles = $"+strconv.Itoa(argIdx))
+		args = append(args, *req.Roles)
 		argIdx++
 	}
 	if req.Enabled != nil {
@@ -885,9 +940,9 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var u userInfo
 	err := h.policyDB().QueryRow(ctx, `
-		SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at
+		SELECT id, tenant_id, username, display_name, email, role, COALESCE(roles, '{}'), enabled, must_change_password, last_login_at, created_at
 		FROM users WHERE id = $1
-	`, auth.UserID).Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt)
+	`, auth.UserID).Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Roles, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -897,7 +952,7 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	// to localStorage and use it as Authorization: Bearer header on subsequent calls.
 	// This fixes the "cookie-only hydration" gap where the user has a valid cookie
 	// but no JWT in localStorage (e.g., logged in before the unified-auth change).
-	token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
+	token, expiresAt, signErr := SignTokenWithRoles(u.ID, u.TenantID, u.Username, u.Role, effectiveLoginRoles(u.Role, u.Roles), h.secret, u.MustChangePassword)
 	if signErr != nil {
 		// Don't fail the /me call if signing fails — just return user info
 		writeJSON(w, http.StatusOK, u)

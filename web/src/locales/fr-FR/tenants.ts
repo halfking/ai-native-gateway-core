@@ -222,6 +222,15 @@ export default {
     createOrderFailed: 'La création de la commande a échoué. Veuillez réessayer.'
   },
   usage: {
+    usageStatModels: 'Modèles',
+    usageStatRequests: 'Requêtes tot.',
+    usageStatTokens: 'Tokens tot.',
+    usageStatInput: 'Tokens entrée',
+    usageStatOutput: 'Tokens sortie',
+    usageStatCached: 'Tokens cache',
+    usageStatCacheRate: 'Taux cache',
+    usageStatSuccessRate: 'Taux succès',
+    usageStatCredits: 'Crédits',
     title: "Ma consommation",
     adminTitle: "Statistiques de consommation",
     refresh: "Actualiser",
