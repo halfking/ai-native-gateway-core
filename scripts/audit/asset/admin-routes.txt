@@ -1,4 +1,4 @@
-# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=797
+# admin-routes.txt —— 仓内路由清单快照 | 本文件由 scripts/audit/extract-admin-routes.sh 生成，不要手改 | 口径：源码里 mux.HandleFunc/mux.Handle 的字面量首参（path<TAB>method<TAB>file:line；method=ANY 表示源码无方法前缀；口径与已知偏差见生成器头部注释）| 数据行数=796
 /	ANY	cmd/gateway/main.go:8294
 /	ANY	cmd/gateway/main.go:8297
 /.well-known/oauth-protected-resource	ANY	cmd/gateway/mcp_gateway.go:69
@@ -32,8 +32,8 @@
 /api/admin/annotations/samples	ANY	admin/handler.go:1803
 /api/admin/annotations/stats	ANY	admin/handler.go:1807
 /api/admin/anomaly-reporter/stats	ANY	cmd/gateway/main.go:8685
-/api/admin/approvals	ANY	cmd/gateway/main.go:9103
-/api/admin/approvals/stats	ANY	cmd/gateway/main.go:9104
+/api/admin/approvals	ANY	cmd/gateway/main.go:9102
+/api/admin/approvals/stats	ANY	cmd/gateway/main.go:9103
 /api/admin/attachments	ANY	admin/handler.go:1270
 /api/admin/attachments/	ANY	admin/handler.go:1275
 /api/admin/attachments/cleanup/execute	ANY	admin/handler.go:1274
@@ -92,8 +92,8 @@
 /api/admin/connection-registry	ANY	admin/handler.go:1292
 /api/admin/connection-registry/{request_id}	ANY	admin/handler.go:1293
 /api/admin/credential-model-peaks	ANY	admin/peak_handlers.go:27
-/api/admin/credential-success-rates	ANY	cmd/gateway/main.go:8984
-/api/admin/credential-success-rates/reset	ANY	cmd/gateway/main.go:8985
+/api/admin/credential-success-rates	ANY	cmd/gateway/main.go:8983
+/api/admin/credential-success-rates/reset	ANY	cmd/gateway/main.go:8984
 /api/admin/credentials/{id}/session-ping	ANY	admin/handler.go:1618
 /api/admin/dashboard/board	ANY	admin/handler.go:1334
 /api/admin/dashboard/board/error-drill	ANY	admin/handler.go:1384
@@ -154,11 +154,11 @@
 /api/admin/diagnostics/model-routing	ANY	admin/handler.go:1883
 /api/admin/diagnostics/routing-blocked	ANY	admin/handler.go:1881
 /api/admin/diagnostics/routing-blocked/fix	ANY	admin/handler.go:1882
-/api/admin/dispatch/dimensions	ANY	cmd/gateway/main.go:8999
-/api/admin/dispatch/queues	ANY	cmd/gateway/main.go:8995
-/api/admin/dispatch/request-dimensions/	ANY	cmd/gateway/main.go:9002
-/api/admin/dispatch/waterfall	ANY	cmd/gateway/main.go:8996
-/api/admin/dispatch/waterfall/request/	ANY	cmd/gateway/main.go:8997
+/api/admin/dispatch/dimensions	ANY	cmd/gateway/main.go:8998
+/api/admin/dispatch/queues	ANY	cmd/gateway/main.go:8994
+/api/admin/dispatch/request-dimensions/	ANY	cmd/gateway/main.go:9001
+/api/admin/dispatch/waterfall	ANY	cmd/gateway/main.go:8995
+/api/admin/dispatch/waterfall/request/	ANY	cmd/gateway/main.go:8996
 /api/admin/extension-points	ANY	admin/handler.go:1170
 /api/admin/feishubot/routing-rules	ANY	admin/modules.go:1394
 /api/admin/feishubot/routing-rules/	ANY	admin/modules.go:1395
@@ -256,8 +256,8 @@
 /api/admin/pending-responses	ANY	admin/handler.go:1782
 /api/admin/pending-responses/	ANY	admin/handler.go:1783
 /api/admin/pending-responses/stats	ANY	admin/handler.go:1781
-/api/admin/plugin-config	ANY	cmd/gateway/main.go:9222
-/api/admin/plugin-providers	ANY	cmd/gateway/main.go:9233
+/api/admin/plugin-config	ANY	cmd/gateway/main.go:9221
+/api/admin/plugin-providers	ANY	cmd/gateway/main.go:9232
 /api/admin/policies	ANY	cmd/gateway/main.go:8788
 /api/admin/policies/check	ANY	cmd/gateway/main.go:8791
 /api/admin/policies/delete	ANY	cmd/gateway/main.go:8790
@@ -335,12 +335,12 @@
 /api/admin/sensitive-words/status	ANY	admin/sensitive_words_handler.go:36
 /api/admin/session-analytics	ANY	cmd/gateway/main.go:8838
 /api/admin/session-analytics/	ANY	cmd/gateway/main.go:8840
-/api/admin/session-analytics/activity	ANY	cmd/gateway/main.go:8845
+/api/admin/session-analytics/activity	ANY	cmd/gateway/main.go:8844
 /api/admin/session-analytics/clients	ANY	admin/handler.go:1414
 /api/admin/session-analytics/clients/	ANY	admin/handler.go:1415
-/api/admin/session-analytics/cost-trend	ANY	cmd/gateway/main.go:8846
-/api/admin/session-analytics/health-trend	ANY	cmd/gateway/main.go:8848
-/api/admin/session-analytics/latency-trend	ANY	cmd/gateway/main.go:8847
+/api/admin/session-analytics/cost-trend	ANY	cmd/gateway/main.go:8845
+/api/admin/session-analytics/health-trend	ANY	cmd/gateway/main.go:8847
+/api/admin/session-analytics/latency-trend	ANY	cmd/gateway/main.go:8846
 /api/admin/session-analytics/tasks	ANY	admin/handler.go:1416
 /api/admin/session-analytics/tasks/	ANY	admin/handler.go:1417
 /api/admin/session-analytics/users	ANY	admin/handler.go:1436
@@ -350,7 +350,6 @@
 /api/admin/session-analytics/v2/clients	GET	admin/handler.go:1451
 /api/admin/session-analytics/v2/clients/{id}	GET	admin/handler.go:1452
 /api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8839
-/api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8841
 /api/admin/session-analytics/v2/model-ranking	ANY	admin/handler.go:1441
 /api/admin/session-analytics/v2/overview	GET	admin/handler.go:1455
 /api/admin/session-analytics/v2/provider-ranking	ANY	admin/handler.go:1442
@@ -375,8 +374,8 @@
 /api/admin/session-audit/	ANY	admin/handler.go:1547
 /api/admin/session-audit/export	ANY	admin/handler.go:1549
 /api/admin/session-audit/stats	ANY	admin/handler.go:1548
-/api/admin/session-clusters	ANY	cmd/gateway/main.go:8842
-/api/admin/session-clusters/	ANY	cmd/gateway/main.go:8843
+/api/admin/session-clusters	ANY	cmd/gateway/main.go:8841
+/api/admin/session-clusters/	ANY	cmd/gateway/main.go:8842
 /api/admin/session-compare	ANY	cmd/gateway/main.go:8808
 /api/admin/session-crosstalk	ANY	admin/handler.go:1715
 /api/admin/session-export	ANY	cmd/gateway/main.go:8825
@@ -385,12 +384,12 @@
 /api/admin/session-handoff	ANY	cmd/gateway/main.go:8810
 /api/admin/sessions	ANY	admin/handler.go:1506
 /api/admin/sessions/	ANY	admin/handler.go:1507
-/api/admin/sessions/detail	ANY	cmd/gateway/main.go:9035
+/api/admin/sessions/detail	ANY	cmd/gateway/main.go:9034
 /api/admin/sessions/dual-read-drift	ANY	cmd/gateway/dual_read_validator.go:194
 /api/admin/sessions/inspector-stats	ANY	admin/handler.go:1555
-/api/admin/sessions/list	ANY	cmd/gateway/main.go:9042
+/api/admin/sessions/list	ANY	cmd/gateway/main.go:9041
 /api/admin/sessions/online	ANY	admin/handler.go:1562
-/api/admin/sessions/summary	ANY	cmd/gateway/main.go:9036
+/api/admin/sessions/summary	ANY	cmd/gateway/main.go:9035
 /api/admin/sessions/{id}/dual-read	ANY	cmd/gateway/dual_read_validator.go:193
 /api/admin/sessions/{id}/timeline	ANY	admin/handler.go:1563
 /api/admin/sessions/{id}/turns	ANY	admin/handler.go:1567
@@ -428,7 +427,7 @@
 /api/admin/teams/budget/stats	ANY	admin/team_handlers.go:28
 /api/admin/teams/members/add	ANY	admin/team_handlers.go:23
 /api/admin/teams/members/remove	ANY	admin/team_handlers.go:24
-/api/admin/tenant-approval-config/	ANY	cmd/gateway/main.go:9187
+/api/admin/tenant-approval-config/	ANY	cmd/gateway/main.go:9186
 /api/admin/tenant-settings/	ANY	admin/settings.go:26
 /api/admin/tenants	ANY	admin/handler.go:1183
 /api/admin/tenants/	ANY	admin/handler.go:1184
@@ -463,10 +462,10 @@
 /api/admin/work-types/	ANY	admin/work_types.go:55
 /api/admin/work-types/stats	ANY	admin/work_types.go:53
 /api/admin/work-types/sync-from-acc	ANY	admin/work_types.go:54
-/api/agents	ANY	cmd/gateway/main.go:9047
-/api/agents/	ANY	cmd/gateway/main.go:9050
-/api/agents/health	ANY	cmd/gateway/main.go:9049
-/api/agents/stats	ANY	cmd/gateway/main.go:9048
+/api/agents	ANY	cmd/gateway/main.go:9046
+/api/agents/	ANY	cmd/gateway/main.go:9049
+/api/agents/health	ANY	cmd/gateway/main.go:9048
+/api/agents/stats	ANY	cmd/gateway/main.go:9047
 /api/attachments/	ANY	admin/handler.go:1700
 /api/auth/app-token	ANY	admin/handler.go:1155
 /api/auth/captcha	ANY	admin/handler.go:1143
@@ -660,7 +659,7 @@
 /api/usage/my	ANY	admin/handler.go:1162
 /api/users	ANY	admin/handler.go:1157
 /api/users/	ANY	admin/handler.go:1190
-/api/v1/approvals/	ANY	cmd/gateway/main.go:9087
+/api/v1/approvals/	ANY	cmd/gateway/main.go:9086
 /api/v1/compare	ANY	cmd/prompt-optimizer/main.go:296
 /api/v1/optimize	ANY	cmd/prompt-optimizer/main.go:293
 /api/v1/optimize/batch	ANY	cmd/prompt-optimizer/main.go:294
