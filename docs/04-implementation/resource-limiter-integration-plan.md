@@ -712,6 +712,8 @@ kill $GATEWAY_PID
 3. 验证功能正常，无性能退化
 4. 收集监控数据
 
+**灰度物料已就绪（2026-11-27，v1.5）**：配置模板 `plugin-runtime/config/gateway-canary-resource-limits.yaml`（合并进开发环境 gateway.yaml 的 plugins: 节即可；含 4 步验证清单——日志确认 cgroup/monitor 模式、plugin-nav 无 degraded、/metrics 出现 `llmgw_plugin_*` 序列、24h 观察 violations 增速与 usage/limit 水位；回滚 = `resource_limits_enabled: false` 热重载即关，无需重启）。**执行条件**：开发环境网关需 PostgreSQL + Redis 完整栈（本机 Docker 仅 DB，无网关进程）——由运维环境负责人执行模板合入，观察数据回填本节。
+
 #### Phase 2: 灰度发布（1-2 周）
 
 1. 在 1-2 个测试环境启用 ResourceLimiter

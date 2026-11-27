@@ -1,0 +1,34 @@
+# gateway-canary-resource-limits.yaml —— resource-limiter 灰度配置模板（§5.1 Phase 1）
+#
+# 用法：把 plugins: 块合并进开发环境 gateway.yaml 的 plugins: 节（不是整文件替换），
+# 配置热重载会自动拾取——**无需重启网关**（总开关与默认限制都走 scan() 必经点）。
+#
+# 验证步骤（启用后 10 分钟内完成）：
+#   1. 日志确认：每个启用插件应出现
+#      `INFO: cgroup resource limits enabled for plugin <id>`（Linux）
+#      `INFO: resource monitoring enabled for plugin <id>`（macOS/降级）
+#      ⚠️ 若出现 `cannot enable subtree controllers` → 有缺陷，回报（见 §3.8 修复 1）
+#   2. 插件全部 ready：/api/v1/plugin-nav 无 failed/degraded（§3.6 P0 回归点）
+#   3. 指标出现：/metrics（admin 鉴权）中
+#      llmgw_plugin_limiter_mode_info{mode="cgroup"} = 1（Linux）
+#      llmgw_plugin_memory_usage_bytes > 0（启动 5s 后，cgroup 读回生效）
+#      llmgw_plugin_memory_limit_bytes = 536870912（512M）
+#   4. 观察 24h：llmgw_plugin_limit_violations_total 增速、
+#      usage/limit 水位（§5.2 默认值够用性判据）
+#
+# 回滚：把 resource_limits_enabled 改为 false（或删掉整个块），重载即全关。
+
+plugins:
+  # ── resource-limiter 灰度块（§5.1 Phase 1：开发环境） ──
+  # 总开关：紧急关闭通道，false 时默认限制与 manifest 限制一并豁免。
+  resource_limits_enabled: true
+
+  # 全局默认限制（保守值 §5.2：大多数插件足够，防进程泄漏）。
+  # manifest 声明 resource_limits 的插件以 manifest 为准。
+  default_resource_limits:
+    memory:
+      limit: "512M"    # 保守：语法 100M/1G/512MB/256Mi
+      swap: false      # Linux only：默认禁 swap
+    cpu:
+      limit: "50%"     # 防单插件独占 CPU
+    max_processes: 10  # 防线程泄漏（cgroup pids.max）
