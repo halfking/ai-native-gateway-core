@@ -443,6 +443,16 @@ func (h *Handler) updateOrgWallet(w http.ResponseWriter, r *http.Request, id int
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// ★ 2026-11-28 审计轮：credit_limit 三态解析（及其 400）必须发生在**任何
+	//   写操作之前**——修复前非法 payload 会先把 ensure-wallet/balance/policy
+	//   落库、再在校验处返回 400（部分写副作用）。user 面（users.go）顺序
+	//   本就正确，两面从此同形。
+	limitVal, setNull, keep, perr := parseCreditLimit(req.CreditLimitCredits)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+
 	// 余额/策略直接 COALESCE 合并；limit 三态单独处理。
 	if _, err := h.policyDB().Exec(ctx, `
 		INSERT INTO org_credit_wallets (org_id, tenant_id, balance_credits, credit_limit_credits, credit_policy)
@@ -464,11 +474,6 @@ func (h *Handler) updateOrgWallet(w http.ResponseWriter, r *http.Request, id int
 			writeInternalErr(w, "update policy failed", err)
 			return
 		}
-	}
-	limitVal, setNull, keep, perr := parseCreditLimit(req.CreditLimitCredits)
-	if perr != nil {
-		writeError(w, http.StatusBadRequest, perr.Error())
-		return
 	}
 	if !keep {
 		if setNull {

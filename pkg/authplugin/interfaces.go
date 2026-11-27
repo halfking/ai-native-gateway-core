@@ -78,6 +78,7 @@ type AuthResult struct {
 	Username           string                 // Username
 	TenantID           string                 // Resolved tenant ID
 	Role               string                 // User role: "user", "tenant_admin", "super_admin"
+	Roles              []string               // 多角色数组（P1-b 2026-11-27；2026-11-28 审计轮补透传）。nil/空 = 单角色，主角色恒首元素
 	DisplayName        string                 // User display name
 	Email              string                 // User email address
 	Enabled            bool                   // Whether user account is enabled

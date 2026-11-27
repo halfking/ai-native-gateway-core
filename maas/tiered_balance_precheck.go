@@ -18,9 +18,12 @@ package maas
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // PrecheckScope 预检层级：org / user（tenant 级走原 PreCheckBalance）
@@ -73,9 +76,15 @@ func (s *Service) PreCheckWalletBalance(ctx context.Context, scope PrecheckScope
 	`, table, idCol), subjectID).Scan(&balance, &creditLimit, &policy)
 
 	if err != nil {
-		// 无钱包行 = 该层不限额（正常形态，Debug 级）；真查询失败 = fail-open（Warn）。
-		slog.Debug("tiered precheck: wallet row absent or query failed, fail-open",
-			"scope", scope, "subject_id", subjectID, "error", err)
+		// 无钱包行 = 该层不限额（正常形态，Debug 级）；真查询失败 = fail-open（Warn，
+		// 2026-11-28 审计轮把两种形态分开记——此前统一 Debug，真故障在日志里不可见）。
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Debug("tiered precheck: wallet row absent (layer unlimited), fail-open",
+				"scope", scope, "subject_id", subjectID)
+		} else {
+			slog.Warn("tiered precheck: wallet query failed, fail-open",
+				"scope", scope, "subject_id", subjectID, "error", err)
+		}
 		return &BillingDecision{Allow: true, Policy: "warn", Reason: "wallet absent or query failed, fail-open"}, nil
 	}
 
