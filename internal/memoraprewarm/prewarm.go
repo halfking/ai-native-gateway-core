@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	pluginruntime "github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -43,24 +44,67 @@ type Client interface {
 
 // PrewarmHTTPClient 是 Client 的生产实现。
 type PrewarmHTTPClient struct {
-	baseURL    string // ASM 根地址，如 http://asm:8782
-	token      string // plugin context token（与 /api/v1/* 同认证链）
+	baseURL string // ASM 根地址，如 http://asm:8782
+	token   string // plugin context token（与 /api/v1/* 同认证链）
+	// ★ 2026-11-27 灰度放量轮（认证契约对齐）：ASM /api/v1/memory-recall/*
+	//   的真实认证是 plugin.VerifyContext 五头 HMAC（X-Gateway-Context-*，
+	//   secret=AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET，与网关
+	//   LLM_GATEWAY_SECRET_KEY 同值——summarize asm 委托同款走通）。
+	//   原先只发 Bearer ⇒ 生产配齐 env 后仍会全量 401 → unavailable。
+	//   secret/pluginID 齐备 ⇒ 每请求 SignHeaders；缺席 ⇒ 退回 Bearer
+	//   （老部署/测试替身兼容）。
+	secret     []byte // VerifyContext 对称密钥（nil = 走 Bearer）
+	pluginID   string // X-Gateway-Plugin-ID（默认 ai-session-manager）
 	httpClient *http.Client
 	logger     *slog.Logger
 }
 
 // NewPrewarmHTTPClient 从环境构造（AI_SESSION_MANAGER_URL 复用既有
-// 配置面；PLUGIN_CONTEXT_TOKEN 同链）。baseURL/token 缺失 ⇒ 返回 nil
+// 配置面；ASM_PLUGIN_CONTEXT_TOKEN 同链）。baseURL/token 缺失 ⇒ 返回 nil
 // （预热整体禁用——零 goroutine、零日志）。
+//
+// 认证头来源（2026-11-27）：LLM_GATEWAY_SECRET_KEY（= ASM 侧
+// AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET）+ LLM_GATEWAY_ASM_PLUGIN_ID
+// （缺省 ai-session-manager）⇒ 与 summarize 委托同一对凭据、同一签名族。
+// ASM_PLUGIN_CONTEXT_TOKEN 仍保留为 Bearer 兜底（无 secret 的部署）。
 func NewPrewarmHTTPClientFromEnv() *PrewarmHTTPClient {
 	base := strings.TrimRight(os.Getenv("AI_SESSION_MANAGER_URL"), "/")
 	token := os.Getenv("ASM_PLUGIN_CONTEXT_TOKEN")
 	if base == "" || token == "" {
 		return nil
 	}
+	c := &PrewarmHTTPClient{
+		baseURL:    base,
+		token:      token,
+		pluginID:   strings.TrimSpace(os.Getenv("LLM_GATEWAY_ASM_PLUGIN_ID")),
+		httpClient: &http.Client{Timeout: DefaultHTTPTimeout},
+		logger:     slog.Default(),
+	}
+	if c.pluginID == "" {
+		c.pluginID = "ai-session-manager"
+	}
+	if sk := os.Getenv("LLM_GATEWAY_SECRET_KEY"); sk != "" {
+		c.secret = []byte(sk)
+	}
+	return c
+}
+
+// NewPrewarmHTTPClientForTest 显式注入全部凭据的构造器（测试与未来
+// 非 env 装配面共用；语义与 NewPrewarmHTTPClientFromEnv 相同：base/token
+// 任一为空 ⇒ nil）。secret 为 nil ⇒ 不签名（仅 Bearer）。
+func NewPrewarmHTTPClientForTest(baseURL, token string, secret []byte, pluginID string) *PrewarmHTTPClient {
+	base := strings.TrimRight(baseURL, "/")
+	if base == "" || token == "" {
+		return nil
+	}
+	if strings.TrimSpace(pluginID) == "" {
+		pluginID = "ai-session-manager"
+	}
 	return &PrewarmHTTPClient{
 		baseURL:    base,
 		token:      token,
+		secret:     secret,
+		pluginID:   pluginID,
 		httpClient: &http.Client{Timeout: DefaultHTTPTimeout},
 		logger:     slog.Default(),
 	}
@@ -89,6 +133,11 @@ func (c *PrewarmHTTPClient) Prewarm(ctx context.Context, tenantID, sessionID, qu
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	// 认证契约对齐（2026-11-27）：ASM /api/v1/* 走 VerifyContext 五头 HMAC
+	// （见结构体注释）；secret 齐备时叠加签名头，tenant 从签名头下沉。
+	if c.secret != nil && c.pluginID != "" {
+		pluginruntime.SignHeaders(req.Header, c.secret, c.pluginID, tenantID)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		RecordPrewarm(ClassifyOutcome(0, err)) // timeout | unavailable
