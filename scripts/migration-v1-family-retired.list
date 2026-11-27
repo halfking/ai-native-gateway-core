@@ -1,0 +1,104 @@
+# migration-v1-family-retired.list —— v1（request_logs 族）退役迁移清单
+#
+# 背景（2026-11-28 42P01 噪声收口轮）：
+#   v1 族（request_logs / request_logs_hot / request_logs_bodies_* / _hot 变体）
+#   已随迁移 890 全量退役——890 把 request_logs_with_current_month 视图重建到
+#   会话族（session_turns_*），v1 物理表已从所有现役环境删除。但部分环境的
+#   schema_migrations 账本停在这些迁移应用之前（账本漂移库），SSOT 部署通道
+#   （deploy-lib/db-changelog.sh 的 _deploy_pending_startup_migrations）按
+#   「账本无记录 ⇒ pending」判定，会把下面这些只引用 v1 族的迁移反复投喂给
+#   现役库 ⇒ PG 日志 42P01（relation does not exist）噪声 + 部署通道中断。
+#
+#   本清单由 2026-11-28 一次性 PG17 容器实测得出，两部分共 54 件：
+#   ① 41 个**纯 v1 件**（整条 SQL 只触碰 request_logs 族对象，空库即 42P01）；
+#   ② 13 个**混合件**（同时触碰 v1 与现役族）——逐件在「v1 族缺席+现役族
+#     在位」形态实测：v1 腿全部 42P01（无 DO 守卫），或 CREATE OR REPLACE
+#     会把现役对象倒退回 v1 源（见下方补录段逐件理由）。
+#   守卫不拦的 9 件（511/717/733/802/823/835/838/839/857）裁决存档在文末。
+#
+# 生效位置：deploy-lib/db-changelog.sh 的 v1 族退役守卫。守卫判据是
+#   「目标库 to_regclass('public.request_logs') IS NULL」（v1 族已从目标库
+#   删除）＋ basename 精确匹配本清单 ⇒ 按件跳过投递并打可见日志。
+#   目标库仍有 v1 族（老形态库）⇒ 守卫不触发，行为与本清单加入前逐字一致。
+#
+# ⚠ 本清单**不删除**任何迁移文件（252 checksums 账 + Go sha 判据冻结字节）；
+#   它只约束「部署通道向 v1 族已删库的投递面」。fresh 新装链不走本清单
+#   （fresh 基线已含 890 ⇒ 406/420/428/449/529 等按账本正常应用或跳过）。
+# ── 混合件补录段（2026-11-28 逐件实测裁决）────────────────────────────
+# 以下 13 件同时触碰 v1 族与现役族（或会复活/倒退现役对象）。逐件在
+# 「211 形态」（v1 族缺席 + 会话/现役族在位）一次性容器实测：v1 腿全部
+# 42P01（无 DO 守卫），或 CREATE OR REPLACE 会把现役对象倒退回 v1 源。
+#   · 529：bodies 分区腿 42P01（00:29 炸通道的元凶）；sticky 腿 211 已应用
+#   · 547/563/564/565/457：索引/触发器/回填/JOIN 腿直引 request_logs(_hot)
+#   · 649/837：把 routing_analytics_source 重建回 v1 源（倒退 890 的会话源现役视图）
+#   · 680/696：把 request_logs_with_current_month 重建回 v1 源（同上）
+#   · 688：CREATE OR REPLACE 复活 890 已删的 v1 promote 函数（僵尸）＋
+#          把 promote_session_turns_hot_to_partition 函数体从 897 自愈腿
+#          版倒退回 688 版（211 live 体 md5=897 版实证）
+#   · 725/736：ALTER/DROP POLICY ON request_logs 腿 42P01；现役族腿
+#          （tenant_model_policies 策略 / usage_ledger 列）已由后续迁移
+#          独立投递（211 实测 2 策略 / rate_multiplier 列在位），损失可承
+# 跳过 = 保守方向：清单内 13 件的全部「现役族有益腿」均已由后续迁移或
+# 现役 SSOT（db.go ensure / 现役函数体）覆盖，无独占交付。
+457_session_v2_owner_filter.sql
+529_repair_shared_pg_sticky_and_bodies_2026_07.sql
+547_session_project_attribution.sql
+563_session_summary_trigger_on_hot.sql
+564_session_summary_backfill_safe.sql
+565_cost_usd_pricing_backfill.sql
+649_routing_analytics_probe_filter.sql
+680_request_logs_current_month_view_bootstrap.sql
+688_promote_default_retention_align_go_scheduler.sql
+696_request_logs_view_system_fingerprint.sql
+725_r41_request_logs_and_tmp_super_admin_bypass.sql
+736_maas_rate_multiplier.sql
+837_routing_mv_refresh_state.sql
+
+420_request_logs_trace_events.sql
+428_recent_success_rate_probe_filters.sql
+443_observability_fields.sql
+448_request_logs_view_routing_attempts.sql
+449_request_logs_hot_trace_events.sql
+455_request_id_unique_for_hot_tables.sql
+458_request_logs_canonical_model.sql
+459_request_logs_view_client_perception.sql
+466_relax_compression_parent_check.sql
+473_partition_precreate_2026_09_10.sql
+481_request_logs_bodies_precreate_2026_07.sql
+491_request_logs_queue_timestamps.sql
+510_request_type.sql
+532_request_logs_final_success.sql
+542_request_logs_token_band.sql
+543_request_logs_discard_events.sql
+561_request_logs_view_origin_actor.sql
+562_fix_request_logs_bodies_partitions_heap.sql
+573_drop_request_logs_body_columns.sql
+574_request_logs_customer_id_bigint.sql
+575_request_logs_view_customer_id.sql
+576_request_logs_customer_id_bigint.sql
+577_request_logs_view_customer_id.sql
+602_request_logs_promote_atomic.sql
+605_fix_tool_calls_index_predicate.sql
+610_request_class_due_at.sql
+651_provider_quality_hot_rollup.sql
+687_fix_473_partition_0800_bounds.sql
+697_request_logs_promote_system_fingerprint.sql
+728_sql_audit_request_logs_credential_model_index.sql
+754_archive_request_logs_default.sql
+756_request_logs_id_index.sql
+808_request_logs_default_partition.sql
+811_partition_bounds_shanghai_midnight_repair.sql
+819_request_abandoned.sql
+829_bodies_columnar_rollback.sql
+836_supplier_errors_heap_reassert.sql
+858_request_logs_final_success_gsid_idx.sql
+860_rename_request_logs_family_pending_delete.sql
+862_partition_family_leading_ts_idx.sql
+882_request_logs_cost_negative_partial_idx.sql
+
+# ── 守卫不拦的 9 件（裁决存档，防止后人重复裁决）──────────────────
+# 在「211 形态」实测可跑，不进清单：511（IF NOT EXISTS 全 no-op）、
+# 717（全 DO 块守卫，缺视图缺表各步守卫跳过）、733（回填腿 to_regclass
+# 四路守卫）、802/823/835（211 列/表在位 ⇒ IF NOT EXISTS no-op）、
+# 838/839/857（CREATE OR REPLACE analyze：211 live 体与 857 终态语义
+# 等价——仅注释语言与已死的 v1 正则前缀差异；重放终态=857 体，可承）。
