@@ -7404,6 +7404,15 @@ func main() {
 		// the registry, which surfaces in /api/v1/plugin-nav. P8: switched from
 		// socket-only dial (which missed wedged-but-listening plugins) to a
 		// real GET that requires a 200 response.
+		// §5.3：插件资源限制指标导出（llmgw_plugin_*，/metrics 已有 admin 鉴权）。
+		// 零插件配限制时 collector 空转零开销。两条 supervisor 路径都要挂：
+		// legacy（env 目录直连）与 controller（LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG，
+		// 生产 gateway.yaml plugins: 管理的路径）——collector 只认 sup，
+		// controller.Supervisor() 同一个类型。
+		pluginMetrics := newPluginMetricsCollector(sup, 15*time.Second)
+		pluginMetrics.Start()
+		defer pluginMetrics.Stop()
+
 		if pluginController == nil {
 			healthCheck := newPluginHealthCheck(sup)
 			healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
@@ -7417,11 +7426,6 @@ func main() {
 			})
 			healthLoop.Start()
 			defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
-			// §5.3：插件资源限制指标导出（llmgw_plugin_*，/metrics 已有 admin 鉴权）。
-			// 零插件配限制时 collector 空转零开销。
-			pluginMetrics := newPluginMetricsCollector(sup, 15*time.Second)
-			pluginMetrics.Start()
-			defer pluginMetrics.Stop()
 			// graceful shutdown: SIGTERM each plugin process (health loop already stopped above)
 			defer func() {
 				for pluginID := range pluginBases {
