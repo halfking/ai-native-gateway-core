@@ -206,7 +206,7 @@ tmux new-session -d -s casdoor-e2e-gw 'cd localtest/casdoor-e2e && set -a && sou
 | 1 | `run-e2e-tests.sh` 依赖仓外 `/tmp/captcha_solver.py` 与绝对路径 `/Users/xutaohuang/...`，全新克隆无法复现 | 解题器入仓 `captcha_solver.py`，路径改为脚本目录相对 |
 | 2 | seed 口令以 base64 硬编码在已跟踪脚本里（与 runtime/admin_password 同值） | 改为读 `runtime/admin_password`；该值是一次性本地 e2e 口令，但已存在于 git 历史（af75f107d），如要彻底清除需重生成 runtime 密钥 |
 | 3 | `cap3.png` 为 0 字节垃圾文件已入库 | 删除 |
-| 4 | `final_green_run.log` 实际在 gitignore 的 `runtime/` 下，并未随提交落盘 | 重跑并留证到 `evidence/final_green_run.log`（入库） |
+| 4 | `final_green_run.log` 实际在 gitignore 的 `runtime/` 下，并未随提交落盘 | 重跑并留证到 `evidence/final_green_run.txt`（入库） |
 | 5 | README 引用不存在的 `../casdoor-e2e-tests.md`/`./tests/…`，且 go build 路径错误 | 已改正；脚本补可执行位 |
 
 复跑：修正后连续 2 遍 PASS=21 FAIL=0。

@@ -15,7 +15,7 @@ curl -s http://127.0.0.1:18781/healthz
 bash ./run-e2e-tests.sh        # 八判据 21 断言，幂等，期望 PASS=21 FAIL=0
 ```
 
-测试脚本 `run-e2e-tests.sh`（判据 C1–C8 写在文件头注释）；其 captcha 自动解题依赖同目录 `captcha_solver.py`（读 `admin/auth_captcha.go` 的字形表）。留证见 `evidence/final_green_run.log`。
+测试脚本 `run-e2e-tests.sh`（判据 C1–C8 写在文件头注释）；其 captcha 自动解题依赖同目录 `captcha_solver.py`（读 `admin/auth_captcha.go` 的字形表）。留证见 `evidence/final_green_run.txt`。
 
 ## 拓扑
 
