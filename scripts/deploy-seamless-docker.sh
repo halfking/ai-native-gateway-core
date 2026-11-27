@@ -2391,14 +2391,32 @@ dd_start_secondary() {
   # ── 独立卷 + 起容器 ─────────────────────────────────────────────────
   mkdir -p "${DD_GW_DATA_ROOT}/data-s" "${DD_GW_DATA_ROOT}/logs-s"
   chown -R 65532:65532 "${DD_GW_DATA_ROOT}/data-s" "${DD_GW_DATA_ROOT}/logs-s" 2>/dev/null || true
-  # web 静态资源与 version.json：**复用主槽目录**（只读挂载 ⇒ 与主槽同一份
-  # SPA/版本戳；副节点无独立的版本生命周期——它的版本就是主槽的版本）。
+  # web 静态资源与 version.json：**复用在役主槽**的种子（只读挂载 ⇒ 与主槽
+  # 同一份 SPA/版本戳；副节点无独立的版本生命周期——它的版本就是主槽的版本）。
+  # ★ 2026-11-28 修正（r9 真机抓到）：选槽判据原为「目录存在性」（for a b;
+  #   -d web/$slot/dist ⇒ 挑中第一个目录还在的槽）——旧槽虽停但目录仍在 ⇒
+  #   挑中**非在役旧槽** ⇒ 副节点挂旧 SPA/旧版本戳 ⇒ nginx 双行轮询下
+  #   /api/system/version 一半新一半旧 ⇒ 前端更新横幅常驻 + /m 移动端滞后。
+  #   修正＝与上方「镜像来源」同款判据：取**在役主槽容器**的槽位；目录
+  #   存在性只作兜底（在役槽种子目录缺失时才回退，并保留 warn）。
   local _main_slot_web=""
-  for _main_c in a b; do
-    if [[ -d "${DD_GW_DATA_ROOT}/web/${_main_c}/dist" ]]; then
-      _main_slot_web="$_main_c"; break
-    fi
-  done
+  local _active_for_web="$(dd_active_slot 2>/dev/null || true)"
+  case "$_active_for_web" in
+    a|b)
+      if [[ -d "${DD_GW_DATA_ROOT}/web/${_active_for_web}/dist" ]]; then
+        _main_slot_web="$_active_for_web"
+      else
+        warn "在役槽 ${_active_for_web} 的 web 种子目录缺失 ⇒ 回退按目录存在性选槽（版本戳/SPA 可能与主槽漂移）"
+      fi
+      ;;
+  esac
+  if [[ -z "$_main_slot_web" ]]; then
+    for _main_c in a b; do
+      if [[ -d "${DD_GW_DATA_ROOT}/web/${_main_c}/dist" ]]; then
+        _main_slot_web="$_main_c"; break
+      fi
+    done
+  fi
   local _web_mounts=()
   if [[ -n "$_main_slot_web" ]]; then
     _web_mounts+=(
