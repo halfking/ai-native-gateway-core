@@ -74,8 +74,8 @@ const (
 // monitorStopGrace 是 Stop() 等待采样 goroutine 退出的上限。
 //
 // ★ 2026-11-28（12h 审计轮 P1 修复）：原先 monitor 模式下的等待是**无上限**
-//   的 `<-r.monitorDone`——采样循环一旦卡住，插件停止就被无限期挂住。
-//   给一个上限，采样循环异常时降级为 WARN 继续（清理 cgroup 仍要跑）。
+// 的 `<-r.monitorDone`——采样循环一旦卡住，插件停止就被无限期挂住。
+// 给一个上限，采样循环异常时降级为 WARN 继续（清理 cgroup 仍要跑）。
 const monitorStopGrace = 2 * time.Second
 
 // ProcessStats tracks resource usage for monitoring
@@ -246,9 +246,9 @@ func (r *ResourceLimiter) writeCgroup(file, value string) error {
 // cgroupDir 返回当前 cgroup 目录（持读锁）。
 //
 // ★ 2026-11-28（12h 审计轮 P1 修复）：cgroupPath 此前被 Stop() **写**、
-//   被采样 goroutine（monitorCgroup）与 applyCgroupLimits/AssignProcess **读**，
-//   且两侧都不持锁 ⇒ 真实数据竞争（go test -race 可复现：Stop 与采样拍
-//   同时读写同一个 string 头指针）。统一走访问器收口。
+// 被采样 goroutine（monitorCgroup）与 applyCgroupLimits/AssignProcess **读**，
+// 且两侧都不持锁 ⇒ 真实数据竞争（go test -race 可复现：Stop 与采样拍
+// 同时读写同一个 string 头指针）。统一走访问器收口。
 func (r *ResourceLimiter) cgroupDir() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -589,7 +589,7 @@ func (r *ResourceLimiter) Stop() error {
 	select {
 	case <-r.monitorDone:
 	case <-time.After(monitorStopGrace):
-		fmt.Printf("WARN: plugin %s resource sampling did not stop within %s\\n",
+		fmt.Printf("WARN: plugin %s resource sampling did not stop within %s\n",
 			r.pluginName, monitorStopGrace)
 	}
 
@@ -618,7 +618,7 @@ func (r *ResourceLimiter) Stop() error {
 // 由调用方（Supervisor.Stop）WARN 降级，不影响插件服务。
 //
 // ★ 2026-11-28（12h 审计轮 P1 修复）：入参改为目录快照（cgroupDir()），
-//   避免与采样 goroutine 争用 r.cgroupPath（原先两处都不持锁 ⇒ 数据竞争）。
+// 避免与采样 goroutine 争用 r.cgroupPath（原先两处都不持锁 ⇒ 数据竞争）。
 func (r *ResourceLimiter) removeCgroup(cgroupDir string) error {
 	// monitor 模式（cgroup 不可用）下目录为空 → 无目录需清理
 	if cgroupDir == "" {
