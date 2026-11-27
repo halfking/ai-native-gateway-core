@@ -352,6 +352,42 @@ func TestRegistrySyncFailureKeepsSnapshot(t *testing.T) {
 	}
 }
 
+// ---- W3 E2E 修复回归：endpoint 形态兼容 + 默认 iss ----
+
+func TestUpstreamURLOf(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"http://memora-server:9002/mcp", "http://memora-server:9002/mcp"}, // 已带路径（registry 形态）
+		{"http://memora-server:9002/mcp/", "http://memora-server:9002/mcp"},
+		{"http://memora:8080", "http://memora:8080/mcp"},  // 基址约定（既有行为）
+		{"http://memora:8080/", "http://memora:8080/mcp"}, //
+		{"https://mcp.context7.com/mcp", "https://mcp.context7.com/mcp"},
+		{"https://api.githubcopilot.com/mcp/", "https://api.githubcopilot.com/mcp"},
+	}
+	for _, tc := range cases {
+		if got := upstreamURLOf(tc.in); got != tc.want {
+			t.Fatalf("upstreamURLOf(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestServiceJWTIssuerDefaultIssuerIsMemora(t *testing.T) {
+	iss, err := NewServiceJWTIssuer("k", "", "memora-api", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := iss.Issue("default", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := jwt.Parse(tok, func(*jwt.Token) (any, error) { return []byte("k"), nil })
+	claims, _ := parsed.Claims.(jwt.MapClaims)
+	if claims["iss"] != "memora" {
+		// memora MCP 面只用 primary verifier（iss 精确匹配，无 allowlist 回退）；
+		// 默认 iss 不是 memora ⇒ 全部出站调用 401（E2E 实证）。
+		t.Fatalf("default iss = %v, want memora", claims["iss"])
+	}
+}
+
 // ---- W2：指标族（ADR §6：mcp_gateway_registry_sync_total / _errors_total / _snapshot_entries）----
 
 // gatherRegistryMetrics 从默认 registry 抓联邦三族的当前读数。
