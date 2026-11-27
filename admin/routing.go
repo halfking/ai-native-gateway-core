@@ -724,7 +724,22 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			// super_admin 和 admin_key：看全部（不修改）
 		}
 	}
-	
+
+	// ★ 2026-11-27 12h 审计轮（P1-H 根修）：plan_order / order_debug 此前绕过
+	//   上面的候选脱敏——candidates 里的 CredentialID 被清零了，但 plan_order
+	//   条目直接携带真实 credential_id（routing_plan_order.go:81），tenant_admin/
+	//   user 经 /api/routing/resolve（admin 门=任意 JWT）仍可读到凭据 ID。
+	//   非特权角色：plan_order 的 credential_id 一并清零（rank/provider/tier/
+	//   weight 保留语义），order_debug 整体置 nil（调试面对非特权角色无意义，
+	//   且其 first_match 比对读的是已清零的 candidates[0]，只会产出错值）。
+	orderDebug := buildOrderDebug(planOrder, planSource, candidates)
+	if auth != nil && !IsSuperAdminOrLegacy(r) {
+		for _, entry := range planOrder {
+			entry["credential_id"] = 0
+		}
+		orderDebug = nil
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_model":         model,
 		"canonical_name":       rawModels[0],
@@ -733,7 +748,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		"raw_models":           rawModels,
 		"plan_order":           planOrder,
 		"plan_order_source":    planSource,
-		"order_debug":          buildOrderDebug(planOrder, planSource, candidates),
+		"order_debug":          orderDebug,
 		"candidates":           candidates,
 		"reorder_revision":     reorderRevision,
 		"reorder_canonical_id": reorderCanonicalID,
@@ -3405,9 +3420,17 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	}
 	
 	// 2026-11-26: 用户级过滤（普通用户只看自己的路由决策）
-	// routing_decision_log 通过 identity_hash 关联用户
+	// ★ 2026-11-27 12h 审计轮（P1-G 根修）：此前 `rdl.identity_hash = Username`
+	//   恒不匹配——identity_hash 的写入源是客户端指纹 SHA-256 hex
+	//   （domains/identity/identity.go:227，恒 64 位十六进制），永不等于用户名
+	//   ⇒ role=user 请求 decisions 恒得 0 行，「user 只看自己的决策」实际是
+	//   「user 什么也看不到」。改经 api_keys 归属键过滤：rdl.api_key_id →
+	//   api_keys.owner_user 与 JWT username 同域（admin/keys.go 建号默认
+	//   'admin'，会话族投影 COALESCE(c.owner_user, k.owner_user) 同源）。
+	//   EXISTS 半连接不改变行集（无 JOIN 扇出），tenant 过滤仍在上方生效。
 	if auth != nil && auth.Role == RoleUser {
-		clauses = append(clauses, fmt.Sprintf("rdl.identity_hash = $%d", argIdx))
+		clauses = append(clauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM api_keys ak WHERE ak.id = rdl.api_key_id AND ak.owner_user = $%d)", argIdx))
 		args = append(args, auth.Username)
 		argIdx++
 	}
@@ -4265,6 +4288,13 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// ★ 2026-11-27 12h 审计轮（P1-I 根修）：本端点此前走 h.admin 门（任意 JWT
+	//   含 role=user 可达），行体却返回 balance_usd/credential_label/
+	//   acquisition_source/acquisition_detail——与 f43735eea 自钉的「余额属凭据
+	//   财务面」策略矛盾（同族漏网）。免费池的可用性摘要（offer 计数/状态）
+	//   对所有 admin 角色开放；凭据身份与财务面（credential_id/label/balance/
+	//   acquisition 族）收窄到 super_admin/admin_key（与 candidates 脱敏同口径）。
+	fullDetail := IsSuperAdminOrLegacy(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -4342,6 +4372,8 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		e.Models = []any{}
 		e.ModelNames = []string{}
+		// ★ P1-I：字段剥取统一放在 models 回填循环之后（见下）——此处提前剥
+		//   会把 CredentialID 清零 ⇒ 回填按 byCred[0] 查不到 ⇒ models 全挂空。
 		pool = append(pool, e)
 		byCred[e.CredentialID] = []any{}
 	}
@@ -4532,6 +4564,15 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			pool[i].ModelNames = names
+		}
+		// ★ P1-I 脱敏（见函数头注释）：非特权角色剥凭据身份与财务面；
+		//   保留 provider/catalog/状态面/offer 计数（可用性摘要语义）。
+		if !fullDetail {
+			pool[i].CredentialID = 0
+			pool[i].CredentialLabel = ""
+			pool[i].BalanceUSD = nil
+			pool[i].AcquisitionSource = nil
+			pool[i].AcquisitionDetail = nil
 		}
 	}
 

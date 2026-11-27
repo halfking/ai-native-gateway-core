@@ -2,6 +2,8 @@ package admin
 
 import (
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -377,5 +379,65 @@ func TestRoleConstants(t *testing.T) {
 	// Verify roles are distinct
 	if RoleSuperAdmin == RoleTenantAdmin || RoleSuperAdmin == RoleUser || RoleTenantAdmin == RoleUser {
 		t.Error("Role constants should be distinct")
+	}
+}
+
+// TestRoutingDecisions_UserFilter_UsesOwnerJoin 钉住 decisions 用户过滤的
+// 归属键口径（2026-11-27 12h 审计轮 P1-G）。
+//
+// 为什么是读源钉测：identity_hash 的写入源是客户端指纹 SHA-256 hex（恒 64 位
+// 十六进制），与 username 永不相等——此前 `rdl.identity_hash = $N Username`
+// 的写法让 user 角色的 decisions 恒为 0 行（功能静默失效，结构性自证测试抓
+// 不到）。钉两点：
+//  1. 过滤必须经 api_keys.owner_user 归属键（EXISTS 半连接）；
+//  2. 不允许回潮成 identity_hash = username 的恒假比较。
+func TestRoutingDecisions_UserFilter_UsesOwnerJoin(t *testing.T) {
+	src, err := os.ReadFile("routing.go")
+	if err != nil {
+		t.Fatalf("read routing.go: %v", err)
+	}
+	s := string(src)
+
+	if !strings.Contains(s, "EXISTS (SELECT 1 FROM api_keys ak WHERE ak.id = rdl.api_key_id AND ak.owner_user = $") {
+		t.Error("decisions 用户过滤必须经 api_keys.owner_user 归属键（EXISTS 半连接）")
+	}
+	if strings.Contains(s, "rdl.identity_hash = $") && strings.Contains(s, "auth.Username") {
+		// 恒假比较回潮检测：identity_hash 是 64-hex 指纹，与 username 永不相等
+		if !strings.Contains(s, "identity_hash = sha256") {
+			t.Error("禁止 identity_hash = Username 恒假比较（identity_hash 是客户端指纹 hex，不是用户名）")
+		}
+	}
+}
+
+// TestRoutingResolve_PlanOrderDesensitized 钉住 plan_order/order_debug 走脱敏层
+// （2026-11-27 12h 审计轮 P1-H）。
+func TestRoutingResolve_PlanOrderDesensitized(t *testing.T) {
+	src, err := os.ReadFile("routing.go")
+	if err != nil {
+		t.Fatalf("read routing.go: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "entry[\"credential_id\"] = 0") {
+		t.Error("非特权角色下 plan_order 的 credential_id 必须清零（此前绕过候选脱敏泄露凭据 ID）")
+	}
+	if !strings.Contains(s, "orderDebug = nil") {
+		t.Error("非特权角色下 order_debug 必须置 nil（调试面 + 读已清零字段产出错值）")
+	}
+}
+
+// TestFreePoolStatus_DesensitizedForNonPrivileged 钉住 free-pool 的财务面脱敏
+// （2026-11-27 12h 审计轮 P1-I）。
+func TestFreePoolStatus_DesensitizedForNonPrivileged(t *testing.T) {
+	src, err := os.ReadFile("routing.go")
+	if err != nil {
+		t.Fatalf("read routing.go: %v", err)
+	}
+	s := string(src)
+	// 剥取必须在 models 回填之后（提前剥 CredentialID 会让 byCred 聚合失联）
+	if !strings.Contains(s, "fullDetail := IsSuperAdminOrLegacy(r)") {
+		t.Error("free-pool 必须以 IsSuperAdminOrLegacy 判定财务面可见性")
+	}
+	if !strings.Contains(s, "pool[i].BalanceUSD = nil") {
+		t.Error("非特权角色 free-pool 行体的 balance_usd 必须置 nil（财务面，与 f43735eea 同口径）")
 	}
 }
