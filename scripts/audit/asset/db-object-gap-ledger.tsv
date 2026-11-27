@@ -1010,3 +1010,4 @@
 1002	idx_billing_retry_queue_pending	billing_retry_queue	retired	present	retired	retired	complete	none
 1002	idx_billing_retry_queue_request	billing_retry_queue	retired	present	retired	retired	complete	none
 1002	idx_billing_retry_queue_tenant	billing_retry_queue	retired	present	retired	retired	complete	none
+1002	uq_billing_retry_queue_inflight	billing_retry_queue	retired	present	retired	retired	complete	none

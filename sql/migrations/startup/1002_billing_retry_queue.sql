@@ -53,8 +53,18 @@ COMMENT ON COLUMN billing_retry_queue.status IS
   '状态：pending（待重试）/ retrying（重试中）/ completed（已完成）/ failed（永久失败）';
 
 -- 索引：快速查询待重试任务
-CREATE INDEX IF NOT EXISTS idx_billing_retry_queue_pending 
-  ON billing_retry_queue(next_retry_at, status) 
+CREATE INDEX IF NOT EXISTS idx_billing_retry_queue_pending
+  ON billing_retry_queue(next_retry_at, status)
+  WHERE status IN ('pending', 'retrying');
+
+-- ★ 2026-11-27 12h 审计轮（P2-A 兜底）：同请求在途唯一约束 —— 并发入队
+--   （双网关同时 EnqueueCreditDeduction 同一 requestID）时，应用层的
+--   check-then-insert 在无此约束下会插出两行在途任务。部分唯一索引只约束
+--   在途行（pending/retrying），终态行（completed/failed）允许同请求历史
+--   多条。maas/billing_retry_queue.go 的 INSERT 已配 ON CONFLICT 同谓词
+--   幂等写入。建在本文件刚 CREATE 的新表上 ⇒ 无存量冲突风险。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_retry_queue_inflight
+  ON billing_retry_queue(request_id)
   WHERE status IN ('pending', 'retrying');
 
 -- 索引：快速查询特定请求的重试记录
@@ -89,12 +99,12 @@ COMMENT ON VIEW v_billing_retry_stats IS
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables 
+        SELECT 1 FROM information_schema.tables
         WHERE table_name = 'billing_retry_queue'
     ) THEN
         RAISE EXCEPTION 'Migration 1002 failed: billing_retry_queue table not created';
     END IF;
-    
+
     RAISE NOTICE 'Migration 1002 completed successfully';
 END $$;
 

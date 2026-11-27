@@ -353,22 +353,25 @@ func (h *Handler) handleGetBillDetails(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getAdminEmail 从请求中获取管理员邮箱（辅助函数）
+// getAdminEmail 从请求中获取管理员身份（辅助函数）。
+//
+// ★ 2026-11-27 12h 审计轮（P1-E 根修）：此前优先取客户端可伪造的
+//   X-Admin-Email header（注释自承「临时实现」）⇒ mark-paid/void/batch 的
+//   maas_bill_status_audit.action_by 可被任意 super_admin 请求伪造，
+//   1001 迁移建的审计触发器失去可信主体。改为以 AdminMiddleware 注入的
+//   AuthContext（GetAuthContext，admin/context.go:31）为准——Username 是
+//   验签后的 JWT 主体；header 仅在无 AuthContext 时作为 legacy admin-key
+//   请求的补充记录，且格式上带 header: 前缀以免与真实用户名混淆。
 func getAdminEmail(r *http.Request) string {
-	// 从context或session中获取当前登录用户信息
-	// 这里需要根据实际的认证机制实现
-	// 示例：从JWT claims中获取
-	
-	// 临时实现：从header获取
-	email := r.Header.Get("X-Admin-Email")
-	if email != "" {
-		return email
+	if auth := GetAuthContext(r); auth != nil && auth.Username != "" {
+		return auth.Username
 	}
-	
-	// 或从context获取
-	if user, ok := r.Context().Value("admin_user").(string); ok {
-		return user
+
+	// legacy admin-key 通道（无 JWT 主体）：保留 header 作为来源标注，
+	// 显式标记不可信来源，审计侧可据此区分。
+	if email := r.Header.Get("X-Admin-Email"); email != "" {
+		return "header:" + email
 	}
-	
+
 	return "unknown"
 }

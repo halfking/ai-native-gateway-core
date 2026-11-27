@@ -302,7 +302,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ （`842f53987`）在 `cmd/gateway/main.go` 链体**之前**净增 **13 行** ⇒
 		// ★ 合并树逐锚点实测（★ 不是按位移量推算 ★）：Recovery **:9247**、
 		// ★ Auth **:9263**、SecurityHeaders **:9266** ⇒ 链体 **9246-9266**；
-		// ★ Logging 注释 **9249-9256**、maintain 注释 **9202-9207**。
+		// ★ Logging 注释 **9265-9272**、maintain 注释 **9218-9224**。
 		// ★ 漂移归属（★ 实测、★ 不是推断 ★）：★ 上游 `842f53987` 改 cmd/gateway/main.go
 		// ★ ⇒ ★ 我方只改对拍表与文档引用、★ 不动上游代码（★ 与历次同款处置 ★★）。
 		file: "cmd/gateway/main.go", from: 9246, to: 9266,
@@ -347,7 +347,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 在链体之前净增 13 行 ⇒ ★ 合并树逐行实测 ⇒ ★ 自陈注释块漂到 **9249-9256**
 		// ★ ⇒ ★ 重钉 [9249,9256] ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、
 		// ★ 只是位置漂了 ★★）。
-		file: "cmd/gateway/main.go", from: 9249, to: 9256,
+		file: "cmd/gateway/main.go", from: 9265, to: 9272,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -382,7 +382,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-27 第二十九次重钉：★ 同上（★ `842f53987` 链前 +13 行 ★）⇒
 		// ★ 合并树逐行实测 ⇒ ★ R49-A1 注释块漂到 **9202-9207** ⇒ ★ 重钉 [9202,9207] ★
 		// ★（★ 仍是那 6 行注释块、★ 语义锚与判据不变 ★★）。
-		file: "cmd/gateway/main.go", from: 9202, to: 9207,
+		file: "cmd/gateway/main.go", from: 9218, to: 9224,
 		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
 		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
 		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页

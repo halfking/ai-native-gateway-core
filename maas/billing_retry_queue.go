@@ -49,7 +49,7 @@ func (s *Service) EnqueueCreditDeduction(ctx context.Context, tenantID, ownerUse
 	var existingID int64
 	err := s.pool.QueryRow(ctx, `
 		SELECT id FROM billing_retry_queue
-		WHERE request_id = $1 
+		WHERE request_id = $1
 		  AND status IN ('pending', 'retrying')
 		LIMIT 1
 	`, requestID).Scan(&existingID)
@@ -62,23 +62,33 @@ func (s *Service) EnqueueCreditDeduction(ctx context.Context, tenantID, ownerUse
 			    last_attempted_at = NOW()
 			WHERE id = $2
 		`, lastError, existingID)
-		
+
 		if err != nil {
 			slog.Warn("failed to update existing retry queue item",
 				"request_id", requestID,
 				"error", err)
 		}
-		
+
 		return nil // 已存在，不重复入队
 	}
 
-	// 插入新的重试任务
+	// 插入新的重试任务。
+	// ★ 2026-11-27 12h 审计轮（P2-A）：上面「查无 → 插入」是 check-then-act
+	//   竞态——双网关同时入队同一 requestID 会插两行。此前无唯一约束兜底，
+	//   重复行各自走完重试（重复扣减被 DeductCredits 的 advisory-lock 幂等
+	//   检查兜住，但队列语义坏掉）。migration 1002 已补部分唯一索引
+	//   (request_id) WHERE status IN ('pending','retrying')，这里改用
+	//   ON CONFLICT 幂等插入：撞行时退化为更新错误信息，与上方已存在分支
+	//   同语义。
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO billing_retry_queue 
-		(tenant_id, owner_user, request_id, credits, retry_type, 
+		INSERT INTO billing_retry_queue
+		(tenant_id, owner_user, request_id, credits, retry_type,
 		 attempts, max_attempts, last_error, next_retry_at, status)
-		VALUES ($1, $2, $3, $4, 'deduct_credits', 
+		VALUES ($1, $2, $3, $4, 'deduct_credits',
 		        0, 10, $5, NOW() + INTERVAL '1 minute', 'pending')
+		ON CONFLICT (request_id) WHERE status IN ('pending', 'retrying')
+		DO UPDATE SET last_error = EXCLUDED.last_error,
+		             last_attempted_at = NOW()
 	`, tenantID, ownerUser, requestID, credits, lastError)
 
 	if err != nil {
@@ -118,15 +128,22 @@ func (s *Service) ProcessRetryQueue(ctx context.Context, batchSize int) (process
 		batchSize = 100
 	}
 
-	// 查询待重试任务
+	// 查询待重试任务。
+	// ★ 2026-11-27 12h 审计轮（P2-B）：FOR UPDATE SKIP LOCKED —— 多副本网关
+	//   各自跑 BillingRetryWorker 时，此前裸 SELECT 会让两个 worker 捞到同一
+	//   批任务并发重试（同一 requestID 的重复执行被 DeductCredits 幂等兜住，
+	//   但会放大 DB 压力并让 attempts 双计）。行锁 + 跳过已锁行 = 消费互斥、
+	//   副本间互不阻塞（与 metricsstore processor 同一模式）。LIMIT 在锁外
+	//   语义不变：锁不到的行被跳过，批次可能小于 batchSize，可接受。
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, tenant_id, owner_user, request_id, credits, 
+		SELECT id, tenant_id, owner_user, request_id, credits,
 		       retry_type, attempts, max_attempts, last_error
 		FROM billing_retry_queue
 		WHERE status IN ('pending', 'retrying')
 		  AND next_retry_at <= NOW()
 		ORDER BY next_retry_at
 		LIMIT $1
+		FOR UPDATE SKIP LOCKED
 	`, batchSize)
 
 	if err != nil {
@@ -175,10 +192,18 @@ func (s *Service) ProcessRetryQueue(ctx context.Context, batchSize int) (process
 			WHERE id = $1
 		`, item.ID)
 
-		// 执行扣减
+		// 执行扣减。
+		// ★ 2026-11-27 12h 审计轮（P2-C）：refund_credits 此前不走任何执行
+		//   分支 ⇒ execErr 恒 nil ⇒ 空跑也会被标 completed（队列说退了、
+		//   积分没退）。当前仓内无 refund 入队方（死枚举值），但为防未来
+		//   接线即踩雷：未知/未实现类型按失败处理走退避重试路径，超限进
+		//   failed 可见，不再静默假完成。
 		var execErr error
-		if item.RetryType == "deduct_credits" {
+		switch item.RetryType {
+		case "deduct_credits":
 			_, execErr = s.DeductCredits(ctx, item.TenantID, item.OwnerUser, item.RequestID, item.Credits)
+		default:
+			execErr = fmt.Errorf("unsupported retry_type %q (no executor wired)", item.RetryType)
 		}
 
 		if execErr == nil {

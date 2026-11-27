@@ -3575,6 +3575,10 @@ func main() {
 	var promptInjectionHandler *admin.PromptInjectionHandler
 	var outputComplianceHandler *admin.OutputComplianceHandler
 	var scanScheduler *bg.ScanScheduler // R20 §二.6: FreeDiscovery periodic scan worker
+	// ★ 2026-11-27 12h 审计轮（P1-F 合一收口）：authRegistry 声明提到本层，
+	//   下方 9100 行的 pluginRegistry 复用同一实例（SwitchConfig 热切换贯穿
+	//   登录面/PUT 面/审批面），不再各自为政造两个实例。
+	var authRegistry *authplugin.Registry
 	{
 		var adminDB *pgxpool.Pool
 		if dbConn != nil && dbConn.Enabled() {
@@ -3588,7 +3592,6 @@ func main() {
 		//   配置源一致（env 覆盖 > plugin_config 表 > 默认）、plugin-config PUT
 		//   经 SwitchConfig 热切换后登录面立即生效。旧 initAuthRegistry（只读
 		//   env、三接口、无 ApprovalProvider）已薄壳化，不再是生产路径。
-		var authRegistry *authplugin.Registry
 		if adminDB != nil {
 			var err error
 			// redisClientForCache 类型是 session.RedisClient 包装；装配点此处
@@ -9097,15 +9100,28 @@ func main() {
 		// Phase 4 (2026-11-15): Plugin Registry Initialization
 		// Initialize plugin-based architecture supporting Native (PostgreSQL) and Casdoor providers.
 		// Enables runtime switching between authentication/user/tenant/approval providers.
+		//
+		// ★ 2026-11-27 12h 审计轮（P1-F 合一收口）：此前这里无条件
+		//   initializePluginRegistry 再造一个新实例——SwitchConfig 热切换只
+		//   改到本实例（PUT/审批面），登录面 adminHandler 持有的 authRegistry
+		//   （3601 行装配）是另一个实例 ⇒ 「登录面立即生效」只兑现了审批面，
+		//   登录面要等重启。改为复用已装配的 authRegistry（同一实例贯穿
+		//   登录面/PUT 面/审批面）；仅在 authRegistry 尚未装配时兜底自建
+		//   （老装配块未命中的部署形态）。
 		var pluginRegistry *authplugin.Registry
 		if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
-			var err error
-			pluginRegistry, err = initializePluginRegistry(dbConn.Pool(), redisClientForCache.Client(), cfg.SecretKey)
-			if err != nil {
-				slog.Error("failed to initialize plugin registry", "error", err)
-				// Continue without plugin registry - handlers will fall back to legacy implementations
+			if authRegistry != nil {
+				pluginRegistry = authRegistry
+				slog.Info("plugin registry: reusing auth registry instance (login/admin/PUT faces unified)")
 			} else {
-				slog.Info("plugin registry initialized successfully")
+				var err error
+				pluginRegistry, err = initializePluginRegistry(dbConn.Pool(), redisClientForCache.Client(), cfg.SecretKey)
+				if err != nil {
+					slog.Error("failed to initialize plugin registry", "error", err)
+					// Continue without plugin registry - handlers will fall back to legacy implementations
+				} else {
+					slog.Info("plugin registry initialized successfully")
+				}
 			}
 		}
 

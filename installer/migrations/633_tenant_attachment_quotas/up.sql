@@ -24,6 +24,16 @@ CREATE TABLE IF NOT EXISTS public.tenant_attachment_quotas (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- ★ 2026-11-27 12h 审计轮（P2-F 原子预留）：两列单独 ADD —— 兼容已投递
+--   633 的存量库（ALTER ... IF NOT EXISTS 幂等，旧库补列、新库 CREATE 时
+--   并无此列再补亦同值）。QuotaManager.CheckAndReserve 原子预留写回
+--   reserved_bytes/reserved_files_today，CommitUsage 转销，失败
+--   ReleaseReservation 释放；三操作都在单行 UPSERT 上串行化。
+ALTER TABLE public.tenant_attachment_quotas
+    ADD COLUMN IF NOT EXISTS reserved_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE public.tenant_attachment_quotas
+    ADD COLUMN IF NOT EXISTS reserved_files_today INTEGER NOT NULL DEFAULT 0;
+
 -- 索引：按更新时间查询（监控、清理）
 CREATE INDEX IF NOT EXISTS idx_tenant_attachment_quotas_updated_at
     ON public.tenant_attachment_quotas(updated_at);
@@ -40,6 +50,10 @@ COMMENT ON COLUMN public.tenant_attachment_quotas.last_reset_date IS
     'Date when files_today was last reset (for daily limit enforcement)';
 COMMENT ON COLUMN public.tenant_attachment_quotas.updated_at IS
     'Last update timestamp (for monitoring and cleanup)';
+COMMENT ON COLUMN public.tenant_attachment_quotas.reserved_bytes IS
+    'In-flight bytes reserved by CheckAndReserve and not yet committed/released (concurrency-safe quota headroom)';
+COMMENT ON COLUMN public.tenant_attachment_quotas.reserved_files_today IS
+    'In-flight file slots reserved today (transferred by CommitUsage, released on failure)';
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('633', 'tenant attachment quotas: per-tenant storage bytes + daily file count with auto-reset (P0 upload-DoS fix)')
