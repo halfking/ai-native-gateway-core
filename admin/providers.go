@@ -895,7 +895,9 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 		//      第三方域名回退 OpenAI 兼容。
 		protocol := ""
 		if req.Protocol != nil && *req.Protocol != "" {
-			normalized, normErr := providercatalog.NormalizeProviderProtocol(*req.Protocol)
+			// 2026-11-28 协议自适应：唯一差异是额外接受 'adaptive' 选择器
+			// （见 admin/adaptive_protocol.go），其余严格契约不变。
+			normalized, normErr := normalizeProviderProtocolInput(*req.Protocol)
 			if normErr != nil {
 				writeError(w, http.StatusBadRequest, normErr.Error())
 				return
@@ -1113,7 +1115,8 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 		// vapeur-style legacy spellings (e.g. "openai-response") could re-enter
 		// the table through it after createProvider was fixed. Same contract
 		// as create: normalize or 400.
-		normalized, normErr := providercatalog.NormalizeProviderProtocol(*req.Protocol)
+		// 2026-11-28 协议自适应：与 create 同一契约（含 'adaptive' 选择器）。
+		normalized, normErr := normalizeProviderProtocolInput(*req.Protocol)
 		if normErr != nil {
 			writeError(w, http.StatusBadRequest, normErr.Error())
 			return
