@@ -2838,6 +2838,13 @@ func main() {
 		// R40（R39 §七.3 移交收口）：音频候选失败与 chat/embeddings 同进
 		// 共享台账——音频面此前在 credential quality 视图上不可见。
 		audioService.SetFailureLogger(candidateFailureLedger)
+		// ★ 模型策略（2026-11-27 三级配额制轮）：embeddings/音频三面此前
+		//   不检查租户/组织/用户模型策略（审计发现：gemini 经 chat 间接
+		//   继承、直连面零检查）⇒ 与 chat 面共享同一 Checker 单例接入。
+		//   modelPolicy 在 main 前段构造（:1116 起），此处已就位；nil 时
+		//   SetModelPolicy 仍安全（面内 nil 判定跳过 = 既有行为）。
+		embeddingsHandler.SetModelPolicy(modelPolicy, resolver)
+		audioService.SetModelPolicy(modelPolicy, resolver)
 		audioTranscriptionsHandler = streaming.NewAudioTranscriptionsHandler(audioService)
 		audioSpeechHandler = streaming.NewAudioSpeechHandler(audioService)
 		audioMCPHandler = streaming.NewAudioMCPHandler(audioService)
@@ -7394,6 +7401,15 @@ func main() {
 		// the registry, which surfaces in /api/v1/plugin-nav. P8: switched from
 		// socket-only dial (which missed wedged-but-listening plugins) to a
 		// real GET that requires a 200 response.
+		// §5.3：插件资源限制指标导出（llmgw_plugin_*，/metrics 已有 admin 鉴权）。
+		// 零插件配限制时 collector 空转零开销。两条 supervisor 路径都要挂：
+		// legacy（env 目录直连）与 controller（LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG，
+		// 生产 gateway.yaml plugins: 管理的路径）——collector 只认 sup，
+		// controller.Supervisor() 同一个类型。
+		pluginMetrics := newPluginMetricsCollector(sup, 15*time.Second)
+		pluginMetrics.Start()
+		defer pluginMetrics.Stop()
+
 		if pluginController == nil {
 			healthCheck := newPluginHealthCheck(sup)
 			healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{

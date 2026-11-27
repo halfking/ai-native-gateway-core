@@ -12,6 +12,7 @@ export default {
     colKeys: "Claves",
     colCost7d: "Coste 7 días",
     colRequests: "Solicitudes totales",
+    colBalance: 'Saldo / Límite de crédito',
     colContact: "Correo de contacto",
     colCreated: "Creado",
     empty: 'Aún no hay inquilinos.',
@@ -84,6 +85,8 @@ export default {
     cancel: 'Cancelar',
     create: 'Crear',
     lastLoginCol: 'Último inicio de sesión',
+    userBalanceCol: 'Saldo de usuario',
+    orgBalanceCol: 'Saldo de organización',
   },
   dashboard: {
     title: "Panel",

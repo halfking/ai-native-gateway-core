@@ -301,6 +301,34 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	// this path the fallback never saw the body ⇒ empty agent_name.
 	logCtx.Body = bodyBytes
 	logCtx.EnsureCaptured()
+	// ── 组织/用户级余额预检（三级配额制，2026-11-27）──────────────────
+	//	body 读入后（预估成本用 FromBody 同款；bodyBytes 此刻已在手）。
+	//	豁免与租户级预算闸同源（default 租户 + 内部 key 自判 + platform 豁免）。
+	//	任一级 block ⇒ 402（chat 面 returnBillingError 同款语义、本面错误信封）。
+	{
+		maasSvc := h.chatHandler.maasSvc
+		billingExempt := tenantBillingExempt(r.Context(), keyInfo)
+		if maasSvc != nil && maasSvc.Enabled() && !billingExempt &&
+			keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+			owner := ""
+			if keyInfo.OwnerUser != nil {
+				owner = *keyInfo.OwnerUser
+			}
+			tieredCost := h.chatHandler.EstimateRequestCostCreditsFromBody(bodyBytes, logCtx.ClientModel)
+			if blocked, err := maasSvc.PreCheckOrgAndUserForOwner(r.Context(), owner, tieredCost); err != nil {
+				slog.Warn("tiered balance precheck failed on messages surface, allowing (fail-open)",
+					"request_id", requestID, "owner_user", owner, "error", err)
+			} else if blocked != nil && !blocked.Allow {
+				slog.Warn("tiered balance precheck rejected messages request",
+					"request_id", requestID, "owner_user", owner, "reason", blocked.Reason)
+				logCtx.SetError("billing_insufficient_balance", blocked.Reason)
+				logCtx.EmitFailure("billing_insufficient_balance", blocked.Reason, nil, nil)
+				*attemptLogged = true
+				writeAnthropicError(w, http.StatusPaymentRequired, "insufficient_quota", blocked.Reason)
+				return
+			}
+		}
+	}
 	// ★ 2026-10-29 audit: EnsureCaptured's ensureRequestBodyBuffered returns
 	// early when c.Body is already filled ⇒ c.ClientModel stays empty on this
 	// path (the chat path gets it from the same call) ⇒ client_model on the

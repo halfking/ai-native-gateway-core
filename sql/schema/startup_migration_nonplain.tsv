@@ -140,3 +140,7 @@ canonical/983q_request_metrics_board_hours.sql	both	-	为看板的部分自然�
 embeddata/983q_request_metrics_board_hours.sql	installer	-	983q 的安装器内嵌副本。
 canonical/983r_request_metrics_board_hour_distributions.sql	both	-	发布小时分布、供应商计量和密钥位图。
 embeddata/983r_request_metrics_board_hour_distributions.sql	installer	-	983r 的安装器内嵌副本。
+canonical/1003_org_hierarchy_and_wallets.sql	both	-	组织层级 + 组织/用户积分钱包（2026-11-27 三级配额制轮）：organizations ＋ users.org_id ＋ org_credit_wallets ＋ user_credit_wallets（范式 = 007 钱包 + 1000 信用额度/策略；余额/限额 NULL=不限制）。★ 四位数前缀（1003_）对按文件名解析的门隐形 ⇒ 五点投递（embeddata 副本/go:embed/embeddedSQLFiles/StartupFiles/部署通道 files=()/本册）。★ 自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫（1000 同款）。★ 幂等 DDL ⇒ 从未在任何环境应用过 ⇒ 零已应用字节变更。
+embeddata/1003_org_hierarchy_and_wallets.sql	installer	-	同 canonical/1003 行：安装器 embeddata 副本的登记键（embeddata 宇宙按 embeddata/ 前缀单独成行）。
+canonical/1004_three_tier_model_policies.sql	both	-	三级模型过滤（2026-11-27 三级配额制轮）：tenant_model_policies.mode（allow/deny 双模，缺省 deny=既有黑名单语义零变化）＋ org_model_policies / user_model_policies（024 范式：软删 + active 视图 + 审计触发器；allow=白名单空名单全放行）。★ 四位数前缀对按文件名解析的门隐形 ⇒ 五点投递（embeddata 副本/go:embed/embeddedSQLFiles/StartupFiles/部署通道 files=()/本册）。★ 自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；依赖 1003 organizations。
+embeddata/1004_three_tier_model_policies.sql	installer	-	同 canonical/1004 行：安装器 embeddata 副本的登记键（embeddata 宇宙按 embeddata/ 前缀单独成行）。

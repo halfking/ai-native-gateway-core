@@ -3518,6 +3518,36 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
+	// ── 三级配额制：组织/用户级余额预检（2026-11-27）────────────────────
+	// 租户级预检放行后，继续组织/用户两级逐级 AND（每级独立 warn/block，
+	// 任一级 block 即 402 阻断）。豁免口径与租户级同源：default 租户 +
+	// 内部回环 key（IsInternal）+ platform billing 豁免。
+	// 钱包行不存在 = 该层不限额 ⇒ 跳过（fail-open，maas 包内已处理）。
+	if h.maasSvc != nil && h.maasSvc.Enabled() && !billingExempt &&
+		keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+		owner := ""
+		if keyInfo.OwnerUser != nil {
+			owner = *keyInfo.OwnerUser
+		}
+		// 预估成本与租户级同源（FromBody 变体，body 已排空）。
+		tieredCost := h.EstimateRequestCostCreditsFromBody(bodyBytes, clientModel)
+		blocked, err := h.maasSvc.PreCheckOrgAndUserForOwner(r.Context(), owner, tieredCost)
+		if err != nil {
+			slog.Warn("tiered balance precheck query failed, allowing request (fail-open)",
+				"request_id", requestID, "owner_user", owner, "error", err)
+		} else if blocked != nil && !blocked.Allow {
+			slog.Warn("tiered balance precheck rejected request",
+				"request_id", requestID, "owner_user", owner,
+				"reason", blocked.Reason,
+				"balance", blocked.BalanceBefore,
+				"credit_limit", blocked.CreditLimit,
+				"estimated_cost", tieredCost)
+			captureAndEmitFailure("billing_insufficient_balance", blocked.Reason, nil, nil, http.StatusPaymentRequired)
+			h.returnBillingError(w, r, blocked)
+			return // ⚠️ Block request
+		}
+	}
+
 	// ========== Message Field Validation (2026-07-26) ==========
 	// Validate messages field with enhanced checks for common issues.
 	// This runs after format detection/fixing to catch any remaining problems.

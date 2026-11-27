@@ -136,6 +136,11 @@ type usageTrendFilters struct {
 	apiKeyID   int64
 	models     []string
 	top        int
+	// ★ 三级配额制维度（2026-11-27）：org_id / user_id 深链过滤。
+	//   org_id 对 request_metrics.org_id（owner→users→org 投影归因）；
+	//   user_id 对 user_id（end_user_id 派生）。零值 = 不过滤。
+	orgID  string
+	userID string
 	// ★ 五维排行过滤（client_model / end_user_id / api_key_prefix /
 	//   application_code / task_type）。
 	//
@@ -171,6 +176,9 @@ func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
 		// ★ 五维排行过滤：与日志端点**同名同义**（usage-trends ↔ request-logs
 		//   共用一套维度词汇）⇒ 值直接复用 logs.go 的读法（单一真相）。
 		dims: rankingDimensionFiltersFromRequest(r),
+		// 三级配额制维度（2026-11-27）：与 orgs/tenants 页深链同参数名。
+		orgID:  r.URL.Query().Get("org_id"),
+		userID: r.URL.Query().Get("user_id"),
 	}
 	// 重复 query 参数多选（model=a&model=b）；单值（model=a）是长度 1 的退化
 	// 形式，向后兼容。空值/重复值剔除，超上限截断。
@@ -203,6 +211,16 @@ func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
 // 都是明细读面）。
 func usageTrendSource(f usageTrendFilters) string {
 	switch {
+	// ★ 三级配额制维度（2026-11-27）：org_id / user_id 只存在于 request_metrics
+	//   投影（owner→users→org 归因）⇒ 必须走 request_metrics 明细读面（v2 端点
+	//   的 MetricsFilter 已直推该列）；而本函数选的两档（汇总 dim_minute /
+	//   明细 request_logs 视图族）都不带 org 列 ⇒ 设了 org/user 过滤仍走这两档
+	//   ⇒ 筛选被静默忽略（与五维过滤 2026-11-23 实测缺陷同型）。
+	//   ⇒ org/user 过滤的序列/排行由 usage-trends v2 端点承担（ReadRequestStats
+	//     的 MetricsFilter.OrgID/UserID）；本 trend-series 端点对这两个参数
+	//     同样走明细档语义由 v2 承担 ⇒ 这里返回明细档（确保不落汇总档）。
+	case f.orgID != "", f.userID != "":
+		return "request_logs_with_current_month"
 	// ★ 五维排行过滤（client_model / end_user_id / api_key_prefix /
 	//   application_code / task_type）**必须走明细档**：汇总档
 	//   （request_stats_dim_minute）只有 model 一个维度 ⇒ 设了这些维却留在

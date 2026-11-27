@@ -37,6 +37,8 @@
 # 用法:
 #   bash scripts/deploy-211.sh                 # 部署最新代码到 211（蓝绿）
 #   bash scripts/deploy-211.sh --status        # 只看探测与槽位现状，不改动
+#   bash scripts/deploy-211.sh --start-secondary  # 起双活副节点（traffic-only，端口 8784）
+#   bash scripts/deploy-211.sh --stop-secondary   # 停副节点并收缩回单活（常规部署前必做）
 #   bash scripts/deploy-211.sh --stop          # 停掉两个槽（容器保留可 start）
 #   bash scripts/deploy-211.sh --redis-db 9    # 引擎参数原样转发
 #   bash scripts/deploy-211.sh --dry-run       # 打印目标合同 JSON
@@ -416,7 +418,9 @@ fi
 _DD_IS_DEPLOY=1
 for _dd_arg in ${ARGS[@]+"${ARGS[@]}"}; do
   case "$_dd_arg" in
-    --status|--probe-only|--stop) _DD_IS_DEPLOY=0 ;;
+    # ★ 双活副节点模式也是「只读探测/生命周期」类（不构建、不上线代码）⇒
+    #   与 --status 同口径跳过测试闸门（副节点复用在役镜像，无新构建证据可言）。
+    --status|--probe-only|--stop|--start-secondary|--stop-secondary) _DD_IS_DEPLOY=0 ;;
   esac
 done
 if [[ "$_DD_IS_DEPLOY" == "1" ]]; then

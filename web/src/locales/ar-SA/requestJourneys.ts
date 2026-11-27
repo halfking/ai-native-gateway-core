@@ -28,7 +28,7 @@ export default {
   modelScopeLoading: 'جارٍ تحميل النماذج المميزة والشائعة خلال آخر 3 أيام…',
   queueAwaitingStream: 'جارٍ الاتصال بالبث المباشر، ستُحمَّل بيانات هذه المنطقة تلقائيًا بعد الاتصال…',
   refreshScope: 'Refresh scope',
-  modelGroupLayerTitle: 'Available nodes grouped by model',
+  modelGroupLayerTitle: 'العُقد المتاحة مجمّعة حسب النموذج',
   modelGroupCount: '{count} models',
   modelScopeSaving: 'Saving…',
   outOfScopeModels: '{models} فيه عقد لكنه خارج النطاق (المميزة أو الساخنة خلال 3 أيام). تعرض هذه اللوحة النماذج داخل النطاق فقط، لذلك لا تظهر أي مجموعة.',

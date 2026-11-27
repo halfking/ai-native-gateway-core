@@ -28,7 +28,7 @@ export default {
   modelScopeLoading: 'Chargement des modèles à la une et populaires des 3 derniers jours…',
   queueAwaitingStream: 'Connexion au flux en direct en cours, les données de cette zone se chargeront automatiquement une fois connectée…',
   refreshScope: 'Refresh scope',
-  modelGroupLayerTitle: 'Available nodes grouped by model',
+  modelGroupLayerTitle: 'Nœuds disponibles regroupés par modèle',
   modelGroupCount: '{count} models',
   modelScopeSaving: 'Saving…',
   outOfScopeModels: '{models} a des nœuds mais sort du périmètre (à la une / 3 jours chauds). Ce panneau ne liste que les modèles du périmètre, aucun groupe n\'apparaît donc.',

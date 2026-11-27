@@ -40,6 +40,13 @@ func (h *Handler) handleUsageTrendV2(w http.ResponseWriter, r *http.Request) {
 		ClientModel: f.dims.clientModel, EndUser: f.dims.endUserID, KeyPrefix: f.dims.apiKeyPrefix,
 		AppCode: f.dims.applicationCode, TaskType: f.dims.taskType, Owner: owner,
 	}
+	// 三级配额制维度（2026-11-27）：org/user 深链过滤直达 request_metrics 投影列。
+	if f.orgID != "" {
+		query.OrgID = &f.orgID
+	}
+	if f.userID != "" {
+		query.UserID = &f.userID
+	}
 	if f.providerID > 0 {
 		query.ProviderID = &f.providerID
 	}

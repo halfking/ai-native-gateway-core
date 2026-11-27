@@ -11,7 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/limiter"
 )
 
 // command 是对一个插件进程的抽象，便于测试注入 fake。
@@ -35,6 +37,9 @@ type SupervisorConfig struct {
 	PluginEnv func(pluginID string) []string
 	// EventBus 用于发布插件生命周期事件（可选）
 	EventBus eventbus.EventBus
+	// DefaultLimits 是全局默认资源限制（可选）。Manifest 未声明
+	// resource_limits 时应用；nil 时无任何默认限制（历史行为）。
+	DefaultLimits *ResourceLimits
 }
 
 // Supervisor 管理所有已启动的插件进程。P0 为内存态骨架。
@@ -45,6 +50,7 @@ type Supervisor struct {
 	procs          map[string]command
 	states         map[string]*PluginState
 	manifests      map[string]*Manifest // P7: for Restart
+	limiters       map[string]*limiter.ResourceLimiter
 	commandFactory func(socketPath, entrypoint string, env []string) command
 }
 
@@ -54,7 +60,7 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	if cfg.SocketDir != "" {
 		_ = os.MkdirAll(cfg.SocketDir, 0o755) // ignore "already exists"；真正的失败会在插件尝试 listen 时暴露
 	}
-	s := &Supervisor{cfg: cfg, procs: map[string]command{}, states: map[string]*PluginState{}, manifests: map[string]*Manifest{}}
+	s := &Supervisor{cfg: cfg, procs: map[string]command{}, states: map[string]*PluginState{}, manifests: map[string]*Manifest{}, limiters: map[string]*limiter.ResourceLimiter{}}
 	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
 		return newExecCommand(socketPath, entrypoint, env, s.cfg.ContextSecret)
 	}
@@ -94,10 +100,57 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	if s.cfg.PluginEnv != nil {
 		env = append(env, s.cfg.PluginEnv(m.PluginID)...)
 	}
+
+	// ResourceLimiter 接线：Manifest 声明的 resource_limits 优先，否则回落到
+	// SupervisorConfig.DefaultLimits（全局默认）；两者都未配置则不创建 limiter
+	// （向后兼容：未配置 limits 的插件行为与历史版本完全一致）。
+	limits := m.ResourceLimits
+	if limits == nil {
+		limits = s.cfg.DefaultLimits
+	}
+	var rl *limiter.ResourceLimiter
+	if limits != nil {
+		var err error
+		rl, err = limiter.NewResourceLimiter(m.PluginID, *limits)
+		if err != nil {
+			return nil, fmt.Errorf("create resource limiter for %s: %w", m.PluginID, err)
+		}
+		// §5.3 埋点：超限/OOM 计数接入 metrics（回调内部 nil 安全；测试手工
+		// 构造的 Supervisor 同样受益——hooks 挂在 limiter 上而非构造函数）。
+		rl.SetObservabilityHooks(
+			func(kind string) { metrics.RecordPluginLimitViolation(m.PluginID, kind) },
+			func(delta uint64) { metrics.RecordPluginOOMKill(m.PluginID, delta) },
+		)
+	}
+
 	cmd := s.commandFactory(socketPath, m.Runtime.Entrypoint, env)
+
+	// 应用资源限制：execCommand 通过 prepare 钩子在 Start 内部（exec.Cmd 创建
+	// 之后、进程启动之前）注入 cgroup/SysProcAttr 配置。Apply 失败说明限制配置
+	// 本身非法（如内存格式错误）——fail-fast，不启动不受控的进程。
+	if rl != nil {
+		if execCmd, ok := cmd.(*execCommand); ok {
+			execCmd.prepare = rl.Apply
+		}
+		// fakeCommand（测试注入）没有底层 exec.Cmd，跳过——cgroup 限制只对
+		// 真实进程有意义；limiter 本身照常登记，便于测试断言。
+	}
+
 	if err := cmd.Start(ctx); err != nil {
+		if rl != nil {
+			_ = rl.Stop()
+		}
 		return nil, fmt.Errorf("start plugin %s: %w", m.PluginID, err)
 	}
+
+	// 分配进程到 cgroup（启动后；monitor 模式下开启监控）。失败仅警告不阻止
+	// 启动——资源限制是保护措施，不应因降级失败而拒绝插件服务。
+	if rl != nil {
+		if err := rl.AssignProcess(cmd.Pid()); err != nil {
+			fmt.Printf("WARN: failed to assign plugin %s process to resource limits: %v\n", m.PluginID, err)
+		}
+	}
+
 	st := &PluginState{
 		PluginID:      m.PluginID,
 		PluginVersion: m.PluginVersion,
@@ -109,6 +162,9 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	s.procs[m.PluginID] = cmd
 	s.states[m.PluginID] = st
 	s.manifests[m.PluginID] = m
+	if rl != nil {
+		s.limiters[m.PluginID] = rl
+	}
 	s.mu.Unlock()
 
 	// 发布 plugin.started 事件
@@ -126,7 +182,9 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 func (s *Supervisor) Stop(pluginID string) error {
 	s.mu.Lock()
 	cmd, ok := s.procs[pluginID]
+	rl := s.limiters[pluginID]
 	delete(s.procs, pluginID)
+	delete(s.limiters, pluginID)
 	if st := s.states[pluginID]; st != nil {
 		st.Status = "stopped"
 		st.SocketPath = ""
@@ -137,13 +195,38 @@ func (s *Supervisor) Stop(pluginID string) error {
 		return fmt.Errorf("plugin %s not running", pluginID)
 	}
 
+	// 先停进程再清理 ResourceLimiter：cgroup 模式下 rmdir 要求组内无存活
+	// 进程——若先 rl.Stop() 会拿着「还挂着进程」的 cgroup 做 rmdir，EBUSY
+	// 重试 3 秒也白等（真机 e2e 发现）。monitor 模式顺序同样成立：先杀进程，
+	// 采样循环下一拍自然退出，再 close channel 也无泄漏窗口。
+	if err := cmd.Stop(); err != nil {
+		// 进程停止失败不阻断 limiter 清理：进程可能已自行退出（竞态）。
+		fmt.Printf("WARN: failed to stop plugin %s process: %v\n", pluginID, err)
+	}
+
+	// 停止 ResourceLimiter（清理 cgroup / 停止监控）。失败仅警告：插件进程
+	// 已停止，limiter 清理失败不应让调用方误判停止失败。
+	if rl != nil {
+		if err := rl.Stop(); err != nil {
+			fmt.Printf("WARN: failed to stop resource limiter for plugin %s: %v\n", pluginID, err)
+		}
+	}
+
 	// 发布 plugin.stopped 事件
 	s.publishEvent(context.Background(), "plugin.stopped", pluginID, map[string]interface{}{
 		"plugin_id": pluginID,
 		"status":    "stopped",
 	})
 
-	return cmd.Stop()
+	return nil
+}
+
+// LimiterOf 返回插件当前生效的 ResourceLimiter（未配置限制或未启动时为 nil）。
+// 供运维/观测面读取监控统计。
+func (s *Supervisor) LimiterOf(pluginID string) *limiter.ResourceLimiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.limiters[pluginID]
 }
 
 // SocketPathOf returns the unix socket path for a started plugin ("" if not started).
@@ -162,14 +245,19 @@ func (s *Supervisor) Restart(pluginID string) error {
 	s.mu.Lock()
 	m, ok := s.manifests[pluginID]
 	oldCmd, oldRunning := s.procs[pluginID]
+	oldRL := s.limiters[pluginID]
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("plugin %s manifest not found (never started)", pluginID)
 	}
 	if oldRunning && oldCmd != nil {
 		_ = oldCmd.Stop()
+		if oldRL != nil {
+			_ = oldRL.Stop()
+		}
 		s.mu.Lock()
 		delete(s.procs, pluginID)
+		delete(s.limiters, pluginID)
 		s.mu.Unlock()
 	}
 	if _, err := s.Start(context.Background(), m); err != nil {
@@ -192,13 +280,18 @@ func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 	s.mu.Lock()
 	oldManifest := s.manifests[newManifest.PluginID]
 	oldCmd, oldRunning := s.procs[newManifest.PluginID]
+	oldRL := s.limiters[newManifest.PluginID]
 	s.mu.Unlock()
 
 	// 1. stop old process first (it's about to be replaced)
 	if oldRunning && oldCmd != nil {
 		_ = oldCmd.Stop()
+		if oldRL != nil {
+			_ = oldRL.Stop()
+		}
 		s.mu.Lock()
 		delete(s.procs, newManifest.PluginID)
+		delete(s.limiters, newManifest.PluginID)
 		s.mu.Unlock()
 	}
 
@@ -253,6 +346,20 @@ func (s *Supervisor) ManifestOf(pluginID string) *Manifest {
 	return s.manifests[pluginID]
 }
 
+// States 返回全部已启动插件状态快照（§5.3 指标导出器的枚举面；含 starting
+// 等中间态）。返回拷贝，调用方可安全读字段。未启动任何插件时返回空切片。
+func (s *Supervisor) States() []PluginState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]PluginState, 0, len(s.states))
+	for _, st := range s.states {
+		if st != nil {
+			out = append(out, *st)
+		}
+	}
+	return out
+}
+
 // execCommand 用 os/exec 启动插件 entrypoint。
 type execCommand struct {
 	mu         sync.Mutex
@@ -262,6 +369,10 @@ type execCommand struct {
 	secret     []byte
 	cmd        *exec.Cmd
 	done       chan struct{} // 在 Wait 完成后关闭；Stop 用它判断进程是否已退出
+	// prepare 在 Start 内部创建 exec.Cmd 之后、c.Start() 之前被调用
+	// （ResourceLimiter.Apply 借此在启动前注入资源限制）。cmd 不是构造期
+	// 创建的——需要 CommandContext 的 ctx 取消语义——所以用钩子而非 Cmd()。
+	prepare func(*exec.Cmd) error
 }
 
 func newExecCommand(socketPath, entrypoint string, env []string, secret []byte) *execCommand {
@@ -279,6 +390,11 @@ func (e *execCommand) Start(ctx context.Context) error {
 	// 防止插件把 env 打到日志里造成 HMAC secret 泄露。P5 计划改为结构化捕获。
 	c.Stdout = NewRedactingWriter(e.secret, os.Stderr)
 	c.Stderr = NewRedactingWriter(e.secret, os.Stderr)
+	if e.prepare != nil {
+		if err := e.prepare(c); err != nil {
+			return fmt.Errorf("prepare exec %s: %w", e.entrypoint, err)
+		}
+	}
 	if err := c.Start(); err != nil {
 		return fmt.Errorf("exec %s: %w", e.entrypoint, err)
 	}
@@ -326,6 +442,15 @@ func (e *execCommand) Pid() int {
 		return 0
 	}
 	return e.cmd.Process.Pid
+}
+
+// Cmd 暴露底层 exec.Cmd，供观测/调试面查看启动后的进程句柄。未启动时返回
+// nil。资源限制注入不走这里——exec.Cmd 是 Start 内部用 CommandContext 创建
+// 的，启动前注入走 prepare 钩子（见 execCommand）。
+func (e *execCommand) Cmd() *exec.Cmd {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cmd
 }
 
 // publishEvent 发布插件事件到 eventbus（如果已配置）

@@ -440,3 +440,5 @@
 422	983p_request_metrics_history_pages.sql
 423	983q_request_metrics_board_hours.sql
 424	983r_request_metrics_board_hour_distributions.sql
+425	1003_org_hierarchy_and_wallets.sql
+426	1004_three_tier_model_policies.sql

@@ -12,6 +12,7 @@ export default {
     colKeys: "Schlüssel",
     colCost7d: "Kosten 7 Tage",
     colRequests: "Gesamtanfragen",
+    colBalance: 'Guthaben / Kreditlimit',
     colContact: "Kontakt-E-Mail",
     colCreated: "Erstellt",
     empty: 'Noch keine Mandanten vorhanden.',
@@ -84,6 +85,8 @@ export default {
     cancel: 'Abbrechen',
     create: 'Erstellen',
     lastLoginCol: 'Letzte Anmeldung',
+    userBalanceCol: 'Benutzerguthaben',
+    orgBalanceCol: 'Organisationsguthaben',
   },
   dashboard: {
     title: "Dashboard",

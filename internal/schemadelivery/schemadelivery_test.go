@@ -246,11 +246,61 @@ func TestReferencesIn_Binding(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []string
-			for _, o := range u.referencesIn(tc.sql) {
+			for _, o := range u.referencesIn(tc.sql, nil) {
 				got = append(got, o.String())
 			}
 			assertKeys(t, "引用", got, tc.want)
 		})
+	}
+}
+
+// TestReferencesIn_SplitCTE —— 拼接常量形态（2026-11-27 量具误报修复）的判据。
+// 生产形态：domains/metrics 的 WITH 链被 `+ requestModelKey +` 切成多个字面量，
+// daily_sessions 在一段声明（无 WITH 头的中链 `), daily_sessions AS (`）、另一段使用。
+// referencesIn 靠调用方按文件传入的 fileCTE 遮蔽这类名字 ⇒ 判据钉「随 fileCTE 变的映射」：
+// 同一段 SQL，传 daily_sessions ⇒ 不报；传别的名字（变异）⇒ 照报 —— 证明遮蔽真的来自输入
+// 而不是恒绿。titles 在 testIndex 里是未投递表名，daily_sessions 撞它的形态由
+// {"裸列名恰好是一张未投递的表名"} 族覆盖的反面：这里是「表位上」的同名碰撞。
+func TestReferencesIn_SplitCTE(t *testing.T) {
+	// 用未投递表 titles 直接当「被 CTE 名遮蔽的碰撞」对象：真实事件里那个名字
+	// 是候选散文件的 TEMP 表，在 referencesIn 的视角里就是 u.tables 里的一个名字。
+	const use = "SELECT t.id FROM titles t WHERE t.id = $1"
+
+	u := testIndex()
+	// ① 无 fileCTE ⇒ 照报（基线：判据能红）。
+	if got := u.referencesIn(use, nil); len(got) != 1 || got[0].Table != "titles" {
+		t.Fatalf("基线（无 fileCTE）应报 titles，实得 %v", got)
+	}
+	// ② WITH 头链在中段字面量里声明过 ⇒ 遮蔽。
+	withHead := map[string]bool{"titles": true}
+	if got := u.referencesIn(use, withHead); len(got) != 0 {
+		t.Fatalf("WITH 头声明的 fileCTE 应遮蔽 titles，实得 %v", got)
+	}
+	// ③ 中链声明 `), titles AS (` 也应被 collectCTEChain 收进 fileCTE ⇒ 遮蔽。
+	//    这正是 daily_sessions/daily_totals 的声明形状。
+	mid := map[string]bool{}
+	collectCTEChain(tokenize(stripComments("), titles AS (SELECT 1) SELECT * FROM titles")), mid)
+	if !mid["titles"] {
+		t.Fatalf("中链声明 `), titles AS (` 应被 collectCTEChain 收集，实得 %v", mid)
+	}
+	if got := u.referencesIn(use, mid); len(got) != 0 {
+		t.Fatalf("中链声明的 fileCTE 应遮蔽 titles，实得 %v", got)
+	}
+	// ④ 变异守卫：把声明的名字改成别的（daily_totals）⇒ titles 不再被遮蔽 ⇒ 照报。
+	//    若实现写死「中链后面恒遮蔽」这条判据就会红。
+	mut := map[string]bool{}
+	collectCTEChain(tokenize(stripComments("), daily_totals AS (SELECT 1) SELECT * FROM daily_totals")), mut)
+	if mut["titles"] || !mut["daily_totals"] {
+		t.Fatalf("变异后应只收集 daily_totals，实得 %v", mut)
+	}
+	if got := u.referencesIn(use, mut); len(got) != 1 || got[0].Table != "titles" {
+		t.Fatalf("名字变异后 titles 应恢复被报（映射随输入变），实得 %v", got)
+	}
+	// ⑤ SELECT 列表的逗号不误入：`, titles, sensitive_words FROM` 里 titles 不是 CTE。
+	plain := map[string]bool{}
+	collectCTEChain(tokenize(stripComments("SELECT titles, sensitive_words FROM titles WHERE id = $1")), plain)
+	if len(plain) != 0 {
+		t.Fatalf("普通 SELECT 列表的逗号不应产生 CTE 名，实得 %v", plain)
 	}
 }
 

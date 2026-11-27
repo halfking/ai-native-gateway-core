@@ -513,9 +513,9 @@ th.n { text-align: right; }
     <p class="doc-sub">
       这份稿子把「个人用户第一次打开控制台会看到什么」画成整页尺寸的界面，外加顶栏每一个菜单展开后的样子。
       菜单文案与落地路径取自 <span class="mono">web/src/config/appNav.ts</span> 与 <span class="mono">web/src/locales/zh-CN/nav.ts</span>，
-      专家面一共 <span class="num">70</span> 个入口（8 个分组 <span class="num">67</span>项 +顶层 <span class="num">3</span>项），落在 <span class="num">69</span> 个落地路径上。
+      专家面一共 <span class="num">71</span> 个入口（8 个分组 <span class="num">68</span>项 +顶层 <span class="num">3</span>项），落在 <span class="num">70</span> 个落地路径上。
       简易模式露出 <span class="num">14</span> 个页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），
-      专家面其余 <span class="num">56</span> 条收进一个「高级」折叠组，条目本身一个不删。
+      专家面其余 <span class="num">57</span> 条收进一个「高级」折叠组，条目本身一个不删。
     </p>
   </header>
 
@@ -740,7 +740,7 @@ th.n { text-align: right; }
               <div class="panel-head"><span class="t">工作模式</span></div>
               <div style="padding:var(--kx-space-4);font-size:var(--kx-text-sm);color:var(--kx-muted);line-height:1.8">
                 当前是简易模式：导航露出 <span class="num" style="color:var(--kx-text)">14</span> 项，
-                专家面的 <span class="num" style="color:var(--kx-text)">56</span> 条收在「高级」里，展开可见。
+                专家面的 <span class="num" style="color:var(--kx-text)">57</span> 条收在「高级」里，展开可见。
                 <div style="margin-top:var(--kx-space-3)">
                   <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-sliders"/></svg>切到专家模式</button>
                 </div>
@@ -761,7 +761,7 @@ th.n { text-align: right; }
     <p class="sec-desc">
       顶栏一共 <span class="num">9</span> 个位置：四个直链、四个分组、一个「高级」折叠组。
       四个分组的下拉面板都很窄，两三项，面板宽度按条目数收敛，不留大片空白。
-      「高级」展开后是二级分组，56 条按专家面的分组归位，用户在里面看到的目录结构和专家面一致 —— 53 项页内条目，加上 FreeLLM 免费模型那 1 条站外链接。（2026-11-17：/tenant/usage 由折叠区提升进「请求」组下拉，本数由五十改为四十九；同日 PI 错误分析入口 /admin/pi-analysis 落地，本数由四十九改为五十。）
+      「高级」展开后是二级分组，57 条按专家面的分组归位，用户在里面看到的目录结构和专家面一致 —— 53 项页内条目，加上 FreeLLM 免费模型那 1 条站外链接。（2026-11-17：/tenant/usage 由折叠区提升进「请求」组下拉，本数由五十改为四十九；同日 PI 错误分析入口 /admin/pi-analysis 落地，本数由四十九改为五十。）
     </p>
 
     <div class="menu-grid">
@@ -832,7 +832,7 @@ th.n { text-align: right; }
       <div class="menu-cell" style="grid-column:1 / -1">
         <div class="hd">
           <span class="t">高级</span>
-          <span class="n">56 条 ·展开后按专家面分组归位；条目名称见「专家面菜单」一节</span>
+          <span class="n">57 条 ·展开后按专家面分组归位；条目名称见「专家面菜单」一节</span>
         </div>
         <div class="bd" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--kx-space-2)">
           <div>
@@ -874,7 +874,7 @@ th.n { text-align: right; }
             <a class="dd-item" href="#s2"><span class="lb">连接注册台</span></a>
           </div>
           <div>
-            <div class="dd-group-label">数据运维 · 15</div>
+            <div class="dd-group-label">系统设置 · 15</div>
             <a class="dd-item" href="#s2"><span class="lb">敏感信息规则</span></a>
             <a class="dd-item" href="#s2"><span class="lb">自更新与升级</span></a>
             <a class="dd-item" href="#s2"><span class="lb">代理管理</span></a>
@@ -936,16 +936,16 @@ th.n { text-align: right; }
   <section class="sec" id="s3">
     <div class="sec-head">
       <h2>条目归属</h2>
-      <span class="tagline">70 个专家面入口逐条去了哪里</span>
+      <span class="tagline">71 个专家面入口逐条去了哪里</span>
     </div>
     <p class="sec-desc">
       每一行都是 <span class="mono">appNav.ts</span> 里真实存在的条目，中文名取自 <span class="mono">zh-CN/nav.ts</span>。
-      专家面 <span class="num">70</span> 个入口落在 <span class="num">69</span> 个落地路径上，
+      专家面 <span class="num">71</span> 个入口落在 <span class="num">70</span> 个落地路径上，
       「自动更新」同时挂在运维中心和接入指南两个分组下，表里出现两行、各带所属分组。
       最后一列写它在简易模式里的位置：<span class="num">4</span> 项提到顶栏，<span class="num">9</span> 项收进四个分组，
-      <span class="num">56</span> 项进「高级」，<span class="num">1</span> 条走站外链接 —— 那条站外链接住在「模型与路由」组里，
-      随该组一起折叠、点开走新窗口，所以「高级」面板实际是 <span class="num">56</span> 条。没有任何一个入口被删掉。
-      这张表由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从真源生成，行数与真源对不齐就是红的；<span class="num">70</span>项 / <span class="num">69</span> 个落地路径 / <span class="num">56</span> 条收进「高级」折叠组这三档口径，由 <span class="mono">web/src/config/navCounts.test.ts</span> 锁死，真源或三份文档任一侧变了都转红。
+      <span class="num">57</span> 项进「高级」，<span class="num">1</span> 条走站外链接 —— 那条站外链接住在「模型与路由」组里，
+      随该组一起折叠、点开走新窗口，所以「高级」面板实际是 <span class="num">57</span> 条。没有任何一个入口被删掉。
+      这张表由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从真源生成，行数与真源对不齐就是红的；<span class="num">71</span>项 / <span class="num">70</span> 个落地路径 / <span class="num">57</span> 条收进「高级」折叠组这三档口径，由 <span class="mono">web/src/config/navCounts.test.ts</span> 锁死，真源或三份文档任一侧变了都转红。
     </p>
 
     <div class="legend">
@@ -962,72 +962,76 @@ th.n { text-align: right; }
         </thead>
         <tbody>
           <tr data-ledger-row><td>总览</td><td class="path">/dashboard</td><td>顶层主链接</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
-          <tr data-ledger-row><td>实时拓扑</td><td class="path">/live</td><td>顶层主链接</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
-          <tr data-ledger-row><td>请求阶段树</td><td class="path">/live2</td><td>顶层主链接</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>标准模型</td><td class="path">/tenant/models</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>套餐与充值</td><td class="path">/tenant/pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>我的消耗</td><td class="path">/tenant/usage</td><td>运营管理</td><td><span class="chip chip-ok">请求</span></td></tr>
-          <tr data-ledger-row><td>月账单</td><td class="path">/tenant/bills</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>我的账户</td><td class="path">/tenant/account</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>运营总览</td><td class="path">/admin/board-operational</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>成本价格</td><td class="path">/pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>比较与定价</td><td class="path">/model-pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>供应商对账</td><td class="path">/admin/reconciliation</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>报价工作台</td><td class="path">/operations/sales</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>营销管理</td><td class="path">/operations/marketing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>市场价格采集</td><td class="path">/operations/market-prices</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>模型与目录</td><td class="path">/models</td><td>供应商与模型</td><td><span class="chip chip-ok">供应商与模型</span></td></tr>
-          <tr data-ledger-row><td>路由全景</td><td class="path">/routing-v2</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>凭据监控</td><td class="path">/routing-v2/credentials</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>AUTO 路由运营</td><td class="path">/routing-v2/auto-ops</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>供应商</td><td class="path">/providers</td><td>供应商与模型</td><td><span class="chip chip-ok">供应商与模型</span></td></tr>
-          <tr data-ledger-row><td>用量趋势分析</td><td class="path">/admin/usage-trends</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>FreeLLM 免费模型</td><td class="path">https://freellm.itestu.cn</td><td>供应商与模型</td><td><span class="chip chip-warn">站外链接</span> <span class="chip chip-warn">站外</span></td></tr>
-          <tr data-ledger-row><td>租户管理</td><td class="path">/tenants</td><td>密钥与用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
-          <tr data-ledger-row><td>用户管理</td><td class="path">/users</td><td>密钥与用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
-          <tr data-ledger-row><td>API 密钥</td><td class="path">/keys</td><td>密钥与用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
-          <tr data-ledger-row><td>密钥申请</td><td class="path">/key-applications</td><td>密钥与用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>审计日志</td><td class="path">/audit-logs</td><td>密钥与用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>请求日志</td><td class="path">/request-logs</td><td>请求与会话</td><td><span class="chip chip-ok">请求</span></td></tr>
-          <tr data-ledger-row><td>我的会话</td><td class="path">/my/sessions</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>我的用量（统一入口）</td><td class="path">/my/usage</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>队列瀑布图</td><td class="path">/dispatch/waterfall</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>轮次列表</td><td class="path">/admin/turns</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>会话分析中心</td><td class="path">/admin/session-analytics/users</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>用户会话分析</td><td class="path">/admin/session-analytics/users/overview</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>请求注册表</td><td class="path">/admin/request-registry</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>连接注册台</td><td class="path">/admin/connection-registry</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>敏感信息规则</td><td class="path">/admin/sanitize-rules</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>系统设置</td><td class="path">/admin/settings</td><td>系统设置</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
-          <tr data-ledger-row><td>自更新与升级</td><td class="path">/admin/self-update</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>代理管理</td><td class="path">/admin/proxy</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>数据生命周期</td><td class="path">/admin/data-lifecycle</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>格式异常监控</td><td class="path">/format-anomalies</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>模型完整性监控</td><td class="path">/model-integrity</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>模型可信度</td><td class="path">/model-credibility</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>模块管理</td><td class="path">/admin/modules</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>提示词注入检测</td><td class="path">/admin/prompt-injection</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>PI 错误分析</td><td class="path">/admin/pi-analysis</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>错误处理手册</td><td class="path">/admin/error-playbook</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>压缩管理</td><td class="path">/admin/compression</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>微信机器人</td><td class="path">/admin/modules?module=wechat_bot</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>Agent Registry</td><td class="path">/admin/agents</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>更新与激活</td><td class="path">/customer/update-activate</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>离线激活</td><td class="path">/customer/offline-activation</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>数据采集范围</td><td class="path">/maintain/tenant/telemetry</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>运维总览</td><td class="path">/maintain/ops/overview</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>中心运维</td><td class="path">/maintain/ops/center</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>发布与下载</td><td class="path">/maintain/ops/downloads</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>License 管理</td><td class="path">/maintain/ops/licenses</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>故障管理</td><td class="path">/maintain/ops/faults</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>自动更新</td><td class="path">/maintain/ops/autoupdate</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>VibeCoding</td><td class="path">/ops/vibecoding</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>接入示例</td><td class="path">/examples</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
-          <tr data-ledger-row><td>自动配置</td><td class="path">/examples#auto-config</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
-          <tr data-ledger-row><td>帮助手册</td><td class="path">/help</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
-          <tr data-ledger-row><td>自动更新</td><td class="path">/maintain/ops/autoupdate</td><td>接入指南</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>赞助与捐赠</td><td class="path">/maintain/donate</td><td>接入指南</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
-          <tr data-ledger-row><td>对话</td><td class="path">/chat</td><td>对话</td><td><span class="chip chip-primary">顶栏直链</span></td></tr><tr data-ledger-row><td>人员排行</td><td class="path">/admin/session-analytics/user-ranking</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr><tr data-ledger-row><td>智能体排行</td><td class="path">/admin/session-analytics/agent-ranking</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr><tr data-ledger-row><td>模型排行</td><td class="path">/admin/session-analytics/model-ranking</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>实时拓扑</td><td class="path">/live</td><td>顶层主链接</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
+    <tr data-ledger-row><td>请求阶段树</td><td class="path">/live2</td><td>顶层主链接</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>标准模型</td><td class="path">/tenant/models</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>套餐与充值</td><td class="path">/tenant/pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>我的消耗</td><td class="path">/tenant/usage</td><td>运营管理</td><td><span class="chip chip-ok">请求</span></td></tr>
+    <tr data-ledger-row><td>月账单</td><td class="path">/tenant/bills</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>我的账户</td><td class="path">/tenant/account</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>运营总览</td><td class="path">/admin/board-operational</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>成本价格</td><td class="path">/pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>比较与定价</td><td class="path">/model-pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>供应商对账</td><td class="path">/admin/reconciliation</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>报价工作台</td><td class="path">/operations/sales</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>营销管理</td><td class="path">/operations/marketing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>市场价格采集</td><td class="path">/operations/market-prices</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>模型与目录</td><td class="path">/models</td><td>供应商与模型</td><td><span class="chip chip-ok">供应商与模型</span></td></tr>
+    <tr data-ledger-row><td>路由全景</td><td class="path">/routing-v2</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>凭据监控</td><td class="path">/routing-v2/credentials</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>AUTO 路由运营</td><td class="path">/routing-v2/auto-ops</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>供应商</td><td class="path">/providers</td><td>供应商与模型</td><td><span class="chip chip-ok">供应商与模型</span></td></tr>
+    <tr data-ledger-row><td>用量趋势分析</td><td class="path">/admin/usage-trends</td><td>供应商与模型</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>FreeLLM 免费模型</td><td class="path">https://freellm.itestu.cn</td><td>供应商与模型</td><td><span class="chip chip-warn">站外链接</span> <span class="chip chip-warn">站外</span></td></tr>
+    <tr data-ledger-row><td>租户管理</td><td class="path">/tenants</td><td>密钥与用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
+    <tr data-ledger-row><td>组织管理</td><td class="path">/orgs</td><td>密钥与用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>用户管理</td><td class="path">/users</td><td>密钥与用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
+    <tr data-ledger-row><td>API 密钥</td><td class="path">/keys</td><td>密钥与用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
+    <tr data-ledger-row><td>密钥申请</td><td class="path">/key-applications</td><td>密钥与用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>审计日志</td><td class="path">/audit-logs</td><td>密钥与用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>我的会话</td><td class="path">/my/sessions</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>我的用量（统一入口）</td><td class="path">/my/usage</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>请求日志</td><td class="path">/request-logs</td><td>请求与会话</td><td><span class="chip chip-ok">请求</span></td></tr>
+    <tr data-ledger-row><td>队列瀑布图</td><td class="path">/dispatch/waterfall</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>轮次列表</td><td class="path">/admin/turns</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>会话分析中心</td><td class="path">/admin/session-analytics/users</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>我的会话</td><td class="path">/admin/session-analytics/users/overview</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>请求注册表</td><td class="path">/admin/request-registry</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>连接注册台</td><td class="path">/admin/connection-registry</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>敏感信息规则</td><td class="path">/admin/sanitize-rules</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>系统设置</td><td class="path">/admin/settings</td><td>系统设置</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
+    <tr data-ledger-row><td>自更新与升级</td><td class="path">/admin/self-update</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>代理管理</td><td class="path">/admin/proxy</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>数据生命周期</td><td class="path">/admin/data-lifecycle</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>格式异常监控</td><td class="path">/format-anomalies</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>模型完整性监控</td><td class="path">/model-integrity</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>模型可信度</td><td class="path">/model-credibility</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>模块管理</td><td class="path">/admin/modules</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>提示词注入检测</td><td class="path">/admin/prompt-injection</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>PI 错误分析</td><td class="path">/admin/pi-analysis</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>错误处理手册</td><td class="path">/admin/error-playbook</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>人员排行</td><td class="path">/admin/session-analytics/user-ranking</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>智能体排行</td><td class="path">/admin/session-analytics/agent-ranking</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>模型排行</td><td class="path">/admin/session-analytics/model-ranking</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>压缩管理</td><td class="path">/admin/compression</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>微信机器人</td><td class="path">/admin/modules?module=wechat_bot</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>Agent Registry</td><td class="path">/admin/agents</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>更新与激活</td><td class="path">/customer/update-activate</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>离线激活</td><td class="path">/customer/offline-activation</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>数据采集范围</td><td class="path">/maintain/tenant/telemetry</td><td>系统设置</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>运维总览</td><td class="path">/maintain/ops/overview</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>中心运维</td><td class="path">/maintain/ops/center</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>发布与下载</td><td class="path">/maintain/ops/downloads</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>License 管理</td><td class="path">/maintain/ops/licenses</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>故障管理</td><td class="path">/maintain/ops/faults</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>自动更新</td><td class="path">/maintain/ops/autoupdate</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>VibeCoding</td><td class="path">/ops/vibecoding</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>接入示例</td><td class="path">/examples</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
+    <tr data-ledger-row><td>自动配置</td><td class="path">/examples#auto-config</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
+    <tr data-ledger-row><td>帮助手册</td><td class="path">/help</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
+    <tr data-ledger-row><td>自动更新</td><td class="path">/maintain/ops/autoupdate</td><td>接入指南</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>赞助与捐赠</td><td class="path">/maintain/donate</td><td>接入指南</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+    <tr data-ledger-row><td>对话</td><td class="path">/chat</td><td>对话</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
 
 
         </tbody>
@@ -1124,7 +1128,7 @@ th.n { text-align: right; }
       </div>
 
       <div class="menu-cell">
-        <div class="hd"><span class="t">数据运维</span><span class="n">16 项</span></div>
+        <div class="hd"><span class="t">系统设置</span><span class="n">16 项</span></div>
         <div class="bd">
           <a class="dd-item" href="#s4"><span class="lb">敏感信息规则</span></a>
           <a class="dd-item" href="#s4"><span class="lb">系统设置</span></a>
@@ -1221,12 +1225,12 @@ th.n { text-align: right; }
       </div>
       <div class="rule">
         <span class="rt">折叠不隐藏，深链仍然可达</span>
-        <span class="rb">56 条进「高级」折叠组，展开可见，URL 不变。仓库里已有「不擅自改菜单」的硬门与 31 条孤儿白名单，折叠不触碰它。</span>
+        <span class="rb">57 条进「高级」折叠组，展开可见，URL 不变。仓库里已有「不擅自改菜单」的硬门与 31 条孤儿白名单，折叠不触碰它。</span>
         <span class="rc">web/src/config/navCoverage.test.ts:51,79</span>
       </div>
       <div class="rule">
         <span class="rt">同一路径出现两次要在界面上标出来</span>
-        <span class="rb">「自动更新」同时挂在运维中心和接入指南两个分组下，各算一个入口，共70项。简易模式折叠后它仍出现两次，菜单里标注重复，用户不会被绕晕。</span>
+        <span class="rb">「自动更新」同时挂在运维中心和接入指南两个分组下，各算一个入口，共71项。简易模式折叠后它仍出现两次，菜单里标注重复，用户不会被绕晕。</span>
         <span class="rc">web/src/config/appNav.ts（opsplatform 与 guide 组各一项）</span>
       </div>
       <div class="rule">
@@ -1241,7 +1245,7 @@ th.n { text-align: right; }
     配套文档：<a href="simple-expert-mode-design.html">《简易模式与专家模式 · 设计方案》</a>讲分层原理与落地机制，
     <a href="simple-mode-ui-mockup.html">《简易模式 · 控制台效果稿》</a>讲总览页与设置页的画面细节。
     本稿补上整页形态与顶栏菜单的完整目录。<br>
-    菜单数据来源：<span class="mono">web/src/config/appNav.ts</span>（8 组67项 +顶层3项 =70，落地路径69 个）、
+    菜单数据来源：<span class="mono">web/src/config/appNav.ts</span>（8 组68项 +顶层3项 =71，落地路径70 个）、
     <span class="mono">web/src/locales/zh-CN/nav.ts</span>（中文名）、
     <span class="mono">web/src/components/shell/AppTopbar.vue</span>（顶栏渲染结构）。
   </footer>

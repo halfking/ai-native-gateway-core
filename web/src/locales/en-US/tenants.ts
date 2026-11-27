@@ -16,6 +16,7 @@ export default {
     colKeys: 'Keys',
     colCost7d: '7-day cost',
     colRequests: 'Total requests',
+    colBalance: 'Balance / Credit Limit',
     colContact: 'Contact email',
     colCreated: 'Created',
     empty: 'No tenants yet',
@@ -88,6 +89,8 @@ export default {
     cancel: 'Cancel',
     create: 'Create',
     lastLoginCol: 'Last login',
+    userBalanceCol: 'User Balance',
+    orgBalanceCol: 'Org Balance',
   },
   dashboard: {
     title: 'Dashboard',

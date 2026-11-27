@@ -45,6 +45,7 @@ export default {
     freePool: "الموارد المجانية",
     freeDiscovery: "اكتشاف الموارد المجانية",
     tenants: "إدارة المستأجرين",
+    orgs: "المؤسسات",
     users: "إدارة المستخدمين",
     keys: "مفاتيح API",
     keyApplications: "طلب المفتاح",

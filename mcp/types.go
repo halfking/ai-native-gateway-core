@@ -71,6 +71,19 @@ func (c ToolClass) ValidToolClass() bool {
 	}
 }
 
+// 上游适配器鉴权模式（Adapter.AuthMode 取值）。
+const (
+	// AuthModeNone 不带任何上游凭据。
+	AuthModeNone = "none"
+	// AuthModeBearer 静态 bearer token（AuthSecret）。
+	AuthModeBearer = "bearer"
+	// AuthModeAPIKey 静态 X-Api-Key（AuthSecret）。
+	AuthModeAPIKey = "apikey"
+	// AuthModeLLMGateway 网关动态签发短 service JWT（ADR 2026-11-27 §4 D2a，
+	// 对应 memora registry auth_mode=llm_gateway；AuthSecret 不用）。
+	AuthModeLLMGateway = "llm_gateway"
+)
+
 // Adapter 是一个被网关纳管的 MCP 上游服务（原 tools/mcp-gateway 的「路径分流
 // 目标」的泛化：路径前缀 → 具名适配器）。
 type Adapter struct {
@@ -88,8 +101,15 @@ type Adapter struct {
 	ProtocolVersion string `json:"protocol_version,omitempty"`
 	// Headers 转发到上游的静态请求头（如租户标识）。
 	Headers map[string]string `json:"headers,omitempty"`
-	// AuthMode 上游鉴权模式：none / bearer / apikey。
+	// AuthMode 上游鉴权模式：none / bearer / apikey / llm_gateway。
+	// llm_gateway（ADR 2026-11-27 §4 D2a）：网关动态签出站 service JWT，
+	// 不使用 AuthSecret（凭据不落 Store）。
 	AuthMode string `json:"auth_mode,omitempty"`
+	// Labels 联邦元数据（registry 同步写入，如 project 归属；ADR §5 D3a）。
+	// 不参与路由，供看板展示与联邦过滤。
+	Labels map[string]string `json:"labels,omitempty"`
+	// Manual 标记治理字段经人工设置（ADR §3 D1：registry 同步不覆盖）。
+	Manual bool `json:"manual,omitempty"`
 	// AuthSecret 上游凭据。对外输出时一律脱敏。
 	AuthSecret string `json:"-"`
 	// Capability 该适配器所属能力域（memory / code / agent ...），用于能力路由。

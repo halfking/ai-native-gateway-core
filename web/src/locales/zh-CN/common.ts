@@ -164,6 +164,7 @@ export default {
     standardName: '标准名',
     email: '邮箱',
     role: '角色',
+    org: '组织',
     username: '用户名',
     operator: '操作人',
     note: '说明',

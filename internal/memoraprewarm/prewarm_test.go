@@ -220,3 +220,46 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met within 2s")
 }
+
+//  8. 认证契约对齐（2026-11-27 灰度放量轮）：secret+pluginID 齐备 ⇒ 每请求
+//     叠加 X-Gateway-Context-* 五头（与 summarize asm 委托同签名族，ASM 侧
+//     plugin.VerifyContext 可验）；缺席 ⇒ 仅 Bearer（老部署兼容）。
+func TestPrewarmClientSignsContextHeaders(t *testing.T) {
+	secret := []byte("test-context-secret-0123456789abcdef")
+	var gotCtx, gotPlugin, gotTenant, gotSig string
+	var bearerSeen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPlugin = r.Header.Get("X-Gateway-Plugin-ID")
+		gotTenant = r.Header.Get("X-Gateway-Tenant-ID")
+		gotCtx = r.Header.Get("X-Gateway-Context-Signature")
+		gotSig = r.Header.Get("X-Gateway-Context-Timestamp")
+		bearerSeen = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewPrewarmHTTPClientForTest(srv.URL, "stub-token", secret, "ai-session-manager")
+	c.Prewarm(context.Background(), "tenant-a", "sess-1", "q")
+	if gotPlugin != "ai-session-manager" || gotTenant != "tenant-a" {
+		t.Fatalf("context headers missing: plugin=%q tenant=%q", gotPlugin, gotTenant)
+	}
+	if gotCtx == "" || gotSig == "" {
+		t.Fatal("signature/timestamp headers missing")
+	}
+	if bearerSeen == "" {
+		t.Fatal("Bearer fallback header should stay present")
+	}
+
+	// 无 secret ⇒ 不签名（headers 缺席），仅 Bearer。
+	var noSig string
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noSig = r.Header.Get("X-Gateway-Context-Signature")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv2.Close()
+	c2 := NewPrewarmHTTPClientForTest(srv2.URL, "stub-token", nil, "")
+	c2.Prewarm(context.Background(), "tenant-a", "sess-2", "q")
+	if noSig != "" {
+		t.Fatal("unsigned client must not send context signature headers")
+	}
+}

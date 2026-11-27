@@ -25,6 +25,7 @@ import liveStageTree from './liveStageTree'
 import providerDetail from './providerDetail'
 import providerDetailPage from './providerDetailPage'
 import tenants from './tenants'
+import orgs from './orgs'
 import forbidden from './forbidden'
 import settings from './settings'
 import workTypes from './workTypes'
@@ -128,6 +129,7 @@ export default {
   providerDetail,
   providerDetailPage,
   tenants,
+  orgs,
   forbidden,
   settings,
   workTypes,

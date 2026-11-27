@@ -29,6 +29,18 @@ type userInfo struct {
 	MustChangePassword bool       `json:"must_change_password"`
 	LastLoginAt        *time.Time `json:"last_login_at"`
 	CreatedAt          time.Time  `json:"created_at"`
+
+	// 三级配额制（2026-11-27）：组织归属 + 用户/组织钱包（租户 users tab 余额列数据源）。
+	Org       *orgRef        `json:"org,omitempty"`
+	Wallet    *orgWalletInfo `json:"wallet,omitempty"`
+	OrgWallet *orgWalletInfo `json:"org_wallet,omitempty"`
+}
+
+// orgRef 用户所属组织的精简引用（/tenants/{code}/users 与 /orgs/{id}/members 共用）。
+type orgRef struct {
+	ID   int    `json:"id"`
+	Code string `json:"code"`
+	Name string `json:"name"`
 }
 
 type createUserRequest struct {
@@ -168,7 +180,7 @@ func (h *Handler) auditLog(actor, action, targetType string, targetID int, detai
 	}
 	payload = sanitizeJSONBPayload(payload)
 	// 2026-07-16: Force text protocol to avoid pgx binary encoding issues (same fix as apihub/telemetry)
-	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`, actor, action, targetType, targetID, string(payload))
+	_, err := h.policyDB().Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`, actor, action, targetType, targetID, string(payload))
 	if err != nil {
 		// Last-resort: PG still rejected (could be a transient type
 		// issue we cannot sanitize). Try inserting the raw text form
@@ -176,7 +188,7 @@ func (h *Handler) auditLog(actor, action, targetType string, targetID int, detai
 		// ::text to bypass JSONB validation.
 		if isJSONBValidationError(err) {
 			fallback := auditJSONBValidationFallback(payload)
-			if _, fbErr := h.db.Exec(ctx,
+			if _, fbErr := h.policyDB().Exec(ctx,
 				`INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`,
 
 				actor, action, targetType, targetID, string(fallback)); fbErr != nil {
@@ -361,6 +373,40 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 三级配额制（2026-11-27）：user 级模型策略子资源
+	// /api/users/{id}/model-policies[...]
+	if strings.Contains(idStr, "/model-policies") {
+		parts := strings.SplitN(idStr, "/model-policies", 2)
+		id, cerr := strconv.Atoi(parts[0])
+		if cerr != nil || id <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid user id")
+			return
+		}
+		// 策略管理是平台级配置（跨租户影响数据面），限 super_admin。
+		if auth := GetAuthContext(r); auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+			writeError(w, http.StatusForbidden, "super_admin role required for model policy management")
+			return
+		}
+		h.handleUserModelPolicies(w, r, id, strings.TrimSuffix(parts[1], "/"))
+		return
+	}
+
+	// 三级配额制（2026-11-27）：user 级钱包子资源 /api/users/{id}/wallet
+	if strings.Contains(idStr, "/wallet") {
+		parts := strings.SplitN(idStr, "/wallet", 2)
+		id, cerr := strconv.Atoi(parts[0])
+		if cerr != nil || id <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid user id")
+			return
+		}
+		if r.Method != http.MethodPatch && r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "wallet requires PATCH")
+			return
+		}
+		h.updateUserWallet(w, r, id)
+		return
+	}
+
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid user id")
@@ -391,6 +437,86 @@ func requireUserManager(w http.ResponseWriter, r *http.Request) bool {
 	}
 	writeError(w, http.StatusForbidden, "administrator role required")
 	return false
+}
+
+// updateUserWalletRequest 镜像 updateOrgWalletRequest（limit 三态用
+// RawMessage + parseCreditLimit：**int64 双指针在 encoding/json 下是死的
+// —— JSON null 与缺省都把外层指针置 nil）。
+type updateUserWalletRequest struct {
+	BalanceCredits     *int64          `json:"balance_credits"`
+	CreditLimitCredits json.RawMessage `json:"credit_limit_credits,omitempty"`
+	CreditPolicy       *string         `json:"credit_policy"`
+}
+
+// updateUserWallet: PATCH /api/users/{id}/wallet —— 用户钱包调整
+//（三级配额制 2026-11-27；语义与 updateOrgWallet 逐字对齐；
+// limit 三态：缺省=保持 / 数值=设值 / "unlimited"=设 NULL）。
+func (h *Handler) updateUserWallet(w http.ResponseWriter, r *http.Request, id int) {
+	var req updateUserWalletRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.CreditPolicy != nil && *req.CreditPolicy != "warn" && *req.CreditPolicy != "block" {
+		writeError(w, http.StatusBadRequest, "credit_policy must be 'warn' or 'block'")
+		return
+	}
+	limitVal, setNull, keep, perr := parseCreditLimit(req.CreditLimitCredits)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// 行随写随建（INSERT ... ON CONFLICT DO NOTHING + 后续 UPDATE 同 orgs 面）。
+	if _, err := h.policyDB().Exec(ctx, `
+		INSERT INTO user_credit_wallets (user_id, tenant_id, balance_credits, credit_limit_credits, credit_policy)
+		VALUES ($1, (SELECT tenant_id FROM users WHERE id = $1), COALESCE($2, 0), NULL, COALESCE($3, 'warn'))
+		ON CONFLICT (user_id) DO NOTHING
+	`, id, req.BalanceCredits, req.CreditPolicy); err != nil {
+		writeInternalErr(w, "ensure user wallet failed", err)
+		return
+	}
+	if req.BalanceCredits != nil {
+		if _, err := h.policyDB().Exec(ctx, `UPDATE user_credit_wallets SET balance_credits = $2, updated_at = now() WHERE user_id = $1`, id, *req.BalanceCredits); err != nil {
+			writeInternalErr(w, "update balance failed", err)
+			return
+		}
+	}
+	if req.CreditPolicy != nil {
+		if _, err := h.policyDB().Exec(ctx, `UPDATE user_credit_wallets SET credit_policy = $2, updated_at = now() WHERE user_id = $1`, id, *req.CreditPolicy); err != nil {
+			writeInternalErr(w, "update policy failed", err)
+			return
+		}
+	}
+	if !keep {
+		if setNull {
+			if _, err := h.policyDB().Exec(ctx, `UPDATE user_credit_wallets SET credit_limit_credits = NULL, updated_at = now() WHERE user_id = $1`, id); err != nil {
+				writeInternalErr(w, "clear credit limit failed", err)
+				return
+			}
+		} else {
+			if _, err := h.policyDB().Exec(ctx, `UPDATE user_credit_wallets SET credit_limit_credits = $2, updated_at = now() WHERE user_id = $1`, id, *limitVal); err != nil {
+				writeInternalErr(w, "update credit limit failed", err)
+				return
+			}
+		}
+	}
+
+	var balance int64
+	var limit *int64
+	var policy string
+	if err := h.policyDB().QueryRow(ctx, `
+		SELECT COALESCE(balance_credits, 0), credit_limit_credits, COALESCE(credit_policy, 'warn')
+		FROM user_credit_wallets WHERE user_id = $1
+	`, id).Scan(&balance, &limit, &policy); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	b := balance
+	writeJSON(w, http.StatusOK, map[string]any{"wallet": orgWalletInfo{BalanceCredits: &b, CreditLimitCredits: limit, CreditPolicy: policy}})
 }
 
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -758,7 +884,7 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	var u userInfo
-	err := h.db.QueryRow(ctx, `
+	err := h.policyDB().QueryRow(ctx, `
 		SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at
 		FROM users WHERE id = $1
 	`, auth.UserID).Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt)
@@ -808,7 +934,7 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	var currentHash string
-	err := h.db.QueryRow(ctx, "SELECT password_hash FROM users WHERE id = $1", auth.UserID).Scan(&currentHash)
+	err := h.policyDB().QueryRow(ctx, "SELECT password_hash FROM users WHERE id = $1", auth.UserID).Scan(&currentHash)
 	if err != nil {
 		writeLookupErr(w, "user not found", err)
 		return
@@ -822,7 +948,7 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "password hash failed")
 		return
 	}
-	_, err = h.db.Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = now() WHERE id = $2`, string(newHash), auth.UserID)
+	_, err = h.policyDB().Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = now() WHERE id = $2`, string(newHash), auth.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return

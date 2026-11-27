@@ -346,6 +346,33 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
 		logCtx.OutboundProvenance = prov
 	}
+	// ── 组织/用户级余额预检（三级配额制，2026-11-27）──────────────────
+	//	body 读入后（预估成本 FromBody 同款）；豁免与租户级预算闸同源
+	//	（default 租户 + 内部 key 自判 + platform 豁免）。任一级 block ⇒ 402。
+	{
+		maasSvc := h.chatHandler.maasSvc
+		billingExempt := tenantBillingExempt(r.Context(), keyInfo)
+		if maasSvc != nil && maasSvc.Enabled() && !billingExempt &&
+			keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+			owner := ""
+			if keyInfo.OwnerUser != nil {
+				owner = *keyInfo.OwnerUser
+			}
+			tieredCost := h.chatHandler.EstimateRequestCostCreditsFromBody(bodyBytes, logCtx.ClientModel)
+			if blocked, err := maasSvc.PreCheckOrgAndUserForOwner(r.Context(), owner, tieredCost); err != nil {
+				slog.Warn("tiered balance precheck failed on responses surface, allowing (fail-open)",
+					"request_id", requestID, "owner_user", owner, "error", err)
+			} else if blocked != nil && !blocked.Allow {
+				slog.Warn("tiered balance precheck rejected responses request",
+					"request_id", requestID, "owner_user", owner, "reason", blocked.Reason)
+				logCtx.SetError("billing_insufficient_balance", blocked.Reason)
+				logCtx.EmitFailure("billing_insufficient_balance", blocked.Reason, nil, nil)
+				*attemptLogged = true
+				writeResponsesError(w, http.StatusPaymentRequired, blocked.Reason, "insufficient_quota", "billing_insufficient_balance")
+				return
+			}
+		}
+	}
 	// N21-3（2026-09-30）：/v1/responses 入口此前零附件提取——含媒体轮次的
 	// attachments 列恒空。与 messages lane 同构：body 读取后即刻提取，
 	// strict 模式（显式 opt-in）下存储失败 503，默认 lenient 仅记录。

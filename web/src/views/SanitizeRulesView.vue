@@ -2,7 +2,7 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from "vue-i18n";
-import { isSuperAdmin, isTenantAdmin } from "../store";
+import { isSuperAdmin, isTenantAdmin, isRegularUser } from "../store";
 import { getSetting, updateSetting } from "../api/settings";
 import {
   RULE_TYPES,
@@ -64,7 +64,20 @@ const labels = computed<Record<string, string>>(() => ({
   changed: t("sanitizeRules.changed"),
 }));
 const superAdmin = computed(() => isSuperAdmin());
-const allowed = computed(() => superAdmin.value || isTenantAdmin());
+// ★ 2026-11-27 非管理员菜单重构轮（owner 指令「敏感信息规则」对非管理员放开）：
+//   后端四档化已给 role=user 开放 events + blocked-reviews（含 insights）的
+//   **本租户只读档**（admin/sanitize_rules_handler.go userRead），前端此前
+//   `allowed = superAdmin || isTenantAdmin()` 把 user 挡在横幅外 ⇒ 菜单在、
+//   页面死（事件列表永不加载、页签不渲染）。补 user 进 allowed —— 与后端
+//   userRead 档位一一对齐：user 能看的事件/审核队列与 ta 相同（租户收口
+//   在后端），但复核（写）与标签按钮必须按角色隐藏（见模板 superAdmin 守卫
+//   与 canReview）。
+const regularUser = computed(() => isRegularUser());
+const allowed = computed(() => superAdmin.value || isTenantAdmin() || regularUser.value);
+// user 是纯只读档：后端对 user 的 events/{id}/review 一律 403
+//（handleSanitizeRules 的 userRead 只放 GET 面），前端按钮同步隐藏，
+// 不发注定被拒的写请求。
+const canReview = computed(() => superAdmin.value || isTenantAdmin());
 const tab = ref(superAdmin.value ? "rules" : "events");
 const head = ref<RuleCurrent | null>(null),
   draft = ref<RuleConfig>({ rules: [] }),
@@ -2086,6 +2099,7 @@ onBeforeUnmount(() => {
             {{ t("sanitizeRules.linked") }}: v{{ event.resolved_version }}
           </p>
           <label
+            v-if="canReview"
             >{{ t("sanitizeRules.reviewComment")
             }}<input
               v-model="reviewComments[event.id]"
@@ -2093,7 +2107,7 @@ onBeforeUnmount(() => {
               maxlength="2000"
               :disabled="reviewBusy !== null"
           /></label>
-          <div class="toolbar">
+          <div v-if="canReview" class="toolbar">
             <button
               v-for="status in [
                 'confirmed_sensitive',

@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -67,6 +68,12 @@ func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger, localTools *mcp
 	mux.Handle("/mcp/", handler)
 	mux.Handle("/.well-known/oauth-protected-resource", handler)
 	mux.Handle("/.well-known/oauth-protected-resource/mcp", handler)
+
+	// registry 联邦同步器驱动（ADR 2026-11-27 §3）：enabled 时后台轮询；
+	// 同步失败只退避重试+记状态，绝不影响数据面与主进程。
+	if syncer := gateway.RegistrySyncer(); syncer != nil {
+		go syncer.Run(context.Background())
+	}
 
 	logger.Info("mcp gateway mounted",
 		"data_plane", "/mcp",

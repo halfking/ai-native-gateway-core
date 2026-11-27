@@ -20,6 +20,8 @@ export interface UsageSummary {
   // 展示此字段，使平台运营能直接看到「按当前定价 × 总 token」折算的
   // 销售口径积分消耗量，与 cost_usd 上游成本口径并列。
   total_credits_charged?: number
+  total_cached_tokens?: number
+  unique_models?: number
   avg_latency_ms: number
   success_rate: number
   // Optional degradation markers. When the backend cannot run its aggregation
@@ -527,6 +529,9 @@ export interface UsageTrendFilterQuery {
   top?: number
   /** ★ 五维排行过滤（见 RankingDimensionFilters）。 */
   dims?: RankingDimensionFilters
+  /** ★ 三级配额制维度（2026-11-27）：org_id（组织 code）/ user_id（使用者）。 */
+  org_id?: string
+  user_id?: string
 }
 
 export function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
@@ -540,6 +545,8 @@ export function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
     qs.set('model', q.model)
   }
   if (q.top != null) qs.set('top', String(q.top))
+  if (q.org_id) qs.set('org_id', q.org_id)
+  if (q.user_id) qs.set('user_id', q.user_id)
   if (q.dims) applyRankingDimensionQs(qs, q.dims)
   return qs
 }

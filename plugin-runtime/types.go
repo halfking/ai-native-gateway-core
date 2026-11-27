@@ -5,6 +5,8 @@ package pluginruntime
 import (
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/limiter"
 )
 
 const (
@@ -145,9 +147,21 @@ type Manifest struct {
 	SettingsSchema *SettingsSchema `json:"settings_schema,omitempty"`
 	ClientAssets   []string        `json:"client_assets,omitempty"`
 
+	// ResourceLimits 定义插件进程的资源限制（可选；未配置时 Supervisor 不创建
+	// limiter，行为与历史版本一致——向后兼容）。见 plugin-runtime/limiter 包。
+	ResourceLimits *ResourceLimits `json:"resource_limits,omitempty"`
+
 	// ManifestPath 是 manifest 文件的绝对路径，由 LoadManifest 填充；不参与 JSON 序列化。
 	ManifestPath string `json:"-"`
 }
+
+// 资源限制线协议类型：真实定义在 plugin-runtime/limiter 包（Supervisor 接线面），
+// 这里用类型别名让 Manifest 的 JSON 合同与 limiter 保持单一来源，避免双份结构漂移。
+type (
+	ResourceLimits = limiter.ResourceLimits
+	MemoryLimit    = limiter.MemoryLimit
+	CPULimit       = limiter.CPULimit
+)
 
 // EffectiveAPI returns the caret host API range the plugin is written for.
 // Empty API defaults to "^1" (magpie Compatible semantics).

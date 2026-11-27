@@ -56,6 +56,7 @@ export default {
     freePool: 'Free Resources',
     freeDiscovery: 'Free Discovery',
     tenants: 'Tenant Management',
+    orgs: 'Organizations',
     users: 'User Management',
     keys: 'API Keys',
     keyApplications: 'Key Applications',

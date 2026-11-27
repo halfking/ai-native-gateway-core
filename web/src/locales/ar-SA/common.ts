@@ -164,6 +164,7 @@ export default {
     standardName: 'الاسم القياسي',
     email: 'البريد الإلكتروني',
     role: 'الدور',
+    org: 'المؤسسة',
     username: 'اسم المستخدم',
     operator: 'المنفّذ',
     note: 'شرح',

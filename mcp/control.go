@@ -122,6 +122,12 @@ func (c *ControlPlane) Handler() http.Handler {
 	mux.HandleFunc("GET /recommend", c.scoped(ScopeAnalyze, c.handleRecommend))
 	mux.HandleFunc("GET /stats", c.scoped(ScopeAnalyze, c.handleStats))
 
+	// registry 联邦只读视图（ADR 2026-11-27 §4 D2b；需 mcp.analyze）。
+	// 未启用联邦时 /registry/status 返回 {"enabled":false}，/registry/servers
+	// 返回空清单——不 404，让看板可以无条件探测。
+	mux.HandleFunc("GET /registry/status", c.scoped(ScopeAnalyze, c.handleRegistryStatus))
+	mux.HandleFunc("GET /registry/servers", c.scoped(ScopeAnalyze, c.handleRegistryServers))
+
 	// 注册面（需 mcp.register）：创建 + 查看。
 	mux.HandleFunc("GET /adapters", c.scoped(ScopeRegister, c.handleListAdapters))
 	mux.HandleFunc("POST /adapters", c.scoped(ScopeRegister, c.handleCreateAdapter))
@@ -400,6 +406,31 @@ func isMCPMetricFamily(name string) bool {
 //
 //	域，不在业务 key 的 scope 体系内）；这里是**给业务 key 用的**统计出口
 //	⇒ 需要 mcp.analyze，且只返回 MCP 网关自己的指标族。
+//
+// handleRegistryStatus 联邦同步器状态（ADR §4 D2b）。未启用时 enabled=false。
+func (c *ControlPlane) handleRegistryStatus(w http.ResponseWriter, r *http.Request) {
+	st := c.gateway.RegistrySyncStatus()
+	if st == nil {
+		_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{"enabled": false})
+		return
+	}
+	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", st)
+}
+
+// handleRegistryServers 联邦条目视图（ADR §4 D2b）。未启用时空清单。
+func (c *ControlPlane) handleRegistryServers(w http.ResponseWriter, r *http.Request) {
+	st := c.gateway.RegistrySyncStatus()
+	if st == nil {
+		_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{"servers": []any{}, "count": 0, "enabled": false})
+		return
+	}
+	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
+		"servers": st.Entries,
+		"count":   len(st.Entries),
+		"enabled": true,
+	})
+}
+
 func (c *ControlPlane) handleStats(w http.ResponseWriter, r *http.Request) {
 	if id := controlIdentity(r); id != nil && !id.Admin {
 		// The legacy Prometheus families have no tenant labels; exporting them

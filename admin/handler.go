@@ -117,6 +117,9 @@ type Handler struct {
 	// usersDB 是**用户管理写路径**的窄注入面（2026-11-26 角色治理轮）：nil ⇒ h.db。
 	// 作用：让「非 default 租户不得拥有 super_admin」这条判据能在单测里被钉住。
 	usersDB usersDB
+	// orgPolicyDB 是 org/user 级模型策略 + org/user 钱包读写路径的窄注入面
+	//（2026-11-27 三级配额制轮）：nil ⇒ h.db。作用见 orgPolicyDB 注释。
+	orgPolicyDB orgPolicyDB
 	// keyCreateDB 是 createKey 的落库查询面（★ 2026-11-23 211 建 key 全量 500 回归
 	// 根修 ★）：nil ⇒ h.db（keyCreateQuerier）。db 字段是具体 *pgxpool.Pool，单测里
 	// 注入不了 pgxmock ⇒ 此前建 key 的测试都停在 DB 面之前 ⇒ 「落库语句引用了未应用
@@ -338,8 +341,12 @@ type Handler struct {
 	// write so the next chat request sees the change without waiting
 	// for the 60s TTL.  Interface avoids an import cycle (admin
 	// → relay would be ugly; relay → admin already exists).
+	// 2026-11-27 三级配额制轮：加 InvalidateOrg/InvalidateUser（组织/用户
+	// 级策略写路径的缓存失效；*modelpolicy.Checker 同时满足三方法）。
 	modelPolicy interface {
 		Invalidate(tenantID string)
+		InvalidateOrg(orgID int64)
+		InvalidateUser(userID int64)
 	}
 	// keyVerifier (2026-07-17) invalidates the KeyInfo cache when admin
 	// writes (update rate limits, enable/disable, revoke, patch profile)
@@ -585,7 +592,13 @@ func (h *Handler) SetAttachmentStorage(s AttachmentStorageService) {
 // denylist cache so admin write endpoints can invalidate per-tenant
 // entries.  Called from cmd/gateway/main.go after constructing both
 // the admin Handler and the modelpolicy.Checker.
-func (h *Handler) SetModelPolicy(mp interface{ Invalidate(string) }) {
+// 2026-11-27 三级配额制轮：接口加 InvalidateOrg/InvalidateUser（组织/用户
+// 级策略写路径同款失效）。
+func (h *Handler) SetModelPolicy(mp interface {
+	Invalidate(tenantID string)
+	InvalidateOrg(orgID int64)
+	InvalidateUser(userID int64)
+}) {
 	h.modelPolicy = mp
 }
 
@@ -1170,6 +1183,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/v2/{code}/stats", h.superAdmin(h.handleTenantStatsV2))
+	// 三级配额制（2026-11-27）：组织管理 API（列表/CRUD/钱包/成员，super_admin）。
+	mux.HandleFunc("/api/admin/orgs", h.superAdmin(h.handleOrgs))
+	mux.HandleFunc("/api/admin/orgs/", h.superAdmin(h.handleOrgs))
 	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
