@@ -5,7 +5,7 @@
 # ★   ⇒ ⇒ 假缺口的第三种来源一直躺着（★ idx_sessions_last_full_at 实测命中）
 # ★ scope=expected-index-key-columns
 # ★ bundled_at=2026-11-27T17:53:58+00:00
-# ★ 211 rows=986 sha256=09ffa8a6a625eb9e97c5bb0d29bb83b898e550b97403aa6a3b6e09197632df81 collected_at=2026-11-08T23:15:42+00:00 | 252 rows=990 sha256=34572dcfbee93eb02a1c0af2c3ea6d7c57480d4c76c4baff3350b6433e6a72a7 collected_at=2026-11-08T23:15:42+00:00 | fresh rows=1122 sha256=f9deb8023e2da35d7149fb43462871ec3bad49e1b59998dc9c68f8ead23d5041 collected_at=2026-11-27T17:53:24+00:00 | local rows=905 sha256=cb77c1b1fa9fa8154e40723faa0b1dd86d7ab55e9ff78bcc9378ae2ba05f718b collected_at=2026-11-08T23:15:42+00:00
+# ★ 211 rows=986 sha256=09ffa8a6a625eb9e97c5bb0d29bb83b898e550b97403aa6a3b6e09197632df81 collected_at=2026-11-08T23:15:42+00:00 | 252 rows=990 sha256=34572dcfbee93eb02a1c0af2c3ea6d7c57480d4c76c4baff3350b6433e6a72a7 collected_at=2026-11-08T23:15:42+00:00 | fresh rows=1128 sha256=1e565bced7df370d8439e25b56a8686d24b4454159934cf13c594e6f976733c2 collected_at=2026-11-27T17:53:24+00:00 | local rows=905 sha256=cb77c1b1fa9fa8154e40723faa0b1dd86d7ab55e9ff78bcc9378ae2ba05f718b collected_at=2026-11-08T23:15:42+00:00
 local	public	agent_relationships	dst_agent_id
 local	public	agent_relationships	src_agent_id
 local	public	agents	kind
@@ -3476,7 +3476,13 @@ fresh	public	request_metrics	status
 fresh	public	request_metrics	team_id
 fresh	public	request_metrics	tenant_id
 fresh	public	request_metrics	traffic_class
+fresh	public	request_metrics_daily_state	day
 fresh	public	request_metrics_pending	enqueued_at
+fresh	public	request_metrics_refresh_pending	enqueued_at
+fresh	public	request_metrics_refresh_pending	kind
+fresh	public	request_metrics_refresh_pending	occurred_at
+fresh	public	request_metrics_refresh_pending	request_id
+fresh	public	request_metrics_refresh_pending	tenant_id
 fresh	public	request_reconciliation_links	child_request_id
 fresh	public	request_reconciliation_links	parent_request_id
 fresh	public	request_reconciliation_links	registered_at

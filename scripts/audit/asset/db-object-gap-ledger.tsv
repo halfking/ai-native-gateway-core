@@ -5,21 +5,21 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-27T18:28:11+00:00
-# ★ expected=1018 envs=local,fresh,252,211 gaps_by_env={"211": 56, "252": 60, "fresh": 52, "local": 61} production_gaps=73
+# ★ generated_at=2026-11-27T18:52:31+00:00
+# ★ expected=1018 envs=local,fresh,252,211 gaps_by_env={"211": 56, "252": 60, "fresh": 49, "local": 61} production_gaps=73
 999d	idx_licenses_tenant_created	licenses	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
 395b	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 999d	idx_releases_tenant_published	releases	missing	present	missing	missing	gap	prod-full-gap
 478p2	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 478p2	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
-983k	idx_request_metrics_daily_dirty	request_metrics_daily_state	retired	retired	retired	retired	complete	none
+983k	idx_request_metrics_daily_dirty	request_metrics_daily_state	retired	present	retired	retired	complete	none
 983c	idx_request_metrics_occurred_cursor	request_metrics	retired	present	retired	present	complete	none
-983n	idx_request_metrics_projection_person_history	request_metrics	retired	missing	retired	missing	gap	prod-partial-gap
-983j	idx_request_metrics_projection_provider	request_metrics	retired	missing	retired	missing	gap	prod-partial-gap
-983j	idx_request_metrics_projection_session	request_metrics	retired	missing	retired	missing	gap	prod-partial-gap
+983n	idx_request_metrics_projection_person_history	request_metrics	retired	present	retired	missing	gap	prod-partial-gap
+983j	idx_request_metrics_projection_provider	request_metrics	retired	present	retired	missing	gap	prod-partial-gap
+983j	idx_request_metrics_projection_session	request_metrics	retired	present	retired	missing	gap	prod-partial-gap
 983b	idx_request_metrics_raw_model	request_metrics	retired	present	retired	present	complete	none
-983j	idx_request_metrics_refresh_pending_age	request_metrics_refresh_pending	retired	retired	retired	retired	complete	none
-983j	idx_request_metrics_refresh_pending_time	request_metrics_refresh_pending	retired	retired	retired	retired	complete	none
+983j	idx_request_metrics_refresh_pending_age	request_metrics_refresh_pending	retired	present	retired	retired	complete	none
+983j	idx_request_metrics_refresh_pending_time	request_metrics_refresh_pending	retired	present	retired	retired	complete	none
 0	idx_request_logs_session	request_logs	retired	retired	retired	retired	complete	none
 1	idx_users_tenant	users	present	present	present	present	complete	none
 1	idx_users_username	users	present	present	present	present	complete	none
