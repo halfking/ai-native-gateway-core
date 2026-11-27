@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>492投递方案执行报告 - 2026-11-27</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; color: #24292e; background: #f6f8fa; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1 { color: #0366d6; border-bottom: 3px solid #0366d6; padding-bottom: 15px; margin-bottom: 30px; }
+        h2 { color: #2ea44f; margin: 30px 0 15px 0; padding-left: 12px; border-left: 4px solid #2ea44f; }
+        h3 { color: #6a737d; margin: 20px 0 10px 0; }
+        .success-banner { background: linear-gradient(135deg, #2ea44f 0%, #22863a 100%); color: white; padding: 25px; border-radius: 8px; margin: 20px 0; }
+        .info-box { background: #e1f5fe; border-left: 4px solid #0366d6; padding: 20px; margin: 15px 0; border-radius: 6px; }
+        .warning-box { background: #fff5b1; border-left: 4px solid #e36209; padding: 20px; margin: 15px 0; border-radius: 6px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e1e4e8; }
+        th { background: #f6f8fa; font-weight: 600; }
+        .checklist { background: #f6f8fa; padding: 20px; border-radius: 6px; margin: 15px 0; }
+        .checklist-item { padding: 10px; margin: 8px 0; background: white; border-radius: 4px; border-left: 3px solid #2ea44f; }
+        code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+        .badge-success { background: #dcffe4; color: #22863a; }
+        .badge-info { background: #e1f5fe; color: #0366d6; }
+        pre { background: #f6f8fa; padding: 15px; border-radius: 6px; overflow-x: auto; }
+        .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e1e4e8; text-align: center; color: #6a737d; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✅ 492投递方案执行报告</h1>
+        <p style="color: #6a737d; margin-bottom: 30px;">执行时间：2026-11-27 19:00-19:15 | 方案：A（搬进投递通道）</p>
+
+        <div class="success-banner">
+            <h2 style="color: white; margin: 0 0 15px 0;">执行成功</h2>
+            <p style="font-size: 1.1em;">492迁移已完整集成到所有投递通道，W4.3上线阻塞已解除</p>
+        </div>
+
+        <h2>📋 执行概况</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>项目</th>
+                    <th>详情</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>问题描述</strong></td>
+                    <td>customers/channel_users表定义存在但不在任何投递通道</td>
+                </tr>
+                <tr>
+                    <td><strong>影响</strong></td>
+                    <td>admin/channels.go四处引用报42P01，W4.3上线受阻</td>
+                </tr>
+                <tr>
+                    <td><strong>选择方案</strong></td>
+                    <td>方案A：搬进投递通道（五点同步）</td>
+                </tr>
+                <tr>
+                    <td><strong>执行时间</strong></td>
+                    <td>15分钟</td>
+                </tr>
+                <tr>
+                    <td><strong>提交SHA</strong></td>
+                    <td><code>1357e6291</code></td>
+                </tr>
+                <tr>
+                    <td><strong>推送状态</strong></td>
+                    <td><span class="badge badge-success">✓ 已推送到origin/main</span></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>✅ 五点同步验证</h2>
+
+        <div class="checklist">
+            <div class="checklist-item">
+                <strong>✅ 1. embeddata副本</strong>
+                <pre>installer/cmd/llm-gw-installer/embeddata/startup/492_channels_customers.sql
+installer/cmd/llm-gw-installer/embeddata/startup/492_channels_customers.down.sql</pre>
+                <p style="margin-top: 10px;">状态: 已复制源文件到embeddata目录</p>
+            </div>
+
+            <div class="checklist-item">
+                <strong>✅ 2. go:embed指令</strong>
+                <p style="margin-top: 10px;">文件: <code>installer/cmd/llm-gw-installer/main.go</code></p>
+                <pre>var channelsCustomers492 []byte
+var channelsCustomers492Down []byte</pre>
+                <p>状态: 已添加embed变量，编译通过</p>
+            </div>
+
+            <div class="checklist-item">
+                <strong>✅ 3. StartupFiles数组</strong>
+                <p style="margin-top: 10px;">文件: <code>installer/internal/dbinit/runner.go</code></p>
+                <pre>"492_channels_customers.sql",  // 索引415</pre>
+                <p>位置: 排在1000-1002之后</p>
+                <p>注释: 完整说明问题背景、投递收口、符合双账本纪律</p>
+            </div>
+
+            <div class="checklist-item">
+                <strong>✅ 4. TSV清单</strong>
+                <p style="margin-top: 10px;">文件: <code>sql/schema/installed_startup_migrations.tsv</code></p>
+                <pre>415	492_channels_customers.sql</pre>
+                <p>生成方式: <code>go test -run TestStartupManifest -update</code> 自动生成</p>
+                <p>验证: TestStartupManifestMatchesStartupFiles 通过</p>
+            </div>
+
+            <div class="checklist-item">
+                <strong>✅ 5. 部署脚本</strong>
+                <p style="margin-top: 10px;">文件: <code>scripts/apply-db-revision-sequence.sh</code></p>
+                <pre>"$ROOT_DIR/sql/migrations/startup/492_channels_customers.sql"</pre>
+                <p>位置: files=()数组末尾（1000-1002之后）</p>
+                <p>注释: 完整说明W4.3需求、投递收口、零字节变更</p>
+            </div>
+        </div>
+
+        <h2>🧪 测试验证</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>测试项</th>
+                    <th>状态</th>
+                    <th>备注</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>installer编译</td>
+                    <td><span class="badge badge-success">✓ PASS</span></td>
+                    <td><code>go build ./cmd/llm-gw-installer/</code></td>
+                </tr>
+                <tr>
+                    <td>StartupManifest测试</td>
+                    <td><span class="badge badge-success">✓ PASS</span></td>
+                    <td>TestStartupManifestMatchesStartupFiles (0.365s)</td>
+                </tr>
+                <tr>
+                    <td>embeddata文件存在性</td>
+                    <td><span class="badge badge-success">✓ PASS</span></td>
+                    <td>TestStartupManifestFilesExist</td>
+                </tr>
+                <tr>
+                    <td>源文件完整性</td>
+                    <td><span class="badge badge-success">✓ PASS</span></td>
+                    <td>事务包裹+自登记+幂等DDL</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>📦 文件改动清单</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>文件</th>
+                    <th>类型</th>
+                    <th>改动</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>installer/.../492_channels_customers.sql</code></td>
+                    <td>新增</td>
+                    <td>embeddata副本（4277字节）</td>
+                </tr>
+                <tr>
+                    <td><code>installer/.../492_channels_customers.down.sql</code></td>
+                    <td>新增</td>
+                    <td>embeddata副本（224字节）</td>
+                </tr>
+                <tr>
+                    <td><code>installer/cmd/llm-gw-installer/main.go</code></td>
+                    <td>修改</td>
+                    <td>+6行（go:embed指令+变量声明）</td>
+                </tr>
+                <tr>
+                    <td><code>installer/internal/dbinit/runner.go</code></td>
+                    <td>修改</td>
+                    <td>+8行（StartupFiles条目+注释）</td>
+                </tr>
+                <tr>
+                    <td><code>scripts/apply-db-revision-sequence.sh</code></td>
+                    <td>修改</td>
+                    <td>+7行（files=()条目+注释）</td>
+                </tr>
+                <tr>
+                    <td><code>sql/schema/installed_startup_migrations.tsv</code></td>
+                    <td>修改</td>
+                    <td>+1行（索引415自动生成）</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p><strong>总计</strong>: 6个文件，98行新增</p>
+
+        <h2>🎯 解决效果</h2>
+
+        <div class="info-box">
+            <h3 style="margin-top: 0;">立即生效</h3>
+            <ul>
+                <li><strong>新环境</strong>: fresh install链路自动获得四张表（channels/customers/channel_users/channels_customers）</li>
+                <li><strong>installer</strong>: 新装环境通过StartupFiles自动应用492</li>
+                <li><strong>部署脚本</strong>: 下次部署自动应用到现有环境</li>
+            </ul>
+        </div>
+
+        <div class="warning-box">
+            <h3 style="margin-top: 0;">现有环境影响</h3>
+            <ul>
+                <li><strong>211/245/154生产库</strong>: 下次部署时自动应用492迁移</li>
+                <li><strong>DDL特性</strong>: 492自带事务包裹+幂等DDL（CREATE TABLE IF NOT EXISTS）</li>
+                <li><strong>风险评估</strong>: 低（从未应用过，零已应用字节变更）</li>
+                <li><strong>锁时间</strong>: ~5s（lock_timeout = '5s'）</li>
+            </ul>
+        </div>
+
+        <h2>📊 迁移内容概览</h2>
+
+        <h3>创建的表</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>表名</th>
+                    <th>用途</th>
+                    <th>关键列</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>channels</code></td>
+                    <td>渠道商主表</td>
+                    <td>id, name, slug, created_at</td>
+                </tr>
+                <tr>
+                    <td><code>customers</code></td>
+                    <td>客户主表</td>
+                    <td>id, name, created_at</td>
+                </tr>
+                <tr>
+                    <td><code>channel_users</code></td>
+                    <td>渠道商用户</td>
+                    <td>id, channel_id, user_id</td>
+                </tr>
+                <tr>
+                    <td><code>channels_customers</code></td>
+                    <td>渠道-客户关联</td>
+                    <td>channel_id, customer_id</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>权限设计</h3>
+        <ul>
+            <li><strong>核心契约</strong>: OwnsCustomer(channel, customer) - 渠道商只能看自己名下客户</li>
+            <li><strong>跨客户访问</strong>: 403拒绝</li>
+            <li><strong>事实源对齐</strong>: applications.customer_id（迁移407）是既有锚点</li>
+        </ul>
+
+        <h2>✨ 后续建议</h2>
+
+        <div class="info-box">
+            <h3 style="margin-top: 0;">生产环境部署</h3>
+            <ol>
+                <li><strong>211环境</strong>: 优先部署验证（落后较少，风险可控）</li>
+                <li><strong>监控DDL执行</strong>: 关注lock_timeout和执行时间</li>
+                <li><strong>验证表创建</strong>: 部署后检查四张表存在性</li>
+                <li><strong>API测试</strong>: 验证 <code>/api/channels/*</code> 端点正常</li>
+            </ol>
+        </div>
+
+        <div class="warning-box">
+            <h3 style="margin-top: 0;">注意事项</h3>
+            <ul>
+                <li><strong>无外键约束</strong>: customer_id是BIGINT但无FK（历史数据兼容性）</li>
+                <li><strong>对账机制</strong>: channels_customers对customers有FK（新表新约束）</li>
+                <li><strong>回滚支持</strong>: 492.down.sql已提供DROP TABLE语句</li>
+            </ul>
+        </div>
+
+        <h2>📝 执行命令记录</h2>
+
+        <pre># 五点同步
+cp sql/migrations/startup/492*.sql installer/cmd/llm-gw-installer/embeddata/startup/
+
+# 更新runner.go (手动编辑)
+# 更新main.go (手动编辑)
+# 更新apply-db-revision-sequence.sh (手动编辑)
+
+# 自动生成TSV
+cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update
+
+# 验证编译
+go build ./cmd/llm-gw-installer/
+
+# 验证测试
+go test ./internal/dbinit/ -run TestStartupManifest -v
+
+# 提交推送
+git add <files>
+git commit -m "feat(migration): 492投递方案A..."
+git push origin main</pre>
+
+        <h2>🔗 相关文档</h2>
+
+        <ul>
+            <li>技术分析: <code>docs/audit/2026-11-27-remaining-tasks-analysis.md</code> 第3章</li>
+            <li>源迁移文件: <code>sql/migrations/startup/492_channels_customers.sql</code></li>
+            <li>down迁移: <code>sql/migrations/startup/492_channels_customers.down.sql</code></li>
+        </ul>
+
+        <div class="footer">
+            <p><strong>执行完成时间</strong>: 2026-11-27 19:15</p>
+            <p><strong>提交SHA</strong>: 1357e6291</p>
+            <p><strong>状态</strong>: ✅ 已推送到origin/main</p>
+            <p><strong>下一步</strong>: 生产环境部署验证</p>
+        </div>
+    </div>
+</body>
+</html>
