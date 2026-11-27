@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>两周修正任务审计轮总结 — 2026-11-27</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--line:#334155;--tx:#e2e8f0;--mut:#94a3b8;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--acc:#60a5fa;--pur:#a78bfa}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--tx);font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.65;padding:32px 20px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:26px;margin-bottom:4px}
+  h1 span{color:var(--acc)}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:28px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:28px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .kpi .n{font-size:30px;font-weight:700}
+  .kpi .l{color:var(--mut);font-size:12px;margin-top:2px}
+  .kpi.ok .n{color:var(--ok)}.kpi.warn .n{color:var(--warn)}.kpi.acc .n{color:var(--acc)}.kpi.pur .n{color:var(--pur)}
+  h2{font-size:18px;margin:30px 0 12px;padding-left:10px;border-left:4px solid var(--acc)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th{color:var(--mut);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-weight:600;white-space:nowrap}
+  td{padding:8px 10px;border-bottom:1px solid rgba(51,65,85,.5);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;padding:1px 9px;border-radius:99px;font-size:11px;font-weight:600;margin-right:4px}
+  .t-ok{background:rgba(52,211,153,.15);color:var(--ok)}
+  .t-del{background:rgba(248,113,113,.15);color:var(--bad)}
+  .t-keep{background:rgba(96,165,250,.15);color:var(--acc)}
+  .t-save{background:rgba(167,139,250,.2);color:var(--pur)}
+  .t-warn{background:rgba(251,191,36,.15);color:var(--warn)}
+  .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px}
+  .bar-label{width:170px;color:var(--mut);flex-shrink:0}
+  .bar-track{flex:1;background:rgba(51,65,85,.6);border-radius:6px;height:20px;position:relative}
+  .bar-fill{height:100%;border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;font-size:11px;font-weight:700;color:#0f172a;min-width:34px}
+  code{background:rgba(51,65,85,.8);padding:1px 6px;border-radius:5px;font-size:12px;font-family:ui-monospace,Menlo,monospace;color:#93c5fd}
+  .sha{color:var(--pur);font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  ul{padding-left:20px;font-size:13.5px}
+  li{margin:5px 0}
+  .muted{color:var(--mut);font-size:12.5px}
+  .sev{font-weight:700}
+  .sev.p0{color:var(--bad)}.sev.p1{color:var(--warn)}.sev.p2{color:var(--acc)}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;font-size:12.5px}
+  .flow .step{background:rgba(51,65,85,.7);border:1px solid var(--line);border-radius:8px;padding:6px 12px}
+  .flow .arr{color:var(--mut)}
+  footer{margin-top:34px;color:var(--mut);font-size:12px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>两周修正任务审计轮总结 <span>2026-11-27</span></h1>
+  <div class="sub">读数基线：origin/main = <code>41daac111a</code> → 本轮终态 <code>083dd16780</code> ｜ 零 schema 变更 / 零迁移字节变更 / 零生产写 / 零部署</div>
+
+  <div class="grid">
+    <div class="kpi acc"><div class="n">11+1</div><div class="l">合并远端提交 + 遥测分支</div></div>
+    <div class="kpi ok"><div class="n">3</div><div class="l">分支处置（删3·留0非main）</div></div>
+    <div class="kpi pur"><div class="n">132</div><div class="l">s5-evidence 提交先保全后删</div></div>
+    <div class="kpi warn"><div class="n">30</div><div class="l">tmp/ 文件证据化收编</div></div>
+    <div class="kpi ok"><div class="n">0</div><div class="l">全量编译红（双 module）</div></div>
+  </div>
+
+  <h2>一、P1 主分支合并与编译测试</h2>
+  <div class="card">
+    <div class="flow">
+      <div class="step">本地 5 笔（embeddings 线 ×4 + docs）</div><div class="arr">→</div>
+      <div class="step">merge origin/main 11 笔 <span class="sha">39c0cd2851</span></div><div class="arr">→</div>
+      <div class="step">安装器冲突取远端超集</div><div class="arr">→</div>
+      <div class="step">合并 telemetry 分支 <span class="sha">f636118b70</span></div><div class="arr">→</div>
+      <div class="step">二次 merge（并行 cherry-pick 收敛）<span class="sha">41daac111a</span></div>
+    </div>
+    <table>
+      <tr><th>关键点</th><th>事实</th></tr>
+      <tr><td>安装器 3 文件冲突</td><td>远端 <span class="sha">1076e93dc1</span> 是本地 <span class="sha">ac9806605f</span> 的超集（633+1000-1002 全量五点投递 vs 仅 633）→ 取远端；<b>main.go 自动合并叠出重复 go:embed 声明</b> → 手工去重至与远端逐字节一致</td></tr>
+      <tr><td>并行车道同改</td><td>我方 merge <span class="sha">6dfd06ad29</span>（分支）与上游 cherry-pick <span class="sha">ec949dd8a3</span> patch-id 逐字相同 → 合并自然收敛，零内容重复</td></tr>
+      <tr><td>验证</td><td><code>go build ./...</code> 主模块 + installer 双 EXIT=0；streaming 132s／admin 111s／bg 35s／telemetry／dbinit／attachments／sessionv2mirror 全 <b>ok</b></td></tr>
+    </table>
+  </div>
+
+  <h2>二、P2 分支审计处置（两周内未合并）</h2>
+  <div class="card">
+    <table>
+      <tr><th>分支</th><th>未合并提交</th><th>审计判定</th><th>处置</th></tr>
+      <tr><td><code>codex/opencode-gateway-ledger</code></td><td>1 笔 <span class="sha">6dfd06ad29</span></td><td><span class="tag t-ok">有效</span> usage_ledger 回写服务路由；schema 验证通过（330 建表含四列）；与 embeddings 线正交、干净合并</td><td><span class="tag t-ok">合并进 main</span><span class="tag t-del">分支已删（本地+远端）</span></td></tr>
+      <tr><td><code>codex/request-metrics-v2</code></td><td>54 笔</td><td><span class="tag t-warn">被取代</span> 独立表方案(983j~r) 被 main chr(1) 投影键方案取代且已部署；唯一价值验收文档 680 行已由 <span class="sha">9a0999515d</span> 保全</td><td><span class="tag t-del">远端引用已不存在</span><span class="tag t-keep">跟踪引用已清</span></td></tr>
+      <tr><td><code>codex/s5-memora-route-contract</code></td><td>本车道 5+2 笔</td><td>全部已进 main（is-ancestor 判据）</td><td><span class="tag t-del">分支已删</span></td></tr>
+    </table>
+    <p class="muted" style="margin-top:8px">终态：本地仅 main；双远端一致。<span class="tag t-del">删 3</span><span class="tag t-keep">留 0（非 main）</span></p>
+  </div>
+
+  <h2>三、P3 worktree 与孤儿目录</h2>
+  <div class="card">
+    <table>
+      <tr><th>对象</th><th>读数</th><th>处置</th></tr>
+      <tr><td><code>.scratch/rmv2-test</code>（本仓 detached worktree）</td><td>干净树 @ <span class="sha">b82e82dadc</span>（被取代分支 tip）、近 2h 零活动</td><td><span class="tag t-del">已删</span></td></tr>
+      <tr><td>3 个 submodule 检出（maintain/session-manager/cloudreve）</td><td>父仓正规结构、全干净</td><td><span class="tag t-keep">保留</span></td></tr>
+      <tr><td>go-3 的 codex worktree <code>211-v2-reaudit</code></td><td>干净、分支已并入、零活动</td><td><span class="tag t-del">worktree+分支已删</span></td></tr>
+      <tr><td><code>s5-evidence</code> 孤儿目录 315M</td><td><b>持有 132 笔未推送 docs 提交</b>（分叉自正本 109fbd84）；6 份独有文档</td><td><span class="tag t-save">先保全后删</span>→<code>codex/s5-evidence-archive-20261127</code>（github workspace 仓）</td></tr>
+      <tr><td>8 个死目录（仅剩 marker 文件）+ <code>.scratch</code></td><td>0 字节、零活跃</td><td><span class="tag t-del">全清</span></td></tr>
+      <tr><td>go-3 / go-5 / go-cursor 三克隆</td><td>dirty=0、ahead=0；14:2x mtime 活跃为 fetch 所致非编辑</td><td><span class="tag t-keep">保留</span></td></tr>
+    </table>
+  </div>
+
+  <h2>四、P4–P6 文档整理 · 审核目标 · 批判审计</h2>
+  <div class="card">
+    <div class="bar-row"><div class="bar-label">tmp/ 收编 evidence</div><div class="bar-track"><div class="bar-fill" style="width:100%;background:var(--warn)">30 件</div></div></div>
+    <div class="bar-row"><div class="bar-label">订正头追加</div><div class="bar-track"><div class="bar-fill" style="width:33%;background:var(--acc)">2 份</div></div></div>
+    <div class="bar-row"><div class="bar-label">新审核目标</div><div class="bar-track"><div class="bar-fill" style="width:33%;background:var(--pur)">3 条</div></div></div>
+    <div class="bar-row"><div class="bar-label">不动判定（有据）</div><div class="bar-track"><div class="bar-fill" style="width:66%;background:var(--ok)">2 族</div></div></div>
+    <table style="margin-top:12px">
+      <tr><th>动作</th><th>内容</th></tr>
+      <tr><td>收编</td><td><code>tmp/</code> 30 件 → <code>docs/audit/evidence/2026-11-27-billing-deploy-superseded/</code>（带 INDEX：性质判定 + 脚本勿复用告警）；deployment-summary 两处引用同步重写</td></tr>
+      <tr><td>审核目标</td><td>新建 <code>docs/audit/2026-11-27-审核目标增补.md</code>：本周画像（384 笔：docs 118/fix 95/feat 38）+ 三条新目标 <b>戊</b>（patch-id 收敛判据）/<b>己</b>（tmp/ 不得入库）/<b>庚</b>（孤儿目录先查未推送提交）</td></tr>
+      <tr><td>订正头 ×2</td><td>deployment-summary 与 database-correction-plan：与主档 L137 投递收口口径对齐（原文一字不动）</td></tr>
+      <tr><td>不动（有据）</td><td>① 12小时系列 append-only 窗口日志（主档 L136 登记 verify.sh §300 引用，维持不搬）② handoff multimodal 系列 5 份（同车道不同角色，非重复）</td></tr>
+      <tr><td>提交</td><td><span class="sha">083dd16780</span> 已推 origin；github 网络层不可达（198.18.x 代理拒 22/443），后台轮询重推中</td></tr>
+    </table>
+  </div>
+
+  <h2>五、测试命令与结果</h2>
+  <div class="card">
+    <table>
+      <tr><th>命令</th><th>结果</th></tr>
+      <tr><td><code>go build ./...</code>（主模块）</td><td><span class="tag t-ok">EXIT=0</span></td></tr>
+      <tr><td><code>go build ./...</code>（installer module）</td><td><span class="tag t-ok">EXIT=0</span></td></tr>
+      <tr><td><code>go test ./domains/streaming/ -count=1</code></td><td><span class="tag t-ok">ok 133s</span></td></tr>
+      <tr><td><code>go test ./admin/ ./bg/ ./domains/attachments/</code></td><td><span class="tag t-ok">ok 111s / 35s / 0.4s</span></td></tr>
+      <tr><td><code>go test ./domains/hooks/observability/telemetry/</code></td><td><span class="tag t-ok">ok 0.5s</span></td></tr>
+      <tr><td><code>go test ./installer/internal/dbinit/</code></td><td><span class="tag t-ok">ok 5.5s</span></td></tr>
+      <tr><td><code>go test ./scripts/ursmcheck/ -run TestAgentsMd</code></td><td><span class="tag t-ok">ok 0.6s</span></td></tr>
+    </table>
+  </div>
+
+  <h2>六、遗留风险</h2>
+  <div class="card">
+    <ul>
+      <li><span class="sev p1">P1</span> <b>github 远端推送未完成</b>：本地领先 github/main 1 笔（<span class="sha">083dd16780</span>）；网络层 198.18.x 拒 22/443（主档 L126 有同款瞬时抖动登记），后台轮询中。origin（codeup）已推成功。</li>
+      <li><span class="sev p1">P1</span> <b>492 投递口径仍待 owner</b>：1000-1002 半边已闭合（L137），剩 492_channels_customers 双口径（搬通道 vs 读端改形状）未拍板。</li>
+      <li><span class="sev p2">P2</span> <b>correction-plan 的「252」叙述未核实</b>：已加订正头拦截，但 252 主机是否存在于真实拓扑需 owner 确认。</li>
+      <li><span class="sev p2">P2</span> <b>docs 近两周新增 758 路径</b>：本轮只处理了 tmp/ 收编与 2 处订正；audit/evidence 目录的长期版本管理（按月归档）仍是开放项。</li>
+      <li><span class="sev p2">P2</span> <b>211 部署追平</b>：沿主档 L136 —— 追平前必须先闭合 492 投递面。</li>
+      <li><span class="sev p2">P2</span> <b>245 IO 风暴补丁</b>：<code>scripts/ops/245-disk-check-hardening.sh</code> 在本地待 owner 决策。</li>
+    </ul>
+  </div>
+
+  <h2>七、本轮通用式（三条）</h2>
+  <div class="card">
+    <ul>
+      <li><b>「自动合并成功」不等于「编译通过」</b> —— 双方同名 go:embed 变量/map 键会叠出重复声明；对含注册表的文件，合并后必须以「与胜出侧逐字节 diff 为空」为判据，而不是相信 git 的无冲突报告。</li>
+      <li><b>「同一改动、两条车道、两个 SHA」用 patch-id 收敛</b> —— git log 里的两条独立记录可能内容逐字相同；合并前 <code>git show | git patch-id --stable</code> 对拍是唯一机械判据。</li>
+      <li><b>删任何工作树前先数 <code>rev-list --count origin/main..HEAD</code></b> —— 315M 的「垃圾」目录里藏着 132 笔未推送提交；「目录旧」与「内容未保全」是两件事。</li>
+    </ul>
+  </div>
+
+  <footer>
+    两周修正任务审计轮 ｜ 2026-11-27 15:0x–15:4x ｜ 本轮写盘 = 2 个 merge + telemetry 合并 + docs 收编提交 <span class="sha">083dd16780</span>（origin 已推）+ 本页 ｜ 零生产写 / 零 schema 变更 / 零迁移字节变更 / 零部署
+  </footer>
+</div>
+</body>
+</html>
