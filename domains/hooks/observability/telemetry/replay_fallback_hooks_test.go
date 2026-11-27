@@ -114,12 +114,12 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 		require.NoError(t, err)
 		defer mockDB.Close()
 
-		// updateRequestLog 事务链：usage_ledger（无 token 走 5 参分支）→ commit。
+		// updateRequestLog 事务链：usage_ledger（无 token 走 9 参分支）→ commit。
 		// v1 宽表 UPDATE / 正文族 upsert / 终态成功认领（SAVEPOINT+claim）
 		// 随 890 整段退役。
 		mockDB.ExpectBegin()
 		mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 		mockDB.ExpectCommit()
 
@@ -148,7 +148,7 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 
 		mockDB.ExpectBegin()
 		mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnError(fmt.Errorf("simulated degraded write failure"))
 
 		hookCalled := false

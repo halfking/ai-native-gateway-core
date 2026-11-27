@@ -132,7 +132,7 @@ func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 			mock, recording, recorder := newRecordingDB(t)
 			mock.ExpectBegin()
 			mock.ExpectExec("UPDATE usage_ledger_hot").
-				WithArgs(anyArgs(5)...).
+				WithArgs(anyArgs(9)...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			mock.ExpectCommit()
 
@@ -223,7 +223,7 @@ func TestReviewV2LatchSurvivesUpdatePath(t *testing.T) {
 
 	mock, recording, recorder := newRecordingDB(t)
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE usage_ledger_hot").WithArgs(anyArgs(5)...).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec("UPDATE usage_ledger_hot").WithArgs(anyArgs(9)...).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectCommit()
 
 	c := &Client{requestLogDB: recording}
