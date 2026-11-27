@@ -2298,8 +2298,11 @@ dd_start_secondary() {
   # ── 注入容器（-e 逐键解码；secret 不回显）────────────────────────────
   local _env_args=()
   while IFS= read -r _line || [[ -n "$_line" ]]; do
+    # ★ 只注入 export 前缀行；空行/注释行跳过。首版 case 把 ''|'#'* 与
+    #   'export '* 一起落到处理分支 ⇒ 头部注释行被当键名注入（键名守卫
+    #   当场拦下：非法键名「# llm-gateway-go 副节点 env @ …」）。
     case "$_line" in
-      ''|'#'*|'export '*) : ;;
+      'export '*) : ;;
       *) continue ;;
     esac
     _line="${_line#export }"
