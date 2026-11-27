@@ -1,0 +1,76 @@
+# casdoor-e2e 本地联调栈（方案 B：全本地隔离，不触碰 154 在役 casdoor / 211 PG）
+# 端口选型避开宿主占用：PG 15433（宿主 5432 被 postgres 占）、casdoor 18000（8000 留给宿主其它用途）。
+# casdoor 自己的 DB 用独立容器内库 casdoor（不复用网关库 gateway_e2e），schema 各自管理。
+version: '3.8'
+
+services:
+  pg:
+    # 00-prereqs.sql 硬依赖 citus（无则 RAISE EXCEPTION）；此镜像 = 211 生产同源
+    # （kx-citus-pg17，含 citus+vector），本机 acc-dev 栈同镜像现役验证可用
+    image: registry.kxpms.cn/kx-citus-pg17:13.3.0-vector-arm64
+    container_name: casdoor-e2e-pg
+    environment:
+      POSTGRES_DB: gateway_e2e
+      POSTGRES_USER: gateway_e2e
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD required}
+    ports:
+      - "15433:5432"
+    # 命名卷：换镜像后匿名卷残留旧 collation ⇒ 重建时 down -v 干净起
+    volumes:
+      - pg-e2e-data2:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_e2e -d gateway_e2e"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  casdoor-db:
+    image: postgres:17
+    container_name: casdoor-e2e-casdoor-db
+    environment:
+      POSTGRES_DB: casdoor
+      POSTGRES_USER: casdoor
+      POSTGRES_PASSWORD: ${CASDOOR_DB_PASSWORD:?CASDOOR_DB_PASSWORD required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casdoor -d casdoor"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  casdoor:
+    image: casbin/casdoor:latest
+    container_name: casdoor-e2e
+    depends_on:
+      casdoor-db:
+        condition: service_healthy
+    # 镜像以 uid=1000(casdoor) 运行 ⇒ 渲染目标必须是 casdoor 属主可写的 /conf；
+    # init_data 直接只读挂载到 /init_data.json（与 app.conf 的 initDataFile 路径一致）。
+    entrypoint: ["/bin/sh", "-c", "sed \"s/@PG_PASSWORD@/$$CASDOOR_DB_PASSWORD/\" /conf.orig/app.conf.template > /conf/app.conf && exec /server"]
+    environment:
+      CASDOOR_DB_PASSWORD: ${CASDOOR_DB_PASSWORD:?CASDOOR_DB_PASSWORD required}
+    ports:
+      - "18000:8000"
+    volumes:
+      - ./casdoor/app.conf.template:/conf.orig/app.conf.template:ro
+      - ./casdoor/init_data.json:/init_data.json:ro
+      - ./casdoor/logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/health 2>/dev/null || curl -sf http://127.0.0.1:8000/api/health 2>/dev/null || echo -n ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: casdoor-e2e-redis
+    ports:
+      - "18799:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  pg-e2e-data2:
