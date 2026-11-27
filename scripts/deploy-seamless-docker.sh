@@ -963,6 +963,9 @@ fi
 # ⇒ 两条出路：① 正路 = 从部署机走 `deploy-211.sh`（--via 自动取号并转发）；
 #   ② 逃生门 = 目标机上显式 `DD_BUILD_SHA=<8位提交号>`（如镜像审计已知身份，
 #   或纯重建槽位等场景），此时号来自运维声明而非 git ⇒ 部署日志会注明。
+# ★ 2026-11-27：这组身份门只在 MODE=deploy 生效——--start-secondary 复用
+#   在役镜像，副节点的 /version 与主槽同一份挂载（version/<slot>.json），
+#   身份由主槽承担；它自己没有「新构建身份」可写。
 if [[ "$MODE" == "deploy" && -z "${DD_BUILD_SHA:-}" ]]; then
   if [[ ! -e "$DD_REPO_ROOT/.git" ]]; then
     die "目标树没有 .git（同步树形态）且未显式给 DD_BUILD_SHA ⇒ /version 将沿用旧戳说谎。两条出路：① 从部署机跑 scripts/deploy-211.sh（--via 自动取号）；② 显式 export DD_BUILD_SHA=<8位提交号> 后重跑（运维声明的身份，日志将注明）。"
