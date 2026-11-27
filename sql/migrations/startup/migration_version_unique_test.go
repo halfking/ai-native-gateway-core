@@ -75,6 +75,24 @@ func TestDeployedMigration529ChecksumIsStable(t *testing.T) {
 	}
 }
 
+// TestDeployedMigration1006ChecksumIsStable —— 1006 的字节冻结钉（528/529 同款）：
+// 本件退役 528 复活的孤儿 v1 promote 函数。真库 drop 后函数体 md5 对拍
+// （2026-11-28 211 真机）与 42P01 消失是它的语义判据；此钉保证未来任何对
+// 1006 的内容加固都走「内容指纹重放」通道而非静默改字节。
+func TestDeployedMigration1006ChecksumIsStable(t *testing.T) {
+	const (
+		name = "1006_drop_orphan_v1_promote_function.sql"
+		want = "e5030787240bac69dfe2e8e9f3d233cf1a0f295ff08b0038799aca3bcb6d444b"
+	)
+	body, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(body)); got != want {
+		t.Fatalf("deployed startup migration %s checksum changed: got %s want %s", name, got, want)
+	}
+}
+
 // TestHeavyDDLModernMigrationsDeclareMeasuredBudget — 全表扫描类 DDL 的超时预算
 // 必须按「目标环境最大表」实测，而不是按本地测试表拍（24h 审计第 7 轮 §5b-2）：
 //

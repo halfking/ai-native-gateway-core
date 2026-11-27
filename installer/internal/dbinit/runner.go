@@ -2224,6 +2224,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 1005（2026-11-27 三级配额制 P1-b）：users.roles 多角色数组。
 			//   role 保留为主角色；roles 空 = 有效集回落 [role]（存量兼容）。
 			"1005_user_roles_array.sql",
+			// ★ 1006（2026-11-28 42P01 根残留清理）：DROP 528 复活的孤儿函数
+			//   promote_request_logs_bodies_hot_to_partition（体引用的表已被
+			//   890 删 ⇒ hot cron 能力探针见函数在就执行 ⇒ 每批 42P01）。
+			//   down 件按 528 up 原体还原。
+			"1006_drop_orphan_v1_promote_function.sql",
 		},
 	}
 }

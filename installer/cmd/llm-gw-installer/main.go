@@ -2044,6 +2044,12 @@ var userRolesArray1005 []byte
 //go:embed embeddata/startup/1005_user_roles_array.down.sql
 var userRolesArray1005Down []byte
 
+//go:embed embeddata/startup/1006_drop_orphan_v1_promote_function.sql
+var dropOrphanV1PromoteFunction1006 []byte
+
+//go:embed embeddata/startup/1006_drop_orphan_v1_promote_function.down.sql
+var dropOrphanV1PromoteFunction1006Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2925,6 +2931,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/1004_three_tier_model_policies.down.sql":       threeTierModelPolicies1004Down,
 	"startup/1005_user_roles_array.sql":                     userRolesArray1005,
 	"startup/1005_user_roles_array.down.sql":                userRolesArray1005Down,
+	"startup/1006_drop_orphan_v1_promote_function.sql":      dropOrphanV1PromoteFunction1006,
+	"startup/1006_drop_orphan_v1_promote_function.down.sql": dropOrphanV1PromoteFunction1006Down,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
 	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
