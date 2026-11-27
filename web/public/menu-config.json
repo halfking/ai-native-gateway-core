@@ -549,6 +549,7 @@
           "path": "/customer/update-activate",
           "labelKey": "nav.item.updateActivate",
           "icon": "🔄",
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         },
@@ -565,6 +566,7 @@
           "labelKey": "nav.item.telemetryScope",
           "icon": "📡",
           "external": true,
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         }
@@ -719,5 +721,5 @@
       "pluginScope": "*"
     }
   ],
-  "exported_fingerprint": "sha256:bf2a43c31381dbd2"
+  "exported_fingerprint": "sha256:3baeee8ebba40c4f"
 }

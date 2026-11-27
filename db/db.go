@@ -6591,13 +6591,36 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 		` + tmpPolicyDDL + `;
 `
 	}
-	sql += `
+	// 2026-11-27 形状感知守卫：视图按库内现值重建，不写死列清单。
+	// 背景：迁移 1004（三级配额制轮）把 tenant_model_policies_active 追加到 8 列
+	//（尾部 mode），而本 ensure 原先写死 7 列 ⇒ 库已是 8 列时 CREATE OR REPLACE
+	// 视图缩列 ⇒ PG 42P16「cannot drop columns from view」⇒ boot 失败
+	//（211 生产库实测 2026-11-27 21:53 chase 部署 abort：boot 重试报
+	// cannot drop columns from view (SQLSTATE 42P16)；上游同日以 52ae9c32f
+	// 把 ensure 写死成 8 列修复——本守卫与其等价且更稳：fresh 无 mode 建 7 列，
+	// 1004 之后视图保持 8 列不动，两边声明互不冲突；读侧 checker 按列名
+	// SELECT，视图多一列无害）。
+	viewHasMode := false
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_attribute a
+			JOIN pg_class c ON c.oid = a.attrelid
+			WHERE c.relname = 'tenant_model_policies_active'
+			  AND c.relkind IN ('v','m')
+			  AND a.attname = 'mode' AND a.attnum > 0 AND NOT a.attisdropped
+		)`).Scan(&viewHasMode); err != nil {
+		return fmt.Errorf("probe tenant_model_policies_active shape: %w", err)
+	}
+	if !viewHasMode {
+		sql += `
 		CREATE OR REPLACE VIEW tenant_model_policies_active AS
 		    SELECT id, tenant_id, canonical_name, reason, created_by,
 		           created_at, updated_at, mode
 		    FROM tenant_model_policies
 		    WHERE deleted_at IS NULL;
-
+`
+	}
+	sql += `
 		CREATE TABLE IF NOT EXISTS tenant_model_policies_audit (
 		    id              BIGSERIAL PRIMARY KEY,
 		    ts              TIMESTAMPTZ NOT NULL DEFAULT now(),

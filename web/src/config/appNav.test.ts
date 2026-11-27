@@ -276,3 +276,35 @@ describe('V5.1 plugin nav (remote merge)', () => {
     expect(legacy).toBeUndefined()
   })
 })
+
+// ★ 2026-11-27 非管理员菜单重构轮：owner 口径「系统设置」对非管理员只有五项。
+//   /customer/update-activate（license 激活）与 /maintain/tenant/telemetry
+//   （数据采集范围）是节点管理职责 ⇒ management 视角条目；user/ta 视角
+//   不可见。判据钉「标记 + 双视角映射」：若有人摘掉 management 标记，
+//   「标记断言」与「user 视角隐藏断言」同时变红 ⇒ 判据有牙。
+describe('data-ops management items (2026-11-27)', () => {
+  const dataOps = NAV_GROUPS.find((g) => g.id === 'data-ops')!
+  const paths = ['/customer/update-activate', '/maintain/tenant/telemetry']
+
+  it('marks license-activation and telemetry-scope entries as management', () => {
+    for (const p of paths) {
+      const item = dataOps.items.find((it) => it.path === p)
+      expect(item, p).toBeTruthy()
+      expect(item!.management, p).toBe(true)
+    }
+  })
+
+  it('hides both entries for non-management view but keeps them for platform ops', () => {
+    for (const p of paths) {
+      const item = dataOps.items.find((it) => it.path === p)!
+      // user / tenant_admin 视角：management 条目全部隐藏
+      expect(canShowNavItem(item, {
+        isSuperAdmin: false, isPlatformOps: false, isTenantPortal: true, isProviderConsole: false, isManagementView: false,
+      }), p).toBe(false)
+      // super（平台管理视角）不变：条目照常可见
+      expect(canShowNavItem(item, {
+        isSuperAdmin: true, isPlatformOps: true, isTenantPortal: false, isProviderConsole: true, isManagementView: true,
+      }), p).toBe(true)
+    }
+  })
+})

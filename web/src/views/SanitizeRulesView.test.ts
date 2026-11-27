@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   updateSetting: vi.fn(),
   super: vi.fn(() => true),
   tenant: vi.fn(() => false),
+  regular: vi.fn(() => false),
 }));
 vi.mock("../api/sanitize-rules", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -33,6 +34,7 @@ vi.mock("../api/settings", () => ({
 vi.mock("../store", () => ({
   isSuperAdmin: mocks.super,
   isTenantAdmin: mocks.tenant,
+  isRegularUser: mocks.regular,
 }));
 import SanitizeRulesView from "./SanitizeRulesView.vue";
 import messages from "../locales/en-US/sanitizeRules";
@@ -227,6 +229,70 @@ describe("managed rule workflows", () => {
     expect(mocks.instances).not.toHaveBeenCalled();
     expect(mocks.events).toHaveBeenCalled();
     expect(w.find('[data-test="tab-rules"]').exists()).toBe(false);
+  });
+  // ★ 2026-11-27 非管理员菜单重构轮：user 只读档 —— 与后端 userRead
+  //  （events + blocked-reviews 本租户 GET 面）对齐。判据钉「随角色变的加载
+  //  映射」而不是一个正确输出值：变异守卫（把 allowed 改回不含 user）会让
+  //  「events 被调用 + 页签渲染」两条同时变红 ⇒ 判据有牙。
+  it("regular users get the read-only events/blocked-reviews tabs without write controls", async () => {
+    mocks.super.mockReturnValue(false);
+    mocks.tenant.mockReturnValue(false);
+    mocks.regular.mockReturnValue(true);
+    const w = open();
+    await flushPromises();
+    // 只读档加载面：事件列表被拉取（后端 userRead 放行的 GET 面），
+    // 规则编辑器数据一个都不发（user 对 rules 403）。
+    expect(mocks.events).toHaveBeenCalled();
+    expect(mocks.current).not.toHaveBeenCalled();
+    expect(mocks.instances).not.toHaveBeenCalled();
+    expect(mocks.versions).not.toHaveBeenCalled();
+    // 页签与写控件：只有两个只读页签，复核输入/按钮不存在
+    //（user 对 events/{id}/review 一律 403 ⇒ 不发注定被拒的写请求）。
+    expect(w.find('[data-test="tab-rules"]').exists()).toBe(false);
+    expect(w.find('[data-test="tab-events"]').exists()).toBe(true);
+    expect(w.find('[data-test="tab-blockedReviews"]').exists()).toBe(true);
+    // 无权限横幅不再出现（user 已在 allowed 内；此前 user 打开此页
+    // 只能看到「无权限」横幅 —— 正是本轮修掉的死页形态）。
+    expect(w.find("p.error-banner").exists()).toBe(false);
+  });
+  it("regular users never see event review write buttons", async () => {
+    mocks.super.mockReturnValue(false);
+    mocks.tenant.mockReturnValue(false);
+    mocks.regular.mockReturnValue(true);
+    mocks.events.mockResolvedValue({
+      events: [
+        {
+          id: 9,
+          tenant_id: "default",
+          rule_id: "secret",
+          version: 1,
+          phase: "input",
+          action: "mask",
+          status: "pending",
+          type: "secret",
+          field: "pattern",
+          sample_masked: "[REDACTED] field=pattern",
+          count: 1,
+          first_seen: "2026-11-27T00:00:00Z",
+          last_seen: "2026-11-27T00:00:00Z",
+        },
+      ],
+    });
+    const w = open();
+    await flushPromises();
+    await w.get('[data-test="tab-events"]').trigger("click");
+    await flushPromises();
+    // 事件行渲染（只读可见）
+    expect(w.text()).toContain("secret");
+    // 变异守卫：三个复核按钮 + 复核输入框全部不存在 —— 若有人把 canReview
+    // 放开（或删掉 v-if），user 会看到注定 403 的写按钮，判据当场变红。
+    expect(w.find('[data-test="review-comment-9"]').exists()).toBe(false);
+    expect(w.find('[data-test="review-confirmed_sensitive-9"]').exists()).toBe(false);
+    expect(w.find('[data-test="review-false_positive-9"]').exists()).toBe(false);
+    expect(w.find('[data-test="review-ignored-9"]').exists()).toBe(false);
+    // superAdmin 专属的「编辑匹配规则/起草」按钮同样不可见。
+    expect(w.find('[data-test="edit-event-9"]').exists()).toBe(false);
+    expect(w.find('[data-test="draft-event-9"]').exists()).toBe(false);
   });
 });
 describe("editor and polling boundaries", () => {

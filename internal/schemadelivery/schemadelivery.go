@@ -218,6 +218,8 @@ var (
 	reAlterHead = regexp.MustCompile(`(?i)\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w".]+)`)
 	reAddAny    = regexp.MustCompile(`(?i)\bADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([\w".]+)`)
 	reCreateTbl = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNLOGGED\s+|TEMPORARY\s+|TEMP\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w".]+)`)
+	// CREATE 语句头里的 TEMP/UNLOGGED 修饰：命中 ⇒ 会话级对象，不进「投递面」账（见 parseSQL 用点）。
+	reTempOrUnlogged = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNLOGGED|TEMPORARY|TEMP)\s+TABLE\b`)
 	rePartition = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNLOGGED\s+|TEMPORARY\s+|TEMP\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w".]+)\s+PARTITION\s+OF\s+([\w".]+)`)
 	// 改名是两种形态，两条式子：RENAME TO new_table；RENAME [COLUMN] a TO b（可省 COLUMN）。
 	// 列改名那条对「RENAME TO x」天然不匹配（它要求 RENAME 后先有一个列名、再有一个 TO）；
@@ -368,6 +370,15 @@ func parseSQL(name, sql string) *sqlDefs {
 	}
 	for _, loc := range reCreateTbl.FindAllStringSubmatchIndex(sql, -1) {
 		table := normalizeName(sql[loc[2]:loc[3]])
+		// TEMP ／ UNLOGGED 表是会话级（或至少非共享）对象，不存在「投递」概念：
+		// 把它注册成「散文件里定义的表」会让引用它的生产 SQL 被判成「引用未投递对象」
+		//（2026-11-27 实测形态：docs/audit/evidence 的 CREATE TEMP TABLE daily_sessions /
+		// daily_totals 撞上 domains/metrics 拼接 SQL 里的同名 CTE ⇒ 双重量具缺陷叠加成误报）。
+		// 「投递面」的判据面只保留会被交付通道建出来的对象 ⇒ TEMP/UNLOGGED 不注册、不入账。
+		head := sql[loc[0]:loc[2]]
+		if reTempOrUnlogged.MatchString(head) {
+			continue
+		}
 		d.see(table)
 		d.add(Object{Table: table}, name)
 		rest := sql[loc[1]:]
@@ -922,30 +933,13 @@ func lastInsertTable(toks []tok, before int, resolve func(string) string) string
 	return ""
 }
 
-// undeliveredIndex 是未投递对象的检索面，外加「仓里一切定义过的表名」（绑定别名用）。
-type undeliveredIndex struct {
-	tables map[string]bool            // 未投递的表名
-	cols   map[string]map[string]bool // 未投递的列名 ⇒ 拥有它的表
-	known  map[string]bool            // 仓里一切 SQL 定义过的表名
-}
-
-// referencesIn 找出一段 SQL 文本对未投递对象的绑定引用（去重，按对象名排序）。
-func (u *undeliveredIndex) referencesIn(text string) []Object {
-	toks := tokenize(stripComments(text))
+// collectCTEChain 把 toks 里声明的 CTE 名写进 out：认两种形状。
+// ① WITH 头链条：WITH [RECURSIVE] name [(cols)] AS [NOT] [MATERIALIZED] (…) [, name …]；
+// ② 中链声明：`), name AS (`——Go 常量拼接（`+ requestModelKey +`）会把一条 WITH 语句切成
+//    多个字面量，中段的 CTE 声明处没有 WITH 头，只有前一个 CTE 体闭括号后的 `, name AS (`。
+// 两种形状下的误认面都极窄：名字必须紧跟在「`(` 或 `,` 之后」且构成 `name AS (` 三元组。
+func collectCTEChain(toks []tok, out map[string]bool) {
 	n := len(toks)
-	maybe := false
-	for i := range toks {
-		if u.tables[toks[i].id] || u.cols[toks[i].id] != nil {
-			maybe = true
-			break
-		}
-	}
-	if !maybe {
-		return nil
-	}
-
-	// 本段声明的 CTE 名：同名表被它遮蔽。
-	cte := map[string]bool{}
 	for i := 0; i < n; i++ {
 		if toks[i].id != "with" || (i > 0 && toks[i-1].ch == '.') {
 			continue
@@ -958,7 +952,7 @@ func (u *undeliveredIndex) referencesIn(text string) []Object {
 			if j >= n || toks[j].id == "" || sqlKeywords[toks[j].id] {
 				break
 			}
-			cte[toks[j].id] = true
+			out[toks[j].id] = true
 			j++
 			if j < n && toks[j].ch == '(' {
 				j = closeParen(toks, j) + 1
@@ -984,6 +978,48 @@ func (u *undeliveredIndex) referencesIn(text string) []Object {
 			break
 		}
 	}
+	// 中链声明：`), name AS (`。前一个 CTE 体闭括号后逗号接名字再接 `as (`；
+	// 名字后面必须直接是 `as`，前面必须直接是逗号 ⇒ SELECT 列表的逗号、参数占位等都不会误入。
+	for i := 0; i+2 < n; i++ {
+		if toks[i].ch == ',' && toks[i+1].id != "" && !sqlKeywords[toks[i+1].id] &&
+			toks[i+2].id == "as" && i+3 < n && toks[i+3].ch == '(' {
+			out[toks[i+1].id] = true
+		}
+	}
+}
+
+// undeliveredIndex 是未投递对象的检索面，外加「仓里一切定义过的表名」（绑定别名用）。
+type undeliveredIndex struct {
+	tables map[string]bool            // 未投递的表名
+	cols   map[string]map[string]bool // 未投递的列名 ⇒ 拥有它的表
+	known  map[string]bool            // 仓里一切 SQL 定义过的表名
+}
+
+// referencesIn 找出一段 SQL 文本对未投递对象的绑定引用（去重，按对象名排序）。
+// fileCTE 是该文件全部 SQL 字面量里声明的 CTE 名并集：生产 Go 常量常用 `+` 拼接出参数片段
+// （domains/metrics 的 requestModelKey），一条 WITH 语句因此被切成多个字面量，CTE 的声明与
+// 使用可能落在不同字面量里——而运行时它仍是一条语句，遮蔽跟着语句走、不跟字面量走。
+// 调用方（Check）按文件先收集传入；传 nil 即只看本段文本自己的 WITH 头。
+func (u *undeliveredIndex) referencesIn(text string, fileCTE map[string]bool) []Object {
+	toks := tokenize(stripComments(text))
+	n := len(toks)
+	maybe := false
+	for i := range toks {
+		if u.tables[toks[i].id] || u.cols[toks[i].id] != nil {
+			maybe = true
+			break
+		}
+	}
+	if !maybe {
+		return nil
+	}
+
+	// 本段声明的 CTE 名：同名表被它遮蔽。
+	cte := map[string]bool{}
+	for name := range fileCTE {
+		cte[name] = true
+	}
+	collectCTEChain(toks, cte)
 
 	// bareTablePosition：toks[i] 是限定名的最后一段，且这个名字出现在「表的位置」——
 	// FROM／JOIN／INTO／UPDATE 等之后、FROM 列表的逗号之后、字面量开头（FROM 子句片段）。
@@ -1442,9 +1478,22 @@ func Check(root string) (*Result, error) {
 		}
 		idx.cols[o.Column][o.Table] = true
 	}
+	// 按 Go 文件预收集 CTE 名：拼接常量（`+ requestModelKey +`）把一条 WITH 语句切成多个
+	// 字面量，CTE 的声明与使用可能落在不同字面量里 ⇒ 遮蔽按「文件里出现过的全部 CTE 名」算。
+	// 只并同文件——跨文件的 CTE 名碰撞（如各自 TEMP 表重名）不成立遮蔽。
+	fileCTE := map[string]map[string]bool{}
+	for _, rel := range goRels {
+		m := map[string]bool{}
+		for _, l := range goFiles[rel].lits {
+			collectCTEChain(tokenize(stripComments(l.text)), m)
+		}
+		if len(m) > 0 {
+			fileCTE[rel] = m
+		}
+	}
 	for _, rel := range goRels {
 		for _, l := range goFiles[rel].lits {
-			for _, o := range idx.referencesIn(l.text) {
+			for _, o := range idx.referencesIn(l.text, fileCTE[rel]) {
 				r := Reference{File: rel, Line: l.line, Object: o, Source: res.Undelivered[o][0]}
 				if _, ok := knownEntry(rel, o); ok {
 					res.Known = append(res.Known, r)

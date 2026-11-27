@@ -364,9 +364,14 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/modules?module=wechat_bot', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true, management: true },
       { path: '/admin/agents', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true, management: true },
       // 非核心节点：合并站点/激活/许可/协议 →「更新与激活」
-      { path: '/customer/update-activate', labelKey: 'nav.item.updateActivate', icon: '🔄' },
+      // ★ 2026-11-27 非管理员菜单重构轮：加 management —— license 激活是
+      //   节点管理职责（未激活时的「前往激活」重定向走 ACTIVATE_REDIRECT_PATH，
+      //   不依赖菜单可见性）⇒ owner 口径「系统设置五项」不含它。
+      { path: '/customer/update-activate', labelKey: 'nav.item.updateActivate', icon: '🔄', management: true },
       { path: '/customer/offline-activation', labelKey: 'nav.item.licenseOffline', icon: '🔌', notActivatedOnly: true },
-      { path: '/maintain/tenant/telemetry', labelKey: 'nav.item.telemetryScope', icon: '📡', external: true },
+      // ★ 2026-11-27 非管理员菜单重构轮：加 management —— 数据采集范围是
+      //   节点级管理配置（maintain 面租户遥测开关），非用户职责。
+      { path: '/maintain/tenant/telemetry', labelKey: 'nav.item.telemetryScope', icon: '📡', external: true, management: true },
     ],
   },
   {

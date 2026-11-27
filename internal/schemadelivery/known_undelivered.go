@@ -48,17 +48,25 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 		},
 	},
 	// ── 存量缺口（待 owner：投递迁移，或改代码）─────────────────────────────────
-	// ── 上游 W4.3 新特性的投递面缺口（2026-11-26 审计轮登记 ⇒ 2026-11-27 删）────
+	// ── 上游 W4.3 渠道商车道（492）投递面缺口：2026-11-26 审计轮登记 ⇒ 2026-11-27 已闭合 ⇒ 登记已删 ──
 	//
-	// ★ 492（customers / channel_users）两条登记已按「防免死金牌」纪律删除
-	//   （2026-11-27 三级配额制轮代上游收口）：上游 1357e62917 已把
-	//   492_channels_customers.sql 搬进投递通道（五点同步：embeddata 副本 /
-	//   go:embed / StartupFiles / apply 脚本 / TSV manifest 415 行）⇒
+	// ★ 台账现状（2026-11-27）：此组已清空——最后两条登记已按「两头核账」规则删除，历史如下。
+	//
+	// ★ 历史两条登记：admin/channels.go → customers（整表＋7 列）／ channel_users（整表＋2 列）。
+	//   缘起：渠道/客户读端 SQL 读 sql/migrations/startup/492_channels_customers.sql 建的两张表，
+	//   而该件当时不在任何投递通道 ⇒ 部署后读端 42P01；两道投递通道覆盖门只断言【最大编号近邻窗口】，
+	//   492 远在窗口外 ⇒ 门没看它（「拿旧编号当新迁移的编号」会绕过门）。
+	// ★ 闭合（2026-11-27，上游 W4.3 渠道商车道投递收口笔 1357e6291，五点同步）：
+	//   ① 安装器 TSV 清单（sql/schema/installed_startup_migrations.tsv:433，序 415）
+	//   ② installer embeddata 副本 up+down 两件
+	//   ③ go:embed ＋ embeddedSQLFiles（installer/cmd/llm-gw-installer/main.go:2014/2017）
+	//   ④ dbinit.Runner.StartupFiles（installer/internal/dbinit/runner.go:2194）
+	//   ⑤ 部署通道 files=()（scripts/apply-db-revision-sequence.sh:3027）
 	//   ⇒ 本仓 fresh 新装建造器 418/418 全绿（含 492）⇒ 两表在新装与升级库都可达
-	//   ⇒ 原登记「不再被命中」⇒ 留着就是「登记了却不再命中」⇒ 门判 Stale 而红。
-	//   ★ 历史缘由（原 customers 登记的教训仍在）：四条通道当时全无 492、
-	//   两道投递通道覆盖门只断言【最大编号附近的近邻窗口】⇒ 492 远在窗口外
-	//   ⇒ 门没看它（「拿旧编号当新迁移的编号」绕过了门）。
+	//   ⇒ 门重新命中全部引用 ⇒ 登记沦为「登记了却不再命中」⇒ 按防免死金牌纪律删登记。
+	// ★ 同文件更早的 request_logs 那条登记也按同纪律删除（2026-11-26 审计轮）：
+	//   admin/channels.go 的三处读点已改指 canonical 视图 request_logs_with_current_month
+	//   （v1 底表 public.request_logs 已被迁移 890 物理删除 ⇒ 运行时 42P01）。
 	// ── 存量缺口三组（2026-11-26 存量缺口收口轮 · 第 31 轮已修 ⇒ 登记已删）──────
 	// ★ 历史（本轮之前的三条登记，★ 本轮修完 ⇒ 按「两头核账」的规则删掉登记）：
 	//   ① bg/systemmonitor/audit.go → system_probe_runs.total_tokens
