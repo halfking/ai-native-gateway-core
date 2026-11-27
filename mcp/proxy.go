@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -82,6 +84,74 @@ type CallContext struct {
 	// CallID 网关侧调用关联键 ULID（llm_gateway 模式透传 X-MCP-Call-ID，
 	// ADR §6 三本日志对账键）。
 	CallID string
+	// RequestID 是要透传给上游的 JSON-RPC id（E2E 实证：go-sdk 上游对
+	// 带 method 无 id 的请求按 notification 语义拒绝——missing id）。
+	// 空 ⇒ 序列化省略（保持既有对 stdio/notification 类上游的宽容）。
+	RequestID json.RawMessage
+}
+
+// injectProtocolMeta 把 MCP 协议版本注入 params._meta（go-sdk 上游按
+// 2026-06 规范要求请求级 `_meta["io.modelcontextprotocol/protocolVersion"]`；
+// E2E 实证缺失即 -32602）。params 为空/非对象时从零构造。
+func injectProtocolMeta(params json.RawMessage, protocol string) json.RawMessage {
+	if protocol == "" {
+		protocol = ProtocolVersion
+	}
+	var m map[string]any
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &m); err != nil || m == nil {
+			m = map[string]any{}
+		}
+	} else {
+		m = map[string]any{}
+	}
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if _, ok := meta["io.modelcontextprotocol/protocolVersion"]; !ok {
+		meta["io.modelcontextprotocol/protocolVersion"] = protocol
+	}
+	// go-sdk 上游同时要求 clientCapabilities 声明（空对象即合法：
+	// 网关是聚合代理，不代持客户端能力协商结果）。
+	if _, ok := meta["io.modelcontextprotocol/clientCapabilities"]; !ok {
+		meta["io.modelcontextprotocol/clientCapabilities"] = map[string]any{}
+	}
+	m["_meta"] = meta
+	out, err := json.Marshal(m)
+	if err != nil {
+		return params
+	}
+	return out
+}
+
+// upstreamURLOf 由适配器基址推导上游 MCP 端点。
+//
+// 兼容两种注册形态（E2E 实证：memora registry 条目的 endpoint 常已带
+// `/mcp` 路径，如 http://memora-server:9002/mcp——无条件追加会拼出
+// `/mcp/mcp`）：末段已是 `mcp` 视为完整端点原样用；否则按基址约定补
+// `/mcp`（既有行为，存量适配器不受影响）。
+func upstreamURLOf(base string) string {
+	b := strings.TrimRight(strings.TrimSpace(base), "/")
+	if b == "" {
+		return "/mcp"
+	}
+	if idx := strings.LastIndex(b, "/"); idx >= 0 && b[idx+1:] == "mcp" {
+		return b
+	}
+	return b + "/mcp"
+}
+
+// reqIDSeq 是网关对上游请求的 JSON-RPC id 序列（进程内自增即可：
+// 上游按 id 回配响应，跨进程唯一性无意义）。
+var reqIDSeq atomic.Int64
+
+// reqID 取下一个上游请求 id。
+func reqID() int64 { return reqIDSeq.Add(1) }
+
+// id2Raw 把 int64 id 编成 JSON number 形态的 RawMessage。
+func id2Raw(v int64) json.RawMessage {
+	return json.RawMessage(strconv.FormatInt(v, 10))
 }
 
 // UpstreamResult 是上游返回结果。
@@ -99,10 +169,12 @@ type UpstreamResult struct {
 // 无状态路由约定：协议元数据随请求携带（`MCP-Protocol-Version` / `Mcp-Method` /
 // `Mcp-Name` 头），网关不依赖 transport session 亲和。
 func (c *UpstreamClient) Call(ctx context.Context, cc CallContext) (*UpstreamResult, error) {
+	params := injectProtocolMeta(cc.Params, cc.ProtocolVersion)
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
+		ID:      cc.RequestID,
 		Method:  cc.Method,
-		Params:  cc.Params,
+		Params:  params,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mcp: marshal upstream request: %w", err)
@@ -132,7 +204,7 @@ func (c *UpstreamClient) Call(ctx context.Context, cc CallContext) (*UpstreamRes
 }
 
 func (c *UpstreamClient) do(ctx context.Context, cc CallContext, body []byte, protocol string) (*UpstreamResult, error) {
-	endpoint := strings.TrimRight(cc.Adapter.Endpoint, "/") + "/mcp"
+	endpoint := upstreamURLOf(cc.Adapter.Endpoint)
 	reqCtx := ctx
 	if cc.Timeout > 0 {
 		var cancel context.CancelFunc

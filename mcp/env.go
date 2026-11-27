@@ -56,14 +56,14 @@ const (
 	EnvRegistryURL = "MCP_GATEWAY_REGISTRY_URL"
 	// EnvRegistryToken 调 memora /api/v2 的 service JWT（长令牌或网关自签均可，
 	// 由部署侧保证 memora verifier 认它）。
-	EnvRegistryToken = "[REDACTED:secret]"
+	EnvRegistryToken = "MCP_GATEWAY_REGISTRY_TOKEN"
 	// EnvRegistryIntervalSeconds 轮询间隔（默认 60）。
 	EnvRegistryIntervalSeconds = "MCP_GATEWAY_REGISTRY_INTERVAL_SECONDS"
 	// EnvRegistryJWTSecret 出站 service JWT 签名密钥（= memora JWT_SECRET 同值，
 	// ADR §8 R1）。空 ⇒ llm_gateway 模式适配器调用必失败（fail-closed）。
 	EnvRegistryJWTSecret = "MCP_GATEWAY_REGISTRY_JWT_SECRET"
-	// EnvRegistryJWTIssuer 出站 JWT iss（默认 llm-gateway-mcp；须与 memora
-	// V2JWTIssuer 同源配置）。
+	// EnvRegistryJWTIssuer 出站 JWT iss（默认 memora=MEMORA_V2_JWT_ISSUER 生产值；
+	// memora MCP 面只认 primary verifier 的精确 iss 匹配，E2E 实证）。
 	EnvRegistryJWTIssuer = "MCP_GATEWAY_REGISTRY_JWT_ISSUER"
 	// EnvRegistryJWTAudience 出站 JWT aud（须与 memora V2JWTAudience 同源，
 	// memora 默认 memora-api）。

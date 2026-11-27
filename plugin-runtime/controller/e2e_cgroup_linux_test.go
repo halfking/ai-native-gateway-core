@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -102,8 +103,10 @@ func TestE2ECgroupHardLimits(t *testing.T) {
 			if got := readCgroupFile(t, filepath.Join(cgDir, "memory.max")); got != "134217728" {
 				t.Errorf("memory.max = %q, want 134217728", got)
 			}
-			if got := readCgroupFile(t, filepath.Join(cgDir, "memory.high")); got != strconv.Itoa(134217728*90/100) {
-				t.Errorf("memory.high = %q, want %d", got, 134217728*90/100)
+			// memory.high 内核按 page（4K）向下取整：120795955 → 120795136。
+			wantHigh := (134217728 * 90 / 100) &^ 4095 // floor to page size
+			if got := readCgroupFile(t, filepath.Join(cgDir, "memory.high")); got != strconv.Itoa(wantHigh) {
+				t.Errorf("memory.high = %q, want %d (90%% of limit, page-aligned)", got, wantHigh)
 			}
 			if got := readCgroupFile(t, filepath.Join(cgDir, "memory.swap.max")); got != "0" {
 				t.Errorf("memory.swap.max = %q, want 0 (default no swap)", got)
@@ -140,7 +143,11 @@ func TestE2ECgroupHardLimits(t *testing.T) {
 		})
 	}
 
-	// 7) 停止后 cgroup 清理（§8.1：插件停止时 cgroup 正确清理）
+	// 7) 停止后 cgroup 清理（§8.1：插件停止时 cgroup 正确清理）。
+	// 已知环境限制：Docker Desktop 的 cgroup v2 虚拟化层即使目录已空也拒绝
+	// unlinkat（operation not permitted）——裸金属/常规委派主机不受影响。
+	// 为不掩盖真实回归，仍以目录消失为断言；虚拟化层拒删时给出 SKIP 建议
+	// 而非静默降级。
 	if err := sup.Stop("one"); err != nil {
 		t.Fatalf("stop one: %v", err)
 	}
@@ -154,27 +161,39 @@ func TestE2ECgroupHardLimits(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if !removed {
-		t.Errorf("cgroup dir for 'one' not removed within 5s after Stop")
+		t.Errorf("cgroup dir for 'one' not removed within 5s after Stop " +
+			"(virtualization layers like Docker Desktop may deny unlinkat — rerun on bare-metal/delegated host)")
 	}
 }
 
+// TestE2ECgroupOOMHelper 是 OOM 测试的子进程形态：分配并触碰 64MB 内存。
+// 通过 `go test -run TestE2ECgroupOOMHelper` 由 TestE2ECgroupOOMKill 以
+// 自身二进制 exec 拉起（controller helper 同款模式），避免给仓库引入
+// 额外的内存炸弹可执行物。
+func TestE2ECgroupOOMHelper(t *testing.T) {
+	if os.Getenv("OOM_HELPER") == "" {
+		t.Skip("helper process only")
+	}
+	buf := make([]byte, 64<<20)
+	for i := 0; i < len(buf); i += 4096 {
+		buf[i] = 1 // 触碰每个页，强制物理分配
+	}
+	time.Sleep(30 * time.Second) // 保持存活，等内核 OOM 判定
+	os.Exit(0)
+}
+
 // TestE2ECgroupOOMKill 验证 OOM 行为（§8.1）：独立 cgroup + 极小 memory.max，
-// 子进程吃内存超限 → 内核 OOM kill → memory.events oom_kill ≥ 1。
+// 子进程分配触碰 64MB 内存 → 内核 OOM kill → memory.events oom_kill ≥ 1。
 // 不动 controller fixture 的 helper（那是所有控制器测试共用的进程模板，
-// 塞内存炸弹会污染全包测试）——本测试用 limiter 包直接建 cgroup 自证内核语义。
+// 塞内存炸弹会污染全包测试）——本测试用独立 cgroup 自证内核语义。
 func TestE2ECgroupOOMKill(t *testing.T) {
 	requireLinuxCgroupWrite(t)
 
 	dir := filepath.Join(e2eCgroupRoot, "e2e-oom-probe")
+	_ = os.Remove(dir) // 上轮残留清理（有进程占用时 rmdir 失败无害）
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Skipf("cannot create probe cgroup: %v", err)
 	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(dir)
-		}
-	}()
 
 	write := func(name, val string) {
 		t.Helper()
@@ -184,76 +203,54 @@ func TestE2ECgroupOOMKill(t *testing.T) {
 	}
 	// 8MB 硬限（控制器进程自身内存远大于此，所以吃内存的必须是子进程）。
 	write("memory.max", "8388608")
-	// 不写 memory.high——让硬限直接 OOM，验证 oom_kill 路径而非回收路径。
 
-	// 起 probe 主进程（sh 睡循环），拿 pid 后归组进 cgroup。
-	setup := fmt.Sprintf("sh -c 'sleep 30 & echo $! > %s; wait'", filepath.Join(dir, "self_pid"))
-	if err := runSh(setup); err != nil {
-		t.Fatalf("start probe process: %v", err)
-	}
-	pidData, err := os.ReadFile(filepath.Join(dir, "self_pid"))
+	// 吃内存子进程：测试二进制自拉起 helper（分配触碰 64MB）。
+	exe, err := os.Executable()
 	if err != nil {
-		t.Fatalf("read self_pid: %v", err)
-	}
-	pid := strings.TrimSpace(string(pidData))
-	if pid == "" {
-		t.Fatal("probe process did not write its pid")
-	}
-	// probe 主进程归组（其后续子进程继承 cgroup）。
-	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(pid), 0o644); err != nil {
-		t.Fatalf("assign probe pid: %v", err)
-	}
-
-	// 归组吃内存子进程：直接把一个新 sh（吃内存）写进 cgroup.procs。
-	oomSh := fmt.Sprintf("sh -c 'dd if=/dev/zero bs=1M count=64 2>/dev/null | cat > /dev/null' & echo $! > %s", filepath.Join(dir, "oom_pid"))
-	if err := os.WriteFile(filepath.Join(dir, "starter.sh"), []byte(oomSh), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := runSh(fmt.Sprintf("nohup %s >/dev/null 2>&1 &", filepath.Join(dir, "starter.sh"))); err != nil {
-		t.Fatalf("start oom process: %v", err)
+	oom := exec.Command(exe, "-test.run=^TestE2ECgroupOOMHelper$", "-test.timeout=60s")
+	oom.Env = append(os.Environ(), "OOM_HELPER=1")
+	if err := oom.Start(); err != nil {
+		t.Fatalf("start oom helper: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
-	oomPid := strings.TrimSpace(mustRead(t, filepath.Join(dir, "oom_pid")))
-	if oomPid != "" {
-		if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(oomPid), 0o644); err != nil {
-			t.Fatalf("assign oom pid: %v", err)
-		}
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(strconv.Itoa(oom.Process.Pid)), 0o644); err != nil {
+		_ = oom.Process.Kill()
+		t.Fatalf("assign helper pid: %v", err)
 	}
 
 	// 轮询 oom_kill ≥ 1（内核 kill + 计数更新有延迟）。
-	deadline := time.Now().Add(15 * time.Second)
+	killed := false
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		events := readCgroupFile(t, filepath.Join(dir, "memory.events"))
 		if line := eventsLine(events, "oom_kill"); line != "" {
 			if n, err := strconv.Atoi(line); err == nil && n >= 1 {
-				t.Logf("oom_kill count = %d — kernel OOM semantics confirmed (pid %s killed by memory.max=8MB)", n, oomPid)
-				cleanup = false
-				// 有存活 probe 进程需先清（sleep 30）再删目录。
-				_ = runSh(fmt.Sprintf("kill -9 %s 2>/dev/null; true", pid))
-				_ = os.Remove(dir)
-				return
+				t.Logf("oom_kill count = %d — kernel OOM semantics confirmed (helper pid %d killed by memory.max=8MB)", n, oom.Process.Pid)
+				killed = true
+				break
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("oom_kill never incremented within 15s — kernel did not OOM the 64MB allocation under 8MB limit")
+	_ = oom.Process.Kill()
+	_ = oom.Wait()
+	if !killed {
+		t.Fatal("oom_kill never incremented within 30s — kernel did not OOM the 64MB allocation under 8MB limit")
+	}
+
+	// 清理：组内进程已死，直接删组。
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Rmdir(dir); err == nil {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	_ = syscall.Rmdir(dir) // 尽力而为；残留不判失败（环境性 EBUSY）
 }
 
 // ── helpers ──
-
-func runSh(cmd string) error {
-	c := exec.Command("sh", "-c", cmd)
-	return c.Run()
-}
-
-func mustRead(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(data)
-}
 
 func eventsLine(events, key string) string {
 	for _, line := range strings.Split(events, "\n") {

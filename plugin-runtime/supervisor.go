@@ -195,6 +195,15 @@ func (s *Supervisor) Stop(pluginID string) error {
 		return fmt.Errorf("plugin %s not running", pluginID)
 	}
 
+	// 先停进程再清理 ResourceLimiter：cgroup 模式下 rmdir 要求组内无存活
+	// 进程——若先 rl.Stop() 会拿着「还挂着进程」的 cgroup 做 rmdir，EBUSY
+	// 重试 3 秒也白等（真机 e2e 发现）。monitor 模式顺序同样成立：先杀进程，
+	// 采样循环下一拍自然退出，再 close channel 也无泄漏窗口。
+	if err := cmd.Stop(); err != nil {
+		// 进程停止失败不阻断 limiter 清理：进程可能已自行退出（竞态）。
+		fmt.Printf("WARN: failed to stop plugin %s process: %v\n", pluginID, err)
+	}
+
 	// 停止 ResourceLimiter（清理 cgroup / 停止监控）。失败仅警告：插件进程
 	// 已停止，limiter 清理失败不应让调用方误判停止失败。
 	if rl != nil {
@@ -209,7 +218,7 @@ func (s *Supervisor) Stop(pluginID string) error {
 		"status":    "stopped",
 	})
 
-	return cmd.Stop()
+	return nil
 }
 
 // LimiterOf 返回插件当前生效的 ResourceLimiter（未配置限制或未启动时为 nil）。

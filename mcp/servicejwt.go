@@ -38,7 +38,11 @@ func NewServiceJWTIssuer(secret, issuer, audience string, ttl time.Duration) (*S
 		return nil, fmt.Errorf("mcp: service jwt secret empty (set %s)", EnvRegistryJWTSecret)
 	}
 	if issuer == "" {
-		issuer = "llm-gateway-mcp"
+		// ★ 默认 iss 必须是 memora verifier 认的值（MEMORA_V2_JWT_ISSUER，
+		//   生产= memora）。memora 的 MCP 面只用 primary ServiceJWTVerifier
+		//   （iss 精确匹配，无 multi-issuer allowlist 回退——E2E 实证），
+		//   默认值写错 ⇒ 全部出站调用 401。
+		issuer = "memora"
 	}
 	if ttl <= 0 {
 		ttl = ServiceJWTTLTTL
