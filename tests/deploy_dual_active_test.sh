@@ -158,6 +158,51 @@ grep -q 'runtime_role' "$ENGINE" \
   && ok "⑥ 副节点就绪后有角色自证（/version.runtime_role）" \
   || bad "⑥ 副节点缺角色自证判据"
 
+# ★ _dd_unq 双定义对拍（2026-11-27 真机教训）：正式定义在 deploy 主流程读点前，
+#   start-secondary 分派块里另有一份前置定义（bash 自上而下执行 ⇒ 分派块先进
+#   dd_start_secondary → env 派生 → _dd_unq，正式定义那时还没被读到 ⇒ 真机
+#   FATAL command not found）。两份必须逐字一致——漂移即解码语义分叉。
+# 提取器按**出现序号**取第 N 处定义体（对全局提取取两次是自证：按构造恒等）。
+# ★ 前置定义在 if 块内有缩进 ⇒ 匹配 ^[[:space:]]*_dd_unq；BSD head 无 -n -1 ⇒ 去
+#   首尾行用 sed '1d;$d'。
+_dd_unq_nth() {
+  awk -v n="$2" '
+    /^[[:space:]]*_dd_unq\(\) \{/ { c++; if (c == n) p = 1 }
+    p { print }
+    p && /^[[:space:]]*\}$/ { exit }
+  ' "$1" | sed -e '1d' -e '$d' -e 's/^[[:space:]]*//' \
+      -e '/^#/d' -e 's/[[:space:]]*$//' | grep -v '^$'
+}
+# ★ 归一化口径：剥行首空白（前置定义在 if 块内缩进）＋丢弃纯注释行＋去行尾
+#   空白。★ 不剥行内 #：函数体有 `${#decoded}`——行内 # 剥除会把可执行行剥坏
+#   （首版实测 (( ${#decoded} < ${#v} )) 被剥成 (( ${ ⇒ 误红）。两处定义的
+#   可执行行必须逐字一致（含行尾注释——正式定义的 printf -v _bt 行带尾注，
+#   前置副本已同步同款尾注）。
+_du_count="$(grep -c '^[[:space:]]*_dd_unq() {' "$ENGINE")"
+check "⑥ _dd_unq 恰好两处定义（前置 + 正式）" "2" "$_du_count"
+_du_1="$(_dd_unq_nth "$ENGINE" 1 | md5 -q)"
+_du_2="$(_dd_unq_nth "$ENGINE" 2 | md5 -q)"
+if [[ -n "$_du_1" && "$_du_1" == "$_du_2" ]]; then
+  ok "⑥ _dd_unq 两处定义逐字一致（防解码语义漂移）"
+else
+  bad "⑥ _dd_unq 两处定义体不一致或缺失——同步 :2776 正式定义体"
+fi
+# 提取器正向自检（2026-11-27 教训：首版写成「变异后 1 号≠2 号应红」——方向
+# 反了：把第 1 处改名后提取器取到的 1 号就是原第 2 处，相等恰是按序号提取的
+# 正确行为）。正向判据 = 变异后 1 号 == _du_2（序号语义正确）**且** 变异后
+# 只剩 1 处 _dd_unq（改名生效）。★ 变异用 awk 不用 sed：BSD sed 不支持
+# `0,/re/` 首次匹配地址（GNU 扩展）——首版实测变异静默不生效、count 恒 2。
+awk ' /^[[:space:]]*_dd_unq\(\) \{/ && !done { sub(/_dd_unq\(\)/, "_dd_unq_MUTATED()"); done=1 }
+      { print }' "$ENGINE" > "$TMP/engine_mutated.sh" \
+  && { _mut_count="$(grep -c '^[[:space:]]*_dd_unq() {' "$TMP/engine_mutated.sh")"
+       _mut_1="$(_dd_unq_nth "$TMP/engine_mutated.sh" 1 | md5 -q)"
+       if [[ "$_mut_count" == "1" && "$_mut_1" == "$_du_2" ]]; then
+         ok "⑥ 提取器正向自检：第 1 处改名后 1 号=原第 2 处（序号语义真实）"
+       else
+         bad "⑥ 提取器正向自检失败——一致性判据可能取错对象（count=${_mut_count}）"
+       fi; } \
+  || bad "⑥ 提取器正向自检无法执行（awk 失败）"
+
 # ── 结果 ──────────────────────────────────────────────────────────────
 echo
 if (( fail == 0 )); then

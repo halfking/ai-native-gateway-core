@@ -2454,6 +2454,38 @@ dd_stop_secondary() {
 }
 
 if [[ "$MODE" == "start-secondary" ]]; then
+  # ★ 2026-11-27 真机修正（前置定义）：_dd_unq 的正式定义在 :2776（deploy
+  #   主流程第一个读点之前）；bash 自上而下执行 ⇒ start-secondary 分派在这里
+  #   （:2452 附近）就进 dd_start_secondary → env 派生 → _dd_unq 调用 ⇒
+  #   正式定义还没被读到 ⇒ 真机 FATAL `_dd_unq: command not found`（deploy
+  #   主流程不受影响：它流到 2776 之后才用）。这里就地前置定义**同一函数体**
+  #   （身份门沙箱按 ^_dd_unq() { … ^} 提取 ⇒ 不挪正式定义位置，两处保持
+  #   逐字一致，防漂移由 contract 门的两处对拍检查钉住）。
+  # 行为门沙箱同款提取形态见 deploy-seamless-identity_env_test.sh。
+  _dd_unq() {
+    local v=$1 decoded i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
+             17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
+      case "$v" in
+        *\\*) ;;
+        *) break ;;
+      esac
+      local _probe=${v//\\$/} _bt _probe2
+      printf -v _bt '\140'   # 反引号（八进制 140；不在源码里裸写反引号，防脚本自身被解析成替换。
+                             # ★ %c 不能用：printf '%c' 96 取的是参数「96」的首字符 '9' —— 守卫首版实测漏判反引号形态）
+      if [[ "$_probe" == *'$('* || "$_probe" == *'${'* || "$_probe" == *"$_bt"* ]]; then
+        break
+      fi
+      _probe2=${_probe//\$\'/}
+      if [[ "$_probe2" == *'$'* ]]; then
+        break
+      fi
+      decoded=$(eval "printf '%s' ${v}" 2>/dev/null) || break
+      (( ${#decoded} < ${#v} )) || break
+      v=$decoded
+    done
+    printf '%s' "$v"
+  }
   # 完成标记守卫：与 deploy 模式同一 fail-closed 语义 —— dd_start_secondary
   # 任何一步 die 都会以非 0 退出（不会把「副节点没起来」洗成成功）。
   dd_install_exit_guard
