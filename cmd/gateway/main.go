@@ -4511,7 +4511,15 @@ func main() {
 	var requestMetricsDB *sql.DB
 	if dbConn != nil && dbConn.Enabled() {
 		requestMetricsDB = dbConn.Stdlib()
-		metricsProcessor := metricsstore.NewProcessor(requestMetricsDB)
+		// ★ 2026-11-28 L142 轮接线：投影器换用 repair-state 机制（projection.go 的
+		//   ProjectionProcessor）。旧 Processor 的 (occurred_at, request_id) 复合游标
+		//   扫描在 211 自 2026-11-25 22:40 起冻结（游标停走、readiness 恒 503）⇒
+		//   部署水印门（DD_REQUIRE_REQUEST_METRICS=1）全部超时回退。新机制自带
+		//   repair 回填（repair_state 从 (0,-inf) 重扫 usage_facts）＋双队列消费
+		//   （pending ∪ refresh_pending）＋INTEGER 钳制，983j 已播种 repair_state。
+		//   ★ 接线前 NewProjectionProcessor 零调用点（写了判定体没有调用点的
+		//   team_budget_gate 同型）⇒ readiness 永远 false、部署永远失败。
+		metricsProcessor := metricsstore.NewProjectionProcessor(requestMetricsDB)
 		metricsCtx, cancelMetrics := context.WithCancel(context.Background())
 		defer cancelMetrics()
 		metricsConfig := metricsstore.ConfigFromEnv(metricsstore.DefaultConfig())

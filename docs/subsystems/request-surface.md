@@ -22,3 +22,4 @@
 
 `cmd/gateway/main.go:9295-9314`（2026-11-28 重钉：上游 16 笔合并（plugin-runtime limiter 一族＋非管理员菜单重构）在链体之前净增 ⇒ 逐锚点实测 Recovery :9295、SecurityHeaders :9314 ⇒ 窗口 9295-9314；前值 9246-9266 为上一轮读数）：
 `cmd/gateway/main.go:9295-9314`（2026-11-28 第二次重钉：12h 审计追加轮读数 9298-9317 系其树上的读数；★ 本合并树逐行实测 Recovery :9295、SecurityHeaders :9314 ⇒ 窗口 9295-9314 为当前权威读数；前值 9246-9266 为 11-27 读数）：
+`cmd/gateway/main.go:9306-9325`（2026-11-28 第三十二次重钉（L142 轮）：main.go:4514 投影器接线（NewProjectionProcessor）注释块链前净增 +8 ＋ 车道合并 +3 ⇒ 逐锚点实测 Recovery :9306、SecurityHeaders :9325 ⇒ 窗口 9306-9325 为当前权威读数；前值 9295-9314 为上一轮读数；对拍表与 A1 审计档同笔同步）：
