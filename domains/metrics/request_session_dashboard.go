@@ -30,10 +30,10 @@ const sessionDashboardBase = `
 WITH projection AS (
 	SELECT backfill_complete, updated_at,
 		CASE WHEN backfill_complete THEN
-			(SELECT min(enqueued_at) FROM public.request_metrics_pending
+			(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 			 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($4='' OR tenant_id=$4))
 		END AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), selected AS MATERIALIZED (
 	SELECT m.tenant_id, nullif(m.session_id,'') AS session_id, m.occurred_at,
 		` + requestModelKey + ` AS model,
@@ -41,7 +41,7 @@ WITH projection AS (
 		CASE WHEN m.task_id <> 'default' AND m.task_id NOT LIKE 'auto-title:%' THEN nullif(m.task_id,'') END AS task_id,
 		m.status, m.total_tokens, m.credits_charged, m.latency_ms,
 		CASE WHEN m.cost_currency='USD' THEN m.cost_amount END AS usd
-	FROM public.request_metrics m
+	FROM public.request_metrics_projection m
 	WHERE m.occurred_at >= $1 AND m.occurred_at < $2 AND m.source_fact_id IS NOT NULL
 	  AND ($4='' OR m.tenant_id=$4) AND ($6::boolean OR m.traffic_class='business')
 	  AND ($5='' OR EXISTS (SELECT 1 FROM public.session_dim own WHERE own.tenant_id=m.tenant_id
@@ -57,10 +57,10 @@ WITH projection AS (
 	WHERE ($4='' OR d.tenant_id=$4) AND ($5='' OR d.owner_user=$5)
 	  AND ((d.first_request_at >= $3 AND d.first_request_at < $2) OR (d.closed_at >= $1 AND d.closed_at < $2))
 	  AND (SELECT backfill_complete FROM projection)
-	  AND EXISTS (SELECT 1 FROM public.request_metrics e WHERE e.tenant_id=d.tenant_id
+	  AND EXISTS (SELECT 1 FROM public.request_metrics_projection e WHERE e.tenant_id=d.tenant_id
 		AND e.session_id=d.gw_session_id AND e.source_fact_id IS NOT NULL AND ($6 OR e.traffic_class='business')
 		AND e.occurred_at < $2)
-), daily_sessions AS (
+), session_activity_by_day AS (
 	SELECT (occurred_at AT TIME ZONE $7)::date AS day, count(DISTINCT (tenant_id,session_id)) AS count,
 		sum(usd) AS usd, count(*) AS requests, count(usd) AS usd_requests
 	FROM session_requests GROUP BY 1
@@ -78,7 +78,7 @@ WITH projection AS (
 		coalesce(a.count,0) AS active_count, coalesce(c.count,0) AS closed_count,
 		CASE WHEN a.requests IS NULL THEN 0 ELSE a.usd END AS total_cost,
 		coalesce(a.requests,0) AS total_requests, coalesce(a.usd_requests,0) AS usd_requests
-	FROM days LEFT JOIN daily_sessions a USING (day) LEFT JOIN daily_new n USING (day) LEFT JOIN daily_closed c USING (day)
+	FROM days LEFT JOIN session_activity_by_day a USING (day) LEFT JOIN daily_new n USING (day) LEFT JOIN daily_closed c USING (day)
 ), lifecycle_summary AS (
 	SELECT count(*) FILTER (WHERE first_request_at >= $1 AND first_request_at < $2) AS new_count,
 		count(*) FILTER (WHERE closed_at >= $1 AND closed_at < $2) AS closed_count,
@@ -159,7 +159,7 @@ measures AS (
 ), previous_cost AS (
 	SELECT sum(m.cost_amount) FILTER (WHERE m.cost_currency='USD') AS usd,
 		count(*) FILTER (WHERE m.cost_currency IS DISTINCT FROM 'USD' OR m.cost_amount IS NULL) AS unmeasured
-	FROM public.request_metrics m
+	FROM public.request_metrics_projection m
 	WHERE m.occurred_at >= $3 AND m.occurred_at < $1 AND m.source_fact_id IS NOT NULL AND nullif(m.session_id,'') IS NOT NULL
 	  AND ($4='' OR m.tenant_id=$4) AND ($6 OR m.traffic_class='business') AND (SELECT backfill_complete FROM projection)
 	  AND ($5='' OR EXISTS (SELECT 1 FROM public.session_dim own WHERE own.tenant_id=m.tenant_id

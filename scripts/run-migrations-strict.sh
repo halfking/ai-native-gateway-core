@@ -162,6 +162,9 @@ migration_files() {
     while IFS= read -r file; do
       filename=$(basename "$file")
       version=${filename%%_*}
+      if [[ "$scope" == startup && "$filename" == 973_request_metrics_projection.sql ]]; then
+        version=983cp1
+      fi
       version_number=${version%%[^0-9]*}
       printf '%s\t%s\t%s\n' "$version_number" "$version" "$file"
     done < <(find "$migration_root" -type f -name '[0-9]*.sql' ! -name '*.down.sql' -print)

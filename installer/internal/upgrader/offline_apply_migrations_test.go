@@ -77,3 +77,23 @@ func TestForwardMigrationFilesNumericOrderAcrossThousandBoundary(t *testing.T) {
 		t.Fatalf("forward files = %#v, want %#v (numeric order required across 999→1000)", got, want)
 	}
 }
+
+func TestForwardMigrationFilesOrdersReleased973AfterItsPrerequisite(t *testing.T) {
+	root := t.TempDir()
+	want := []string{
+		filepath.Join(root, "983_request_metrics.sql"),
+		filepath.Join(root, "983b_add_raw_model_name.sql"),
+		filepath.Join(root, "983c_add_occurred_cursor_index.sql"),
+		filepath.Join(root, "973_request_metrics_projection.sql"),
+		filepath.Join(root, "983j_request_metrics_973_repair.sql"),
+	}
+	for _, name := range want {
+		if err := os.WriteFile(name, []byte("SELECT 1;"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := forwardMigrationFiles(root)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("forward files = %v, want %v: %v", got, want, err)
+	}
+}

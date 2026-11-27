@@ -16,8 +16,8 @@ export const dailyEvidenceLayouts: Record<DailySection, EvidenceLayout> = {
   },
   requests: {
     count: 'requests', key: 'request_id',
-    summary: ['requests', 'success', 'failure', 'rate_limited', 'cancelled', 'pending', 'unknown_status', 'total_tokens', 'measured_total_requests'],
-    rows: ['tenant_id', 'received_at', 'session_id', 'application_id', 'client_id', 'traffic_class', 'status',
+    summary: ['requests', 'business_requests', 'platform_requests', 'requests_with_terminal_projection', 'success', 'failure', 'rate_limited', 'cancelled', 'pending', 'unknown_status', 'total_tokens', 'measured_total_requests'],
+    rows: ['tenant_id', 'received_at', 'session_id', 'application_id', 'client_id', 'traffic_class', 'status', 'projected_status',
       'admission_rejection', 'input_tokens', 'output_tokens', 'total_tokens', 'usage_source', 'recorded_supplier_sends'],
   },
   attempts: {

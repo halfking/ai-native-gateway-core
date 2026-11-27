@@ -358,6 +358,23 @@ describe('② degraded：恒发字段 ⇒ 「服务端确认过没降级」可�
 // ══════════════════════════════════════════════════════════════════════════
 
 describe('③ 三个「节省」数字是**估算**，不是账单', () => {
+  it('V2 明确显示缺失节省额和缓存口径的覆盖率', async () => {
+    mCache.mockResolvedValue(cache({
+      source: 'request_metrics', total_requests: 10, cache_scope_requests: 6,
+      cache_input_tokens: 100, cache_hit_ratio: 0.25, compression_scope_requests: 5,
+      compressed_requests: 0, dollars_saved: null, compression_saved: null, total_saved: null,
+    }))
+    mCompare.mockResolvedValue(compare())
+    const w = await mountView()
+    await load(w)
+    expect(textOf(w, 'ue-estimate-note')).toBe(t('ue.estimate.unavailable'))
+    expect(textOf(w, 'ue-dollars_saved')).toBe('—')
+    expect(w.findAll('[data-testid^="ue-badge-"]')).toHaveLength(0)
+    expect(w.text()).toContain('25.0%')
+    expect(w.text()).toContain('6 / 10')
+    expect(w.text()).toContain('5 / 10')
+  })
+
   it('③-1 ★★★★★ 三个节省字段都必须**逐个**带「估算」标记', async () => {
     const w = await mountView()
     await load(w)

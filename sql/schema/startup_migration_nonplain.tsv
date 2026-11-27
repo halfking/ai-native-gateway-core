@@ -122,3 +122,21 @@ canonical/1002_billing_retry_queue.sql	both	-	计费重试队列表（2026-11-26
 embeddata/1000_billing_status_and_credit_limit.sql	installer	-	同 canonical/1000 行：安装器 embeddata 副本的登记键（embeddata 宇宙按 embeddata/ 前缀单独成行）。
 embeddata/1001_bill_payment_tracking.sql	installer	-	同 canonical/1001 行：安装器 embeddata 副本的登记键。
 embeddata/1002_billing_retry_queue.sql	installer	-	同 canonical/1002 行：安装器 embeddata 副本的登记键。
+canonical/983j_request_metrics_973_repair.sql	both	-	终态请求投影及刷新队列，由部署序列和安装器 StartupFiles 交付。
+embeddata/983j_request_metrics_973_repair.sql	installer	-	983j 的安装器内嵌副本。
+canonical/983k_request_metrics_daily_summary.sql	both	-	从 983j 派生的可重算日汇总，由部署序列和安装器 StartupFiles 交付。
+embeddata/983k_request_metrics_daily_summary.sql	installer	-	983k 的安装器内嵌副本，顺序在 983j 之后。
+canonical/983l_request_metrics_daily_board.sql	both	-	看板每日分布与趋势，由部署序列和安装器 StartupFiles 交付。
+embeddata/983l_request_metrics_daily_board.sql	installer	-	983l 的安装器内嵌副本，顺序在 983k 之后。
+canonical/983m_request_metrics_daily_history.sql	both	-	历史报表日汇总和精确延迟样本，由部署序列和安装器交付。
+embeddata/983m_request_metrics_daily_history.sql	installer	-	983m 的安装器内嵌副本，依赖 983k 日状态表。
+canonical/983n_request_metrics_daily_tenant_history.sql	both	-	租户日汇总和独立发布状态，由部署序列和安装器交付。
+embeddata/983n_request_metrics_daily_tenant_history.sql	installer	-	983n 的安装器内嵌副本，依赖 983m 历史日汇总结构。
+canonical/983o_request_metrics_daily_history_details.sql	both	-	按日发布可重算的租户模型汇总与人员排名计数，由部署序列和安装器交付。
+embeddata/983o_request_metrics_daily_history_details.sql	installer	-	983o 的安装器内嵌副本，沿用日状态锁与失效机制。
+canonical/983p_request_metrics_history_pages.sql	both	-	按日发布六项历史明细维度，由部署序列和安装器交付。
+embeddata/983p_request_metrics_history_pages.sql	installer	-	983p 的安装器内嵌副本，沿用历史日汇总的失效机制。
+canonical/983q_request_metrics_board_hours.sql	both	-	为看板的部分自然日发布小时计量及会话位图。
+embeddata/983q_request_metrics_board_hours.sql	installer	-	983q 的安装器内嵌副本。
+canonical/983r_request_metrics_board_hour_distributions.sql	both	-	发布小时分布、供应商计量和密钥位图。
+embeddata/983r_request_metrics_board_hour_distributions.sql	installer	-	983r 的安装器内嵌副本。

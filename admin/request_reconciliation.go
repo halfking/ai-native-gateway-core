@@ -73,10 +73,6 @@ func (h *Handler) serveRequestReconciliation(w http.ResponseWriter, r *http.Requ
 	}
 	report, err := read(ctx, h.db, scope, query)
 	if err != nil {
-		if errors.Is(err, reconciliation.ErrFinancialDayOpen) || errors.Is(err, reconciliation.ErrFinancialTimezone) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		if errors.Is(err, reconciliation.ErrTerminalProjectionBackfill) {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
@@ -91,7 +87,7 @@ func (h *Handler) serveRequestReconciliation(w http.ResponseWriter, r *http.Requ
 		name := query.Section
 		if format == "csv-summary" {
 			name += "-summary"
-			data, err = requestReconciliationSummaryCSVWithProjection(report.Summary, report.Projection, report.RequestCountBasis)
+			data, err = requestReconciliationSummaryCSVWithProjection(report.Summary, report.Projection)
 			w.Header().Set("X-Report-Export", "summary")
 		} else {
 			data, err = requestReconciliationCSV(report)
@@ -115,14 +111,6 @@ func (h *Handler) serveRequestReconciliation(w http.ResponseWriter, r *http.Requ
 			w.Header().Set("X-Report-Month", report.Month)
 		}
 		w.Header().Set("X-Report-Coverage", report.Coverage)
-		if period := report.FinancialPeriod; period != nil {
-			w.Header().Set("X-Report-Financial-Status", period.Status)
-			w.Header().Set("X-Report-Financial-Timezone", period.Timezone)
-			w.Header().Set("X-Report-Financial-Closed-Through", period.ClosedThrough)
-		}
-		if report.RequestCountBasis != "" {
-			w.Header().Set("X-Report-Request-Count-Basis", report.RequestCountBasis)
-		}
 		if p := report.Projection; p != nil {
 			w.Header().Set("X-Report-Terminal-Usage-Source", p.Source)
 			if p.UpdatedAt != nil {
@@ -148,19 +136,13 @@ func requireCompletedReconciliationDay(query reconciliation.ReportQuery, now tim
 }
 
 func requestReconciliationSummaryCSV(raw json.RawMessage) ([]byte, error) {
-	return requestReconciliationSummaryCSVWithProjection(raw, nil, "")
+	return requestReconciliationSummaryCSVWithProjection(raw, nil)
 }
 
-func requestReconciliationSummaryCSVWithProjection(raw json.RawMessage, projection *reconciliation.ReportProjection, requestCountBasis string) ([]byte, error) {
+func requestReconciliationSummaryCSVWithProjection(raw json.RawMessage, projection *reconciliation.ReportProjection) ([]byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
-	}
-	if requestCountBasis != "" {
-		if fields == nil {
-			fields = map[string]json.RawMessage{}
-		}
-		fields["request_count_basis"], _ = json.Marshal(requestCountBasis)
 	}
 	if projection != nil {
 		if fields == nil {

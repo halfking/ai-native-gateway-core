@@ -18,8 +18,8 @@ import {
 } from '../api/board'
 import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
 import { useI18n } from 'vue-i18n'
-import { boardRangeFromKxRange, toBoardTimeQuery, type BoardTimeRange } from '../utils/boardTimeRange'
 import { formatDateTimeIso } from '../utils/datetime'
+import { boardRangeFromKxRange, toBoardTimeQuery, type BoardTimeRange } from '../utils/boardTimeRange'
 import { rangeFromSpanDays } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import * as echarts from 'echarts'
@@ -72,6 +72,10 @@ async function load() {
   error.value = ''
   try {
     boardData.value = await fetchDashboardBoard(toBoardTimeQuery(boardRange.value))
+    
+    // 初始化趋势图表
+    await nextTick()
+    initTrendChart()
   } catch (e) {
     error.value = surfaceError(e)
   } finally {
@@ -296,6 +300,9 @@ function topItems(items: any[] | undefined, n: number = 5) {
 // ★ 2026-11-23：自定义区间下钻时把 start/end 一起带过去（下游列表页已支持
 //   读取），否则「看板选的历史区间 → 下钻页变回最近 N 天」，同一页两个口径。
 function rangeQuery(): Record<string, string> {
+  if (boardData.value?.window_start && boardData.value.window_end) {
+    return { start: boardData.value.window_start, end: boardData.value.window_end, days: String(boardRange.value.days) }
+  }
   const r = boardRange.value
   if (r.preset === 'custom' && r.start && r.end) {
     return { start: r.start, end: r.end }

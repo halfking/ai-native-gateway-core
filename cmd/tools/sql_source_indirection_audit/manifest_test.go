@@ -30,7 +30,10 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 166 处（v1 0 文件/0 处、canonical 66/136、unresolved 15/30、v1arm 0/0）
+//	全仓拼接点 190 处（v1 0 文件/0 处、canonical 69/140、unresolved 22/50、v1arm 0/0）
+//	（2026-11-27 V2 合并刷新：166 → 190（canonical 66 → 69 文件/136 → 140 处；
+//	  unresolved 15 → 22 文件/30 → 50 处 —— codex/request-metrics-v2 并入 8 文件
+//	  投影表读点，全部 nonv1-by-inspection 人工登记，见「V2 合并补登」段）。
 //
 //	（2026-11-26 刷新：164 → 166（canonical 65 → 66 文件 / 134 → 136 处）。
 //	  ★ 唯一增量 = 并行车 2026-11-26 12:0x 的 PI 分析取证轮新增
@@ -505,6 +508,50 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Via: "138/162 行 `FROM ` + db.SessionFamilyTurnsSourceSQL() + ` rl`、" +
 			"384/443 行 ForSessionSQL()。全是会话族。",
 		Consequence: "与 v1 无关。",
+	},
+	// ── V2 合并补登（2026-11-27，request-metrics-v2 并入新增的投影表读点 8 文件）──
+	// 判定依据=逐文件读拼接点：全部读 public.request_metrics_projection /
+	// request_metrics_board_days / request_metrics_daily_state 等 983 系投影表，
+	// 与 v1 母表/canonical 视图无关 ⇒ nonv1-by-inspection。
+	"domains/metrics/request_daily_board.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L30/L114 `FROM public.request_metrics_projection`（字面量表名，983 系投影表）。",
+		Consequence: "与 v1/canonical 视图无关；读投影表（迁移 983 建、983j-r 补齐汇总面）。",
+	},
+	"domains/metrics/request_hourly_board_distributions.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L37/L49/L54 `FROM public.request_metrics_projection`（字面量表名）。",
+		Consequence: "与 v1/canonical 视图无关。",
+	},
+	"domains/metrics/request_stats.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L62/L64 statsWithGroupedMembership(source) 的 source 实参是投影 SQL 内部 CTE 名（bounded/summary_input，非表名）；L341/L344 `FROM public.request_metrics_projection`（字面量）。",
+		Consequence: "与 v1/canonical 视图无关；source 参数化的两个实参均为同函数内 CTE 别名，工具不可静态判定故 unresolved(tool)，人工核对无外部表拼接。",
+	},
+	"domains/reportrollup/daily_history.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L166/L232/L249 `FROM/JOIN public.request_metrics_projection`（字面量表名）。",
+		Consequence: "与 v1/canonical 视图无关。",
+	},
+	"domains/reportrollup/projected_daily_page.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L120/L128/L143/L145 `FROM ` + historyPageDaysTable/historyPageCellsTable（本包常量，983o 系投影日历表）。",
+		Consequence: "与 v1/canonical 视图无关。",
+	},
+	"domains/reportrollup/projected_person_rank.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L16 personRankFacts = `FROM public.request_metrics_projection`（字面量）。",
+		Consequence: "与 v1/canonical 视图无关。",
+	},
+	"domains/reportrollup/projected_workbook.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L42 `FROM public.request_metrics_projection`（字面量）。",
+		Consequence: "与 v1/canonical 视图无关。",
+	},
+	"internal/metricsstore/daily_summary.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "L17 request_metrics_daily_state、L38 boardDays=request_metrics_board_days、L45/L47 days 拼接（983 系投影状态/日历表）；L124 `FROM `+days（同族常量）。",
+		Consequence: "与 v1/canonical 视图无关。",
 	},
 	// ── S4 波 4（2026-10-13）新增的会话族拼接点 ──────────────────────────
 	// ── S4 波 4（2026-10-13）补登：波 2/波 3 引入但当时未进本清单的 8 文件 ──
@@ -1744,7 +1791,7 @@ var documentedSnapshot = bucketSnapshot{
 	//   在上游树上逐字复现 ⇒ ⇒ 这 +2 全是上游引入的）。
 	// ★ 我方本轮对 db/request_logs_view_schema.go 追加了一个瘦源 helper
 	//   ⇒ **该文件的处数未变**（原树对拍即证明）。
-	TotalSites: 166,
+	TotalSites: 190,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1764,10 +1811,13 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmSites: 0,
 	// 两个信用桶回填入口改读过账流水，移除两个间接日志读点。
 	// 已提交的会话探测三臂源包含两个间接读点，补登一个文件。
-	CanonFiles: 66,
-	CanonSites: 136,
-	UnresFiles: 15,
-	UnresSites: 30,
+	// ★ 2026-11-27（V2 合并刷新）：166 → 190（canonical 66 → 69 文件/136 → 140 处、
+	//   unresolved 15 → 22 文件/30 → 50 处）—— request-metrics-v2 并入 8 文件投影表
+	//   读点（全部 nonv1-by-inspection 人工登记，见「V2 合并补登」段）。
+	CanonFiles: 69,
+	CanonSites: 140,
+	UnresFiles: 22,
+	UnresSites: 50,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

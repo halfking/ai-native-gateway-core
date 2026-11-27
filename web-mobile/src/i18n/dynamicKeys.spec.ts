@@ -204,6 +204,7 @@ const OPEN_PREFIXES: readonly string[] = [
  * ⚠️ 红了不许直接改数字：先重量一遍，确认是真的增减。
  */
 const GENERATED_KEY_TOTAL = 372 // 2026-11-26 合并轮重测：369 + 3（V2 投影轮新增 3 个动态键：2006-11-25 菜单 PC 对齐轮 369 → 合并树 372；56 个前缀 × 各自后缀数）
+const GENERATED_KEY_TOTAL = 376 // 372 个既有键，加上日对账的投影结局、终态覆盖、业务与平台运维收件。
 
 describe('动态 i18n 键在两侧词典里都存在', () => {
   for (const [prefix, suffixes] of DYNAMIC_KEYS) {

@@ -430,3 +430,12 @@
 412	1000_billing_status_and_credit_limit.sql
 413	1001_bill_payment_tracking.sql
 414	1002_billing_retry_queue.sql
+415	983j_request_metrics_973_repair.sql
+416	983k_request_metrics_daily_summary.sql
+417	983l_request_metrics_daily_board.sql
+418	983m_request_metrics_daily_history.sql
+419	983n_request_metrics_daily_tenant_history.sql
+420	983o_request_metrics_daily_history_details.sql
+421	983p_request_metrics_history_pages.sql
+422	983q_request_metrics_board_hours.sql
+423	983r_request_metrics_board_hour_distributions.sql

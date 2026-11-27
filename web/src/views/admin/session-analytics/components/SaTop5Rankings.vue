@@ -168,7 +168,7 @@ function openTask(task: string) {
                 <td>{{ row.provider || '—' }}</td>
                 <td class="num">{{ fmt(row.request_count) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" :terminal-cost="row.usd_unmeasured_requests === undefined ? undefined : row.total_cost" :usage-credits="row.credits_charged" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>
@@ -225,7 +225,7 @@ function openTask(task: string) {
                 <td class="num">{{ fmt(row.model_count) }}</td>
                 <td class="num">{{ fmt(row.request_count) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" :terminal-cost="row.usd_unmeasured_requests === undefined ? undefined : row.total_cost" :usage-credits="row.credits_charged" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>
@@ -277,7 +277,7 @@ function openTask(task: string) {
                 <td class="num">{{ fmt(row.session_count) }}</td>
                 <td class="num">{{ fmt(row.total_tokens) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" :terminal-cost="row.usd_unmeasured_requests === undefined ? undefined : row.total_cost" :usage-credits="row.credits_charged" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>
@@ -334,7 +334,7 @@ function openTask(task: string) {
                 <td class="num">{{ fmt(row.session_count) }}</td>
                 <td class="num">{{ fmt(row.owner_count) }}</td>
                 <td class="num">
-                  <SaCostCell :internal-cost="row.internal_cost" :external-cost="row.external_cost" :terminal-cost="row.usd_unmeasured_requests === undefined ? undefined : row.total_cost" :usage-credits="row.credits_charged" />
+                  <SaCostCell :internal-cost="row.total_cost" :external-cost="row.credits_charged" projected />
                 </td>
               </tr>
             </tbody>

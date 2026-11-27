@@ -4,7 +4,7 @@ export default {
   terminalExecutions: 'Terminal executions',
   projectedView: 'Historical request statistics',
   projectedDays: 'Observed requests on {n} days',
-  projectedBasis: 'Grouped by calendar day in {zone}. Each terminal execution counts once, including each orchestration step. See daily reconciliation for client receipts, supplier sends, and invoices, and the credit ledger for postings.',
+  projectedBasis: 'Days use {zone}. The credit ledger records postings, and daily reconciliation shows supplier sends and invoices.',
   projectedPending: 'Some requests in this period are still being processed.',
   projectedMissingUSD: '{n} requests have no USD amount or use another currency.',
   projectedEmpty: 'No requests were observed for these dates and filters.',
@@ -18,7 +18,7 @@ export default {
     details: 'Evidence details', amountBreakdown: 'Supplier amounts by currency and traffic class',
     window: '{start} to {end} (exclusive), {zone}', readAt: 'Read at {at}', exactInCSV: 'Exact value in CSV', yes: 'Yes', no: 'No',
     internalNote: 'The credit comparison uses complete hourly buckets. Buckets that cross a day boundary appear separately.',
-    terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection.',
+    terminalProjection: 'Receipt time determines the day. Terminal usage comes from the request statistics projection. The request status and projected outcome are shown separately. A blank projected outcome indicates missing terminal evidence.',
     terminalProjectionPending: 'Terminal usage is still syncing. The oldest queued record is from {at}. Revisions from another day can affect this report.',
     sections: { requests: 'Client requests', attempts: 'Supplier attempts', sessions: 'Sessions', postings: 'Credit postings', coverage: 'Evidence coverage', internal: 'Internal credit check', supplier_invoices: 'Daily supplier invoices' },
     invoices: {
@@ -59,6 +59,8 @@ export default {
       internal: 'Gross debits, net posted credits, and consumption buckets are shown separately for this date.',
     },
     fields: {
+      projected_status: 'Projected outcome', requests_with_terminal_projection: 'Receipts with a projected outcome',
+      business_requests: 'Business receipts', platform_requests: 'Platform operations receipts',
       requests: 'Client requests', success: 'Successful', failure: 'Failed', rate_limited: 'Rate limited', cancelled: 'Cancelled', pending: 'Pending',
       unknown_status: 'Unknown outcome', unassigned_session: 'Without a session', local_day: 'Local date', request_id: 'Request ID',
       admission_rejected_requests: 'Gateway admission rejections', admission_rejection: 'Admission rejection reason',
@@ -137,6 +139,9 @@ export default {
   byTenant: 'By tenant',
   byPerson: 'By person',
   byModel: 'By model',
+  dimension: 'Dimension',
+  dailyDetails: 'Daily details',
+  exportDailyDetails: 'Export full range details',
   byDay: 'By day',
   // Column labels
   provider: 'Provider',

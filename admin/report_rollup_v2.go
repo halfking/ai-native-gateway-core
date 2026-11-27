@@ -15,14 +15,18 @@ import (
 )
 
 func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	section := r.PathValue("section")
+	prepareDownload := r.Method == http.MethodHead && section == "export"
+	if r.Method != http.MethodGet && !prepareDownload {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	section := r.PathValue("section")
-	if section != "summary" && section != "dimensions" && section != "export" {
+	if section != "summary" && section != "dimensions" && section != "export" && section != "daily" {
 		writeError(w, http.StatusNotFound, "unknown report-rollup resource")
 		return
+	}
+	if section == "export" {
+		w.Header().Set("Cache-Control", "no-store")
 	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "request metrics are unavailable")
@@ -58,12 +62,43 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	daily := reportDailyDetail(r)
+	params := r.URL.Query()
+	scope := reportrollup.ProjectedSummaryScope(params.Get("summary_scope"))
+	if scope != "" && (section != "summary" || daily ||
+		(scope != reportrollup.ProjectedSummaryTotals && scope != reportrollup.ProjectedSummaryDistribution)) {
+		writeError(w, http.StatusBadRequest, "summary_scope must be totals or distribution on a summary without daily detail")
+		return
+	}
+	var personPage int32
+	if params.Has("person_page") {
+		page, err := strconv.ParseInt(params.Get("person_page"), 10, 32)
+		if err != nil || page < 1 || view != reportrollup.ViewInternal || scope != reportrollup.ProjectedSummaryDistribution {
+			writeError(w, http.StatusBadRequest, "person_page must be a positive integer on an internal distribution summary")
+			return
+		}
+		personPage = int32(page)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
 	defer cancel()
+	if prepareDownload {
+		// The browser validates the session and range before its native download.
+		// Only the GET builds the workbook.
+		if err := h.readProjectedReport(ctx, start, end, func(pgx.Tx, reportrollup.ProjectionCoverage) error { return nil }); err != nil {
+			writeProjectedReportError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if section == "daily" {
+		h.handleProjectedDailyPage(ctx, w, r, start, end, view, filter, trafficScope)
+		return
+	}
 	if section == "dimensions" {
 		var dims *reportrollup.DimensionOptions
 		var coverage reportrollup.ProjectionCoverage
-		err := h.readProjectedReport(ctx, start, end, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
+		err := h.readProjectedReport(ctx, start, end, func(q pgx.Tx, p reportrollup.ProjectionCoverage) error {
 			coverage = p
 			var err error
 			dims, err = reportrollup.LoadProjectedDimensionOptions(ctx, q, view, filter, p)
@@ -78,14 +113,28 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rep *reportrollup.GrainReport
-	names := h.dimensionNames(ctx)
-	daily := reportDailyDetail(r)
 	if section == "export" {
 		daily = reportExportDetail(r)
 	}
-	err = h.readProjectedReport(ctx, start, end, func(q reportrollup.Querier, p reportrollup.ProjectionCoverage) error {
+	var names reportrollup.Names
+	switch {
+	case scope == "":
+		names = h.dimensionNames(ctx)
+	case scope == reportrollup.ProjectedSummaryDistribution && (view == reportrollup.ViewProvider || view == reportrollup.ViewCredential):
+		names.Providers = h.providerNames(ctx)
+	}
+	err = h.readProjectedReport(ctx, start, end, func(q pgx.Tx, p reportrollup.ProjectionCoverage) error {
 		var err error
-		rep, err = reportrollup.BuildProjectedReport(ctx, q, start, end, view, filter, names, daily, p)
+		switch {
+		case personPage > 0:
+			rep, err = reportrollup.BuildProjectedPersonPage(ctx, q, start, end, filter, p, personPage)
+		case section == "export":
+			rep, err = reportrollup.BuildProjectedWorkbookReport(ctx, q, start, end, view, filter, names, daily, p)
+		case scope == "":
+			rep, err = reportrollup.BuildProjectedReport(ctx, q, start, end, view, filter, names, daily, p)
+		default:
+			rep, err = reportrollup.BuildProjectedSummary(ctx, q, start, end, view, filter, names, p, scope)
+		}
 		return err
 	})
 	if err != nil {
@@ -97,6 +146,76 @@ func (h *Handler) handleReportRollupV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"report": rep, "traffic_scope": trafficScope})
+}
+
+func (h *Handler) handleProjectedDailyPage(ctx context.Context, w http.ResponseWriter, r *http.Request, start, end time.Time, view reportrollup.View, filter reportrollup.GrainFilter, trafficScope string) {
+	params := r.URL.Query()
+	dayValue := params.Get("day")
+	day, err := settings.ParseSystemDate(dayValue)
+	if err != nil || day.Format(time.DateOnly) != dayValue || day.Before(start) || day.After(end) {
+		writeError(w, http.StatusBadRequest, "day must be a YYYY-MM-DD date in the report range")
+		return
+	}
+	group, err := reportrollup.ParseGrainGroup(params.Get("group"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var number int64 = 1
+	if params.Has("page") {
+		number, err = strconv.ParseInt(params.Get("page"), 10, 32)
+		if err != nil || number < 1 {
+			writeError(w, http.StatusBadRequest, "page must be a positive integer")
+			return
+		}
+	}
+	var coverage reportrollup.ProjectionCoverage
+	var page reportrollup.ProjectedDailyPage
+	if err := h.readProjectedReport(ctx, day, day, func(q pgx.Tx, p reportrollup.ProjectionCoverage) error {
+		coverage = p
+		if p.From.Before(p.Through) {
+			// A single day can still sort tens of thousands of exact latency samples.
+			// Avoid spilling the day query without changing pooled connection settings.
+			if _, err := q.Exec(ctx, `SELECT set_config('work_mem','16MB',true)
+				WHERE pg_size_bytes(current_setting('work_mem')) < pg_size_bytes('16MB')`); err != nil {
+				return fmt.Errorf("set daily report work_mem: %w", err)
+			}
+		}
+		var err error
+		page, err = reportrollup.BuildProjectedDailyPage(ctx, q, view, filter, p, group, int(number))
+		return err
+	}); err != nil {
+		writeProjectedReportError(w, err)
+		return
+	}
+	h.fillProjectedDailyLabels(ctx, group, page.Rows)
+	writeJSON(w, http.StatusOK, map[string]any{"day": day.Format(time.DateOnly), "group": group,
+		"page": page, "projection": coverage, "source": reportrollup.ProjectedSource, "traffic_scope": trafficScope})
+}
+
+func (h *Handler) fillProjectedDailyLabels(ctx context.Context, group reportrollup.GrainGroup, rows []reportrollup.DailyGroupRow) {
+	if len(rows) == 0 {
+		return
+	}
+	var query string
+	switch group {
+	case reportrollup.GrainGroupProvider:
+		query = `SELECT id, display_name FROM providers WHERE id=ANY($1::bigint[])`
+	case reportrollup.GrainGroupCredential:
+		query = `SELECT id, label FROM credentials WHERE id=ANY($1::bigint[])`
+	case reportrollup.GrainGroupAPIKey:
+		query = `SELECT id, COALESCE(NULLIF(key_alias, ''), key_prefix) FROM api_keys WHERE id=ANY($1::bigint[])`
+	default:
+		return
+	}
+	ids := make([]int64, len(rows))
+	for i, row := range rows {
+		ids[i], _ = strconv.ParseInt(row.Key, 10, 64)
+	}
+	labels := h.idLabelMap(ctx, query, ids)
+	for i := range rows {
+		rows[i].Name = labels[ids[i]]
+	}
 }
 
 func projectedReportRange(r *http.Request, now time.Time) (time.Time, time.Time, error) {
@@ -112,7 +231,7 @@ func projectedReportRange(r *http.Request, now time.Time) (time.Time, time.Time,
 	return end.AddDate(0, 0, 1-days), end, nil
 }
 
-func (h *Handler) readProjectedReport(ctx context.Context, start, end time.Time, read func(reportrollup.Querier, reportrollup.ProjectionCoverage) error) error {
+func (h *Handler) readProjectedReport(ctx context.Context, start, end time.Time, read func(pgx.Tx, reportrollup.ProjectionCoverage) error) error {
 	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err

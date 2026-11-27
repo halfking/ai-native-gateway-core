@@ -107,7 +107,7 @@
             <td>{{ t('sessionAnalytics.unit.percent', { value: fmt(m.cache_rate) }) }}</td>
             <td>{{ m.avg_duration_ms == null ? '—' : t('sessionAnalytics.unit.milliseconds', { value: fmt(m.avg_duration_ms) }) }}</td>
             <td>
-              <SaCostCell :internal-cost="m.internal_cost" :external-cost="m.external_cost" :terminal-cost="m.usd_unmeasured_requests === undefined ? undefined : m.total_cost" :usage-credits="m.credits_charged" />
+              <SaCostCell :internal-cost="m.total_cost" :external-cost="m.credits_charged" projected />
             </td>
             <td>{{ fmt(m.user_count) }}</td>
             <td>{{ formatTime(m.last_used_at) }}</td>

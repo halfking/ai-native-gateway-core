@@ -178,7 +178,6 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //     <script setup> 头部插行而重锁）。★ 根治方向（未做，登记在 AGENTS.md）：
   //     本表按**行号**锚定 ⇒ 该文件任何增删行都会让它红；改「内容锚点」才谈得
   //     上不漂移（同 internal/rowsguard 的 exemptionAnchorSep 先例）。
-  // 统计 V2 扩充筛选和来源说明后，三个内嵌表的详情入口保持原契约。
   ['src/views/UserProfileView.vue', 477, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
   ['src/views/UserProfileView.vue', 540, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 282 改为 283。

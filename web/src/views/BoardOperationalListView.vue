@@ -8,7 +8,7 @@ import { fetchDashboardBoard, type BoardPayload, type BoardPieItem } from '../ap
 import { ANALYTICS_REGISTRY, type AnalyticsDimension } from '../config/analyticsRegistry'
 import StatsDateRangePicker from '../components/analytics/StatsDateRangePicker.vue'
 import { boardRangeFromKxRange, toBoardTimeQuery } from '../utils/boardTimeRange'
-import { rangeFromSpanDays } from '../components/ui/kxDatePresets'
+import { rangeFromSpanDays, systemTzDateStr } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 
 const route = useRoute()
@@ -38,8 +38,16 @@ const dimension = computed(() => {
 //     ⇒ 比运营面板页多一处真实收窄（该页原有 365 天上限）⇒ 已在决策单登记。
 const urlStart = typeof route.query.start === 'string' ? route.query.start : ''
 const urlEnd = typeof route.query.end === 'string' ? route.query.end : ''
-const rangeValue = ref<KxDateRange>(
-  urlStart && urlEnd
+const startMs = Date.parse(urlStart)
+const endMs = Date.parse(urlEnd)
+const pinnedWindow = ref(
+  urlStart.includes('T') && urlEnd.includes('T') && endMs > startMs
+    ? { start: urlStart, end: urlEnd }
+    : undefined,
+)
+const rangeValue = ref<KxDateRange>(pinnedWindow.value
+  ? { start: systemTzDateStr(startMs), end: systemTzDateStr(endMs - 1) }
+  : urlStart && urlEnd
     ? { start: urlStart, end: urlEnd }
     : rangeFromSpanDays(Number(route.query.days) || 7),
 )
@@ -96,9 +104,10 @@ const pageTitle = computed(() => {
 })
 
 function onRangeApply(range: KxDateRange) {
+  pinnedWindow.value = undefined
   rangeValue.value = range
   router.push({
-    query: { ...route.query, days: boardRange.value.days }
+    query: { ...route.query, days: boardRange.value.days, start: boardRange.value.start, end: boardRange.value.end }
   })
   void load()
 }
@@ -107,7 +116,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    boardData.value = await fetchDashboardBoard(toBoardTimeQuery(boardRange.value))
+    boardData.value = await fetchDashboardBoard(pinnedWindow.value ?? toBoardTimeQuery(boardRange.value))
   } catch (e) {
     error.value = surfaceError(e)
   } finally {

@@ -9,7 +9,7 @@ const { t, locale } = useI18n()
 const fields = computed(() => dailyFields[props.report.section])
 const integers = computed(() => new Intl.NumberFormat(locale.value))
 const labels = (field: string) => t(`reports.daily.fields.${field}`)
-const enums = new Set(['status', 'traffic_class', 'delivery', 'outcome', 'bill_comparison', 'entry_type', 'reported_semantics', 'estimate_basis'])
+const enums = new Set(['status', 'projected_status', 'traffic_class', 'delivery', 'outcome', 'bill_comparison', 'entry_type', 'reported_semantics', 'estimate_basis'])
 const amounts = computed<(EvidenceFields & { strength: string })[]>(() => [
   ['contract_estimated_amount', props.report.summary.estimates_by_traffic_and_currency],
   ['reported_amount', props.report.summary.reported_by_traffic_currency_and_semantics],

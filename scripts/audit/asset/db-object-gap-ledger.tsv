@@ -1,5 +1,6 @@
 # db-object-gap-ledger.tsv —— ★ 「期望索引集 × 三环境真实底账」缺口台账
 # ★ 生成器：scripts/audit/db-object-census.py reconcile
+# 采集早于 973 上线与 983j–983o。棘轮按原在途判据区分缺口与待部署。
 # ★ 列：migration_no	index_name	table	local	fresh	252	211	verdict	severity
 # ★ 状态词：present | present-via-child | missing | retired | retired-by-column-drop
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉

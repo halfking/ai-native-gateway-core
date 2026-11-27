@@ -16,16 +16,16 @@ type SessionRequestRankingQuery struct {
 const sessionRequestRankingBase = `
 WITH projection AS (
 	SELECT backfill_complete, updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), observable AS (
 	SELECT tenant_id, owner_user, occurred_at, status, total_tokens, cached_tokens, latency_ms, credits_charged,
 		nullif(session_id,'') AS session_id, nullif(agent_name,'') AS agent_name,
 		CASE WHEN task_id <> 'default' AND task_id NOT LIKE 'auto-title:%' THEN nullif(task_id,'') END AS task,
 		CASE WHEN cost_currency='USD' THEN cost_amount END AS usd,
 		coalesce(nullif(provider_code,''),provider_id::text,'') AS provider, ` + requestModelKey + ` AS model
-	FROM public.request_metrics
+	FROM public.request_metrics_projection
 	WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)
 	  AND traffic_class='business' AND source_fact_id IS NOT NULL AND (SELECT backfill_complete FROM projection)
 )
