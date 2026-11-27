@@ -162,7 +162,7 @@
               <td>{{ fmt(u.task_count) }}</td>
               <td>{{ fmt(u.total_tokens) }}</td>
               <td>
-                <SaCostCell :internal-cost="u.internal_cost" :external-cost="u.external_cost" :terminal-cost="u.usd_unmeasured_requests === undefined ? undefined : u.total_cost" :usage-credits="u.credits_charged" />
+                <SaCostCell :internal-cost="u.total_cost" :external-cost="u.credits_charged" projected />
               </td>
               <td>{{ formatTime(u.last_active_at) }}</td>
               <td>

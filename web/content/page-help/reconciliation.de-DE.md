@@ -2,6 +2,12 @@
 
 Diese Seite fasst die vom Gateway erfasste Nutzung des Vortags aus Anbieter-, Mandanten-, Personen-, Modell- und weiteren Perspektiven zusammen. Sie dient zum Abgleich der Gateway-Aufzeichnungen; sie ist keine Lieferantenrechnung und weist keinen bestätigten Zahlbetrag aus.
 
+## Historische Anfragestatistiken
+
+Historische Anfragestatistiken verwenden die asynchron aktualisierte Anfragedatenprojektion. Öffnen Sie die Tagesdetails und wählen Sie Datum und Dimension. Die Zeitraumfilter gelten für die Detailansicht und den Export. Der Export der Zeitraumdetails enthält alle Zeilen des gewählten Zeitraums und der gewählten Dimension.
+
+Die Downloadliste des Browsers zeigt den Fortschritt an. Überschreiten die Daten das Excel-Zeilenlimit eines Arbeitsblatts, stehen die übrigen Zeilen auf nummerierten Folgeblättern.
+
 ## Wie Snapshots erstellt werden
 
 - Der tägliche Aggregationsjob erstellt in den frühen Morgenstunden einen Snapshot des **Vortages**; für die Daten des aktuellen Tages gibt es erst in den frühen Morgenstunden des Folgetags einen Snapshot. Die Seite zeigt den Hinweis „Snapshot für heute wird in den frühen Morgenstunden des Folgetags erstellt“.

@@ -130,8 +130,7 @@ export default {
     usd: '{value} USD',
     credits: '{value} créditos',
   },
-  costNote:
-    'La columna de coste se presenta en dos unidades: coste interno (USD) y créditos externos. Las dos unidades son distintas, por lo que esa columna solo sirve para comparaciones relativas y no como un único importe monetario.',
+  costNote: 'Los costes en USD y los créditos se muestran por separado. Un guion indica que faltan datos.',
   // ★ N9：外部コストが 0 のとき「—」を出す理由（0 と測定されたわけではない）。
   externalCostNotCarried:
     'Esta vista todavía no recopila los créditos externos por separado: el lado de escritura de créditos no está implementado, así que «—» significa «no recopilado», no «medido como cero».',

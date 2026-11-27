@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -105,6 +106,40 @@ func (p *userProvisioner) ensureLocalUser(
 			return 0, fmt.Errorf("%w: %q (tenant %q)", ErrUsernameConflict, username, tenantID)
 		}
 		return 0, fmt.Errorf("casdoor provision: insert user: %w", err)
+	}
+
+	// ★ 2026-11-27 12h 审计轮（W7 原子化）：INSERT users 与 metadata 回写此前
+	//   非同事务——两步之间进程崩溃会留下无关联 users 行，后续登录反查 miss
+	//   ⇒ 再 INSERT 撞 UNIQUE ⇒ ErrUsernameConflict 永久拒登死局（原补偿：
+	//   回写失败删行，但崩溃窗口补偿不会执行）。底层连接可开事务时
+	//   （*pgxpool.Pool/*pgx.Tx 都有 Begin），把回写放进同一事务原子提交；
+	//   不可开事务（纯 mock 测试面 / Begin 失败）保留旧的补偿删除路径。
+	if txable, ok := db.(interface {
+		Begin(ctx context.Context) (pgx.Tx, error)
+	}); ok {
+		tx, txErr := txable.Begin(ctx)
+		if txErr == nil {
+			wErr := writeProvisionedUserID(ctx, tx, mappingID, newID)
+			if wErr == nil {
+				cErr := tx.Commit(ctx)
+				if cErr == nil {
+					slog.Info("casdoor: provisioned local user",
+						"casdoor_external_id", externalID,
+						"tenant_id", tenantID,
+						"username", username,
+						"users_id", newID,
+						"atomic_tx", true)
+					return newID, nil
+				}
+				// commit 失败：事务已 abort，users 行随事务回滚，直接报错重试。
+				_ = tx.Rollback(ctx)
+				return 0, fmt.Errorf("casdoor provision: commit link: %w", cErr)
+			}
+			// 回写失败：整体回滚，users 行不再半挂。
+			_ = tx.Rollback(ctx)
+			return 0, fmt.Errorf("casdoor provision: link mapping: %w", wErr)
+		}
+		// Begin 失败 → 落到下方补偿删除路径（幂等降级）。
 	}
 
 	if err := writeProvisionedUserID(ctx, db, mappingID, newID); err != nil {

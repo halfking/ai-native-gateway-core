@@ -1145,7 +1145,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/client-error", h.handleClientError) // Frontend error reporting (public, rate-limited)
 	// JWT-authenticated routes (JWT or admin key)
 	mux.Handle("/v1/keys/apply", h.admin(h.handleV1KeysApply))
-
+	h.registerRequestMetricsV2Routes(mux)
 	admin := h.admin
 	// JWT-authenticated routes (JWT or admin key)
 	mux.HandleFunc("/api/auth/me", admin(h.handleAuthMe))

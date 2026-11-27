@@ -8,12 +8,12 @@ import (
 const sessionFilterOptionsV2SQL = `
 WITH projection AS (
 	SELECT backfill_complete,updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), candidates AS (
 	SELECT DISTINCT nullif(` + requestModelKey + `,'__unknown__') AS model,nullif(provider_code,'') AS provider
-	FROM public.request_metrics
+	FROM public.request_metrics_projection
 	WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)
 	  AND ($4='' OR owner_user=$4) AND source_fact_id IS NOT NULL AND traffic_class='business'
 	  AND (SELECT backfill_complete FROM projection)

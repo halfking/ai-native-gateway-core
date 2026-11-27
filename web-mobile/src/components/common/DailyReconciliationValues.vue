@@ -7,7 +7,7 @@ defineProps<{ fields: readonly string[]; values: EvidenceFields }>()
 function metric(field: string, value: unknown) {
   if (typeof value === 'string') {
     if (!value) return '—'
-    if (['kind', 'match_status', 'traffic_class', 'status', 'outcome', 'delivery', 'estimate_basis'].includes(field)) {
+    if (['kind', 'match_status', 'traffic_class', 'status', 'projected_status', 'outcome', 'delivery', 'estimate_basis'].includes(field)) {
       const key = `rr.evidence.values.${value}`
       const label = t(key)
       return label === key ? value : label

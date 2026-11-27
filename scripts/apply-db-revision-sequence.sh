@@ -3025,6 +3025,15 @@ files=(
   #   ★ 492 自带事务包裹 ＋ 自登记 ⇒ 符合≥952双账本纪律。
   #   ★ 从未应用过 ⇒ 零已应用字节变更。
   "$ROOT_DIR/sql/migrations/startup/492_channels_customers.sql"
+  "$ROOT_DIR/sql/migrations/startup/983j_request_metrics_973_repair.sql"
+  "$ROOT_DIR/sql/migrations/startup/983k_request_metrics_daily_summary.sql"
+  "$ROOT_DIR/sql/migrations/startup/983l_request_metrics_daily_board.sql"
+  "$ROOT_DIR/sql/migrations/startup/983m_request_metrics_daily_history.sql"
+  "$ROOT_DIR/sql/migrations/startup/983n_request_metrics_daily_tenant_history.sql"
+  "$ROOT_DIR/sql/migrations/startup/983o_request_metrics_daily_history_details.sql"
+  "$ROOT_DIR/sql/migrations/startup/983p_request_metrics_history_pages.sql"
+  "$ROOT_DIR/sql/migrations/startup/983q_request_metrics_board_hours.sql"
+  "$ROOT_DIR/sql/migrations/startup/983r_request_metrics_board_hour_distributions.sql"
   # ★ 1003（2026-11-27 三级配额制轮）：组织层级 + 组织/用户积分钱包。
   #   organizations ＋ users.org_id ＋ org_credit_wallets ＋ user_credit_wallets
   #   ＝ 租户→组织→用户三级额度链数据面。自带 BEGIN/COMMIT ＋ 5s lock_timeout
@@ -3514,6 +3523,36 @@ if [[ -n "$installer_receipts" ]]; then
   done
 fi
 
+# The 973 release and preview used one version number for different bytes.
+# The dependent repair requires the release fingerprint before any migration runs.
+for file in "${files[@]}"; do
+  base="${file##*/}"
+  [[ "$base" == 973_request_metrics_projection.sql ]] || continue
+  released_sha="$(sha256_file "$file")"
+  prior_release=""
+  if [[ "$(psql_query "SELECT to_regclass('public.gateway_db_revision_sequences') IS NOT NULL")" == t ]]; then
+    prior_release="$(psql_query "SELECT CASE WHEN count(*)=0 THEN ''
+      WHEN bool_and(coalesce(to_jsonb(r)->>'content_sha256', '')='${released_sha}') THEN 'matched'
+      ELSE 'mismatch' END FROM public.gateway_db_revision_sequences r
+      WHERE regexp_replace(sequence_name, '^.*:', '')='${base}'")"
+  fi
+  if [[ "$prior_release" == mismatch ]]; then
+    printf 'error: released 973 deployment fingerprint differs for %s\n' "$base" >&2
+    exit 4
+  fi
+  if [[ "$prior_release" != matched && -z "$(installer_source_hash "$base")" ]]; then
+    prior_version=""
+    if [[ "$(psql_query "SELECT to_regclass('public.schema_migrations') IS NOT NULL")" == t ]]; then
+      prior_version="$(psql_query "SELECT 1 FROM public.schema_migrations WHERE version='973' LIMIT 1")"
+    fi
+    if [[ "$prior_version" == 1 ]]; then
+      printf 'error: released 973 requires a deployment or installer fingerprint for %s\n' "$base" >&2
+      exit 4
+    fi
+  fi
+  break
+done
+
 psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
 # 2026-09-21 252 部署验证轮（纪律⑨，F4 机制债收口）：台账从"按文件名记账"
 # 升级为"文件名+内容指纹记账"。content_sha256 为 NULL 的行是历史遗留记账
@@ -3570,7 +3609,7 @@ for file in "${files[@]}"; do
     fi
     continue
   fi
-  
+
   # ★★ 方案 A：部署通道账本统一（2026-11-26）★★
   # 部署通道权威台账里无记录 ⇒ 在应用前查询安装器台账 public.schema_migrations。
   # 若版本已在安装器台账 ⇒ 跳过（该迁移已被安装器应用）+ 回填部署通道台账，
@@ -4056,6 +4095,26 @@ ledger_artifact_probe "983b_add_raw_model_name.sql" \
 #   ★ ⇒ 用 to_regclass 判父表索引更直接）。
 ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
   "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
+ledger_artifact_probe "973_request_metrics_projection.sql" \
+  "to_regclass('public.request_metrics_pending') IS NOT NULL AND to_regclass('public.request_metrics_projection_state') IS NOT NULL AND to_regclass('public.idx_request_metrics_fact_request') IS NOT NULL AND to_regclass('public.idx_request_metrics_projected_time') IS NOT NULL AND (SELECT count(*) FROM pg_constraint WHERE conrelid='public.request_metrics'::regclass AND conname='request_metrics_fact_identity' AND convalidated) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='973') = 1 AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_fact' AND tgenabled IN ('O','A')) = 1"
+ledger_artifact_probe "983j_request_metrics_973_repair.sql" \
+  "to_regclass('public.request_metrics_projection') IS NOT NULL AND to_regclass('public.request_metrics_refresh_pending') IS NOT NULL AND to_regclass('public.request_metrics_repair_state') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND ((tgrelid='public.usage_facts'::regclass AND tgname='enqueue_request_metrics_refresh_fact') OR (tgrelid='public.request_context_attrs'::regclass AND tgname='enqueue_request_metrics_context') OR (tgrelid='public.session_turns_hot'::regclass AND tgname='enqueue_request_metrics_turn'))) = 3 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983j') = 1"
+ledger_artifact_probe "983k_request_metrics_daily_summary.sql" \
+  "to_regclass('public.request_metrics_daily_state') IS NOT NULL AND to_regclass('public.request_metrics_daily_summary') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_codes') IS NOT NULL AND to_regclass('public.request_metrics_daily_session_masks') IS NOT NULL AND to_regclass('public.idx_request_metrics_daily_dirty') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics'::regclass AND tgname IN ('invalidate_request_metrics_daily_insert','invalidate_request_metrics_daily_update','invalidate_request_metrics_daily_delete','invalidate_request_metrics_daily_truncate') AND tgenabled IN ('O','A')) = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983k') = 1"
+ledger_artifact_probe "983l_request_metrics_daily_board.sql" \
+  "to_regclass('public.request_metrics_board_days') IS NOT NULL AND to_regclass('public.request_metrics_board_pies') IS NOT NULL AND to_regclass('public.request_metrics_board_providers') IS NOT NULL AND to_regclass('public.request_metrics_board_keys') IS NOT NULL AND to_regclass('public.request_metrics_board_series') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983l') = 1"
+ledger_artifact_probe "983m_request_metrics_daily_history.sql" \
+  "to_regclass('public.request_metrics_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983m') = 1"
+ledger_artifact_probe "983n_request_metrics_daily_tenant_history.sql" \
+  "to_regclass('public.request_metrics_tenant_history_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_tenant_history') IS NOT NULL AND to_regclass('public.idx_request_metrics_projection_person_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_tenant_history_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983n') = 1"
+ledger_artifact_probe "983o_request_metrics_daily_history_details.sql" \
+  "to_regclass('public.request_metrics_history_detail_days') IS NOT NULL AND to_regclass('public.request_metrics_person_rank_codes') IS NOT NULL AND to_regclass('public.request_metrics_person_rank_packs') IS NOT NULL AND to_regclass('public.request_metrics_daily_tenant_model_history') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_detail_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983o') = 1"
+ledger_artifact_probe "983p_request_metrics_history_pages.sql" \
+  "to_regclass('public.request_metrics_history_page_days') IS NOT NULL AND to_regclass('public.request_metrics_daily_history_page_cells') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_history_page_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983p') = 1"
+ledger_artifact_probe "983q_request_metrics_board_hours.sql" \
+  "to_regclass('public.request_metrics_board_hour_days') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_summary') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_masks') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_hour_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983q') = 1"
+ledger_artifact_probe "983r_request_metrics_board_hour_distributions.sql" \
+  "to_regclass('public.request_metrics_board_hour_distribution_days') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_pies') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_providers') IS NOT NULL AND to_regclass('public.request_metrics_board_hour_keys') IS NOT NULL AND (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='public.request_metrics_daily_state'::regclass AND tgname='invalidate_request_metrics_board_hour_distribution_day' AND tgenabled IN ('O','A')) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version='983r') = 1"
 # ★ 999a 的产物 = 手册条目行（纯种子迁移：不建对象，只 INSERT 六条
 #   data_maintenance: 前缀的 prompt 条目）⇒ 探针 = 六条全在。
 #   ★ 999a_data_maintenance_playbook.sql

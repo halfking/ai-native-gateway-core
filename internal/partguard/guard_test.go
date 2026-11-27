@@ -125,6 +125,13 @@ var allowedParentDML = []struct {
 	//   scan.go 归并为同 (file,table) 对）⇒ Count=3。
 	{"admin/permission_fix_examples.go", "sessions", 3,
 		"教学示例代码（文件头自陈「修复案例的模板」）：Before/After 成对展示租户隔离修复的 3 处 sessions 父表写（UPDATE 标题 ×2 + DELETE ×1）。零路由接线（逐符号外部引用=0）⇒ 不在请求路径；真实修复已落在 admin/context_enhanced.go + admin/my_endpoints.go。先例 233c14a2bc/706297b758 对同一文件选「登记不删」⇒ 本门同口径。"},
+	// ★ 2026-11-27（V2 合并）：internal/metricsstore/projection.go 对
+	//   request_metrics（分区父表）有 1 处 DELETE —— 投影 CTE 的「修订回退」：
+	//   删除已被上游撤回（latest CTE 无对应行）的 fact 行，属投影表自维护语义
+	//   （writer.go 只 INSERT，projection 负责 INSERT+DELETE+acknowledge 修订闭环），
+	//   与红线本意（防 hot/分区双写不一致）不同 —— 登记而不改代码（本门同先例口径）。
+	{"internal/metricsstore/projection.go", "request_metrics", 1,
+		"V2 投影 removed CTE：DELETE 已被上游撤回的 fact 行（source_fact_id 非空且 latest 无对应）—— 投影修订闭环的自维护删除，非跨分区业务写。"},
 	// ★ 2026-11-24（迁移 983，统计专用表 request_metrics）：**不**在此登记。
 	//   本门的红线是「★ 更新/删除只能在 hot 表进行 ★」（scan.go 的 stmtPatterns
 	//   只认 UPDATE / DELETE / TRUNCATE，**没有 INSERT**）⇒ 对父表的 INSERT
@@ -218,6 +225,19 @@ var allowedDynamicDML = []struct {
 	Count  int
 	Reason string
 }{
+	// ★ 2026-11-27（V2 合并补登）：投影日汇总的刷新路径 DELETE——全部指向
+	//   983 系**投影表**（非业务分区父表），与红线本意（hot/分区双写）无关。
+	{"domains/metrics/request_hourly_board_distributions.go", "DELETE", 3,
+		"小时分布刷新：DELETE FROM prefix+pies/providers/keys（prefix=public.request_metrics_board_ 前缀，983q/r 投影小时表）—— 按日重建看板小时分布的先删后插，纯投影表自维护。"},
+	{"domains/reportrollup/daily_history.go", "DELETE", 1,
+		"日历史重算：DELETE FROM cells（historyTables(kind) 返回的 983o 投影日历表）—— 按日重算报表行的先删后插，纯投影表自维护。"},
+	// ★ 2026-11-28（配额 L139 车道随 origin/main 并入补登）：模型策略审辩
+	//   UPDATE 走 fmt.Sprintf("UPDATE %s ...")，表名来自 policyTableFor()
+	//   静态映射（org_model_policies / user_model_policies / tenant_model_policies）
+	//   —— 三张都是 1003/1004 新建的独立普通表（024 范式：软删 + active 视图），
+	//   非分区父表 ⇒ 红线无关，登记备案。
+	{"admin/org_model_policies.go", "UPDATE", 3,
+		"模型策略审辩（approve/revoke 链）：UPDATE 目标为 policyTableFor() 静态映射的三张 1003/1004 策略表（org/user/tenant_model_policies），均为普通表非分区父表。"},
 	// ★ 2026-11-18 登记：数据初始化面板（admin 手工触发的一次性重置）的两处 DELETE。
 	// ① 机制：:463 `fmt.Sprintf("DELETE FROM public.%s WHERE NOT (%s)", t.Name, spec.Where)`
 	//    与 :468 `fmt.Sprintf("DELETE FROM public.%s", t.Name)` —— 表名来自**同文件的

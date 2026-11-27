@@ -51,31 +51,71 @@ type requestStatsDB interface {
 
 const requestModelKey = "coalesce(nullif(outbound_model,''), nullif(client_model,''), '__unknown__')"
 
-const requestStatsAggregates = `
-	count(*) AS total_requests,
-	count(*) FILTER (WHERE status = 'success') AS success_count,
-	count(*) FILTER (WHERE status <> 'success') AS failed_count,
-	count(*) FILTER (WHERE status = 'timeout') AS timeout_count,
-	count(*) FILTER (WHERE status = 'rate_limited') AS rate_limited_count,
-	count(DISTINCT nullif(` + requestModelKey + `,'__unknown__')) AS unique_models,
-	count(DISTINCT (tenant_id, session_id)) FILTER (WHERE session_id IS NOT NULL) AS active_sessions,
-	coalesce(sum(prompt_tokens),0) AS total_prompt_tokens,
-	coalesce(sum(completion_tokens),0) AS total_completion_tokens,
-	coalesce(sum(total_tokens),0) AS total_tokens,
-	coalesce(sum(cached_tokens),0) AS cache_read_tokens,
-	coalesce(sum(cache_write_tokens),0) AS cache_write_tokens,
-	coalesce(sum(image_tokens),0) AS image_tokens,
-	coalesce(sum(audio_tokens),0) AS audio_tokens,
-	coalesce(sum(video_tokens),0) AS video_tokens,
-	coalesce(sum(credits_charged),0) AS total_credits_charged,
-	coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0) AS total_cost_usd,
-	count(*) FILTER (WHERE cost_amount <> 0 AND cost_currency IS DISTINCT FROM 'USD') AS cost_rows_outside_usd,
+const (
+	uniqueModelAggregate   = `count(DISTINCT nullif(` + requestModelKey + `,'__unknown__'))`
+	activeSessionAggregate = `count(DISTINCT (tenant_id, session_id)) FILTER (WHERE session_id IS NOT NULL)`
+)
+
+// Separate membership grouping lets PostgreSQL use hashing for exact counts
+// and aggregate the request measures without an ordered aggregate.
+func statsWithGroupedMembership(source string) string {
+	models := "(SELECT count(*) FROM (SELECT " + requestModelKey + " AS model FROM " + source +
+		" GROUP BY 1) AS models WHERE model <> '__unknown__')"
+	sessions := "(SELECT count(*) FROM (SELECT tenant_id, session_id FROM " + source +
+		" WHERE session_id IS NOT NULL GROUP BY tenant_id, session_id) AS sessions)"
+	return statsAggregates(models, sessions)
+}
+
+var requestStatsCounters = []struct{ name, measure string }{
+	{"total_requests", "count(*)"},
+	{"success_count", "count(*) FILTER (WHERE status = 'success')"},
+	{"failed_count", "count(*) FILTER (WHERE status <> 'success')"},
+	{"timeout_count", "count(*) FILTER (WHERE status = 'timeout')"},
+	{"rate_limited_count", "count(*) FILTER (WHERE status = 'rate_limited')"},
+	{"cache_hit_requests", "count(*) FILTER (WHERE cached_tokens > 0)"},
+	{"cache_input_covered_requests", "count(cache_input_tokens)"},
+	{"cache_input_read_tokens", "coalesce(sum(cached_tokens) FILTER (WHERE cache_input_tokens IS NOT NULL),0)"},
+	{"cache_input_total_tokens", "coalesce(sum(cache_input_tokens),0)"},
+	{"measured_token_requests", "count(*) FILTER (WHERE usage_source IN ('llm','corrected'))"},
+	{"currency_evidence_requests", "count(cost_currency)"},
+	{"usd_evidence_requests", "count(*) FILTER (WHERE cost_currency='USD')"},
+	{"total_prompt_tokens", "coalesce(sum(prompt_tokens),0)"},
+	{"total_completion_tokens", "coalesce(sum(completion_tokens),0)"},
+	{"total_tokens", "coalesce(sum(total_tokens),0)"},
+	{"cache_read_tokens", "coalesce(sum(cached_tokens),0)"},
+	{"cache_write_tokens", "coalesce(sum(cache_write_tokens),0)"},
+	{"image_tokens", "coalesce(sum(image_tokens),0)"},
+	{"audio_tokens", "coalesce(sum(audio_tokens),0)"},
+	{"video_tokens", "coalesce(sum(video_tokens),0)"},
+	{"total_credits_charged", "coalesce(sum(credits_charged),0)"},
+	{"total_cost_usd", "coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0)"},
+	{"cost_rows_outside_usd", "count(*) FILTER (WHERE cost_amount <> 0 AND cost_currency IS DISTINCT FROM 'USD')"},
+}
+
+// Use the same definitions when grouping requests and when rebuilding a day.
+func requestStatsCounterSQL(merge bool) string {
+	columns := make([]string, 0, len(requestStatsCounters))
+	for _, counter := range requestStatsCounters {
+		measure := counter.measure
+		if merge {
+			measure = "coalesce(sum(" + counter.name + "),0)"
+		}
+		columns = append(columns, measure+" AS "+counter.name)
+	}
+	return strings.Join(columns, ", ")
+}
+
+var requestStatsRawCounters = requestStatsCounterSQL(false)
+
+func statsAggregates(uniqueModels, activeSessions string) string {
+	return requestStatsRawCounters + ", " + uniqueModels + " AS unique_models, " + activeSessions + ` AS active_sessions,
 	coalesce(avg(latency_ms),0) AS avg_latency_ms,
 	coalesce(avg(ttft_ms),0) AS avg_ttft_ms,
 	coalesce(count(*) FILTER (WHERE status='success')::float8/nullif(count(*),0),0) AS success_rate,
 	min(occurred_at) AS first_request_at,
 	max(occurred_at) AS last_request_at
 `
+}
 
 const requestCostAggregates = `
 	count(*) AS total_requests,
@@ -97,6 +137,7 @@ var requestCostDimensions = map[string]string{
 
 func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 	clauses, args := buildFilterClauses(query.MetricsFilter, "", "occurred_at", kindTimestamp)
+	scope := clauses[2:]
 	clauses = append(clauses, "source_fact_id IS NOT NULL")
 	addFilter := func(column string, value any) {
 		args = append(args, value)
@@ -153,9 +194,14 @@ func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 	}
 
 	key, dimensions, groupBy, order := "", "", "", ""
-	aggregates := requestStatsAggregates
+	aggregates := statsAggregates(uniqueModelAggregate, activeSessionAggregate)
 	switch query.Group {
 	case "summary":
+	case "currency":
+		key = "cost_currency"
+		aggregates = `count(*) AS total_requests, count(cost_currency) AS evidenced_requests,
+			sum(cost_amount) FILTER (WHERE cost_currency IS NOT NULL) AS original_amount`
+		order = " ORDER BY total_requests DESC, key NULLS LAST"
 	case "cache-economics":
 		aggregates = requestCostAggregates + `,
 		coalesce(sum(cached_tokens),0) AS cache_read_tokens,
@@ -300,8 +346,17 @@ func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 			coalesce(sum(credits_charged),0) AS total_credits_charged,
 			coalesce(sum(cost_amount) FILTER (WHERE cost_currency='USD'),0) AS total_cost_usd`
 	}
-	itemSQL := "SELECT " + dimensions + aggregates + " FROM public.request_metrics WHERE " + strings.Join(clauses, " AND ") + groupBy + order
+	itemSQL := "SELECT " + dimensions + aggregates + " FROM public.request_metrics_projection WHERE " + strings.Join(clauses, " AND ") + groupBy + order
+	if query.Group == "summary" {
+		itemSQL = `WITH summary_input AS NOT MATERIALIZED (
+			SELECT * FROM public.request_metrics_projection WHERE ` + strings.Join(clauses, " AND ") + `
+		) SELECT ` + statsWithGroupedMembership("summary_input") + ` FROM summary_input`
+	}
 	itemArraySQL := "SELECT coalesce(jsonb_agg(to_jsonb(items)), '[]'::jsonb) FROM (" + itemSQL + ") items"
+	start, end := query.MetricsFilter.effectiveWindow()
+	if query.Group == "summary" && end.Sub(start) > 24*time.Hour && canUseRequestDailySummary(query) {
+		itemArraySQL = requestDailySummaryItemsSQL(scope, itemArraySQL)
+	}
 	if query.Group == "owner-directory" {
 		args = append(args, query.Limit, query.Offset)
 		itemArraySQL = `WITH directory AS MATERIALIZED (` + itemSQL + `)
@@ -311,16 +366,19 @@ func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 			 (SELECT * FROM directory ORDER BY total_cost_usd DESC, total_requests DESC, key, tenant_id` +
 			fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args)) + `) page)))`
 	}
-	sql := `
+	return requestStatsSQL(itemArraySQL), args, nil
+}
+
+func requestStatsSQL(itemArraySQL string) string {
+	return `
 WITH projection AS (
 	SELECT backfill_complete, updated_at,
-	       (SELECT enqueued_at FROM public.request_metrics_pending ORDER BY enqueued_at LIMIT 1) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	       (SELECT enqueued_at FROM public.request_metrics_pending_events ORDER BY enqueued_at LIMIT 1) AS pending_since
+	FROM public.request_metrics_repair_state WHERE singleton
 )
 SELECT backfill_complete, updated_at, pending_since,
 	CASE WHEN backfill_complete THEN (` + itemArraySQL + `) ELSE '[]'::jsonb END
 FROM projection`
-	return sql, args, nil
 }
 
 // ReadRequestStats reads only the materialized projection and its progress.
@@ -329,10 +387,42 @@ func ReadRequestStats(ctx context.Context, db requestStatsDB, query RequestStats
 	result := RequestStats{
 		Source: "request_metrics", Start: query.StartTime, End: query.EndTime, Timezone: query.Timezone, Group: query.Group,
 	}
+	start, end := query.MetricsFilter.effectiveWindow()
+	usesDailySummary := query.Group == "summary" && canUseRequestDailySummary(query)
+	if usesDailySummary && end.Sub(start) >= 24*time.Hour {
+		clauses, args := buildFilterClauses(query.MetricsFilter, "", "occurred_at", kindTimestamp)
+		sql := requestStatsSQL(requestCoveredSummaryItemsSQL(clauses[2:]))
+		err := db.QueryRow(ctx, sql, args...).Scan(&result.Ready, &result.UpdatedAt, &result.PendingSince, &result.Items)
+		if err != nil || result.Items != nil {
+			return result, err
+		}
+	}
 	sql, args, err := buildRequestStatsQuery(query)
 	if err != nil {
 		return result, err
 	}
-	err = db.QueryRow(ctx, sql, args...).Scan(&result.Ready, &result.UpdatedAt, &result.PendingSince, &result.Items)
+	err = readRequestStatsRow(ctx, db, sql, args, usesDailySummary && end.Sub(start) > 24*time.Hour,
+		&result.Ready, &result.UpdatedAt, &result.PendingSince, &result.Items)
 	return result, err
+}
+
+func readRequestStatsRow(ctx context.Context, db requestStatsDB, query string, args []any, withoutJIT bool, dest ...any) error {
+	if withoutJIT {
+		if beginner, ok := db.(interface {
+			Begin(context.Context) (pgx.Tx, error)
+		}); ok {
+			tx, err := beginner.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			// These mixed plans can spend more time compiling branches than
+			// reading uncovered dates. Rollback restores the caller's setting.
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, "SET LOCAL jit = off"); err != nil {
+				return err
+			}
+			db = tx
+		}
+	}
+	return db.QueryRow(ctx, query, args...).Scan(dest...)
 }

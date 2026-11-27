@@ -14,9 +14,9 @@ type SessionAnalyticsOverviewQuery struct {
 const sessionAnalyticsOverviewSQL = `
 WITH projection AS (
 	SELECT backfill_complete,updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $3 AND occurred_at < $2 AND ($4='' OR tenant_id=$4)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), periods AS (
 	SELECT true AS current,$1::timestamptz AS lo,$2::timestamptz AS hi
 	UNION ALL SELECT false,$3::timestamptz,$1::timestamptz
@@ -27,7 +27,7 @@ WITH projection AS (
 		CASE WHEN m.task_id <> 'default' AND m.task_id NOT LIKE 'auto-title:%' THEN nullif(m.task_id,'') END AS task,
 		` + requestModelKey + ` AS model,m.total_tokens,m.cached_tokens,m.status,m.credits_charged,
 		CASE WHEN m.cost_currency='USD' THEN m.cost_amount END AS usd
-	FROM public.request_metrics m
+	FROM public.request_metrics_projection m
 	LEFT JOIN public.session_dim d ON d.tenant_id=m.tenant_id AND d.gw_session_id=m.session_id
 	WHERE m.occurred_at >= $3 AND m.occurred_at < $2 AND ($4='' OR m.tenant_id=$4)
 		AND m.traffic_class='business' AND m.source_fact_id IS NOT NULL AND (SELECT backfill_complete FROM projection)
@@ -37,7 +37,7 @@ WITH projection AS (
 	SELECT p.current,d.tenant_id,d.gw_session_id FROM periods p JOIN public.session_dim d
 	  ON (d.first_request_at >= p.lo AND d.first_request_at < p.hi) OR (d.closed_at >= p.lo AND d.closed_at < p.hi)
 	WHERE ($4='' OR d.tenant_id=$4) AND (SELECT backfill_complete FROM projection)
-	  AND EXISTS (SELECT 1 FROM public.request_metrics r WHERE r.tenant_id=d.tenant_id AND r.session_id=d.gw_session_id
+	  AND EXISTS (SELECT 1 FROM public.request_metrics_projection r WHERE r.tenant_id=d.tenant_id AND r.session_id=d.gw_session_id
 		AND r.occurred_at<p.hi AND r.traffic_class='business' AND r.source_fact_id IS NOT NULL)
 ), summary_sessions AS (
 	SELECT t.current,count(*) AS sessions,

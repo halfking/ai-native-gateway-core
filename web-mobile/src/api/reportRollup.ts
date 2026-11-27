@@ -394,6 +394,26 @@ export interface ReportRollupParams {
   model?: string
   /** summary 专用：真值是 `1`/`true`/`yes`/`daily`。见 (9)。 */
   detail?: string
+  summaryScope?: 'totals'
+}
+
+export type ReportDailyGroup = 'model' | 'provider' | 'credential' | 'tenant' | 'person' | 'apikey'
+
+export interface ReportDailyPage {
+  day: string
+  group: ReportDailyGroup
+  page: { number: number; page_size: number; total: number; rows: { key: string; name?: string; totals: ReportTotals }[] }
+  projection: NonNullable<ReportGrainReport['projection']>
+}
+
+export function fetchReportDailyPage(
+  p: ReportRollupParams & { day: string; group: ReportDailyGroup; page: number }, options?: RequestOptions,
+): Promise<ReportDailyPage> {
+  const params = new URLSearchParams(queryOf(p))
+  params.set('day', p.day)
+  params.set('group', p.group)
+  params.set('page', String(p.page))
+  return req<ReportDailyPage>('GET', `/api/admin/report-rollup/v2/daily?${params}`, undefined, options)
 }
 
 // ── fetch ───────────────────────────────────────────────────────────────────
@@ -433,6 +453,7 @@ function queryOf(p: ReportRollupParams): string {
   // ★ view 大小写不敏感 ⇒ 这里直接规范化后再发（发原文后端也会归一）。
   if (p.view != null) qs.set('view', normalizeReportView(p.view))
   if (p.trafficScope) qs.set('traffic_scope', p.trafficScope)
+  if (p.summaryScope) qs.set('summary_scope', p.summaryScope)
   for (const [param, v] of [
     ['provider_id', p.providerId],
     ['credential_id', p.credentialId],

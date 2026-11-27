@@ -434,3 +434,14 @@
 416	1003_org_hierarchy_and_wallets.sql
 417	1004_three_tier_model_policies.sql
 418	1005_user_roles_array.sql
+416	983j_request_metrics_973_repair.sql
+417	983k_request_metrics_daily_summary.sql
+418	983l_request_metrics_daily_board.sql
+419	983m_request_metrics_daily_history.sql
+420	983n_request_metrics_daily_tenant_history.sql
+421	983o_request_metrics_daily_history_details.sql
+422	983p_request_metrics_history_pages.sql
+423	983q_request_metrics_board_hours.sql
+424	983r_request_metrics_board_hour_distributions.sql
+425	1003_org_hierarchy_and_wallets.sql
+426	1004_three_tier_model_policies.sql

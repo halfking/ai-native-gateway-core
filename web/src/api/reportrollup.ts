@@ -1,8 +1,8 @@
 // reportrollup.ts — 对账报表 API（2026-09-25 落地轮；2026-09-29 多维筛选轮重写）。
 // 供应商/内部双视角 × 六维筛选（供应商/凭据/模型/租户/用户/apikey）× 汇总/按天明细。
-// 数据来自每日凌晨聚合的 report_snapshots 最细粒度（grain）快照，区间查询不回扫原始日志。
+// V2 reads the asynchronous request projection for summaries, daily details, and exports.
 import { req, BASE, headers } from './_core'
-import { exportFile } from '../utils/exportFile'
+import { downloadSameOriginFile, exportFile } from '../utils/exportFile'
 import { readExportBlob } from '../utils/exportResponse'
 
 export type ReportView = 'provider' | 'internal'
@@ -139,6 +139,7 @@ export interface RangeReport {
   model_totals?: ReportModelRow[]
   tenants?: ReportTenantRow[]
   persons?: ReportPersonRow[]
+  person_page?: { number: number; page_size: number; total: number }
   daily_providers?: DailyGroupRow[]
   daily_credentials?: DailyGroupRow[]
   daily_api_keys?: DailyGroupRow[]
@@ -196,6 +197,8 @@ export interface ReportQuery extends ReportFilter {
   view: ReportView
   /** true = 追加「按天 × 维度」明细行；false = 只要汇总（默认）。 */
   detail?: boolean
+  summary_scope?: 'distribution' | 'totals'
+  person_page?: number
   /**
    * 导出时「按天×X」那张 sheet 按哪个维度拆。缺省 model。
    * 与页面上主表的 groupDim 是同一个维度：导出的口径必须和屏幕上看的那张表
@@ -214,6 +217,8 @@ function rangeQs(q: ReportQuery): string {
   // 参数——后端于是分不清「用户要汇总」和「调用方没指定」，导出的「汇总 ⇄ 按天
   // 明细」开关成了摆设（实测 detail=false / true 导出字节数完全相同）。
   p.set('detail', q.detail ? 'daily' : 'summary')
+  if (q.summary_scope) p.set('summary_scope', q.summary_scope)
+  if (q.person_page != null) p.set('person_page', String(q.person_page))
   if (q.group) p.set('group', q.group)
   if (q.provider_id != null) p.set('provider_id', String(q.provider_id))
   if (q.credential_id != null) p.set('credential_id', String(q.credential_id))
@@ -229,6 +234,20 @@ export async function getReportSummary(q: ReportQuery): Promise<RangeReport> {
   return res.report
 }
 
+export interface ReportDailyPage {
+  day: string
+  group: GroupDim
+  page: { number: number; page_size: number; total: number; rows: DailyGroupRow[] }
+  projection: NonNullable<RangeReport['projection']>
+}
+
+export function getReportDailyPage(q: ReportQuery & { day: string; group: GroupDim; page: number }, signal?: AbortSignal): Promise<ReportDailyPage> {
+  const params = new URLSearchParams(rangeQs(q))
+  params.set('day', q.day)
+  params.set('page', String(q.page))
+  return req<ReportDailyPage>('GET', `/api/admin/report-rollup/v2/daily?${params}`, undefined, { signal })
+}
+
 export async function getReportDimensions(
   q: Pick<ReportQuery, 'start' | 'end' | 'view' | 'traffic_scope'>,
 ): Promise<DimensionOptions> {
@@ -240,16 +259,22 @@ export async function getReportDimensions(
 }
 
 export async function downloadReportExport(q: ReportQuery): Promise<void> {
-  const res = await fetch(`${BASE}/api/admin/report-rollup/v2/export?${rangeQs(q)}`, {
-    headers: headers('GET'),
-  })
-  if (!res.ok) throw new Error(`export failed: ${res.status}`)
-  // 2026-10-06（UI规范 10 §4.6.18）：经 readExportBlob 取体。该端点显式设了
-  // Content-Length（report_rollup.go:441），故命中「读之前就能判」那条路径。
-  const blob = await readExportBlob(res)
-  // 2026-10-05（UI规范 19 §3.1）：走 exportFile 降级链（分享面→壳桥→blob）。
+  const url = `${BASE}/api/admin/report-rollup/v2/export?${rangeQs(q)}`
+  const auth = headers('GET')
   const prefix = q.view === 'internal' ? 'reconciliation_internal' : 'reconciliation_provider'
-  await exportFile({ filename: `${prefix}_${q.start}_${q.end}.xlsx`, blob })
+  const filename = `${prefix}_${q.start}_${q.end}.xlsx`
+  if (!auth.Authorization) {
+    const ready = await fetch(url, { method: 'HEAD', credentials: 'same-origin', headers: auth })
+    if (ready.status === 204) {
+      downloadSameOriginFile(url, filename)
+      return
+    }
+    // An older gateway can still deliver a bounded workbook over GET.
+    if (ready.status !== 405) throw new Error(`export failed: ${ready.status}`)
+  }
+  const res = await fetch(url, { headers: auth })
+  if (!res.ok) throw new Error(`export failed: ${res.status}`)
+  await exportFile({ filename, blob: await readExportBlob(res) })
 }
 
 export async function runReportRollup(date?: string): Promise<{ date: string; rows_written: number; requests_seen: number }> {

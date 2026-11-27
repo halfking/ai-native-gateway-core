@@ -15,9 +15,13 @@ func (h *Handler) registerBillPaymentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/bills/void", h.superAdmin(h.handleVoidBill))
 	mux.HandleFunc("/api/admin/maas/bills/batch-mark-paid", h.superAdmin(h.handleBatchMarkBillsPaid))
 	
-	// 账单查询（admin权限）
-	mux.HandleFunc("/api/admin/maas/bills/list", h.admin(h.handleListBills))
-	mux.HandleFunc("/api/admin/maas/bills/details", h.admin(h.handleGetBillDetails))
+	// 账单查询
+	// ★ 2026-11-27 12h 审计轮（W9 收口）：list/details 此前走 h.admin（任意
+	//   JWT）——同一组账单数据在 /api/admin/bills 族是 superAdmin 闸（财务
+	//   敏感面与 market/model-platforms 同级），弱闸路径让等权数据暴露在
+	//   tenant_admin/user 之下。二收一到 superAdmin。
+	mux.HandleFunc("/api/admin/maas/bills/list", h.superAdmin(h.handleListBills))
+	mux.HandleFunc("/api/admin/maas/bills/details", h.superAdmin(h.handleGetBillDetails))
 }
 
 // handleMarkBillPaid 标记账单为已付款
@@ -46,6 +50,12 @@ func (h *Handler) handleMarkBillPaid(w http.ResponseWriter, r *http.Request) {
 	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+
+	// ★ W8 契约对齐：POST /api/admin/bills/{id}/mark-paid 的路径参数此前被忽略。
+	// 路径 {id} 优先，body bill_id 后备。
+	if id, err := resolveBillID(r); err == nil && id > 0 {
+		req.BillID = id
 	}
 
 	// 验证必填字段
@@ -121,6 +131,12 @@ func (h *Handler) handleVoidBill(w http.ResponseWriter, r *http.Request) {
 	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+
+	// ★ W8 契约对齐：POST /api/admin/bills/{id}/void 的路径参数此前被忽略。
+	// 路径 {id} 优先，body bill_id 后备。
+	if id, err := resolveBillID(r); err == nil && id > 0 {
+		req.BillID = id
 	}
 
 	// 验证必填字段
@@ -309,8 +325,30 @@ func (h *Handler) handleListBills(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// resolveBillID 兼容两条路由族的账单 ID 读取（2026-11-27 12h 审计轮 W8）。
+//
+// 同一组 handler 挂在两个路由族上：/api/admin/bills/{id}（路径参数声明）
+// 与 /api/admin/maas/bills/*（query/body 传参）——此前路径 {id} 被完全忽略，
+// 走 {id} 形态不带 query 时 400，API 契约与路由声明不符。优先级：
+// 路径 {id} > query bill_id >（mark-paid/void 的）JSON body。
+func resolveBillID(r *http.Request) (int64, error) {
+	if v := r.PathValue("id"); v != "" {
+		return strconv.ParseInt(v, 10, 64)
+	}
+	if v := r.URL.Query().Get("bill_id"); v != "" {
+		return strconv.ParseInt(v, 10, 64)
+	}
+	return 0, errBillIDMissing
+}
+
+var errBillIDMissing = errBillIDRequired{}
+
+type errBillIDRequired struct{}
+
+func (errBillIDRequired) Error() string { return "bill_id required" }
+
 // handleGetBillDetails 获取账单详情（包含审计日志）
-// GET /api/admin/maas/bills/details?bill_id=123
+// GET /api/admin/bills/{id} 或 GET /api/admin/maas/bills/details?bill_id=123
 func (h *Handler) handleGetBillDetails(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -323,16 +361,10 @@ func (h *Handler) handleGetBillDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 解析bill_id
-	billIDStr := r.URL.Query().Get("bill_id")
-	if billIDStr == "" {
-		writeError(w, http.StatusBadRequest, "bill_id required")
-		return
-	}
-
-	billID, err := strconv.ParseInt(billIDStr, 10, 64)
+	// 解析bill_id（路径 {id} 优先，query 后备 —— W8 契约对齐）
+	billID, err := resolveBillID(r)
 	if err != nil || billID <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid bill_id")
+		writeError(w, http.StatusBadRequest, "bill_id required")
 		return
 	}
 

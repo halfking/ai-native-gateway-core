@@ -20,14 +20,14 @@ type MaaSQuery struct {
 
 const maasBoundedSQL = `
 WITH projection AS (` + boardProjectionState + `), bounded AS MATERIALIZED (
-	SELECT occurred_at, fact_request_id AS request_id, ` + requestModelKey + ` AS model, raw_model_name, client_model, tenant_id,
+	SELECT occurred_at, request_id, ` + requestModelKey + ` AS model, raw_model_name, client_model, tenant_id,
 		api_key_owner_user, provider_id, provider_name, credential_id, credential_label, canonical_id,
 		prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, credits_charged,
 		CASE WHEN $5::boolean AND cost_currency='USD' THEN cost_amount END AS cost_usd,
 		$5::boolean AND cost_amount<>0 AND cost_currency IS DISTINCT FROM 'USD' AS non_usd_cost,
 		$5::boolean AND (cost_amount IS NULL OR cost_currency IS DISTINCT FROM 'USD') AS unknown_usd_cost,
 		status, error_kind, latency_ms, client_cancelled
-	FROM public.request_metrics
+	FROM public.request_metrics_projection
 	WHERE tenant_id=$3 AND ($4='' OR api_key_owner_user=$4) AND occurred_at >= $1 AND occurred_at < $2
 	  AND traffic_class='business' AND source_fact_id IS NOT NULL AND (SELECT backfill_complete FROM projection)
 )

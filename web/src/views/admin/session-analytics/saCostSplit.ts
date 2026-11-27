@@ -58,8 +58,8 @@ export function formatCreditsAmount(v: number | null | undefined): string {
 /**
  * 外部成本是否落在「占位符」形态（⇒ 调用方应挂上「未采集 / 不携带」的标题说明）。
  */
-export function externalCostIsPlaceholder(v: number | null | undefined): boolean {
-  return isMissingCost(v) || Number(v) === 0
+export function externalCostIsPlaceholder(v: number | null | undefined, projected = false): boolean {
+  return isMissingCost(v) || (!projected && Number(v) === 0)
 }
 
 /** 翻译函数签名（vue-i18n 的 `t` 与此兼容）。 */
@@ -78,8 +78,7 @@ export function usdCostText(v: number | null | undefined, t: Translate): string 
  * 外部成本（积分）的**完整呈现文本**（含单位）。
  * 缺值或 0 ⇒ 纯占位符 '—'（规则见文件头）。
  */
-export function creditsCostText(v: number | null | undefined, t: Translate): string {
-  if (isMissingCost(v)) return COST_PLACEHOLDER
-  if (Number(v) === 0) return COST_PLACEHOLDER
-  return t('sessionAnalytics.unit.credits', { value: formatCreditsAmount(v) })
+export function creditsCostText(v: number | null | undefined, t: Translate, projected = false): string {
+  if (externalCostIsPlaceholder(v, projected)) return COST_PLACEHOLDER
+  return t('sessionAnalytics.unit.credits', { value: Number(v).toLocaleString() })
 }

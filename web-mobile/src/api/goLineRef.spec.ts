@@ -362,24 +362,16 @@ describe('① Go 行号引用普查：读数 + 召回自证 + 阳性对照', () 
   })
 
   it('①-3 ★★★★ 阳性对照：一条真实**正确**的引用必须判为对得上', () => {
-    // 2026-11-25 菜单 PC 对齐轮换锚：原锚 `api/connectionRegistry.ts` 的两条引用
-    //   （:1083 / :1084）**双双**随上游合并漂移 ⇒ 阳性对照改用本轮新写的
-    //   `api/errorPlaybook.ts:8`：`cmd/gateway/main.go:8287` 逐字是
-    //   `pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")` ——
-    //   token（端点路径）与行号都当场核过。
-    // ⇒ 反向读数：判据不能只会喊「对不上」。
-    // ★ 仍保持「**两条**可判定、其中**恰好一条**对不上」这个结构 ——
-    //   结构才是这条判据要证的东西（判据能同时喊「对得上」和「对不上」）。
-    //   （第二条 = :72-74 的 handler 行号引用，判「对得上」；再加一条合成错引用。
-    //     原 connectionRegistry 文件已整体失锚 ⇒ 改用合成夹具维持原结构。）
-    const src = readFileSync(join(WEB, 'api', 'errorPlaybook.ts'), 'utf8')
-    const refs = scanRefs(src, 'api/errorPlaybook.ts')
+    const goFile = 'cmd/gateway/main.go'
+    const route = 'pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")'
+    const source = readFileSync(join(ROOT, goFile), 'utf8').split('\n')
+    const registered = source.flatMap((line, index) => line.includes(route) ? [index + 1] : [])
+    expect(registered).toHaveLength(1)
+    const refs = scanRefs(`${goFile}:${registered[0]} \`${route}\``, 'synthetic-positive-control.ts')
     const { counts, bad } = classify(refs)
-    expect(counts['可判定']).toBeGreaterThanOrEqual(1)
+    expect(counts['可判定']).toBe(1)
     expect(bad).toHaveLength(0)
-    // 正控升级为双向：合成一条错引用，它必须被判「对不上」（与 ①-2 同判据、
-    // 不同源文件 ⇒ 防止 ①-2 的夹具被改坏时正控跟着假绿）。
-    const synth = scanRefs('cmd/gateway/main.go:8999 `pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")`', 'synthetic-positive-control.ts')
+    const synth = scanRefs(`${goFile}:1 \`${route}\``, 'synthetic-positive-control.ts')
     const synthClass = classify(synth)
     expect(synthClass.counts['可判定']).toBe(1)
     expect(synthClass.bad).toHaveLength(1)

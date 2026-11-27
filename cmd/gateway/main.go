@@ -3385,6 +3385,9 @@ func main() {
 	// ── Phase 3: Tool Registry ──────────────────────────────────────────
 	var toolRegistryAPI *admin.ToolRegistryAPI
 	var toolRegistry *registry.ToolRegistry
+	// ★ W1：billing retry worker 的停机句柄（下方 maas 块赋值；shutdown 序列
+	//   调用）。nil = worker 未启动，Stop 分支自然跳过。
+	var billingRetryWorkerStop context.CancelFunc
 	if dbConn != nil && dbConn.Enabled() {
 		toolRegistry = registry.NewToolRegistry(dbConn.Pool(), slog.Default())
 		adapter := registry.NewAdapter(toolRegistry)
@@ -3417,6 +3420,11 @@ func main() {
 
 		// P0-3: Start billing retry worker for async credit deduction
 		// This worker processes failed billing attempts from the retry queue.
+		// ★ 2026-11-27 12h 审计轮（W1 根修）：worker 生命周期接优雅停机——
+		//   此前 go worker.Start(context.Background()) 无任何取消通道，
+		//   SIGTERM 时批处理被硬杀（retrying 行虽可自愈，但半截批次/在途
+		//   advisory 锁要等事务超时才释放）。workerCtx 由下方 shutdown 序列
+		//   （billingRetryWorkerStop）显式取消，worker 的 ctx.Done 分支退出。
 		if maasSvc != nil && maasSvc.Enabled() {
 			worker := bg.NewBillingRetryWorker(
 				maasSvc,
@@ -3424,7 +3432,9 @@ func main() {
 				100,           // batch size
 			)
 
-			go worker.Start(context.Background())
+			workerCtx, workerCancel := context.WithCancel(context.Background())
+			billingRetryWorkerStop = workerCancel
+			go worker.Start(workerCtx)
 
 			slog.Info("billing retry worker started",
 				"interval", 5*time.Minute,
@@ -4509,7 +4519,6 @@ func main() {
 			"batch_size", metricsConfig.BatchSize,
 			"max_rounds_per_tick", metricsConfig.MaxRoundsPerTick)
 	}
-
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
 	// instances as well, not just on the active-role primary.
 	//
@@ -7175,9 +7184,7 @@ func main() {
 	mux.Handle("/healthz", healthHandler)
 	mux.Handle("/healthz/full",
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(healthHandler))
-	// 2026-08-29：/readyz + /version 端点，供 scripts/lifecycle/preflight.sh 三段检查。
-	//   /readyz  严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
-	//   /version 仅暴露 build metadata（version + git_sha + build_seq + build_date），无敏感信息。
+	// /readyz 用于网关基础健康检查，投影就绪单独由运维验证。
 	mux.Handle("/readyz", healthHandler)
 	mux.Handle("/readyz/request-metrics",
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(metricsstore.ProjectionReadinessHandler(requestMetricsDB)))
@@ -8823,9 +8830,9 @@ func main() {
 		// annotation, etc.). Keeping both caused ServeMux panic at startup.
 
 		// Phase 4: Session Analytics API (会话全景分析)
-		// 350 迁移修复 session_summaries 聚合链路后启用。
 		if adminHandler != nil {
 			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
+			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
 			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))
@@ -9721,6 +9728,11 @@ func main() {
 		// monitor is idempotent and safely handles a not-started instance.
 		if candidateFailureMonitor != nil {
 			candidateFailureMonitor.Stop()
+		}
+		// ★ W1：停 billing retry worker（取消其 ctx；worker 的 ctx.Done 分支
+		//   退出，在途批最多再跑一个 processOnce 的 5s 超时窗口）。
+		if billingRetryWorkerStop != nil {
+			billingRetryWorkerStop()
 		}
 		// R47：停 sticky 负载滑窗的 sweep goroutine（sync.Once 幂等）。
 		if stickyLoadTrackerForShutdown != nil {

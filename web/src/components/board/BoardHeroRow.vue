@@ -40,6 +40,10 @@ const creditsDegraded = computed(() => !!summary.value?.credits_missing_view)
  * 于是首屏把「没算出来」显示成「这个时段没有流量」。
  */
 const summaryDegraded = computed(() => summary.value?.degraded_summary === true)
+const missingUsdEvidence = computed(() => {
+  const count = summary.value?.usd_evidence_requests
+  return count == null ? 0 : Math.max(0, (summary.value?.total_requests ?? 0) - count)
+})
 
 const totalTokens = computed(() => {
   const s = summary.value
@@ -155,8 +159,13 @@ function fmtTokensCompact(n: number | undefined) {
     </div>
     <div class="hero-card">
       <div class="hero-card__label">{{ t('dashboard.stat.totalCost') }}</div>
-      <div class="hero-card__value">{{ fmtCost(summary.total_cost_usd) }}</div>
+      <div class="hero-card__value">
+        {{ fmtCost(missingUsdEvidence > 0 && summary.usd_evidence_requests === 0 ? undefined : summary.total_cost_usd) }}
+      </div>
       <div class="hero-card__sub">
+        <span v-if="missingUsdEvidence > 0">
+          {{ t('reports.projectedMissingUSD', { n: missingUsdEvidence }) }}
+        </span>
         <span>{{ t('dashboard.board.heroCreditsEq', { n: fmt(summary.total_credits_charged) }) }}</span>
       </div>
     </div>

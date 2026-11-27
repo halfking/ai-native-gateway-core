@@ -141,6 +141,7 @@ type GrainReport struct {
 	ModelTotals []ModelRow  `json:"model_totals,omitempty"`
 	Tenants     []TenantRow `json:"tenants,omitempty"`
 	Persons     []PersonRow `json:"persons,omitempty"`
+	PersonPage  *PersonPage `json:"person_page,omitempty"`
 
 	// Daily* 明细模式（daily=true）额外返回的按天 × 维度行，供「看到详细
 	// 的每天的数据」与明细导出使用；汇总模式下为 nil。
@@ -213,7 +214,10 @@ func grainGroupSets(daily bool) []string {
 // 末尾多一个 kind。必须一一对应——classify() 靠 GROUPING() 标志把行派发到
 // 对应的层级，两者层级集合不一致会让「按供应商的主要错误」少一层或多半层。
 func grainErrGroupSets(daily bool) []string {
-	base := grainGroupSets(daily)
+	return grainErrorGroups(grainGroupSets(daily))
+}
+
+func grainErrorGroups(base []string) []string {
 	sets := make([]string, len(base))
 	for i, s := range base {
 		inner := strings.TrimSuffix(strings.TrimPrefix(s, "("), ")")
@@ -494,6 +498,7 @@ const (
 // 分组集一改（2026-11-17 审计轮给凭据/人员/apikey 补上归属维度），
 // 这里必须同步——否则行会被派发到兜底分支（gkTotal），
 // 「总计」就会把分组行的度量重复算一遍。
+// 凭据和密钥分组允许归属作为可选分组键，兼容历史快照和请求投影。
 func classify(r grainScanRow) groupKind {
 	d, p, c := !r.gDate, !r.gProvider, !r.gCredential
 	m, t, u, k := !r.gModel, !r.gTenant, !r.gPerson, !r.gKey
@@ -508,7 +513,7 @@ func classify(r grainScanRow) groupKind {
 		return gkProvider
 	case !d && p && !c && m && !t && !u && !k:
 		return gkProviderModel
-	case !d && p && c && !m && !t && !u && !k:
+	case !d && c && !m && !t && !u && !k:
 		return gkCredential
 	case !d && !p && !c && m && !t && !u && !k:
 		return gkModel
@@ -516,17 +521,17 @@ func classify(r grainScanRow) groupKind {
 		return gkTenant
 	case !d && !p && !c && !m && t && u && !k:
 		return gkPerson
-	case !d && !p && !c && !m && t && !u && k:
+	case !d && !p && !c && !m && !u && k:
 		return gkAPIKey
 	case d && p && !c && !m && !t && !u && !k:
 		return gkDayProvider
-	case d && p && c && !m && !t && !u && !k:
+	case d && c && !m && !t && !u && !k:
 		return gkDayCredential
 	case d && !p && !c && !m && t && !u && !k:
 		return gkDayTenant
 	case d && !p && !c && !m && t && u && !k:
 		return gkDayPerson
-	case d && !p && !c && !m && t && !u && k:
+	case d && !p && !c && !m && !u && k:
 		return gkDayAPIKey
 	}
 	return gkTotal // 不可达：分组集枚举封闭；兜底避免空结构体静默丢行
@@ -569,12 +574,15 @@ func (a *grainAccumulator) add(r grainScanRow) {
 		a.projection.add(r.projection)
 	}
 	if r.kind != "" && r.errKindCount > 0 {
-		a.br = mergeBreakdown(a.br, map[string]int64{r.kind: r.errKindCount})
+		if a.br == nil {
+			a.br = make(map[string]int64)
+		}
+		a.br[r.kind] += r.errKindCount
 	}
 }
 
-// finalize 补齐派生列。分位用成功请求数加权还原（分位数不可跨行折叠，
-// 与旧读面 acc.finalize 同款近似）。
+// finalize 补齐派生列。快照的分位数沿用按成功请求数加权的近似，投影在 SQL
+// 中为每个展示行精确计算分位数，且聚合只产生一个包含度量的行。
 func (a *grainAccumulator) finalize() Totals {
 	t := Totals{
 		RequestCount:       a.requestCount,
@@ -789,10 +797,10 @@ func legacyTotalScope(view View) Scope {
 // 默认走这条——响应行数与区间天数基本无关。daily=true 追加「按天 × 维度」
 // 明细行，供明细表格与明细导出。
 func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool) (*GrainReport, error) {
-	return buildGrainReport(ctx, q, start, end, view, filter, names, daily, nil)
+	return buildGrainReport(ctx, q, start, end, view, filter, names, daily, nil, "")
 }
 
-func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool, projection *ProjectionCoverage) (*GrainReport, error) {
+func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view View, filter GrainFilter, names Names, daily bool, projection *ProjectionCoverage, scope ProjectedSummaryScope) (*GrainReport, error) {
 	if !view.Valid() {
 		return nil, fmt.Errorf("unknown view %q", view)
 	}
@@ -886,7 +894,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			case gkCredential:
 				ck := dimKey(r.credentialID)
 				getAccInt(credentials, ck).add(r)
-				if _, ok := metaCredential[ck]; !ok {
+				if _, ok := metaCredential[ck]; !ok && (projection == nil || r.requestCount > 0) {
 					metaCredential[ck] = r
 				}
 			case gkModel:
@@ -898,7 +906,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			case gkAPIKey:
 				ak := dimKey(r.apiKeyID)
 				getAccInt(apiKeys, ak).add(r)
-				if _, ok := metaAPIKey[ak]; !ok {
+				if _, ok := metaAPIKey[ak]; !ok && (projection == nil || r.requestCount > 0) {
 					metaAPIKey[ak] = r
 				}
 			case gkDayProvider:
@@ -921,7 +929,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	}
 
 	if projection != nil {
-		if err := runProjectedGrain(ctx, q, view, filter, daily, *projection, sink(true)); err != nil {
+		if err := runProjectedGrain(ctx, q, view, filter, daily, *projection, scope, sink(true)); err != nil {
 			return nil, err
 		}
 	} else {
@@ -1088,14 +1096,7 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	personKeys := sortedKeysStr(persons)
 	for _, key := range personKeys {
 		tenant, person := splitKey(key)
-		tot := persons[key].finalize()
-		rep.Persons = append(rep.Persons, PersonRow{
-			TenantID:       tenant,
-			Person:         person,
-			Totals:         tot,
-			ErrorBreakdown: persons[key].breakdown(),
-			QualityScore:   ProviderQualityScore(tot),
-		})
+		rep.Persons = append(rep.Persons, persons[key].personRow(tenant, person))
 	}
 	sort.Slice(rep.Persons, func(i, j int) bool {
 		return rep.Persons[i].Totals.RequestCount > rep.Persons[j].Totals.RequestCount
@@ -1135,6 +1136,12 @@ func buildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		rep.Source = "grain"
 	}
 	return rep, nil
+}
+
+func (a *grainAccumulator) personRow(tenant, person string) PersonRow {
+	totals := a.finalize()
+	return PersonRow{TenantID: tenant, Person: person, Totals: totals,
+		ErrorBreakdown: a.breakdown(), QualityScore: ProviderQualityScore(totals)}
 }
 
 // legacySink 旧口径回落行的落点：只有总计与按天有值，维度分组不接受

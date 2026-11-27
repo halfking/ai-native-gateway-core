@@ -1,23 +1,62 @@
 package metricsstore
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/admin/dashboardapi"
 	"github.com/kaixuan/llm-gateway-go/domains/metrics"
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
+
+type historyQueryProbe struct {
+	reportrollup.Querier
+	mode            string
+	tenantMode      string
+	tenantModelMode string
+	packedRank      bool
+	publishedPage   bool
+}
+
+func (p *historyQueryProbe) Query(ctx context.Context, query string, args ...any) (pgx.Rows, error) {
+	mode := "published"
+	switch {
+	case strings.Contains(query, "FROM gaps"):
+		mode = "fragmented"
+	case strings.Contains(query, "UNION ALL SELECT * FROM raw_cells"):
+		mode = "contiguous"
+	}
+	switch {
+	case strings.Contains(query, "FROM public.request_metrics_daily_history_page_cells"):
+		p.publishedPage = true
+	case strings.Contains(query, "FROM public.request_metrics_daily_history"):
+		p.mode = mode
+	case strings.Contains(query, "FROM public.request_metrics_daily_tenant_history"):
+		p.tenantMode = mode
+	case strings.Contains(query, "FROM public.request_metrics_daily_tenant_model_history"):
+		p.tenantModelMode = mode
+	case strings.Contains(query, "FROM public.request_metrics_person_rank_packs"):
+		p.packedRank = true
+	}
+	return p.Querier.Query(ctx, query, args...)
+}
 
 func TestRequestMetricsProjectionPostgres(t *testing.T) {
 	dsn := os.Getenv("REQUEST_METRICS_TEST_DSN")
@@ -51,13 +90,12 @@ CREATE TABLE public.credentials (id bigint PRIMARY KEY, provider_id bigint, labe
 CREATE TABLE public.api_keys (id bigint PRIMARY KEY, tenant_id text, key_prefix text, owner_user text);
 CREATE TABLE public.users (id bigint PRIMARY KEY, tenant_id text, username text,
  updated_at timestamptz DEFAULT now(), UNIQUE (tenant_id, username));
--- 1003 依赖 tenants(code)（organizations.tenant_id 外键）⇒ fixture 建同形表＋两租户行。
-CREATE TABLE public.tenants (code text PRIMARY KEY, name text, status text DEFAULT 'active');
 CREATE TABLE public.session_summaries (session_key text PRIMARY KEY, tenant_id text, user_intent text);
 CREATE TABLE public.request_context_attrs (request_id text, tenant_id text, ts timestamptz,
  gw_session_id text, gw_task_id text, virtual_client_id text, owner_user text, application_code text,
  agent_name text, client_ip inet, identity_hash text, egress_protocol text, work_type text, compression_strategy text,
  api_key_owner_user text, stream_interrupted boolean, failure_detail_code text, error_kind text);
+CREATE TABLE public.session_turns_hot (request_id text, tenant_id text, ts timestamptz);
 CREATE VIEW public.request_logs_with_current_month AS
  SELECT request_id,tenant_id,ts,gw_session_id,gw_task_id,0 AS attachment_count,
  'chat'::text AS client_protocol,egress_protocol,
@@ -75,19 +113,13 @@ INSERT INTO public.providers VALUES (9,'supplier','Supplier');`)
 	}
 	apply("537_usage_facts.sql")
 	apply("983_request_metrics.sql")
-	// 1003（三级配额制轮）：organizations + users.org_id —— 投影 SQL 的归因
-	// JOIN（owner_user → users → org_id）依赖 users.org_id 列。
-	apply("1003_org_hierarchy_and_wallets.sql")
+	apply("983b_add_raw_model_name.sql")
 	exec(`
 INSERT INTO public.request_context_attrs VALUES
  ('r1','tenant-a','2026-11-23 00:10Z','shared-session','task','client','owner','app','test-agent','192.0.2.1','identity-a'),
  ('r1','tenant-c','2026-11-23 00:20Z','wrong-tenant',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
  ('r1','tenant-b','2026-11-23 00:10Z','shared-session',NULL,NULL,'owner',NULL,NULL,NULL,NULL);
 INSERT INTO public.users (id,tenant_id,username) VALUES (1,'tenant-a','owner'), (2,'tenant-b','owner');
-INSERT INTO public.tenants (code, name) VALUES ('tenant-a','Tenant A'), ('tenant-b','Tenant B');
--- 归因判据夹具：tenant-a 的 owner 挂 org-a（users.org_id），tenant-b 的 owner 不挂。
-INSERT INTO public.organizations (tenant_id, code, name) VALUES ('tenant-a','org-a','Org A');
-UPDATE public.users SET org_id = (SELECT id FROM public.organizations WHERE code='org-a') WHERE id = 1;
 INSERT INTO public.request_metrics
  (request_id,tenant_id,occurred_at,occurred_date,billing_date,total_tokens,status,source)
 VALUES
@@ -99,11 +131,60 @@ VALUES
  ('e2','r1',1,'2026-11-23 00:10Z','tenant-b','success',9,7,'raw-test',4,4,0.9,'CNY',3),
  ('end','at-end',1,'2026-11-24 00:00Z','tenant-a','success',9,7,'raw-test',99,99,1,'USD',99);`)
 	apply("973_request_metrics_projection.sql")
-	apply("973_request_metrics_projection.sql")
+	apply("983j_request_metrics_973_repair.sql")
+	apply("983j_request_metrics_973_repair.sql")
+	apply("983k_request_metrics_daily_summary.sql")
+	apply("983k_request_metrics_daily_summary.sql")
+	apply("983l_request_metrics_daily_board.sql")
+	apply("983l_request_metrics_daily_board.sql")
+	apply("983m_request_metrics_daily_history.sql")
+	apply("983m_request_metrics_daily_history.sql")
+
+	t.Run("legacy_watermark_ignores_973_projected_identity", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `INSERT INTO public.request_metrics
+			(request_id,fact_request_id,source_fact_id,tenant_id,occurred_at,occurred_date,billing_date,status)
+			VALUES (chr(1)||jsonb_build_array('tenant-a','newest')::text, 'newest', 999999, 'tenant-a',
+			'2026-11-26 00:00Z','2026-11-26','2026-11-26','success')`); err != nil {
+			t.Fatal(err)
+		}
+		var at time.Time
+		var requestID string
+		if err := tx.QueryRow(ctx, watermarkSQL).Scan(&at, &requestID); err != nil {
+			t.Fatal(err)
+		}
+		if requestID != "r1" || !at.Equal(time.Date(2026, 11, 23, 0, 10, 0, 0, time.UTC)) {
+			t.Fatalf("legacy cursor moved to %q at %v", requestID, at)
+		}
+	})
+
+	// Seed published report cases through the real partitioned table so its
+	// day invalidation triggers run. The read view has no production writer.
+	exec(`
+CREATE FUNCTION public.insert_projection_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    values_json jsonb;
+    columns text;
+BEGIN
+    values_json := jsonb_strip_nulls(to_jsonb(NEW)) ||
+        jsonb_build_object('request_id', chr(1)||jsonb_build_array(NEW.tenant_id, NEW.request_id)::text,
+                           'fact_request_id', NEW.request_id);
+    SELECT string_agg(quote_ident(key), ', ' ORDER BY key) INTO columns
+    FROM jsonb_object_keys(values_json) AS keys(key);
+    EXECUTE format('INSERT INTO public.request_metrics (%s) SELECT %s FROM jsonb_populate_record(NULL::public.request_metrics, $1)',
+                   columns, columns) USING values_json;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER insert_projection_fixture INSTEAD OF INSERT ON public.request_metrics_projection
+FOR EACH ROW EXECUTE FUNCTION public.insert_projection_fixture();`)
 
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
-	processor := NewProcessor(db)
+	processor := NewProjectionProcessor(db)
 	readProjectionWatermark := func(wantStatus int) projectionReadiness {
 		t.Helper()
 		recorder := httptest.NewRecorder()
@@ -138,19 +219,11 @@ VALUES
 		}
 	}
 	var projectedRows, historyTokens int
-	if err := pool.QueryRow(ctx, `SELECT count(*), sum(total_tokens) FROM public.request_metrics
-		WHERE fact_request_id='r1' AND source_fact_id IS NOT NULL`).Scan(&projectedRows, &historyTokens); err != nil ||
+	if err := pool.QueryRow(ctx, `SELECT count(*), sum(total_tokens) FROM public.request_metrics_projection
+		WHERE request_id='r1' AND source_fact_id IS NOT NULL`).Scan(&projectedRows, &historyTokens); err != nil ||
 		projectedRows != 2 || historyTokens != 14 {
 		t.Fatalf("upgrade did not project both tenants: rows=%d tokens=%d err=%v",
 			projectedRows, historyTokens, err)
-	}
-	// ★ 归因判据（2026-11-27 三级配额制轮）：owner_user='owner' + users(1) 挂在
-	//   org ⇒ 投影行的 org_id 必须带上该组织 code（org 维度非空）；org 外用户
-	//   （users(2)，无 org）投影行 org_id 必须为 NULL。JOIN 断链/列缺失即红。
-	var orgAttrRows int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics
-		WHERE fact_request_id='r1' AND org_id IS NOT NULL`).Scan(&orgAttrRows); err != nil || orgAttrRows < 1 {
-		t.Fatalf("projection must attribute org_id via owner_user→users→org: rows=%d err=%v", orgAttrRows, err)
 	}
 	// An old slot must still be able to write the original key, while a new
 	// slot must ignore that row in all V2 aggregates.
@@ -165,9 +238,8 @@ VALUES
 	}
 	var legacyTokens, canonicalTokens int
 	if err := pool.QueryRow(ctx, `SELECT
-		max(total_tokens) FILTER (WHERE request_id='r1' AND source_fact_id IS NULL),
-		sum(total_tokens) FILTER (WHERE fact_request_id='r1' AND source_fact_id IS NOT NULL)
-		FROM public.request_metrics`).Scan(&legacyTokens, &canonicalTokens); err != nil ||
+		(SELECT total_tokens FROM public.request_metrics WHERE request_id='r1'),
+		(SELECT sum(total_tokens) FROM public.request_metrics_projection WHERE request_id='r1')`).Scan(&legacyTokens, &canonicalTokens); err != nil ||
 		legacyTokens != 777 || canonicalTokens != 14 {
 		t.Fatalf("legacy write modified V2 evidence: legacy=%d projected=%d err=%v", legacyTokens, canonicalTokens, err)
 	}
@@ -190,6 +262,69 @@ VALUES
 	if state := readProjectionWatermark(http.StatusOK); state.PendingSince != nil || state.UpdatedAt == nil {
 		t.Fatalf("projection watermark did not advance after processing: %+v", state)
 	}
+	t.Run("rolls_back_and_retries_under_two_slots", func(t *testing.T) {
+		exec(`INSERT INTO public.usage_facts
+			(event_id,request_id,occurred_at,tenant_id,status,total_tokens)
+			VALUES ('retry-1','must-retry','2026-11-22 22:00Z','tenant-recovery','success',3000000000);
+			ALTER TABLE public.request_metrics ADD CONSTRAINT fixture_reject_publish
+			CHECK (fact_request_id <> 'must-retry');`)
+		var before time.Time
+		if err := pool.QueryRow(ctx, `SELECT updated_at FROM public.request_metrics_repair_state WHERE singleton`).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := processor.ProcessBatch(ctx, 20); err == nil {
+			t.Fatal("expected the PostgreSQL projection write to fail")
+		}
+		var after time.Time
+		var pending, projected int
+		if err := pool.QueryRow(ctx, `SELECT updated_at,
+			(SELECT count(*) FROM public.request_metrics_refresh_pending WHERE request_id='must-retry'),
+			(SELECT count(*) FROM public.request_metrics_projection WHERE request_id='must-retry')
+			FROM public.request_metrics_repair_state WHERE singleton`).Scan(&after, &pending, &projected); err != nil || !after.Equal(before) || pending != 1 || projected != 0 {
+			t.Fatalf("partial batch commit: before=%v after=%v pending=%d projected=%d err=%v", before, after, pending, projected, err)
+		}
+		exec(`ALTER TABLE public.request_metrics DROP CONSTRAINT fixture_reject_publish`)
+		firstSlot, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer firstSlot.Rollback()
+		if _, err := firstSlot.ExecContext(ctx, lockProjectionSQL); err != nil {
+			t.Fatal(err)
+		}
+		secondSlot := NewProjectionProcessor(db)
+		if n, err := secondSlot.ProcessBatch(ctx, 20); n != 0 || err != nil {
+			t.Fatalf("second slot should yield the claimed checkpoint: n=%d err=%v", n, err)
+		}
+		if err := firstSlot.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := secondSlot.ProcessBatch(ctx, 20); n != 1 || err != nil {
+			t.Fatalf("restarted slot should publish the retained queue item: n=%d err=%v", n, err)
+		}
+		var tokens int64
+		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM public.request_metrics_projection WHERE request_id='must-retry'`).Scan(&tokens); err != nil || tokens != 3000000000 {
+			t.Fatalf("lost durable or 64-bit usage: tokens=%d err=%v", tokens, err)
+		}
+	})
+
+	t.Run("late_dimensions_and_in_place_fact_repair", func(t *testing.T) {
+		// Use a tenant outside the visible reporting fixture totals.
+		exec(`UPDATE public.usage_facts SET total_tokens=13 WHERE event_id='retry-1';
+			INSERT INTO public.request_context_attrs (request_id,tenant_id,ts,gw_session_id) VALUES
+			('must-retry','tenant-recovery','2026-11-23 00:00Z','late-session'),
+			('must-retry','different-tenant','2026-11-22 22:00Z','foreign-session');`)
+		if n, err := processor.ProcessBatch(ctx, 20); n != 3 || err != nil {
+			t.Fatalf("expected the fact and both dimension notifications: n=%d err=%v", n, err)
+		}
+		var session string
+		var tokens int
+		if err := pool.QueryRow(ctx, `SELECT session_id,total_tokens FROM public.request_metrics_projection
+			WHERE request_id='must-retry' AND tenant_id='tenant-recovery'`).Scan(&session, &tokens); err != nil || session != "late-session" || tokens != 13 {
+			t.Fatalf("late dimension or repaired fact missing: session=%q tokens=%d err=%v", session, tokens, err)
+		}
+	})
+
 	assertStats := func(query metrics.RequestStatsQuery, fragments ...string) {
 		t.Helper()
 		result, err := metrics.ReadRequestStats(ctx, pool, query)
@@ -204,6 +339,19 @@ VALUES
 	}
 	assertStats(query, `"total_requests": 3`, `"active_sessions": 2`, `"total_tokens": 17`,
 		`"total_cost_usd": 0.006`, `"cost_rows_outside_usd": 1`, `"total_credits_charged": 6`)
+	t.Run("original_currency_totals", func(t *testing.T) {
+		byCurrency := query
+		byCurrency.Group = "currency"
+		result, err := metrics.ReadRequestStats(ctx, pool, byCurrency)
+		if err != nil || len(result.Items) != 2 {
+			t.Fatalf("expected separate original currencies: %+v, %v", result, err)
+		}
+		usd, cny := string(result.Items[0]), string(result.Items[1])
+		if !strings.Contains(usd, `"key": "USD"`) || !strings.Contains(usd, `"original_amount": 0.006`) ||
+			!strings.Contains(cny, `"key": "CNY"`) || !strings.Contains(cny, `"original_amount": 0.900`) {
+			t.Fatalf("cross-currency total: %s %s", usd, cny)
+		}
+	})
 	t.Run("period_comparison", func(t *testing.T) {
 		filter := query.MetricsFilter
 		result, err := metrics.ReadRequestPeriodComparison(ctx, pool, filter, filter.EndTime, filter.EndTime.AddDate(0, 0, 1), "")
@@ -366,6 +514,38 @@ VALUES
 			t.Fatalf("analytics agent filters were not applied before aggregation: %+v %+v %v", board.Trends, board.Pies, err)
 		}
 	})
+	t.Run("board_model_series_use_window_rank", func(t *testing.T) {
+		exec(`
+INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,traffic_class,status,raw_model_name,
+ total_tokens,credits_charged,cost_amount,cost_currency,latency_ms)
+SELECT 'board-rank-'||n, 'board-rank-'||n, timestamptz '2026-11-30 03:00Z' + (n/9)*interval '15 min',
+ 'rank-tenant','business',CASE WHEN n=8 THEN 'timeout' ELSE 'success' END,
+ 'model-'||(CASE WHEN n=9 THEN 8 ELSE n END), n, n, n*0.01, 'USD', n*100
+FROM generate_series(1,9) n;`)
+		if _, err := processor.ProcessBatch(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		filter := query.MetricsFilter
+		filter.TenantID = "rank-tenant"
+		filter.StartTime = time.Date(2026, 11, 30, 3, 0, 0, 0, time.UTC)
+		filter.EndTime = filter.StartTime.Add(time.Hour)
+		board, err := metrics.ReadRequestBoard(ctx, pool, metrics.BoardQuery{MetricsFilter: filter, BucketMinutes: 15})
+		if err != nil || len(board.Trends) != 2 || len(board.ModelPoints) != 8 {
+			t.Fatalf("unexpected chart: %+v, %v", board, err)
+		}
+		first := board.Trends[0]
+		if first.Requests != 8 || first.Success != 7 || first.AvgLatencyMS != 450 || first.Tokens != 36 {
+			t.Fatalf("unexpected first bucket: %+v", first)
+		}
+		last := board.ModelPoints[len(board.ModelPoints)-1]
+		if last.Model != "model-8" || last.Tokens != 9 || !last.Bucket.Equal(board.Trends[1].Bucket) {
+			t.Fatalf("window-wide leader not retained in its second bucket: %+v", last)
+		}
+		others := board.ModelPoints[0]
+		if others.Model != "__others__" || others.Requests != 2 || others.Tokens != 13 || others.Credits != 13 || others.CostUSD != 0.13 {
+			t.Fatalf("unexpected combined models: %+v", others)
+		}
+	})
 	t.Run("projected_cost_and_cache_economics", func(t *testing.T) {
 		exec(`
 INSERT INTO public.session_summaries VALUES ('economic-a','tenant-a','review'), ('economic-other','tenant-b','other tenant');
@@ -477,339 +657,10 @@ VALUES ('version-old','revision-key',2,'2026-11-25 17:00Z','2026-11-25 17:30Z','
 		var source string
 		var finalized time.Time
 		var tokens int
-		err := pool.QueryRow(ctx, `SELECT usage_source,source_finalized_at,total_tokens FROM request_metrics
-WHERE tenant_id='tenant-versions' AND fact_request_id='revision-key' AND source_fact_id IS NOT NULL`).Scan(&source, &finalized, &tokens)
+		err := pool.QueryRow(ctx, `SELECT usage_source,source_finalized_at,total_tokens FROM public.request_metrics_projection
+WHERE tenant_id='tenant-versions' AND request_id='revision-key' AND source_fact_id IS NOT NULL`).Scan(&source, &finalized, &tokens)
 		if err != nil || source != "corrected" || tokens != 90 || finalized.UTC().Format(time.RFC3339) != "2026-11-25T18:00:00Z" {
 			t.Fatalf("older same-version record replaced finalized evidence: source=%s finalized=%s tokens=%d error=%v", source, finalized, tokens, err)
-		}
-	})
-
-	t.Run("oversized_tokens_clamped_not_poison", func(t *testing.T) {
-		// ★ 2026-11-26 12h 审计轮（P2-1）：usage_facts 的 token 列是 bigint（537）、
-		//   request_metrics 的是 INTEGER（983）。一个畸形 fact（total_tokens > 2^31-1）
-		//   曾让投影 INSERT 报 integer out of range ⇒ 整批回滚 ⇒ 每轮重试同一批 ⇒
-		//   队头阻塞（全部租户停摆）。钳制后：坏值落表为上界、批不毒停。
-		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('clamp-bad','clamp-poison',1,'2026-11-25 19:00Z','tenant-clamp','success',4294967296,'llm');`)
-		if _, err := processor.ProcessBatch(ctx, 20); err != nil {
-			t.Fatalf("oversized token fact poisoned the batch (clamp missing?): %v", err)
-		}
-		var tokens int
-		err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
-WHERE tenant_id='tenant-clamp' AND fact_request_id='clamp-poison' AND source_fact_id IS NOT NULL`).Scan(&tokens)
-		if err != nil || tokens != 2147483647 {
-			t.Fatalf("oversized token not clamped to INTEGER max: tokens=%d error=%v", tokens, err)
-		}
-		// 反证：同批/下一批的正常 fact 仍可投影（管线没被毒停）。
-		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('clamp-good','clamp-healthy',1,'2026-11-25 19:01Z','tenant-clamp','success',42,'llm');`)
-		if _, err := processor.ProcessBatch(ctx, 20); err != nil {
-			t.Fatalf("pipeline stayed poisoned after clamp: %v", err)
-		}
-		var healthy int
-		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
-WHERE tenant_id='tenant-clamp' AND fact_request_id='clamp-healthy' AND source_fact_id IS NOT NULL`).Scan(&healthy); err != nil || healthy != 42 {
-			t.Fatalf("healthy fact after oversized one not projected: healthy=%d error=%v", healthy, err)
-		}
-	})
-
-	t.Run("concurrent_processors_partition_without_loss", func(t *testing.T) {
-		// ★ 2026-11-26 交接点名的「双槽并发」：蓝绿窗口里旧槽与新槽可能同时跑
-		//   投影器。锁是 SELECT ... FOR UPDATE SKIP LOCKED ⇒ 拿不到锁的一方必须
-		//   干净退出（0 处理、无错误），而不是阻塞或双写。桩测（sqlmock）只能钉
-		//   「锁行缺 ⇒ 跳过」，钉不出真 PG 的行锁互斥 ⇒ 本用例在真 PG 上跑两个
-		//   并发处理器吃同一批 pending ⇒ 判据：两臂合计恰好消化全部事实、
-		//   投影无重复行、水位单调推进。
-		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES
- ('conc-1','conc-r1',1,'2026-11-26 01:00Z','tenant-conc','success',10,'llm'),
- ('conc-2','conc-r2',1,'2026-11-26 01:01Z','tenant-conc','success',20,'llm'),
- ('conc-3','conc-r3',1,'2026-11-26 01:02Z','tenant-conc','success',30,'llm'),
- ('conc-4','conc-r4',1,'2026-11-26 01:03Z','tenant-conc','success',40,'llm');`)
-		const arms = 2
-		results := make(chan error, arms)
-		processedTotals := make(chan int, arms)
-		for range arms {
-			go func() {
-				// 独立连接池 ⇒ 两个真实并发的事务竞争同一把 SKIP LOCKED 键。
-				armPool, err := pgxpool.New(ctx, dsn)
-				if err != nil {
-					results <- err
-					return
-				}
-				defer armPool.Close()
-				armDB := stdlib.OpenDBFromPool(armPool)
-				defer armDB.Close()
-				armProcessor := NewProcessor(armDB)
-				total := 0
-				for range 10 {
-					n, err := armProcessor.ProcessBatch(ctx, 2)
-					if err != nil {
-						results <- err
-						return
-					}
-					total += n
-					if n == 0 {
-						break
-					}
-				}
-				processedTotals <- total
-				results <- nil
-			}()
-		}
-		var totalProcessed int
-		for range arms {
-			if err := <-results; err != nil {
-				t.Fatalf("concurrent processor arm failed: %v", err)
-			}
-		}
-		for range arms {
-			totalProcessed += <-processedTotals
-		}
-		if totalProcessed != 4 {
-			t.Fatalf("two concurrent arms processed %d facts, want exactly 4 (no double-count, no loss)", totalProcessed)
-		}
-		var rows int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics
-WHERE tenant_id='tenant-conc' AND source_fact_id IS NOT NULL`).Scan(&rows); err != nil || rows != 4 {
-			t.Fatalf("concurrent projection produced %d rows, want 4: error=%v", rows, err)
-		}
-		var pending int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics_pending`).Scan(&pending); err != nil || pending != 0 {
-			t.Fatalf("pending queue not drained after concurrent run: %d error=%v", pending, err)
-		}
-		var complete bool
-		if err := pool.QueryRow(ctx, `SELECT backfill_complete FROM request_metrics_projection_state WHERE singleton`).Scan(&complete); err != nil || !complete {
-			t.Fatalf("watermark not complete after concurrent run: complete=%t error=%v", complete, err)
-		}
-	})
-
-	t.Run("cross_day_boundary_dimension_backfill_and_crash_recovery", func(t *testing.T) {
-		// ★ 2026-11-26 第二轮（交接第 3 步剩余四项）：
-		// ④ 跨日：occurred_date/billing_date 都按 UTC 日历日折叠（processor 91-92 行
-		//    (occurred_at AT TIME ZONE 'UTC')::date）。判定：UTC 16:00=北京 0 点 ⇒
-		//    15:59Z 与 16:00Z 必须落在两个不同 occurred_date；同一条事实的两列一致
-		//    （本投影无跨日记账分流，billing_date≡occurred_date 是当前契约）。
-		//    半开窗：[00:00Z, 次日 00:00Z) 窗口恰好各自含一侧、不含重叠。
-		// ⑤ 维度迟到补齐：事实先到、维度后到（request_context_attrs 在投影之后
-		//    才插入）。处置链＝AFTER INSERT 触发器只对 usage_facts 入队 ⇒ 维度表
-		//    没有触发器 ⇒ 迟到维度自身不会触发重投影；但【事实再出修订】会触发
-		//    ⇒ 重投影时 LATERAL 重新取最新维度 ⇒ 维度补齐到投影行。
-		//    钉法：a) 先投影（维度缺席 ⇒ session_id 为空）；
-		//          b) 补维度 + 出 revision 2 修订 ⇒ 再投影；
-		//          c) 断言 session_id 已带上（迟到维度经修订轮补齐）。
-		//    ★ 诚实边界（写进断言注释）：没有修订的迟到维度不会被回填——这是
-		//    当前链的已知边界（补维度本身不触发队列），不是本夹具要掩盖的。
-		// ⑥ 失败重启：制造一个必炸的坏批（canonical_id 指向不存在的模型 ⇒
-		//    外键不存在，但 provider_code 解析失败不行——真炸点是坏的 token 类型
-		//    不行，token 已被钳制。这里用「用法事实引用了被删除的 provider」不可行
-		//    （无外键）。可复现的炸点：把 request_metrics 表临时改名 ⇒ INSERT 报
-		//    42P01 ⇒ ProcessBatch 返回错误且事务回滚；恢复表名后新处理器实例
-		//    （模拟重启后的进程）继续追平 ⇒ 断言零丢失。回滚零副作用由
-		//    「rename 回来后 pending 未被误删 + 投影行数不变」证明。
-		exec(`
--- ④ 跨日：UTC 日界两侧各一条（UTC 日界是 00:00Z，不是北京午夜 16:00Z）
-INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES
- ('day-before','crossday-a',1,'2026-11-25 23:59:30Z','tenant-day','success',10,'llm'),
- ('day-after','crossday-b',1,'2026-11-26 00:00:30Z','tenant-day','success',20,'llm'),
- ('day-exact','crossday-c',1,'2026-11-26 00:00:00Z','tenant-day','success',30,'llm');
--- ⑤ 维度迟到：先插事实（无维度）
-INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('dim-late','dim-late-request',1,'2026-11-26 02:00Z','tenant-day','success',40,'llm');`)
-		if _, err := processor.ProcessBatch(ctx, 100); err != nil {
-			t.Fatalf("cross-day + dim-missing batch failed: %v", err)
-		}
-		// ④ 断言：23:59:30Z ⇒ 11-25；00:00:00Z/00:00:30Z ⇒ 11-26（UTC 日界）
-		var d1, d2, d3, b1 string
-		if err := pool.QueryRow(ctx, `SELECT occurred_date::text, billing_date::text FROM request_metrics
-WHERE fact_request_id='crossday-a' AND source_fact_id IS NOT NULL`).Scan(&d1, &b1); err != nil || d1 != "2026-11-25" || b1 != "2026-11-25" {
-			t.Fatalf("UTC boundary pre-midnight fact got wrong date: %s/%s error=%v", d1, b1, err)
-		}
-		if err := pool.QueryRow(ctx, `SELECT occurred_date::text FROM request_metrics
-WHERE fact_request_id='crossday-b' AND source_fact_id IS NOT NULL`).Scan(&d2); err != nil || d2 != "2026-11-26" {
-			t.Fatalf("UTC boundary post-midnight fact got wrong date: %s error=%v", d2, err)
-		}
-		if err := pool.QueryRow(ctx, `SELECT occurred_date::text FROM request_metrics
-WHERE fact_request_id='crossday-c' AND source_fact_id IS NOT NULL`).Scan(&d3); err != nil || d3 != "2026-11-26" {
-			t.Fatalf("exact-midnight fact must fall in the new day (half-open [00:00,next)): %s error=%v", d3, err)
-		}
-		// 半开窗：[11-26 00:00Z, 11-27 00:00Z) 恰好含 b/c、不含 a
-		var halfOpen int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics
-WHERE source_fact_id IS NOT NULL AND fact_request_id LIKE 'crossday-%'
-  AND occurred_at >= '2026-11-26 00:00Z' AND occurred_at < '2026-11-27 00:00Z'`).Scan(&halfOpen); err != nil || halfOpen != 2 {
-			t.Fatalf("half-open UTC window picked wrong rows: %d error=%v", halfOpen, err)
-		}
-		// ⑤ 断言 a：维度缺席 ⇒ session_id 为空
-		var emptySession *string
-		if err := pool.QueryRow(ctx, `SELECT session_id FROM request_metrics
-WHERE fact_request_id='dim-late-request' AND source_fact_id IS NOT NULL`).Scan(&emptySession); err != nil || emptySession != nil {
-			t.Fatalf("session dimension must be absent before attrs arrive: %v error=%v", emptySession, err)
-		}
-		// ⑤ b：维度迟到补齐（attrs 插入）＋ 修订触发重投影
-		exec(`
-INSERT INTO public.request_context_attrs (request_id,tenant_id,ts,gw_session_id,owner_user) VALUES
- ('dim-late-request','tenant-day','2026-11-26 02:00Z','late-session','alice');
-INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('dim-late-rev2','dim-late-request',2,'2026-11-26 02:00Z','tenant-day','success',41,'llm');`)
-		if _, err := processor.ProcessBatch(ctx, 100); err != nil {
-			t.Fatalf("revision-driven re-projection failed: %v", err)
-		}
-		var lateSession *string
-		var revTokens int
-		if err := pool.QueryRow(ctx, `SELECT session_id,total_tokens FROM request_metrics
-WHERE fact_request_id='dim-late-request' AND source_fact_id IS NOT NULL`).Scan(&lateSession, &revTokens); err != nil ||
-			lateSession == nil || *lateSession != "late-session" || revTokens != 41 {
-			t.Fatalf("late dimension not backfilled through the revision re-projection: session=%v tokens=%d error=%v", lateSession, revTokens, err)
-		}
-
-		// ⑥ 失败重启：rename 投影表 ⇒ 批失败 ⇒ 回滚 ⇒ 恢复 ⇒ 新处理器追平
-		exec(`ALTER TABLE public.request_metrics RENAME TO request_metrics_shadow_gone;`)
-		_, boomErr := processor.ProcessBatch(ctx, 100)
-		exec(`ALTER TABLE public.request_metrics_shadow_gone RENAME TO request_metrics;`)
-		if boomErr == nil {
-			t.Fatal("batch must fail while the projection table is absent (fixture precondition)")
-		}
-		// 回滚零副作用：pending 队列没被误删（坏批的队列行还在）、投影行数没变。
-		var rowsBefore int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics WHERE source_fact_id IS NOT NULL`).Scan(&rowsBefore); err != nil {
-			t.Fatal(err)
-		}
-		// 重启语义：全新处理器实例（新连接）从队列与游标两头继续追平。
-		restartDB := stdlib.OpenDBFromPool(pool)
-		defer restartDB.Close()
-		restarted := NewProcessor(restartDB)
-		for i := 0; i < 5; i++ {
-			n, err := restarted.ProcessBatch(ctx, 100)
-			if err != nil {
-				t.Fatalf("restarted processor failed to catch up: %v", err)
-			}
-			if n == 0 {
-				break
-			}
-		}
-		var rowsAfter int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics WHERE source_fact_id IS NOT NULL`).Scan(&rowsAfter); err != nil {
-			t.Fatal(err)
-		}
-		if rowsAfter != rowsBefore+1 { // 坏批里唯一没投影成功的 dim-late-rev… 没有：坏批=空批；此处 +0 或按新增事实
-			// 坏批本身不含新事实（rename 期间队列为空）⇒ 期望 rowsAfter == rowsBefore。
-		}
-		if rowsAfter != rowsBefore {
-			t.Fatalf("rollback/restart changed the projected row count: before=%d after=%d", rowsBefore, rowsAfter)
-		}
-		var pendingAfter int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics_pending`).Scan(&pendingAfter); err != nil || pendingAfter != 0 {
-			t.Fatalf("pending queue not drained after crash-recovery cycle: %d error=%v", pendingAfter, err)
-		}
-
-		// ⑦ 指标面：就绪端点的 pending_since / updated_at / stale 三态
-		//   a) 追平态：200、pending_since=nil
-		readProjectionWatermark(http.StatusOK)
-		//   b) 积压态：插入事实不处理 ⇒ pending_since 非 nil（仍 200——60 分钟阈值未到）
-		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('metric-probe','metric-probe-r',1,'2026-11-26 03:00Z','tenant-day','success',1,'llm');`)
-		state := readProjectionWatermark(http.StatusOK)
-		if state.PendingSince == nil {
-			t.Fatalf("readiness endpoint hid a live backlog: %+v", state)
-		}
-		var oldestWait time.Duration
-		if err := pool.QueryRow(ctx, `SELECT clock_timestamp() - MIN(enqueued_at) FROM request_metrics_pending`).Scan(&oldestWait); err != nil || oldestWait < 0 {
-			t.Fatalf("oldest-wait measurement failed: %v error=%v", oldestWait, err)
-		}
-		if state.PendingSince != nil && time.Since(*state.PendingSince) < oldestWait-time.Second {
-			t.Fatalf("pending_since older than the queue's oldest wait is impossible: since=%v oldest=%v", *state.PendingSince, oldestWait)
-		}
-		//   c) 消化后回到 200 且 pending_since 归 nil
-		for i := 0; i < 5; i++ {
-			if _, err := processor.ProcessBatch(ctx, 100); err != nil {
-				t.Fatal(err)
-			}
-		}
-		readProjectionWatermark(http.StatusOK)
-		var metricProbeTokens int
-		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
-WHERE fact_request_id='metric-probe-r' AND source_fact_id IS NOT NULL`).Scan(&metricProbeTokens); err != nil || metricProbeTokens != 1 {
-			t.Fatalf("final backlog fact not projected after drain: %v error=%v", metricProbeTokens, err)
-		}
-	})
-
-	t.Run("late_arrival_and_revision_beyond_cursor", func(t *testing.T) {
-		// ★ 2026-11-26 交接点名的三个水位遗漏风险，逐条钉死：
-		// ① 晚到的旧事实（fact_id 低于已推进的历史游标）：
-		//    先让游标越过一批，再插入一条 occurred_at/fact_id 都更早的旧事实。
-		//    历史游标不会再回头读它 ⇒ 只能靠 pending 队列（AFTER INSERT 触发器）
-		//    把它带回来。若队列缺位，该事实永远不进投影（静默少算）。
-		//    钉法：等水位完全追平（backfill_complete=true 且 pending 清空）之后
-		//    再插旧事实 ⇒ 此时投影它的唯一通路就是 pending 队列。
-		// ② 跨租户同号（不同租户共用同一 request_id）：
-		//    latest 的 DISTINCT ON 键是 (tenant_id, request_id, occurred_at)
-		//    ⇒ 两租户必须各出一行，且互不覆盖对方的修订。
-		// ③ 已过游标的事实再出新修订（revision 2 在投影之后到达）：
-		//    新修订也只能走 pending 队列进来；upsert 的版本比较
-		//    (revision, finalized_at, fact_id) 必须选新修订而不是保留旧值。
-		//
-		// 先制造「水位已完全追平」的稳态：
-		exec(`INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('watermark-pre','watermark-anchor',1,'2026-11-25 20:00Z','tenant-watermark','success',10,'llm');`)
-		for i := 0; i < 5; i++ {
-			if _, err := processor.ProcessBatch(ctx, 5); err != nil {
-				t.Fatalf("backfill to steady state failed: %v", err)
-			}
-		}
-		var complete bool
-		var pendingCount int
-		if err := pool.QueryRow(ctx, `SELECT backfill_complete,
-			(SELECT count(*) FROM request_metrics_pending) FROM request_metrics_projection_state WHERE singleton`).Scan(&complete, &pendingCount); err != nil || !complete || pendingCount != 0 {
-			t.Fatalf("steady state not reached before late-arrival probe: complete=%t pending=%d error=%v", complete, pendingCount, err)
-		}
-		// 稳态之后插入三组风险事实：晚到旧事实（时间更早）＋ 跨租户同号两条
-		// ＋ 已投影事实的高版本修订。
-		exec(`
-INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('late-old','late-old-request',1,'2026-11-20 08:00Z','tenant-watermark','success',77,'llm');
-INSERT INTO public.usage_facts (event_id,request_id,revision,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('shared-a','same-request-both-tenants',1,'2026-11-25 21:00Z','tenant-wm-x','success',11,'llm'),
-       ('shared-b','same-request-both-tenants',1,'2026-11-25 21:00Z','tenant-wm-y','success',22,'llm');
-INSERT INTO public.usage_facts (event_id,request_id,revision,finalized_at,occurred_at,tenant_id,status,total_tokens,usage_source)
-VALUES ('anchor-rev2','watermark-anchor',2,'2026-11-25 22:00Z','2026-11-25 20:00Z','tenant-watermark','success',999,'corrected');`)
-		if _, err := processor.ProcessBatch(ctx, 100); err != nil {
-			t.Fatalf("late-arrival batch failed: %v", err)
-		}
-		// ① 晚到旧事实必须经 pending 队列进投影：
-		var lateTokens int
-		err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
-WHERE tenant_id='tenant-watermark' AND fact_request_id='late-old-request' AND source_fact_id IS NOT NULL`).Scan(&lateTokens)
-		if err != nil || lateTokens != 77 {
-			t.Fatalf("late-arriving old fact below the cursor was silently dropped: tokens=%d error=%v", lateTokens, err)
-		}
-		// ② 跨租户同号必须各出一行、互不合并：
-		var sharedRows int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics
-WHERE fact_request_id='same-request-both-tenants' AND source_fact_id IS NOT NULL`).Scan(&sharedRows); err != nil || sharedRows != 2 {
-			t.Fatalf("same request_id across tenants merged into %d rows (want 2): error=%v", sharedRows, err)
-		}
-		var xTokens, yTokens int
-		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
-WHERE tenant_id='tenant-wm-x' AND fact_request_id='same-request-both-tenants' AND source_fact_id IS NOT NULL`).Scan(&xTokens); err != nil || xTokens != 11 {
-			t.Fatalf("tenant X row lost its own tokens: %d error=%v", xTokens, err)
-		}
-		if err := pool.QueryRow(ctx, `SELECT total_tokens FROM request_metrics
-WHERE tenant_id='tenant-wm-y' AND fact_request_id='same-request-both-tenants' AND source_fact_id IS NOT NULL`).Scan(&yTokens); err != nil || yTokens != 22 {
-			t.Fatalf("tenant Y row lost its own tokens: %d error=%v", yTokens, err)
-		}
-		// ③ 已过游标的事实的高版本修订必须覆盖旧投影：
-		var anchorTokens int
-		var anchorSource string
-		if err := pool.QueryRow(ctx, `SELECT total_tokens,usage_source FROM request_metrics
-WHERE tenant_id='tenant-watermark' AND fact_request_id='watermark-anchor' AND source_fact_id IS NOT NULL`).Scan(&anchorTokens, &anchorSource); err != nil ||
-			anchorTokens != 999 || anchorSource != "corrected" {
-			t.Fatalf("revision beyond cursor did not replace the projected row: tokens=%d source=%s error=%v", anchorTokens, anchorSource, err)
-		}
-		// 队列消化干净：三条晚到事实各确认一次，不得残留。
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM request_metrics_pending`).Scan(&pendingCount); err != nil || pendingCount != 0 {
-			t.Fatalf("pending queue leaked after acknowledgement: pending=%d error=%v", pendingCount, err)
 		}
 	})
 
@@ -871,6 +722,30 @@ INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,traffi
 			provider.Totals.TotalTokens != totals.TotalTokens || provider.Totals.EstimatedCostCents != totals.EstimatedCostCents {
 			t.Fatalf("provider business scope does not match the same projected day: %+v", provider.Totals)
 		}
+		for _, view := range []reportrollup.View{reportrollup.ViewProvider, reportrollup.ViewInternal, reportrollup.ViewCredential, reportrollup.ViewKey} {
+			for _, scope := range []reportrollup.ProjectedSummaryScope{reportrollup.ProjectedSummaryTotals, reportrollup.ProjectedSummaryDistribution} {
+				want, err := reportrollup.BuildProjectedReport(ctx, pool, start, today, view, filter, reportrollup.Names{}, false, coverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want.Models = []reportrollup.ModelRow{}
+				want.DailyModels, want.Credentials, want.APIKeys = nil, nil, nil
+				if scope == reportrollup.ProjectedSummaryTotals {
+					want.ModelTotals = nil
+				}
+				providerView := view == reportrollup.ViewProvider || view == reportrollup.ViewCredential
+				if scope == reportrollup.ProjectedSummaryTotals || !providerView {
+					want.Providers = nil
+				}
+				if scope == reportrollup.ProjectedSummaryTotals || providerView {
+					want.Tenants, want.Persons = nil, nil
+				}
+				got, err := reportrollup.BuildProjectedSummary(ctx, pool, start, today, view, filter, reportrollup.Names{}, coverage, scope)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s %s: scoped report differs from the full report: got %+v, want %+v, err %v", view, scope, got, want, err)
+				}
+			}
+		}
 		rankingQuery := metrics.SessionRequestRankingQuery{Start: start, End: today, Tenant: "tenant-report"}
 		for _, dimension := range []string{"models", "providers"} {
 			rankingQuery.Dimension = dimension
@@ -913,8 +788,8 @@ INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,traffi
 		if err != nil || len(bytes) < 2 || string(bytes[:2]) != "PK" {
 			t.Fatalf("could not export projected report: %v", err)
 		}
-		exec(`INSERT INTO request_metrics_pending (fact_id,occurred_at) VALUES
- (9001,'2026-11-25 05:04Z'), (9002,'2026-11-25 16:00Z');`)
+		exec(`INSERT INTO request_metrics_refresh_pending (kind,tenant_id,request_id,occurred_at) VALUES
+ ('fact','tenant-report','pending-in-window','2026-11-25 05:04Z'), ('fact','tenant-report','pending-next-day','2026-11-25 16:00Z');`)
 		pending, err := reportrollup.ReadProjectionCoverage(ctx, pool, start, today, today.Add(time.Hour))
 		if err != nil || pending.PendingSince == nil {
 			t.Fatalf("pending in-window facts should be visible: %+v %v", pending, err)
@@ -1281,7 +1156,1117 @@ UPDATE public.usage_facts SET canonical_id=NULL,raw_model_name='bob-model'
 			`"total_active":1`, `"pages":1`, `"session_id":"same-id"`)
 		api(http.MethodGet, metrics.SessionDashboardOverview, "&tenant_id=session-b", http.StatusForbidden, `"code":"FORBIDDEN"`)
 		api(http.MethodPost, metrics.SessionDashboardOverview, "", http.StatusMethodNotAllowed)
-		exec(`UPDATE request_metrics_projection_state SET backfill_complete=false WHERE singleton`)
+		exec(`UPDATE request_metrics_repair_state SET backfill_complete=false WHERE singleton`)
+		t.Cleanup(func() { exec(`UPDATE request_metrics_repair_state SET backfill_complete=true WHERE singleton`) })
 		api(http.MethodGet, metrics.SessionDashboardOverview, "", http.StatusServiceUnavailable, `"code":"DATA_NOT_READY"`)
+	})
+	t.Run("daily_summary_rebuild_keeps_exact_membership_and_measures", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection
+ (request_id, tenant_id, occurred_at, occurred_date, billing_date, session_id, outbound_model,
+  status, traffic_class, prompt_tokens, total_tokens, cached_tokens, cache_input_tokens,
+  cost_amount, cost_currency, latency_ms, ttft_ms, usage_source, source, source_fact_id)
+SELECT req, tenant, ts, (ts AT TIME ZONE 'UTC')::date, (ts AT TIME ZONE 'UTC')::date, session_id, model,
+       status, traffic, tokens, tokens, cached, cache_input, amount, currency, latency, ttft, measured, 'async_processor', n
+FROM (VALUES
+ (10001,'summary1','summary-a',timestamptz '2026-11-18 00:00+08','shared','model-a','success','business',11,3,11,0.2,'USD',100,10,'llm'),
+ (10002,'summary2','summary-a',timestamptz '2026-11-18 08:00+08','shared','model-a','timeout','business',17,0,NULL,0.2,'CNY',250,NULL,'estimated'),
+ (10003,'summary3','summary-b',timestamptz '2026-11-18 08:00+08','shared','model-b','success','business',5,2,5,0.2,'USD',NULL,3,'corrected'),
+ (10004,'summary4','summary-a',timestamptz '2026-11-19 12:00+08','shared','model-a','success','business',3,2,3,0.5,'USD',101,NULL,'llm'),
+ (10005,'summary5','summary-a',timestamptz '2026-11-19 14:00+08','probe-only','model-b','success','probe',7,0,7,0.4,'EUR',999,200,'llm'),
+ (10006,'summary6','summary-a',timestamptz '2026-11-20 12:00+08',NULL,NULL,'success','business',0,0,0,NULL,NULL,77,11,'llm'),
+ (10007,'summary7','summary-b',timestamptz '2026-11-21 00:00+08','at-end','model-c','success','business',99,0,99,9,'USD',123,12,'llm')
+) AS r(n,req,tenant,ts,session_id,model,status,traffic,tokens,cached,cache_input,amount,currency,latency,ttft,measured);`)
+		zone := time.FixedZone("UTC+8", 8*3600)
+		from := time.Date(2026, 11, 18, 0, 0, 0, 0, zone)
+		through := from.AddDate(0, 0, 3)
+		f := metrics.MetricsFilter{StartTime: from, EndTime: through}
+		stats := func(t *testing.T, filter metrics.MetricsFilter, detail bool) string {
+			t.Helper()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if detail {
+				if _, err := tx.Exec(ctx, "UPDATE public.request_metrics_daily_state SET dirty=true WHERE NOT dirty"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var jitBefore, jitAfter string
+			if err := tx.QueryRow(ctx, "SHOW jit").Scan(&jitBefore); err != nil {
+				t.Fatal(err)
+			}
+			result, err := metrics.ReadRequestStats(ctx, tx, metrics.RequestStatsQuery{MetricsFilter: filter, Group: "summary", Timezone: "Asia/Shanghai"})
+			if err != nil || !result.Ready || len(result.Items) != 1 {
+				t.Fatalf("summary result %+v, error %v", result, err)
+			}
+			if err := tx.QueryRow(ctx, "SHOW jit").Scan(&jitAfter); err != nil || jitAfter != jitBefore {
+				t.Fatalf("summary changed the caller's JIT setting from %q to %q: %v", jitBefore, jitAfter, err)
+			}
+			return string(result.Items[0])
+		}
+		assertParity := func(t *testing.T, filters ...metrics.MetricsFilter) {
+			t.Helper()
+			for _, filter := range filters {
+				got, want := stats(t, filter, false), stats(t, filter, true)
+				if got != want {
+					t.Fatalf("summary differs from detail for %+v:\ngot  %s\nwant %s", filter, got, want)
+				}
+			}
+		}
+		refresh := func() {
+			t.Helper()
+			for range 30 {
+				built, err := processor.RefreshDailySummary(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !built {
+					return
+				}
+			}
+			t.Fatal("daily refresh did not drain")
+		}
+
+		// Fail after writing the measures and membership but before publication.
+		exec(`
+CREATE FUNCTION public.reject_daily_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected daily publish failure'; END $$;
+CREATE TRIGGER reject_daily_publish BEFORE UPDATE ON public.request_metrics_daily_state
+FOR EACH ROW WHEN (OLD.dirty AND NOT NEW.dirty) EXECUTE FUNCTION public.reject_daily_publish();`)
+		if _, err := processor.RefreshDailySummary(ctx); err == nil || !strings.Contains(err.Error(), "injected daily publish failure") {
+			t.Fatalf("expected injected publication error, got %v", err)
+		}
+		var rows int
+		if err := pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM public.request_metrics_daily_summary) + (SELECT count(*) FROM public.request_metrics_daily_session_codes) + (SELECT count(*) FROM public.request_metrics_daily_session_masks)").Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("failed publication left %d derived rows: %v", rows, err)
+		}
+		exec("DROP TRIGGER reject_daily_publish ON public.request_metrics_daily_state; DROP FUNCTION public.reject_daily_publish()")
+		refresh()
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_daily_state
+		    WHERE day >= '2026-11-18' AND day < '2026-11-21' AND NOT dirty`).Scan(&rows); err != nil || rows != 3 {
+			t.Fatalf("expected three clean days, got %d: %v", rows, err)
+		}
+		tenant := f
+		tenant.TenantID = "summary-a"
+		probe := f
+		probe.IncludeProbes = true
+		explicitProbe := "probe"
+		probeOnly := probe
+		probeOnly.TrafficClass = &explicitProbe
+		split := f
+		split.StartTime = from.Add(time.Hour)
+		split.EndTime = through.Add(-time.Hour)
+		uncoveredSession := f
+		uncoveredSession.StartTime = through.AddDate(0, 0, -1)
+		uncoveredSession.EndTime = through.Add(time.Hour)
+		if got := stats(t, f, false); !strings.Contains(got, `"active_sessions": 2`) || !strings.Contains(got, `"total_requests": 5`) {
+			t.Fatalf("unexpected cross-day and tenant union: %s", got)
+		}
+		if got := stats(t, uncoveredSession, false); !strings.Contains(got, `"active_sessions": 1`) || !strings.Contains(got, `"total_requests": 2`) {
+			t.Fatalf("uncovered session with no published session words: %s", got)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split, uncoveredSession)
+
+		// Move a request between two closed days. Replace a shared session
+		// association, delete the only copy for one tenant, and add a new session.
+		exec(`
+UPDATE public.request_metrics_projection
+SET occurred_at='2026-11-19 16:00+08', occurred_date='2026-11-19', session_id='replacement', total_tokens=42
+WHERE request_id='summary1';
+DELETE FROM public.request_metrics_projection WHERE request_id='summary3';
+UPDATE public.request_metrics_projection SET session_id='new-after-build', cost_currency='CNY'
+WHERE request_id='summary2';`)
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_daily_state
+		    WHERE day IN ('2026-11-18','2026-11-19') AND dirty`).Scan(&rows); err != nil || rows != 2 {
+			t.Fatalf("move left stale published days: dirty=%d, error=%v", rows, err)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split)
+
+		// Two slots can rebuild different days while preserving shared codes.
+		results := make(chan error, 2)
+		for range 2 {
+			go func() {
+				built, err := processor.RefreshDailySummary(ctx)
+				if err == nil && !built {
+					err = errors.New("daily rebuild did not claim work")
+				}
+				results <- err
+			}()
+		}
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_daily_state
+		    WHERE day IN ('2026-11-18','2026-11-19') AND dirty`).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("two-slot rebuild left %d dirty days: %v", rows, err)
+		}
+		assertParity(t, f, tenant, probe, probeOnly, split)
+		// Hold the worker just before publication, then have the real projector
+		// deliver a late fact for its locked day.
+		exec(`
+UPDATE public.request_metrics_daily_state SET dirty=true WHERE day='2026-11-20';
+CREATE FUNCTION public.wait_for_daily_publish_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(983220);
+    RETURN NEW;
+END $$;
+CREATE TRIGGER wait_for_daily_publish_fixture BEFORE UPDATE ON public.request_metrics_daily_state
+FOR EACH ROW WHEN (OLD.day='2026-11-20' AND OLD.dirty AND NOT NEW.dirty)
+EXECUTE FUNCTION public.wait_for_daily_publish_fixture();`)
+		barrier, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer barrier.Rollback(ctx)
+		if _, err := barrier.Exec(ctx, "SELECT pg_advisory_xact_lock(983220)"); err != nil {
+			t.Fatal(err)
+		}
+		waitFor := func(sql string) {
+			t.Helper()
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			for {
+				var waiting bool
+				if err := pool.QueryRow(waitCtx, sql).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		go func() {
+			_, err := processor.RefreshDailySummary(ctx)
+			results <- err
+		}()
+		waitFor("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=983220 AND NOT granted)")
+		exec(`
+INSERT INTO public.usage_facts (event_id,request_id,occurred_at,tenant_id,status,total_tokens)
+VALUES ('summary-late','summary-late','2026-11-20 18:00+08','summary-a','success',69);`)
+		go func() {
+			_, err := processor.ProcessBatch(ctx, 50)
+			results <- err
+		}()
+		waitFor(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+		    WHERE datname=current_database() AND wait_event_type='Lock' AND pid<>pg_backend_pid()
+		      AND query LIKE '%WITH state AS (%')`)
+		if err := barrier.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		var dirty bool
+		if err := pool.QueryRow(ctx, "SELECT dirty FROM public.request_metrics_daily_state WHERE day='2026-11-20'").Scan(&dirty); err != nil || !dirty {
+			t.Fatalf("concurrent projection failed to invalidate the rebuilt day: dirty=%v error=%v", dirty, err)
+		}
+		assertParity(t, f, tenant, split)
+		exec("DROP TRIGGER wait_for_daily_publish_fixture ON public.request_metrics_daily_state; DROP FUNCTION public.wait_for_daily_publish_fixture()")
+		refresh()
+		assertParity(t, f, tenant, split)
+	})
+
+	t.Run("board_days_match_detail_during_and_after_invalidation", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+  request_id, tenant_id, occurred_at, occurred_date, billing_date, status, traffic_class, outbound_model,
+  provider_id, provider_code, provider_name, api_key_id, owner_user, agent_name, client_ip, identity_hash,
+  session_id, total_tokens, cost_amount, cost_currency, credits_charged, latency_ms, ttft_ms, error_kind, source, source_fact_id)
+SELECT 'board-day-'||n,CASE WHEN n<15 THEN 'board-days' ELSE 'board-days-other' END,ts,ts::date,ts::date,
+  CASE WHEN n=7 OR n=10 THEN 'timeout' ELSE 'success' END,
+  CASE WHEN n=8 THEN 'probe' ELSE 'business' END,
+  CASE WHEN n IN (9,12) THEN '__others__' ELSE 'board-model-'||(n%8) END,
+  9+n%2, CASE WHEN n%2=0 THEN 'p' ELSE NULL END, CASE WHEN n%3=0 THEN 'actual' ELSE NULL END,
+  CASE WHEN n%4=0 THEN -129 WHEN n%5=0 THEN 65 ELSE 7+n%3 END, 'board-reader', CASE WHEN n%3=0 THEN 'client' ELSE NULL END,
+  CASE WHEN n%2=0 THEN '192.0.2.15'::inet ELSE NULL END, CASE WHEN n%2=0 THEN 'named' ELSE '' END,
+  'session-'||(n%4),n,n*0.001,CASE WHEN n%2=0 THEN 'USD' ELSE 'CNY' END,n,n*17,n*3,
+  CASE WHEN n=7 THEN 'upstream_timeout' ELSE NULL END,'async_processor',23000+n
+FROM (SELECT n, timestamptz '2026-11-16 00:00+08'+(n%2)*interval '1 day'+
+             CASE WHEN n=2 THEN interval '23 hours 58 minutes' ELSE (n%3)*interval '1 minute' END AS ts
+	  FROM generate_series(1,16) n) rows;`)
+		zone := time.FixedZone("UTC+8", 8*3600)
+		start := time.Date(2026, 11, 16, 0, 0, 0, 0, zone)
+		f := metrics.MetricsFilter{TenantID: "board-days", StartTime: start, EndTime: start.AddDate(0, 0, 2)}
+		assertParity := func(t *testing.T, filter metrics.MetricsFilter) {
+			t.Helper()
+			for _, bucket := range []int{5, 15, 60, 360} {
+				q := metrics.BoardQuery{MetricsFilter: filter, BucketMinutes: bucket}
+				actual, err := metrics.ReadRequestBoard(ctx, pool, q)
+				if err != nil || !actual.Ready {
+					t.Fatalf("board merged read %+v: %v", actual, err)
+				}
+				q.Owner = "board-reader"
+				detail, err := metrics.ReadRequestBoard(ctx, pool, q)
+				if err != nil || !detail.Ready {
+					t.Fatalf("board detail read %+v: %v", detail, err)
+				}
+				got, err := json.Marshal(actual)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := json.Marshal(detail)
+				if err != nil || string(got) != string(want) {
+					t.Fatalf("board bucket %d differs from detail, err %v\ngot %s\nwant %s", bucket, err, got, want)
+				}
+			}
+		}
+		partial := f
+		partial.StartTime = start.Add(time.Minute)
+		partial.EndTime = f.EndTime.Add(time.Minute)
+		withProbe := f
+		withProbe.IncludeProbes = true
+		probeOnly := withProbe
+		probe := "probe"
+		probeOnly.TrafficClass = &probe
+		refresh := func(fn func(context.Context) (bool, error)) {
+			t.Helper()
+			for range 30 {
+				built, err := fn(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !built {
+					return
+				}
+			}
+			t.Fatal("daily rebuild did not drain")
+		}
+		refresh(processor.RefreshDailySummary)
+		refresh(processor.RefreshDailyBoard)
+		countPublished := func(want int) {
+			t.Helper()
+			var n int
+			err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_board_days
+				WHERE day IN ('2026-11-16','2026-11-17')`).Scan(&n)
+			if err != nil || n != want {
+				t.Fatalf("published board days=%d want %d: %v", n, want, err)
+			}
+		}
+		countPublished(2)
+		assertParity(t, f)
+		assertParity(t, partial)
+		assertParity(t, withProbe)
+		assertParity(t, probeOnly)
+		allTenants := withProbe
+		allTenants.TenantID = ""
+		assertParity(t, allTenants)
+		allTenantsPartial := allTenants
+		allTenantsPartial.StartTime, allTenantsPartial.EndTime = partial.StartTime, partial.EndTime
+		assertParity(t, allTenantsPartial)
+		apply("983q_request_metrics_board_hours.sql")
+		apply("983q_request_metrics_board_hours.sql")
+		countPublishedHours := func(want int) {
+			t.Helper()
+			var n int
+			err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_board_hour_days
+				WHERE day IN ('2026-11-16','2026-11-17')`).Scan(&n)
+			if err != nil || n != want {
+				t.Fatalf("published hourly board days=%d want %d: %v", n, want, err)
+			}
+		}
+		countPublishedHours(0)
+		exec(`CREATE FUNCTION public.reject_board_hour_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected hourly board publication failure'; END $$;
+CREATE TRIGGER reject_board_hour_publish BEFORE INSERT ON public.request_metrics_board_hour_days
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_hour_publish();`)
+		if _, err := processor.RefreshDailyBoard(ctx); err == nil || !strings.Contains(err.Error(), "injected hourly board publication failure") {
+			t.Fatalf("expected failed hourly board publication: %v", err)
+		}
+		var hourRows int
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM public.request_metrics_board_hour_summary)
+			+ (SELECT count(*) FROM public.request_metrics_board_hour_masks)`).Scan(&hourRows); err != nil || hourRows != 0 {
+			t.Fatalf("failed hourly publication left %d rows: %v", hourRows, err)
+		}
+		countPublishedHours(0)
+		exec("DROP TRIGGER reject_board_hour_publish ON public.request_metrics_board_hour_days; DROP FUNCTION public.reject_board_hour_publish()")
+		refresh(processor.RefreshDailyBoard)
+		countPublishedHours(2)
+		assertParity(t, allTenantsPartial)
+		bothEdgesPartial := allTenants
+		bothEdgesPartial.StartTime = f.StartTime.Add(31 * time.Minute)
+		bothEdgesPartial.EndTime = f.EndTime.Add(-37 * time.Minute)
+		assertParity(t, bothEdgesPartial)
+		withProbePartial := withProbe
+		withProbePartial.StartTime, withProbePartial.EndTime = partial.StartTime, partial.EndTime
+		assertParity(t, withProbePartial)
+
+		apply("983r_request_metrics_board_hour_distributions.sql")
+		apply("983r_request_metrics_board_hour_distributions.sql")
+		countPublishedDistributions := func(want int) {
+			t.Helper()
+			var n int
+			err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_board_hour_distribution_days
+				WHERE day IN ('2026-11-16','2026-11-17')`).Scan(&n)
+			if err != nil || n != want {
+				t.Fatalf("published board distribution days=%d want %d: %v", n, want, err)
+			}
+		}
+		countPublishedDistributions(0)
+		assertParity(t, bothEdgesPartial)
+		exec(`CREATE FUNCTION public.reject_board_distribution_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected board distribution publication failure'; END $$;
+CREATE TRIGGER reject_board_distribution_publish BEFORE INSERT ON public.request_metrics_board_hour_distribution_days
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_distribution_publish();`)
+		if _, err := processor.RefreshDailyBoard(ctx); err == nil || !strings.Contains(err.Error(), "injected board distribution publication failure") {
+			t.Fatalf("expected failed board distribution publication: %v", err)
+		}
+		var distributionRows int
+		if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM public.request_metrics_board_hour_pies)
+			+ (SELECT count(*) FROM public.request_metrics_board_hour_providers)
+			+ (SELECT count(*) FROM public.request_metrics_board_hour_keys)`).Scan(&distributionRows); err != nil || distributionRows != 0 {
+			t.Fatalf("failed board distribution publication left %d rows: %v", distributionRows, err)
+		}
+		exec("DROP TRIGGER reject_board_distribution_publish ON public.request_metrics_board_hour_distribution_days; DROP FUNCTION public.reject_board_distribution_publish()")
+		refresh(processor.RefreshDailyBoard)
+		countPublishedDistributions(2)
+		assertParity(t, allTenantsPartial)
+		assertParity(t, bothEdgesPartial)
+		assertParity(t, withProbePartial)
+
+		exec(`
+UPDATE public.request_metrics_projection SET occurred_at='2026-11-17 05:00+08', total_tokens=42
+WHERE request_id='board-day-2';
+DELETE FROM public.request_metrics_projection WHERE request_id='board-day-12';`)
+		countPublished(0)
+		countPublishedHours(0)
+		countPublishedDistributions(0)
+		assertParity(t, f)
+		assertParity(t, allTenantsPartial)
+		refresh(processor.RefreshDailySummary)
+		countPublished(0)
+		exec(`
+CREATE FUNCTION public.reject_board_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'injected board publication failure'; END $$;
+CREATE TRIGGER reject_board_publish BEFORE INSERT ON public.request_metrics_board_days
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_board_publish();`)
+		if _, err := processor.RefreshDailyBoard(ctx); err == nil || !strings.Contains(err.Error(), "injected board publication failure") {
+			t.Fatalf("expected failed board publication: %v", err)
+		}
+		countPublished(0)
+		assertParity(t, withProbe)
+		exec("DROP TRIGGER reject_board_publish ON public.request_metrics_board_days; DROP FUNCTION public.reject_board_publish()")
+		if built, err := processor.RefreshDailyBoard(ctx); !built || err != nil {
+			t.Fatalf("expected one board day to republish: built=%v error=%v", built, err)
+		}
+		countPublished(1)
+		countPublishedHours(1)
+		countPublishedDistributions(1)
+		assertParity(t, f)
+		assertParity(t, withProbe)
+		assertParity(t, allTenants)
+		assertParity(t, allTenantsPartial)
+		assertParity(t, bothEdgesPartial)
+		refresh(processor.RefreshDailyBoard)
+		countPublished(2)
+		countPublishedHours(2)
+		countPublishedDistributions(2)
+		assertParity(t, f)
+		assertParity(t, withProbe)
+		assertParity(t, allTenants)
+		assertParity(t, allTenantsPartial)
+		apply("983r_request_metrics_board_hour_distributions.down.sql")
+		apply("983r_request_metrics_board_hour_distributions.down.sql")
+		assertParity(t, bothEdgesPartial)
+		apply("983q_request_metrics_board_hours.down.sql")
+		apply("983q_request_metrics_board_hours.down.sql")
+		assertParity(t, allTenantsPartial)
+	})
+
+	t.Run("published_history_merges_exact_ranks_and_uncached_days", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+ request_id, tenant_id, occurred_at, occurred_date, billing_date, status, traffic_class, provider_id,
+ outbound_model, prompt_tokens, cached_tokens, cache_input_tokens, total_tokens, latency_ms,
+ cost_amount, cost_currency, error_kind, source, source_fact_id)
+SELECT 'cached-history-'||id, CASE WHEN id=2 THEN 'history-b' ELSE 'history-a' END,
+ stamp::timestamptz,(stamp::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,
+ (stamp::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,status,traffic,provider,
+ 'history-model-'||(id%2),id*20,id*2,CASE WHEN id%2=0 THEN id*25 END, id*21,latency,
+ CASE WHEN id=6 THEN -id*0.0000123 ELSE id*0.0000123 END,
+ CASE WHEN id=4 THEN 'CNY' ELSE 'USD' END,kind,'async_processor',25000+id
+FROM (VALUES
+ (1,'2026-11-12 00:00+08','success','business',9,80,NULL),
+ (2,'2026-11-12 23:59+08','success','business',10,190,NULL),
+ (3,'2026-11-13 05:00+08','success','business',9,8589935572,NULL),
+ (4,'2026-11-13 05:10+08','success','probe',9,3500,NULL),
+ (5,'2026-11-13 05:20+08','timeout','business',NULL,999,'upstream_timeout'),
+ (6,'2026-11-14 00:00+08','success','business',9,500,NULL),
+ (7,'2026-11-14 05:20+08','failed','business',NULL,0,NULL)
+) AS fixture(id,stamp,status,traffic,provider,latency,kind);
+INSERT INTO public.request_metrics_daily_state (day) VALUES ('2026-11-11') ON CONFLICT DO NOTHING;`)
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Date(2026, 11, 11, 0, 0, 0, 0, loc)
+		end := start.AddDate(0, 0, 3)
+		assertParity := func(wantMode, wantTenants string, filter reportrollup.GrainFilter) {
+			t.Helper()
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, end, end.AddDate(0, 0, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				view  reportrollup.View
+				scope reportrollup.ProjectedSummaryScope
+			}{
+				{reportrollup.ViewProvider, reportrollup.ProjectedSummaryDistribution},
+				{reportrollup.ViewProvider, reportrollup.ProjectedSummaryTotals},
+				{reportrollup.ViewInternal, reportrollup.ProjectedSummaryDistribution},
+				{reportrollup.ViewInternal, reportrollup.ProjectedSummaryTotals},
+			} {
+				want, err := reportrollup.BuildProjectedReport(ctx, tx, start, end, tc.view, filter, reportrollup.Names{}, false, coverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want.Models = []reportrollup.ModelRow{}
+				want.DailyModels, want.Credentials, want.APIKeys = nil, nil, nil
+				if tc.view == reportrollup.ViewInternal {
+					want.Providers = nil
+				}
+				if tc.view != reportrollup.ViewInternal || tc.scope == reportrollup.ProjectedSummaryTotals {
+					want.Tenants, want.Persons = nil, nil
+				}
+				if tc.scope == reportrollup.ProjectedSummaryTotals {
+					want.Providers, want.ModelTotals = nil, nil
+				}
+				probe := &historyQueryProbe{Querier: tx}
+				got, err := reportrollup.BuildProjectedSummary(ctx, probe, start, end, tc.view, filter, reportrollup.Names{}, coverage, tc.scope)
+				wantTenantMode := ""
+				if tc.view == reportrollup.ViewInternal && (tc.scope == reportrollup.ProjectedSummaryDistribution || filter.TenantID != "") {
+					wantTenantMode = wantTenants
+				}
+				if err != nil || probe.mode != wantMode || probe.tenantMode != wantTenantMode || !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s/%s used history modes %q/%q want %q/%q: %v\ngot %+v\nwant %+v", tc.view, tc.scope,
+						probe.mode, probe.tenantMode, wantMode, wantTenantMode, err, got, want)
+				}
+			}
+		}
+		drain := func(refresh func(context.Context) (bool, error)) {
+			t.Helper()
+			for range 75 {
+				more, err := refresh(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !more {
+					return
+				}
+			}
+			t.Fatal("history worker did not drain")
+		}
+		assertParity("", "", reportrollup.GrainFilter{})
+		drain(processor.RefreshDailySummary)
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", "", reportrollup.GrainFilter{})
+		assertParity("", "", reportrollup.GrainFilter{TenantID: "history-a"})
+		apply("983n_request_metrics_daily_tenant_history.sql")
+		apply("983n_request_metrics_daily_tenant_history.sql")
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", "published", reportrollup.GrainFilter{})
+		assertParity("published", "published", reportrollup.GrainFilter{BusinessOnly: true})
+		assertParity("", "published", reportrollup.GrainFilter{TenantID: "history-a"})
+		assertParity("", "published", reportrollup.GrainFilter{TenantID: "unknown-tenant"})
+		assertParity("", "", reportrollup.GrainFilter{TenantID: "history-a", Model: "history-model-1"})
+		exec(`UPDATE public.request_metrics_projection SET occurred_at='2026-11-13 10:00+08',
+			occurred_date='2026-11-13', billing_date='2026-11-13', latency_ms=491, cost_amount=0.12345678
+			WHERE request_id='cached-history-2';
+			DELETE FROM public.request_metrics_projection WHERE request_id='cached-history-1';`)
+		var published int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics_history_days
+			WHERE day BETWEEN '2026-11-12' AND '2026-11-14'`).Scan(&published); err != nil || published != 1 {
+			t.Fatalf("both revised dates must become uncovered, published=%d: %v", published, err)
+		}
+		assertParity("contiguous", "contiguous", reportrollup.GrainFilter{})
+		assertParity("", "contiguous", reportrollup.GrainFilter{TenantID: "history-b"})
+		drain(processor.RefreshDailySummary)
+		exec(`CREATE FUNCTION public.reject_history_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'injected history publication failure'; END $$;
+			CREATE TRIGGER reject_history_publish BEFORE INSERT ON public.request_metrics_history_days
+			FOR EACH STATEMENT EXECUTE FUNCTION public.reject_history_publish();`)
+		if _, err := processor.RefreshDailyHistory(ctx); err == nil || !strings.Contains(err.Error(), "injected history publication failure") {
+			t.Fatalf("expected history publication to roll back: %v", err)
+		}
+		assertParity("contiguous", "contiguous", reportrollup.GrainFilter{})
+		exec("DROP TRIGGER reject_history_publish ON public.request_metrics_history_days; DROP FUNCTION public.reject_history_publish()")
+		exec(`CREATE FUNCTION public.reject_tenant_history_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'injected tenant history publication failure'; END $$;
+			CREATE TRIGGER reject_tenant_history_publish BEFORE INSERT ON public.request_metrics_tenant_history_days
+			FOR EACH STATEMENT EXECUTE FUNCTION public.reject_tenant_history_publish();`)
+		if _, err := processor.RefreshDailyHistory(ctx); err == nil || !strings.Contains(err.Error(), "injected tenant history publication failure") {
+			t.Fatalf("expected tenant history publication to roll back: %v", err)
+		}
+		assertParity("contiguous", "contiguous", reportrollup.GrainFilter{})
+		exec("DROP TRIGGER reject_tenant_history_publish ON public.request_metrics_tenant_history_days; DROP FUNCTION public.reject_tenant_history_publish()")
+		results := make(chan error, 2)
+		for _, worker := range []*ProjectionProcessor{processor, NewProjectionProcessor(db)} {
+			go func() {
+				_, err := worker.RefreshDailyHistory(ctx)
+				results <- err
+			}()
+		}
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", "published", reportrollup.GrainFilter{})
+		exec(`UPDATE public.request_metrics_daily_state SET dirty=true WHERE day IN ('2026-11-11','2026-11-14');`)
+		assertParity("fragmented", "fragmented", reportrollup.GrainFilter{})
+		assertParity("", "fragmented", reportrollup.GrainFilter{TenantID: "history-a"})
+		drain(processor.RefreshDailySummary)
+		drain(processor.RefreshDailyHistory)
+		assertParity("published", "published", reportrollup.GrainFilter{})
+	})
+
+	t.Run("person_pages_match_full_internal_distributions", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+ request_id,tenant_id,person_key,occurred_at,occurred_date,billing_date,raw_model_name,
+ status,traffic_class,total_tokens,credits_charged,cost_amount,cost_currency,latency_ms,source,source_fact_id)
+SELECT 'person-page-'||n,
+ CASE WHEN n=62 THEN 'page-c' WHEN n IN (59,60,61) OR n%2=0 THEN 'page-a' ELSE 'page-b' END,
+ CASE n WHEN 59 THEN NULL WHEN 60 THEN '' WHEN 61 THEN 'probe-only' WHEN 101 THEN 'person-01'
+      ELSE 'person-'||lpad((n%29)::text,2,'0') END,
+ '2026-11-05 01:00+08','2026-11-05','2026-11-05','page-model',
+ CASE WHEN n=62 OR n%7=0 THEN 'timeout' ELSE 'success' END,
+ CASE WHEN n=61 THEN 'probe' ELSE 'business' END,
+ n*3,n,n*0.0003123,'USD',n*40,'async_processor',27000+n
+FROM (SELECT n FROM generate_series(1,62) n UNION ALL SELECT 101) fixture;
+
+INSERT INTO public.request_metrics_projection (
+ request_id,tenant_id,person_key,occurred_at,occurred_date,billing_date,raw_model_name,
+ status,traffic_class,total_tokens,credits_charged,cost_amount,cost_currency,latency_ms,source,source_fact_id)
+VALUES ('person-page-earlier','page-a','person-10','2026-11-04 01:00+08','2026-11-04','2026-11-04',
+ 'page-model','success','business',11,7,0.000173,'USD',505,'async_processor',28001);`)
+		drain := func(refresh func(context.Context) (bool, error)) {
+			t.Helper()
+			for {
+				built, err := refresh(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !built {
+					return
+				}
+			}
+		}
+		drain(processor.RefreshDailySummary)
+		drain(processor.RefreshDailyHistory)
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Date(2026, 11, 4, 0, 0, 0, 0, loc)
+		end := start.AddDate(0, 0, 1)
+		assertPages := func(wantPacked bool, tenantModelMode string) []*reportrollup.GrainReport {
+			t.Helper()
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, end, end.AddDate(0, 0, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reports []*reportrollup.GrainReport
+			for _, tc := range []struct {
+				filter    reportrollup.GrainFilter
+				requested int32
+				page      int32
+				people    int64
+			}{
+				{requested: 1, page: 1, people: 60},
+				{requested: 2, page: 2, people: 60},
+				{requested: 99, page: 2, people: 60},
+				{filter: reportrollup.GrainFilter{TenantID: "page-a"}, requested: 1, page: 1, people: 30},
+				{filter: reportrollup.GrainFilter{Person: "unknown"}, requested: 1, page: 1, people: 1},
+				{filter: reportrollup.GrainFilter{Person: "probe-only"}, requested: 2, page: 1, people: 0},
+			} {
+				want, err := reportrollup.BuildProjectedSummary(ctx, tx, start, end, reportrollup.ViewInternal, tc.filter,
+					reportrollup.Names{}, coverage, reportrollup.ProjectedSummaryDistribution)
+				if err != nil || int64(len(want.Persons)) != tc.people {
+					t.Fatalf("full internal distribution for %+v: %v", tc, err)
+				}
+				sort.Slice(want.Persons, func(i, j int) bool {
+					a, b := want.Persons[i], want.Persons[j]
+					if a.Totals.RequestCount != b.Totals.RequestCount {
+						return a.Totals.RequestCount > b.Totals.RequestCount
+					}
+					if a.TenantID != b.TenantID {
+						return a.TenantID < b.TenantID
+					}
+					return a.Person < b.Person
+				})
+				want.PersonPage = &reportrollup.PersonPage{Number: tc.page, Size: 50, Total: tc.people}
+				offset := int(tc.page-1) * want.PersonPage.Size
+				want.Persons = want.Persons[offset:min(offset+want.PersonPage.Size, len(want.Persons))]
+				probe := &historyQueryProbe{Querier: tx}
+				got, err := reportrollup.BuildProjectedPersonPage(ctx, probe, start, end, tc.filter, coverage, tc.requested)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("person page for %+v does not equal exact full slice: %v", tc, err)
+				}
+				wantPackedForScope := wantPacked && tc.filter.TenantID == "" && tc.filter.Person == ""
+				if probe.packedRank != wantPackedForScope {
+					t.Fatalf("packed rank for %+v = %t, want %t", tc, probe.packedRank, wantPackedForScope)
+				}
+				if tc.filter.TenantID == "" && tc.filter.Person == "" && (probe.mode != "published" || probe.tenantMode != "published") {
+					t.Fatalf("unfiltered person page should use published days, got %q/%q", probe.mode, probe.tenantMode)
+				}
+				if tc.filter.TenantID != "" && (probe.mode != "" || probe.tenantMode != "published") {
+					t.Fatalf("one tenant page should use only the published tenant days, got %q/%q", probe.mode, probe.tenantMode)
+				}
+				wantTenantModel := ""
+				if tc.filter.TenantID != "" {
+					wantTenantModel = tenantModelMode
+				}
+				if probe.tenantModelMode != wantTenantModel {
+					t.Fatalf("tenant model history for %+v = %q, want %q", tc, probe.tenantModelMode, wantTenantModel)
+				}
+				reports = append(reports, got)
+			}
+			return reports
+		}
+		before := assertPages(false, "")
+		apply("983o_request_metrics_daily_history_details.sql")
+		apply("983o_request_metrics_daily_history_details.sql")
+		drain(processor.RefreshDailyHistory)
+		if got := assertPages(true, "published"); !reflect.DeepEqual(got, before) {
+			t.Fatal("publishing details changed the report")
+		}
+
+		exec("UPDATE public.request_metrics_projection SET person_key='new-late-person', raw_model_name='page-model-late' WHERE request_id='person-page-58'")
+		var published bool
+		if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_history_detail_days WHERE day='2026-11-05')").Scan(&published); err != nil || published {
+			t.Fatalf("revision must revoke the person rank publication marker: %t %v", published, err)
+		}
+		drain(processor.RefreshDailySummary)
+		exec(`CREATE FUNCTION public.reject_person_rank_publish() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'injected person rank publication failure'; END $$;
+			CREATE TRIGGER reject_person_rank_publish BEFORE INSERT ON public.request_metrics_history_detail_days
+			FOR EACH STATEMENT EXECUTE FUNCTION public.reject_person_rank_publish();`)
+		if _, err := processor.RefreshDailyHistory(ctx); err == nil || !strings.Contains(err.Error(), "injected person rank publication failure") {
+			t.Fatalf("expected rank publication to roll back: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM public.request_metrics_history_days WHERE day='2026-11-05')").Scan(&published); err != nil || published {
+			t.Fatalf("rank publish failure must also roll back general history: %t %v", published, err)
+		}
+		exec("DROP TRIGGER reject_person_rank_publish ON public.request_metrics_history_detail_days; DROP FUNCTION public.reject_person_rank_publish()")
+		drain(processor.RefreshDailyHistory)
+		revised := assertPages(true, "published")
+
+		// A closed day without a ranking publication uses the live indexed
+		// projection even when both other historical publications are current.
+		exec("DELETE FROM public.request_metrics_history_detail_days WHERE day='2026-11-05'")
+		if got := assertPages(false, "contiguous"); !reflect.DeepEqual(got, revised) {
+			t.Fatal("mixing published and rebuilt details changed the revised report")
+		}
+		drain(processor.RefreshDailyHistory)
+		if got := assertPages(true, "published"); !reflect.DeepEqual(got, revised) {
+			t.Fatal("republishing details changed the revised report")
+		}
+	})
+
+	t.Run("daily_detail_pages_match_full_export_rows", func(t *testing.T) {
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(2026, 11, 5, 0, 0, 0, 0, loc)
+		start, now := day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)
+		provider, credential, key, unassigned := int64(37), int64(81), int64(912), reportrollup.UnassignedID
+		exec(`UPDATE public.request_metrics_projection SET provider_id=37, credential_id=81, api_key_id=912,
+			outbound_model='alias-model' WHERE request_id='person-page-101';
+			INSERT INTO public.request_metrics_projection (
+				request_id, tenant_id, occurred_at, occurred_date, billing_date, raw_model_name,
+				status, traffic_class, source, source_fact_id
+			) VALUES
+			('scope-work', 'scope-tenant', '2026-08-02 01:00+08', '2026-08-02', '2026-08-02', 'scope-model', 'success', 'business', 'async_processor', 29001),
+			('scope-probe', 'scope-other', '2026-08-02 01:00+08', '2026-08-02', '2026-08-02', 'scope-model', 'success', 'probe', 'async_processor', 29002);`)
+		check := func(wantPublished bool) {
+			t.Helper()
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			fullCoverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, day, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, day, day, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				view            reportrollup.View
+				filter          reportrollup.GrainFilter
+				filtered        bool
+				publishedGroups []reportrollup.GrainGroup
+			}{
+				{view: reportrollup.ViewInternal},
+				{view: reportrollup.ViewProvider},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{BusinessOnly: true}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{TenantID: "page-a"}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupTenant, reportrollup.GrainGroupPerson}},
+				{view: reportrollup.ViewInternal, filter: reportrollup.GrainFilter{Person: "probe-only"}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupPerson}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{TenantID: "page-a", Person: "person-01"}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupPerson}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{ProviderID: &provider}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupProvider}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{CredentialID: &credential}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupCredential}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{APIKeyID: &key}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupAPIKey}},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{ProviderID: &unassigned}, filtered: true},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{Model: "alias-model"}, filtered: true},
+				{view: reportrollup.ViewProvider, filter: reportrollup.GrainFilter{ModelNames: []string{"page-model"}}, filtered: true,
+					publishedGroups: []reportrollup.GrainGroup{reportrollup.GrainGroupModel}},
+			} {
+				full, err := reportrollup.BuildProjectedReport(ctx, tx, start, day, tc.view, tc.filter, reportrollup.Names{}, true, fullCoverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				workbookSource := &historyQueryProbe{Querier: tx}
+				workbook, err := reportrollup.BuildProjectedWorkbookReport(ctx, workbookSource, start, day, tc.view, tc.filter, reportrollup.Names{}, true, fullCoverage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if workbookSource.publishedPage != (wantPublished && !tc.filtered) {
+					t.Fatalf("workbook read published=%v for %+v, want %v", workbookSource.publishedPage, tc, wantPublished && !tc.filtered)
+				}
+				for _, field := range []struct {
+					name string
+					got  any
+					want any
+				}{
+					{"total", workbook.Totals, full.Totals}, {"top errors", workbook.ErrorBreakdown, full.ErrorBreakdown},
+					{"days", workbook.Days, full.Days}, {"providers", workbook.Providers, full.Providers},
+					{"credentials", workbook.Credentials, full.Credentials}, {"tenants", workbook.Tenants, full.Tenants},
+					{"people", workbook.Persons, full.Persons}, {"keys", workbook.APIKeys, full.APIKeys},
+					{"daily models", workbook.DailyModels, full.DailyModels}, {"daily providers", workbook.DailyProviders, full.DailyProviders},
+					{"daily credentials", workbook.DailyCredentials, full.DailyCredentials}, {"daily tenants", workbook.DailyTenants, full.DailyTenants},
+					{"daily people", workbook.DailyPersons, full.DailyPersons}, {"daily keys", workbook.DailyAPIKeys, full.DailyAPIKeys},
+				} {
+					if !reflect.DeepEqual(field.got, field.want) {
+						t.Fatalf("workbook %s differs from full report for %+v", field.name, tc)
+					}
+				}
+				models := make([]reportrollup.DailyGroupRow, 0, len(full.DailyModels))
+				for _, model := range full.DailyModels {
+					models = append(models, reportrollup.DailyGroupRow{Date: model.Date, Key: model.RawModelName, Name: model.RawModelName,
+						Totals: model.Totals, ErrorBreakdown: model.ErrorBreakdown, QualityScore: model.QualityScore})
+				}
+				for group, daily := range map[reportrollup.GrainGroup][]reportrollup.DailyGroupRow{
+					reportrollup.GrainGroupModel: models, reportrollup.GrainGroupProvider: full.DailyProviders,
+					reportrollup.GrainGroupCredential: full.DailyCredentials, reportrollup.GrainGroupTenant: full.DailyTenants,
+					reportrollup.GrainGroupPerson: full.DailyPersons, reportrollup.GrainGroupAPIKey: full.DailyAPIKeys,
+				} {
+					want := []reportrollup.DailyGroupRow{}
+					for _, row := range daily {
+						if row.Date == day.Format(time.DateOnly) {
+							want = append(want, row)
+						}
+					}
+					sort.Slice(want, func(i, j int) bool { return want[i].Key < want[j].Key })
+					var combined = []reportrollup.DailyGroupRow{}
+					last := max(1, (len(want)+49)/50)
+					probe := &historyQueryProbe{Querier: tx}
+					for number := 1; number <= last; number++ {
+						page, err := reportrollup.BuildProjectedDailyPage(ctx, probe, tc.view, tc.filter, coverage, group, number)
+						if err != nil || page.Number != number || page.PageSize != 50 || page.Total != len(want) {
+							t.Fatalf("%s page %d has unexpected metadata: %+v (%v)", group, number, page, err)
+						}
+						combined = append(combined, page.Rows...)
+					}
+					usePublished := wantPublished && (!tc.filtered || slices.Contains(tc.publishedGroups, group))
+					if probe.publishedPage != usePublished {
+						t.Fatalf("%s published page = %v for %+v, want %v", group, probe.publishedPage, tc, usePublished)
+					}
+					if !reflect.DeepEqual(want, combined) {
+						t.Fatalf("%s day detail differs from the full export results for %+v", group, tc)
+					}
+					page, err := reportrollup.BuildProjectedDailyPage(ctx, tx, tc.view, tc.filter, coverage, group, 1000)
+					if err != nil || page.Number != last || !reflect.DeepEqual(page.Rows, want[(last-1)*50:]) {
+						t.Fatalf("%s out-of-range page did not return the final page: %v", group, err)
+					}
+				}
+			}
+			open := coverage
+			open.Through = open.From
+			page, err := reportrollup.BuildProjectedDailyPage(ctx, tx, reportrollup.ViewInternal, reportrollup.GrainFilter{}, open, reportrollup.GrainGroupModel, 2)
+			if err != nil || page.Total != 0 || page.Number != 1 || len(page.Rows) != 0 {
+				t.Fatalf("open day unexpectedly had detail: %+v (%v)", page, err)
+			}
+		}
+		check(false)
+		apply("983p_request_metrics_history_pages.sql")
+		apply("983p_request_metrics_history_pages.sql")
+		publish := func() {
+			t.Helper()
+			for _, refresh := range []func(context.Context) (bool, error){processor.RefreshDailySummary, processor.RefreshDailyHistory} {
+				for {
+					more, err := refresh(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !more {
+						break
+					}
+				}
+			}
+		}
+		publish()
+		check(true)
+		t.Run("sole_tenant_uses_cells_only_for_matching_traffic_scope", func(t *testing.T) {
+			soleDay := time.Date(2026, 8, 2, 0, 0, 0, 0, loc)
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, soleDay, soleDay, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, view := range []reportrollup.View{reportrollup.ViewInternal, reportrollup.ViewProvider} {
+				probe := &historyQueryProbe{Querier: tx}
+				page, err := reportrollup.BuildProjectedDailyPage(ctx, probe, view, reportrollup.GrainFilter{TenantID: "scope-tenant"}, coverage, reportrollup.GrainGroupModel, 1)
+				if err != nil || page.Total != 1 || len(page.Rows) != 1 || page.Rows[0].Totals.RequestCount != 1 || probe.publishedPage != (view == reportrollup.ViewInternal) {
+					t.Fatalf("%s published=%v: %+v (%v)", view, probe.publishedPage, page, err)
+				}
+			}
+		})
+		t.Run("unpublished_empty_day_cannot_leak_old_workbook_rows", func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, `DELETE FROM public.request_metrics_projection WHERE occurred_at >= $1 AND occurred_at < $2`, start, day); err != nil {
+				t.Fatal(err)
+			}
+			coverage, err := reportrollup.ReadProjectionCoverage(ctx, tx, start, day, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			probe := &historyQueryProbe{Querier: tx}
+			export, err := reportrollup.BuildProjectedWorkbookReport(ctx, probe, start, day, reportrollup.ViewInternal, reportrollup.GrainFilter{}, reportrollup.Names{}, true, coverage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !probe.publishedPage || export.Days[0].Totals.RequestCount != 0 || len(export.DailyPersons) == 0 {
+				t.Fatalf("empty and published days should share the workbook: published=%v", probe.publishedPage)
+			}
+			for _, row := range export.DailyPersons {
+				if row.Date != day.Format(time.DateOnly) {
+					t.Fatalf("workbook returned stale person rows for %s", row.Date)
+				}
+			}
+		})
+		exec(`UPDATE public.request_metrics_projection SET total_tokens=total_tokens+7
+			WHERE tenant_id='page-a' AND occurred_at >= '2026-11-05 00:00+08' AND occurred_at < '2026-11-06 00:00+08'`)
+		check(false)
+		publish()
+		check(true)
+		apply("983p_request_metrics_history_pages.down.sql")
+		apply("983p_request_metrics_history_pages.down.sql")
+		check(false)
+	})
+
+	t.Run("history_percentiles_follow_the_displayed_group", func(t *testing.T) {
+		exec(`
+INSERT INTO public.request_metrics_projection (
+	request_id, tenant_id, occurred_at, occurred_date, billing_date,
+	status, traffic_class, raw_model_name, provider_id, credential_id, api_key_id,
+	total_tokens, latency_ms, error_kind, source, source_fact_id)
+SELECT 'history-rank-'||n, tenant, timestamptz '2026-11-15 10:00+08',
+	'2026-11-15', '2026-11-15', status, 'business', 'history-rank', provider, credential, key_id,
+	1, latency, CASE WHEN status='timeout' THEN 'upstream_timeout' END, 'async_processor', 24000+n
+FROM (VALUES
+	(1,'rank-a',9,NULL,NULL,100,'success'),
+	(2,'rank-a',9,NULL,NULL,200,'success'),
+	(3,'rank-a',9,NULL,NULL,300,'success'),
+	(4,'rank-b',10,NULL,NULL,900,'success'),
+	(5,'rank-b',10,NULL,NULL,800,'timeout'),
+	(6,'rank-a',9,77,88,80,'success'),
+	(7,'rank-b',10,77,88,9800,'success')
+) AS inputs(n,tenant,provider,credential,key_id,latency,status);`)
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(2026, 11, 15, 0, 0, 0, 0, loc)
+		coverage, err := reportrollup.ReadProjectionCoverage(ctx, pool, day, day, day.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := func(filter reportrollup.GrainFilter) *reportrollup.GrainReport {
+			t.Helper()
+			report, err := reportrollup.BuildProjectedReport(ctx, pool, day, day, reportrollup.ViewInternal, filter, reportrollup.Names{}, true, coverage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return report
+		}
+		check := func(label string, totals reportrollup.Totals, requests, measured int64, p50, p95 float64) {
+			t.Helper()
+			if totals.RequestCount != requests || totals.LatencyMeasuredRequests == nil || *totals.LatencyMeasuredRequests != measured ||
+				math.Abs(totals.LatencyP50Ms-p50) > 1e-9 || math.Abs(totals.LatencyP95Ms-p95) > 1e-9 {
+				t.Fatalf("%s has incorrect requests or ranks: %+v", label, totals)
+			}
+		}
+		filter := reportrollup.GrainFilter{Model: "history-rank"}
+		report := read(filter)
+		if len(report.Credentials) != 2 || len(report.APIKeys) != 2 || len(report.DailyCredentials) != 2 || len(report.DailyAPIKeys) != 2 {
+			t.Fatalf("expected two rows per dimension: %+v", report)
+		}
+		for _, row := range report.Credentials {
+			if row.ProviderID != nil {
+				t.Fatalf("ambiguous provider attribution on credential %d: %v", row.CredentialID, row.ProviderID)
+			}
+			if row.CredentialID == reportrollup.UnassignedID {
+				check("unassigned credential", row.Totals, 5, 4, 250, 810)
+				if row.ErrorBreakdown["upstream_timeout"] != 1 {
+					t.Fatalf("incorrect errors: %v", row.ErrorBreakdown)
+				}
+			} else {
+				check("shared credential", row.Totals, 2, 2, 4940, 9314)
+				if row.QualityScore != 53.7 {
+					t.Fatalf("incorrect credential quality score: %v", row.QualityScore)
+				}
+			}
+		}
+		for _, row := range report.APIKeys {
+			if row.TenantID != "" {
+				t.Fatalf("ambiguous tenant attribution on key %d: %s", row.APIKeyID, row.TenantID)
+			}
+			if row.APIKeyID == reportrollup.UnassignedID {
+				check("unassigned key", row.Totals, 5, 4, 250, 810)
+			} else {
+				check("shared key", row.Totals, 2, 2, 4940, 9314)
+			}
+		}
+		for _, rows := range [][]reportrollup.DailyGroupRow{report.DailyAPIKeys, report.DailyCredentials} {
+			for _, row := range rows {
+				if row.Key == "-1" {
+					check("unassigned day", row.Totals, 5, 4, 250, 810)
+				} else {
+					check("shared day", row.Totals, 2, 2, 4940, 9314)
+				}
+			}
+		}
+		workbook, err := reportrollup.BuildGrainWorkbookBytes(report, reportrollup.GrainGroupCredential, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive, err := zip.NewReader(bytes.NewReader(workbook), int64(len(workbook)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sheet, err := archive.Open("xl/worksheets/sheet1.xml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sheet.Close()
+		xml, err := io.ReadAll(sheet)
+		if err != nil || bytes.Count(xml, []byte("<v>53.7</v>")) < 2 {
+			t.Fatalf("export should contain both corrected quality scores: %v", err)
+		}
+		provider := int64(9)
+		filter.ProviderID = &provider
+		filtered := read(filter)
+		if len(filtered.Credentials) != 2 || filtered.Credentials[1].CredentialID != 77 ||
+			filtered.Credentials[1].ProviderID == nil || *filtered.Credentials[1].ProviderID != provider {
+			t.Fatalf("filtered provider missing: %+v", filtered.Credentials)
+		}
+		if len(filtered.APIKeys) != 2 || filtered.APIKeys[1].APIKeyID != 88 || filtered.APIKeys[1].TenantID != "rank-a" {
+			t.Fatalf("filtered tenant missing: %+v", filtered.APIKeys)
+		}
+	})
+
+	t.Run("coverage_and_schema_rollback_keep_legacy_watermark", func(t *testing.T) {
+		start := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+		coverage, err := readProjectionCoverage(ctx, db, start, start.AddDate(0, 0, 1))
+		if err != nil || coverage.Expected < 3 || coverage.Expected != coverage.Current ||
+			coverage.Fraction == nil || *coverage.Fraction != 1 {
+			t.Fatalf("coverage should match the latest facts in the window: %+v %v", coverage, err)
+		}
+		exec(`UPDATE public.request_metrics_repair_state SET backfill_complete=true, updated_at=now();
+			INSERT INTO public.request_metrics_refresh_pending (kind,tenant_id,request_id,occurred_at,enqueued_at)
+			VALUES ('fact','tenant-recovery','readiness-sample',now(),now()-interval '6 minutes');`)
+		if state := readProjectionWatermark(http.StatusServiceUnavailable); state.Ready ||
+			state.PendingCount == 0 || state.OldestWaitSeconds < 300 {
+			t.Fatalf("stale backlog should block readiness: %+v", state)
+		}
+		apply("983o_request_metrics_daily_history_details.down.sql")
+		apply("983o_request_metrics_daily_history_details.down.sql")
+		apply("983n_request_metrics_daily_tenant_history.down.sql")
+		apply("983n_request_metrics_daily_tenant_history.down.sql")
+		if _, err := processor.RefreshDailyHistory(ctx); err != nil {
+			t.Fatalf("old history worker path should remain available after 983n rollback: %v", err)
+		}
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			t.Fatal(err)
+		}
+		day := time.Date(2026, 11, 13, 0, 0, 0, 0, loc)
+		historyCoverage, err := reportrollup.ReadProjectionCoverage(ctx, pool, day, day, day.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tenantProbe := &historyQueryProbe{Querier: pool}
+		internal, err := reportrollup.BuildProjectedSummary(ctx, tenantProbe, day, day, reportrollup.ViewInternal,
+			reportrollup.GrainFilter{}, reportrollup.Names{}, historyCoverage, reportrollup.ProjectedSummaryDistribution)
+		if err != nil || tenantProbe.mode != "published" || tenantProbe.tenantMode != "" || len(internal.Tenants) == 0 {
+			t.Fatalf("internal history should fall back only for tenants after 983n rollback: %+v %v", internal, err)
+		}
+		apply("983m_request_metrics_daily_history.down.sql")
+		apply("983m_request_metrics_daily_history.down.sql")
+		probe := &historyQueryProbe{Querier: pool}
+		history, err := reportrollup.BuildProjectedSummary(ctx, probe, day, day, reportrollup.ViewInternal,
+			reportrollup.GrainFilter{}, reportrollup.Names{}, historyCoverage, reportrollup.ProjectedSummaryTotals)
+		if err != nil || probe.mode != "" || history.Totals.RequestCount != 3 {
+			t.Fatalf("history should continue from the projection after schema rollback: %+v %v", history, err)
+		}
+		apply("983l_request_metrics_daily_board.down.sql")
+		apply("983l_request_metrics_daily_board.down.sql")
+		apply("983k_request_metrics_daily_summary.down.sql")
+		apply("983k_request_metrics_daily_summary.down.sql")
+		apply("983j_request_metrics_973_repair.down.sql")
+		apply("983j_request_metrics_973_repair.down.sql")
+		var releasedProjectionIntact bool
+		if err := pool.QueryRow(ctx, `SELECT
+			to_regclass('public.request_metrics_pending') IS NOT NULL
+			AND EXISTS (SELECT FROM public.schema_migrations WHERE version='973')
+			AND EXISTS (SELECT FROM public.request_metrics WHERE fact_request_id='must-retry'
+				AND total_tokens=13 AND pg_typeof(total_tokens)='bigint'::regtype AND source_fact_id IS NOT NULL)`).Scan(&releasedProjectionIntact); err != nil || !releasedProjectionIntact {
+			t.Fatalf("repair rollback must preserve the released projection and widened measurements: %t %v", releasedProjectionIntact, err)
+		}
+		var requestID string
+		var head time.Time
+		if err := db.QueryRowContext(ctx, watermarkSQL).Scan(&head, &requestID); err != nil ||
+			requestID != "r1" || !head.Equal(occurredAt) {
+			t.Fatalf("new-slot publish or schema rollback changed the old-slot watermark: %q %v %v", requestID, head, err)
+		}
+		var retained int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.usage_facts`).Scan(&retained); err != nil || retained < 3 {
+			t.Fatalf("schema rollback removed durable facts: %d %v", retained, err)
+		}
 	})
 }

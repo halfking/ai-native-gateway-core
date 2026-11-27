@@ -9,6 +9,12 @@ import (
 )
 
 // Config controls the space between projection rounds and the work per round.
+// maxEnvBatchSizeCap 逻辑批上限：仅影响单批内存占用（V2 合并：processor_test 引用）。
+const maxEnvBatchSizeCap = 1_000_000
+
+// maxEnvMaxRoundsCap 单轮批数上限（V2 合并：processor_test 引用；main 版 boundedEnvInt 上限 200 同值）。
+const maxEnvMaxRoundsCap = 200
+
 type Config struct {
 	Interval         time.Duration
 	BatchSize        int

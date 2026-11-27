@@ -18,6 +18,7 @@ export default {
   colSessionKey: '会话标识',
   colTenant: '租户',
   colRequests: '请求数',
+  colTurns: '轮次',
   colCost: '总费用',
   colUpdatedAt: '最近更新',
   untitled: '（无标题）',

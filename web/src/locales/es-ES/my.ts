@@ -17,6 +17,7 @@ export default {
   colSessionKey: 'Clave de sesión',
   colTenant: 'Inquilino',
   colRequests: 'Solicitudes',
+  colTurns: 'Turnos',
   colCost: 'Costo total',
   colUpdatedAt: 'Última actualización',
   untitled: '(Sin título)',

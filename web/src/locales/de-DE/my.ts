@@ -17,6 +17,7 @@ export default {
   colSessionKey: 'Sitzungsschlüssel',
   colTenant: 'Mandant',
   colRequests: 'Anfragen',
+  colTurns: 'Runden',
   colCost: 'Gesamtkosten',
   colUpdatedAt: 'Zuletzt aktualisiert',
   untitled: '(Ohne Titel)',

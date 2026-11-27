@@ -240,9 +240,9 @@ func (h *Handler) dimensionNames(ctx context.Context) reportrollup.Names {
 // idLabelMap 执行一条 id→名称查询。查询失败会**记日志**再返回空 map
 // （非致命，页面退化成显示 id）——但必须留痕：静默吞掉一条写错的 SQL 会让
 // 整列名称恒空且没有任何线索，排查时只能靠翻代码。
-func (h *Handler) idLabelMap(ctx context.Context, sqlText string) map[int64]string {
+func (h *Handler) idLabelMap(ctx context.Context, sqlText string, args ...any) map[int64]string {
 	out := map[int64]string{}
-	rows, err := h.db.Query(ctx, sqlText)
+	rows, err := h.db.Query(ctx, sqlText, args...)
 	if err != nil {
 		slog.Error("report rollup: load id→name map failed, falling back to raw ids",
 			"error", err)

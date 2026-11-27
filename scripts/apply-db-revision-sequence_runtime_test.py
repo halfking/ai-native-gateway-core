@@ -37,6 +37,20 @@ if '-Atqc' in args:
     elif 'CROSS JOIN public.gateway_db_installer_migration_receipts' in q:
         for name, source in s.get('installer_receipts', {}).items():
             print(name + '|' + source)
+    elif q == "SELECT to_regclass('public.gateway_db_revision_sequences') IS NOT NULL":
+        print('t' if s['ledger'] else 'f')
+    elif q == "SELECT to_regclass('public.schema_migrations') IS NOT NULL":
+        print('t' if 'versions' in s else 'f')
+    elif q == "SELECT 1 FROM public.schema_migrations WHERE version='973' LIMIT 1":
+        if '973' in s.get('versions', []): print('1')
+    elif "regexp_replace(sequence_name, '^.*:', '')=" in q:
+        name = '973_request_metrics_projection.sql'
+        assert q.endswith("='" + name + "'")
+        wanted = re.search(r"content_sha256', ''\)='([^']+)'", q).group(1)
+        prior = [row.get('source') for marker, row in s['ledger'].items() if marker.endswith(':' + name)]
+        print(('matched' if all(source == wanted for source in prior) else 'mismatch') if prior else '')
+    elif q.startswith("SELECT to_regclass('public.request_metrics_pending')"):
+        print('t' if s.get('released_projection_artifacts') else 'f')
     elif 'SELECT CASE' in q:
         print('canonical')
     elif 'SELECT content_sha256' in q:
@@ -45,8 +59,6 @@ if '-Atqc' in args:
     elif 'SELECT 1 FROM public.gateway_db_revision_sequences' in q:
         m = re.search("sequence_name='([^']+)'", q).group(1)
         if m in s['ledger']: print('1')
-    elif q.startswith("SELECT to_regclass('public.request_metrics_projection_state')"):
-        print(s.get('projection_artifacts', 't'))
     elif q.startswith('INSERT INTO public.gateway_db_revision_sequences'):
         m, source, execution, adapter = re.search(r"VALUES \('([^']+)', '([^']+)', '([^']+)', '([^']+)'\)", q).groups()
         s['ledger'].setdefault(m, dict(source=source, execution=execution, adapter=adapter))
@@ -123,7 +135,7 @@ def _posix_runtime_available():
 
 
 class RuntimeFixture(unittest.TestCase):
-    def fixture(self, transport, generation, projection=False):
+    def fixture(self, transport, generation, extra_files=()):
         artifacts = ROOT / '.audit-validation'
         artifacts.mkdir(exist_ok=True)
         root = Path(tempfile.mkdtemp(prefix='revision-runtime-', dir=artifacts))
@@ -131,12 +143,9 @@ class RuntimeFixture(unittest.TestCase):
         migrations = root / 'sql/migrations/startup'
         migrations.mkdir(parents=True)
         names = ['001_fixture.sql', '860_rename_request_logs_family_pending_delete.sql',
-                 '543_request_logs_discard_events.sql']
-        bodies = [SQL, RENAME, SQL]
-        if projection:
-            names.append('973_request_metrics_projection.sql')
-            bodies.append(SQL)
-        for name, text in zip(names, bodies):
+                 *extra_files, '543_request_logs_discard_events.sql']
+        for name in names:
+            text = RENAME if name.startswith('860_') else SQL
             (migrations / name).write_text(text)
         body = re.sub(r'^files=\(.*?^\)', 'files=(\n' + '\n'.join(
             '  "$ROOT_DIR/sql/migrations/startup/' + n + '"' for n in names) + '\n)',
@@ -172,15 +181,6 @@ class RuntimeFixture(unittest.TestCase):
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
 
-    def test_first_projection_delivery_checks_artifacts(self):
-        root, state, env, names = self.fixture('psql', 'legacy', projection=True)
-        s = json.loads(state.read_text())
-        s['projection_artifacts'] = 'f'
-        state.write_text(json.dumps(s))
-        result = self.run_fixture(root, env, expected=5)
-        self.assertIn('applying sql/migrations/startup/' + names[-1], result.stdout)
-        self.assertIn('产物对账失败：' + names[-1], result.stderr)
-
     def test_installer_handoff_rejects_missing_seal_and_mismatched_source(self):
         root, state, env, names = self.fixture('psql', 'renamed')
         initial = json.loads(state.read_text())
@@ -213,6 +213,28 @@ class RuntimeFixture(unittest.TestCase):
         second = self.run_fixture(root, env)
         self.assertNotIn('applying ', second.stdout)
         self.assertEqual(after, json.loads(state.read_text()))
+
+    def test_released_973_rejects_unverified_install_before_migrations(self):
+        name = '973_request_metrics_projection.sql'
+        root, state, env, _ = self.fixture('psql', 'renamed', [name])
+        initial = json.loads(state.read_text())
+        release = hashlib.sha256((root / 'sql/migrations/startup' / name).read_bytes()).hexdigest()
+        for ledger, message in [
+            ({}, 'requires a deployment or installer fingerprint'),
+            ({PREFIX + name: {'source': None}}, 'deployment fingerprint differs'),
+            ({PREFIX + name: {'source': 'a' * 64}}, 'deployment fingerprint differs'),
+        ]:
+            with self.subTest(message=message, ledger=ledger):
+                fixture = dict(initial, versions=['973'], ledger=ledger)
+                state.write_text(json.dumps(fixture))
+                result = self.run_fixture(root, env, expected=4)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(fixture, json.loads(state.read_text()))
+        fixture = dict(initial, versions=['973'], ledger={PREFIX + name: {'source': release}},
+                       released_projection_artifacts=True)
+        state.write_text(json.dumps(fixture))
+        result = self.run_fixture(root, env)
+        self.assertIn('already applied: sql/migrations/startup/' + name, result.stdout)
 
     def test_transports_generations_provenance_and_idempotency(self):
         for transport in ['psql', 'docker']:

@@ -31,6 +31,7 @@
 #gen_append	2026-11-23 L32 轮·合并轮六/七 —— 补 1 条新增路由（/api/admin/usage/request-reconciliation，★ 上游 reconciliation 轮注册于 admin/handler.go:1557）；★ 用【官方生成器】重算（★ R87 轮同款做法：★ 静态分级现算 ＋ 从现有台账反推探测产物 ⇒ 台账头 provenance 逐字不变）⇒ ★ 新行 class/bucket/verdict **机器推导**（★ class=read、★ body_check=400-guard、★ 无探测观测 ⇒ verdict=not-probed-not-reached）；★ ★ 既有 727 行**逐字保留**（★ 其中 16 处是人工改判、★ 静态分级器对它们会判漂移 ⇒ **不整表重生成**、★ 只按生成器顺序插入新行）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 728 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 728 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 60 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 729 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 25 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 727 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 752 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 754 行逐字保留，含人工改判）
@@ -45,6 +46,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 790 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 792 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 794 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 39 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 758 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -69,7 +71,7 @@
 /agents	POST	mcp/control.go:129	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /agents/{id}	DELETE	mcp/control.go:130	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/	ANY	cmd/gateway/main.go:7499	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/api/admin/analytics/v2/{dimension}/{identifier}	ANY	admin/handler.go:1289	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/analytics/v2/{dimension}/{identifier}	ANY	admin/handler.go:1341	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/analytics/{dimension}/{identifier}	ANY	admin/handler.go:1278	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/annotations	ANY	admin/handler.go:1524	write	r.Body			not-probed-writes	★ 静态分级：写库
 /api/admin/annotations/	ANY	admin/handler.go:1523	write	400-guard			not-probed-writes	★ 静态分级：写库
@@ -153,12 +155,12 @@
 /api/admin/dashboard/session-overview	ANY	admin/handler.go:1156	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/dashboard/session-trend	ANY	admin/handler.go:1159	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/dashboard/swim-lane-init	ANY	admin/handler.go:1153	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/dashboard/v2/board	ANY	admin/handler.go:1283	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/dashboard/v2/board/error-drill	ANY	admin/handler.go:1284	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/dashboard/v2/session-active	ANY	admin/handler.go:1279	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/dashboard/v2/session-health	ANY	admin/handler.go:1278	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/dashboard/v2/session-overview	ANY	admin/handler.go:1275	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/dashboard/v2/session-trend	ANY	admin/handler.go:1276	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/dashboard/v2/board	ANY	admin/handler.go:1335	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/dashboard/v2/board/error-drill	ANY	admin/handler.go:1336	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/dashboard/v2/session-active	ANY	admin/handler.go:1328	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/dashboard/v2/session-health	ANY	admin/handler.go:1327	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/dashboard/v2/session-overview	ANY	admin/handler.go:1325	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/dashboard/v2/session-trend	ANY	admin/handler.go:1326	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/data-horizon	ANY	admin/handler.go:1218	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/data-lifecycle/blobs/cleanup/execute	ANY	admin/handler.go:1099	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/data-lifecycle/blobs/cleanup/preview	ANY	admin/handler.go:1098	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -347,7 +349,7 @@
 /api/admin/quality/attempts	ANY	cmd/gateway/main.go:7535	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/recovery-tasks/{task_id}	ANY	admin/handler.go:1280	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/report-rollup/	ANY	admin/handler.go:1189	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/report-rollup/v2/{section}	ANY	admin/handler.go:1318	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/report-rollup/v2/{section}	ANY	admin/handler.go:1370	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/request-anomalies	ANY	admin/handler.go:1020	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/request-anomalies/	ANY	admin/handler.go:1021	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/request-detail/	ANY	admin/handler.go:1402	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -392,26 +394,27 @@
 /api/admin/session-analytics/users	ANY	admin/handler.go:1227	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-analytics/users/	ANY	admin/handler.go:1228	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-analytics/users/usage-matrix	ANY	admin/handler.go:1372	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/agent-ranking	ANY	admin/handler.go:1392	read	400-guard			not-probed-not-reached	只读事务内设置当前租户，查询请求投影和会话维表
-/api/admin/session-analytics/v2/clients	GET	admin/handler.go:1400	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/clients/{id}	GET	admin/handler.go:1401	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8733	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/model-ranking	ANY	admin/handler.go:1390	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/overview	GET	admin/handler.go:1404	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/provider-ranking	ANY	admin/handler.go:1391	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/task-ranking	ANY	admin/handler.go:1393	read	400-guard			not-probed-not-reached	只读事务内设置当前租户，查询请求投影
-/api/admin/session-analytics/v2/tasks	GET	admin/handler.go:1402	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/tasks/{id}	GET	admin/handler.go:1403	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/user-ranking	GET	admin/handler.go:1394	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/user-ranking/{owner}	GET	admin/handler.go:1395	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/user-ranking/{owner}/api-keys	GET	admin/handler.go:1399	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/user-ranking/{owner}/models	GET	admin/handler.go:1398	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/user-ranking/{owner}/projects	GET	admin/handler.go:1396	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/user-ranking/{owner}/projects/{project}/tasks	GET	admin/handler.go:1397	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/users	ANY	admin/handler.go:1385	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/users/usage-matrix	ANY	admin/handler.go:1386	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/users/{owner}	GET	admin/handler.go:1390	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/users/{owner}/projects	GET	admin/handler.go:1391	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/agent-ranking	ANY	admin/handler.go:1443	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/clients	GET	admin/handler.go:1451	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/clients/{id}	GET	admin/handler.go:1452	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8763	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8837	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/model-ranking	ANY	admin/handler.go:1441	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/overview	GET	admin/handler.go:1455	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/provider-ranking	ANY	admin/handler.go:1442	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/task-ranking	ANY	admin/handler.go:1444	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/tasks	GET	admin/handler.go:1453	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/tasks/{id}	GET	admin/handler.go:1454	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/user-ranking	GET	admin/handler.go:1445	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/user-ranking/{owner}	GET	admin/handler.go:1446	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/user-ranking/{owner}/api-keys	GET	admin/handler.go:1450	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/user-ranking/{owner}/models	GET	admin/handler.go:1449	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/user-ranking/{owner}/projects	GET	admin/handler.go:1447	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/user-ranking/{owner}/projects/{project}/tasks	GET	admin/handler.go:1448	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/users	GET	admin/handler.go:1437	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/users/usage-matrix	GET	admin/handler.go:1438	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/users/{owner}	GET	admin/handler.go:1439	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/session-analytics/v2/users/{owner}/projects	GET	admin/handler.go:1440	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-approvals	ANY	admin/handler.go:1300	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-approvals/	ANY	admin/handler.go:1301	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/session-archive/stats	ANY	admin/session_archive_handler.go:22	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -477,7 +480,7 @@
 /api/admin/tenant-settings/	ANY	admin/settings.go:26	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tenants	ANY	admin/handler.go:1028	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tenants/	ANY	admin/handler.go:1029	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/tenants/v2/{code}/stats	ANY	admin/handler.go:1138	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/tenants/v2/{code}/stats	ANY	admin/handler.go:1185	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/tools/get	ANY	cmd/gateway/main.go:7570	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/tools/list	ANY	cmd/gateway/main.go:7569	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/tools/reload	ANY	cmd/gateway/main.go:7568	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -492,18 +495,18 @@
 /api/admin/turns/sessions	ANY	admin/handler.go:1406	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/turns/sessions/filter-options	ANY	admin/handler.go:1408	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/usage/	ANY	admin/handler.go:1398	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/usage/request-reconciliation	ANY	admin/handler.go:1591	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/cache-economics	ANY	admin/handler.go:1590	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/cost-trend	ANY	admin/handler.go:1589	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/period-compare	ANY	admin/handler.go:1588	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/request-reconciliation	ANY	admin/handler.go:1592	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/top-rankings	ANY	admin/handler.go:1587	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/trend-models	ANY	admin/handler.go:1586	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/usage/v2/trend-series	ANY	admin/handler.go:1585	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/request-reconciliation	ANY	admin/handler.go:1557	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查（★ 机器推导行；★ GET-only（admin/request_reconciliation.go:19 method guard）读点、★ super-only / tenant_admin 作用域、★ 无写调用 ⇒ 静态分级 read 与源码一致；★ 未真探测）
+/api/admin/usage/v2/cache-economics	ANY	admin/handler.go:1670	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/v2/cost-trend	ANY	admin/handler.go:1669	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/v2/period-compare	ANY	admin/handler.go:1668	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/v2/request-reconciliation	ANY	admin/handler.go:1672	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/v2/top-rankings	ANY	admin/handler.go:1667	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/v2/trend-models	ANY	admin/handler.go:1666	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/usage/v2/trend-series	ANY	admin/handler.go:1665	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/users/	ANY	admin/handler.go:1235	read	400-guard	404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/users/usage-summary	ANY	admin/handler.go:1234	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
-/api/admin/users/v2/usage-summary	ANY	admin/handler.go:1398	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/users/v2/{id}/stats	ANY	admin/handler.go:1399	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/users/v2/usage-summary	ANY	admin/handler.go:1467	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/users/v2/{id}/stats	ANY	admin/handler.go:1468	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/work-types	ANY	admin/work_types.go:51	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/work-types/	ANY	admin/work_types.go:54	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/work-types/stats	ANY	admin/work_types.go:52	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -702,7 +705,7 @@
 /api/tenant/	ANY	cmd/gateway/main.go:7500	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/usage	ANY	admin/handler.go:1395	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/usage/	ANY	admin/handler.go:1396	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
-/api/usage/my	ANY	admin/handler.go:1141	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/usage/my	ANY	admin/handler.go:1162	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/users	ANY	admin/handler.go:1010	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/users/	ANY	admin/handler.go:1031	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/v1/approvals/	ANY	cmd/gateway/main.go:7870	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
@@ -779,7 +782,7 @@
 /plugin/healthz	ANY	cmd/canary-plugin/main.go:43	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /plugins/{pluginId}/{rest...}	GET	cmd/gateway/plugin_proxy_init.go:12	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /readyz	ANY	cmd/gateway/main.go:6608	unknown				not-probed-unresolved	★ 静态分级：解析不出
-/readyz/request-metrics	ANY	cmd/gateway/main.go:7123	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/readyz/request-metrics	ANY	cmd/gateway/main.go:7151	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /recommend	GET	mcp/control.go:114	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /record/	ANY	domains/contextagent/http.go:24	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /registry/servers	GET	mcp/control.go:129	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

@@ -30,7 +30,7 @@ ALTER TABLE session_turns
   ADD COLUMN IF NOT EXISTS billing_policy_applied text;
 
 COMMENT ON COLUMN session_turns.billing_status IS 
-  'charged: 计费成功 | pending_charge: 待补扣费 | failed: 计费失败（已超重试上限）| skipped: 跳过计费（免费额度等）';
+  'charged: 计费成功 | pending_charge: 待补扣费 | failed: 计费失败（已超重试上限）| skipped: 跳过计费（免费额度等）。★ 2026-11-27 12h 审计轮口径订正：billing_status 四列当前无任何 Go writer/reader（实际补扣费走 billing_retry_queue + credit_ledger），本列族仅作统计口径字段存在，默认恒为 charged；接线 writer 前请勿依据 pending_charge/failed 做业务判定。';
 
 COMMENT ON COLUMN session_turns.billing_error IS 
   '计费失败时的错误信息（用于调试和追踪）';

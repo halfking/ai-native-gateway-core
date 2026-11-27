@@ -18,16 +18,16 @@ type SessionDimensionQuery struct {
 const sessionDimensionBase = `
 WITH projection AS (
 	SELECT backfill_complete,updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), observed AS MATERIALIZED (
 	SELECT m.tenant_id,nullif(m.session_id,'') AS session_id,m.occurred_at,
 		(m.occurred_at AT TIME ZONE $4)::date AS day,
 		d.client_id,d.task_id,d.%PRIMARY% AS dimension_id,d.%SECONDARY% AS related_id,m.person_key,
 		` + requestModelKey + ` AS model,m.status,m.latency_ms,m.credits_charged,m.total_tokens,
 		CASE WHEN m.cost_currency='USD' THEN m.cost_amount END AS usd
-	FROM public.request_metrics m
+	FROM public.request_metrics_projection m
 	CROSS JOIN LATERAL (
 		SELECT nullif(m.client_id,'') AS client_id,nullif(m.owner_user,'') AS owner_user,
 			CASE WHEN m.task_id <> 'default' AND m.task_id NOT LIKE 'auto-title:%' THEN nullif(m.task_id,'') END AS task_id

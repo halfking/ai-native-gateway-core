@@ -373,6 +373,9 @@ func (h *Handler) orgMemberRows(ctx context.Context, orgID int) ([]map[string]an
 			},
 		})
 	}
+	if err := rows.Err(); err != nil {
+		warnRowSkip("orgs.members", err)
+	}
 	return members, nil
 }
 

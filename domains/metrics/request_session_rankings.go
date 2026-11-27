@@ -7,26 +7,35 @@ import (
 )
 
 type SessionRequestRankingQuery struct {
-	Start, End    time.Time
-	Tenant        string
+	Start, End time.Time
+	Tenant     string
+	// Owner 非空时按 owner_user 收窄（2026-11-27 非管理员菜单重构轮：
+	// user 档恒注入本人 username ⇒ 五面板只算自己的行）。
+	Owner         string
 	SortBy, Order string
 	Dimension     string
 }
 
+// SessionRequestRankingObservableWhereForTest 暴露 observable CTE 的 WHERE
+// 文本给 admin 包的收窄判据（TestSessionRankingScopeUserTier 变异守卫用）：
+// owner 收窄行被删 ⇒ 判据红。生产查询路径不消费它。
+const SessionRequestRankingObservableWhereForTest = `($4='' OR owner_user=$4)`
+
 const sessionRequestRankingBase = `
 WITH projection AS (
 	SELECT backfill_complete, updated_at,
-		(SELECT min(enqueued_at) FROM public.request_metrics_pending
+		(SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 		 WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)) AS pending_since
-	FROM public.request_metrics_projection_state WHERE singleton
+	FROM public.request_metrics_repair_state WHERE singleton
 ), observable AS (
 	SELECT tenant_id, owner_user, occurred_at, status, total_tokens, cached_tokens, latency_ms, credits_charged,
 		nullif(session_id,'') AS session_id, nullif(agent_name,'') AS agent_name,
 		CASE WHEN task_id <> 'default' AND task_id NOT LIKE 'auto-title:%' THEN nullif(task_id,'') END AS task,
 		CASE WHEN cost_currency='USD' THEN cost_amount END AS usd,
 		coalesce(nullif(provider_code,''),provider_id::text,'') AS provider, ` + requestModelKey + ` AS model
-	FROM public.request_metrics
+	FROM public.request_metrics_projection
 	WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3='' OR tenant_id=$3)
+	  AND ($4='' OR owner_user=$4)
 	  AND traffic_class='business' AND source_fact_id IS NOT NULL AND (SELECT backfill_complete FROM projection)
 )
 `
@@ -123,7 +132,7 @@ func ReadSessionRequestRanking(ctx context.Context, db requestStatsDB, query Ses
 		group, ties = sessionTaskRankings, "task"
 	}
 	statement := sessionRequestRankingBase + group + fmt.Sprintf(sessionRequestRankingResult, orderColumn, orderDirection, ties)
-	err := db.QueryRow(ctx, statement, query.Start, query.End, query.Tenant).
+	err := db.QueryRow(ctx, statement, query.Start, query.End, query.Tenant, query.Owner).
 		Scan(&result.Ready, &result.UpdatedAt, &result.PendingSince, &result.Payload)
 	return result, err
 }

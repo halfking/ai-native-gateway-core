@@ -522,7 +522,13 @@ func (r *ResourceLimiter) Stop() error {
 	r.monitorActive = false
 	r.mu.Unlock()
 
-	if r.mode == ModeMonitor && active {
+	// ★ stopguard 守卫（2026-11-28 代上游收口）：构造后从未 Start（active=false）
+	//   的件不进等待分支——monitorDone 只在 Start 的 goroutine 里 close。
+	if !active {
+		return r.removeCgroup()
+	}
+
+	if r.mode == ModeMonitor {
 		select {
 		case <-r.monitorCancel:
 			// already closed
