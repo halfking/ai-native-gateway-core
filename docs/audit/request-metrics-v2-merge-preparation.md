@@ -594,7 +594,13 @@ git push origin main
 
 **交付**：4 文件摘录为 1 笔提交（`53166a9bd`）推 `merge/request-metrics-v2-batch2`（基线 = 当时的 codeup/main dfdf464c2），与源提交 blob 逐字节一致。验证全绿：TestMigration745 ok、dangling 门家族 ok（摘豁免后仍绿）、`--self-test` SELF-TEST PASS、go vet EXIT=0。**PR #2 已创建**：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go/change/2（无代码冲突，待合并）。
 
-**PR #1（Batch 1）也已创建**：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go/change/1（无代码冲突，待合并——用户钉钉扫码登录后由浏览器代建）。
+**PR #1（Batch 1）也已创建**：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go/change/1（无代码冲突——用户钉钉扫码登录后由浏览器代建）。
+
+### ✅ 两 PR 合并终态（2026-11-28 凌晨核验）
+
+- **PR #1 内容 100% 进 main**：并行车把 `merge/request-metrics-v2-batch1` 分支整体合入（含 Batch 1 三笔 4dedc8938/305de6639/475c246b2 及其续推的 merge 笔），git ancestry 实证（web 页状态滞后，以 git 为准）。
+- **PR #2 已正式合并**：merge commit `8f6ad6c0d`（浏览器代点：合并节点方式 + 提交确认），合并后 main 的 4 文件 blob 终验 = PR 版本（relrefs `^` 锚实证在位），源分支保留。
+- 合并后 main 尖端 `8f6ad6c0d`；211 现役 7b938ced@3321 相对其落后 28 笔（并行车 plugins 灰度系列为主，**无迁移增量**）⇒ 211 无需紧急再追平，与 245/154 轮一并处理。
 
 ### Batch 3（前端）— 对拍完成，实际可搬面 ≈ 0 个文件
 
