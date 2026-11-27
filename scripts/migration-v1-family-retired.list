@@ -95,6 +95,7 @@
 860_rename_request_logs_family_pending_delete.sql
 862_partition_family_leading_ts_idx.sql
 882_request_logs_cost_negative_partial_idx.sql
+528_request_logs_bodies_expired_hot_cleanup.sql
 
 # ── 守卫不拦的 9 件（裁决存档，防止后人重复裁决）──────────────────
 # 在「211 形态」实测可跑，不进清单：511（IF NOT EXISTS 全 no-op）、
@@ -102,3 +103,18 @@
 # 四路守卫）、802/823/835（211 列/表在位 ⇒ IF NOT EXISTS no-op）、
 # 838/839/857（CREATE OR REPLACE analyze：211 live 体与 857 终态语义
 # 等价——仅注释语言与已死的 v1 正则前缀差异；重放终态=857 体，可承）。
+#
+# ── 528 补录（2026-11-28 04:1x，211 真机 42P01 归因后追加）─────────
+# 528 首轮裁决漏网：它在一次性容器里 rc=0（CREATE OR REPLACE promote
+# 函数成功），与 838/839/857 同形态 ⇒ 当时判「重放可承、不进清单」。
+# ★ 但真机暴露了判据缺口：「rc=0 且函数体重放成功」≠「语义可承」——
+#   528 的 CREATE OR REPLACE 复活了 promote_request_logs_bodies_hot_to_partition
+#   （890 已随 v1 族一起 DROP 的函数），而函数体引用已不存在的
+#   request_logs_bodies_hot ⇒ data-lifecycle hot cron 的能力探针
+#   （admin/data_lifecycle_cron.go :246 起，按 pg_proc 函数存在性 skip）
+#   见函数在 ⇒ 放行逐批调用 ⇒ 每批 42P01。211 真机实测：00:29 账本漂移
+#   批次重放 524-529 后，s 槽每轮 hot cron 打 53 条 ERROR（04:0x–04:1x）。
+# ⇒ 528 进清单：现役库（v1 族缺席）上守卫直接跳过它，函数体保持 890
+#   后的「缺席」终态，cron 探针恢复 skip。判据沉淀：对「CREATE OR
+#   REPLACE 退役族对象」的件，重放成功与否不是判据，**重放后退役对象的
+#   存在性是否被改变**才是（改了 = 必进清单）。
