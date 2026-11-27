@@ -5,7 +5,7 @@
         <button class="ep-btn" type="button" :disabled="listLoading" @click="refresh">
           {{ t('errorPlaybook.action.refresh') }}
         </button>
-        <button class="ep-btn ep-btn--primary" type="button" @click="openCreate">
+        <button v-if="superAdmin" class="ep-btn ep-btn--primary" type="button" @click="openCreate">
           {{ t('errorPlaybook.action.create') }}
         </button>
       </template>
@@ -246,7 +246,7 @@
           <button class="ep-btn" type="button" @click="closeCreate">
             {{ t('errorPlaybook.action.cancel') }}
           </button>
-          <button
+          <button v-if="superAdmin"
             class="ep-btn ep-btn--primary"
             type="button"
             :disabled="creating"
@@ -270,6 +270,7 @@
 
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { isSuperAdmin } from '../../../store'
 import { useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
 import DataTable from '../../../components/ui/DataTable.vue'
@@ -291,6 +292,8 @@ import {
 } from '../../../api/errorPlaybook'
 
 const { t } = useI18n()
+// ★ 2026-11-27 非管理员菜单轮：读面开放；创建/执行等写动作 super-only。
+const superAdmin = isSuperAdmin()
 const router = useRouter()
 const { loading: listLoading, error: listError, run } = useErrorPlaybookLoader()
 

@@ -85,11 +85,20 @@ func TestSanitizeRuleAuthorizationMatrix(t *testing.T) {
 			t.Fatal(role, w.Code, w.Body.String())
 		}
 	}
+	// ★ 2026-11-27 非管理员菜单重构轮：user 档只读放行面 = events +
+	//   blocked-reviews（本租户）；规则管理面与其余端点仍 403。
 	for _, role := range []string{"user", "unknown"} {
-		w := sanitizeAPIRequest(t, h, "GET", "/api/admin/sanitize-rules/events", role, "a", "")
+		w := sanitizeAPIRequest(t, h, "GET", "/api/admin/sanitize-rules/versions", role, "a", "")
 		if w.Code != 403 {
-			t.Fatal(role, w.Code)
+			t.Fatal(role, "versions:", w.Code)
 		}
+	}
+	wUser := sanitizeAPIRequest(t, h, "GET", "/api/admin/sanitize-rules/events", "user", "a", "")
+	if wUser.Code != 200 {
+		t.Fatal("user events read:", wUser.Code, wUser.Body.String())
+	}
+	if strings.Contains(wUser.Body.String(), `"tenant_id":"b"`) {
+		t.Fatal("user events read escaped own tenant")
 	}
 	w := sanitizeAPIRequest(t, h, "GET", "/api/admin/sanitize-rules/events", "tenant_admin", "", "")
 	if w.Code != 403 {
@@ -259,7 +268,7 @@ func TestSanitizeRuleJWTAuthorizationUsesAuthenticatedTenant(t *testing.T) {
 	for _, tc := range []struct {
 		role, path string
 		code       int
-	}{{"tenant_admin", "/api/admin/sanitize-rules", 403}, {"tenant_admin", "/api/admin/sanitize-rules/events?tenant_id=b", 200}, {"user", "/api/admin/sanitize-rules/events", 403}, {"super_admin", "/api/admin/sanitize-rules", 200}} {
+	}{{"tenant_admin", "/api/admin/sanitize-rules", 403}, {"tenant_admin", "/api/admin/sanitize-rules/events?tenant_id=b", 200}, {"user", "/api/admin/sanitize-rules/events", 200}, {"user", "/api/admin/sanitize-rules", 403}, {"super_admin", "/api/admin/sanitize-rules", 200}} {
 		token, _, err := SignToken(42, "a", "operator", tc.role, h.secret, false)
 		if err != nil {
 			t.Fatal(err)

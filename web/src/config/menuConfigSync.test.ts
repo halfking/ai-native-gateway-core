@@ -62,7 +62,14 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { NAV_PRIMARY_ITEMS, NAV_GROUPS, type NavItem } from './appNav'
+import { NAV_PRIMARY_ITEMS, NAV_GROUPS, HIDDEN_NAV_PATHS, type NavItem } from './appNav'
+
+// ★ 2026-11-27 非管理员菜单重构轮：导出契约变更 —— annotateGroup/primary 不再
+//   把 HIDDEN_NAV_PATHS 里的路径写进产物（menu-config 是给下游的投递物，
+//   藏了的入口不再宣传）。⇒ 本门的「期望值」构造同步应用同一份过滤
+//   （与 navHidden.test.ts 共用同一清单常量，没有第二份副本）。
+const exportable = (items: readonly NavItem[]): NavItem[] =>
+  items.filter((it) => !HIDDEN_NAV_PATHS.includes(it.path))
 
 const here = dirname(fileURLToPath(import.meta.url))
 const menuPath = join(here, '..', '..', 'public', 'menu-config.json')
@@ -186,14 +193,15 @@ describe('menu-config.json ≡ appNav.ts 反向同步门（F-8）', () => {
     }
   })
 
-  it('primary ≡ NAV_PRIMARY_ITEMS（逐项全字段）', () => {
+  it('primary ≡ NAV_PRIMARY_ITEMS（逐项全字段，剔除隐藏路径后）', () => {
+    const sourcePrimary = exportable(NAV_PRIMARY_ITEMS)
     const diffs: string[] = []
-    if (primary.length !== NAV_PRIMARY_ITEMS.length) {
-      diffs.push(lengthMismatch('primary', '项', NAV_PRIMARY_ITEMS.length, primary.length))
+    if (primary.length !== sourcePrimary.length) {
+      diffs.push(lengthMismatch('primary', '项', sourcePrimary.length, primary.length))
     }
-    const n = Math.min(primary.length, NAV_PRIMARY_ITEMS.length)
+    const n = Math.min(primary.length, sourcePrimary.length)
     for (let i = 0; i < n; i++) {
-      diffs.push(...diffItem(expectedItemShape(NAV_PRIMARY_ITEMS[i]), primary[i], `primary[${i}] (${labelOf(primary[i])})`))
+      diffs.push(...diffItem(expectedItemShape(sourcePrimary[i]), primary[i], `primary[${i}] (${labelOf(primary[i])})`))
     }
     expect(
       diffs,
@@ -203,7 +211,7 @@ describe('menu-config.json ≡ appNav.ts 反向同步门（F-8）', () => {
     ).toEqual([])
   })
 
-  it('groups ≡ NAV_GROUPS（组清单 + 每组 items 逐项全字段）', () => {
+  it('groups ≡ NAV_GROUPS（组清单 + 每组 items 逐项全字段，items 剔除隐藏路径后）', () => {
     const diffs: string[] = []
     if (groups.length !== NAV_GROUPS.length) {
       diffs.push(lengthMismatch('groups', '组', NAV_GROUPS.length, groups.length))
@@ -217,9 +225,12 @@ describe('menu-config.json ≡ appNav.ts 反向同步门（F-8）', () => {
       if (src.id !== gid) {
         diffs.push(`${where}: 组 id 源='${src.id}' 导出='${gid}'`)
       }
-      diffs.push(...diffItem(expectedGroupShape(src), exp, where, ['items']))
-      // items 数组
-      const srcItems = src.items
+      // 组级派生字段按**导出后的 items**（剔除隐藏）复算，与脚本 annotateGroup 口径一致。
+      const exportedItems = exportable(src.items)
+      const scopeSrc = { ...src, items: exportedItems }
+      diffs.push(...diffItem(expectedGroupShape(scopeSrc), exp, where, ['items']))
+      // items 数组（剔除隐藏路径后逐项对拍）
+      const srcItems = exportedItems
       const expItems = Array.isArray(exp.items) ? (exp.items as JsonItem[]) : []
       if (expItems.length !== srcItems.length) {
         diffs.push(lengthMismatch(`${where}.items`, '项', srcItems.length, expItems.length))

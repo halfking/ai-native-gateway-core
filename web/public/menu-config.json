@@ -11,12 +11,18 @@
     "plugin": "依赖 plugin 运行时探测（按 plugin 字段名匹配）",
     "*": "始终可用，无 plugin 依赖"
   },
+  "roleScopeLegend": {
+    "management": "仅管理视角可见（super_admin ∧ default 租户；tenant_admin 不属管理视角）",
+    "userFacing": "所有已登录用户可见（数据范围由后端按角色收窄）",
+    "*": "维持原有角色语义"
+  },
   "primary": [
     {
       "path": "/dashboard",
       "labelKey": "nav.item.overview",
       "icon": "📊",
       "platformOps": true,
+      "userFacing": true,
       "exact": true,
       "tenantScope": "default",
       "pluginScope": "*"
@@ -26,15 +32,7 @@
       "labelKey": "nav.item.liveTopology",
       "icon": "🛰",
       "platformOps": true,
-      "exact": true,
-      "tenantScope": "default",
-      "pluginScope": "*"
-    },
-    {
-      "path": "/live2",
-      "labelKey": "nav.item.liveStageTree",
-      "icon": "🌲",
-      "platformOps": true,
+      "userFacing": true,
       "exact": true,
       "tenantScope": "default",
       "pluginScope": "*"
@@ -49,14 +47,6 @@
           "path": "/tenant/models",
           "labelKey": "nav.item.tenantModels",
           "icon": "🤖",
-          "tenantOnly": true,
-          "tenantScope": "tenant",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/tenant/pricing",
-          "labelKey": "nav.item.tenantPricing",
-          "icon": "💳",
           "tenantOnly": true,
           "tenantScope": "tenant",
           "pluginScope": "*"
@@ -91,6 +81,7 @@
           "icon": "🧭",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -100,6 +91,7 @@
           "icon": "📉",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -109,6 +101,7 @@
           "icon": "💰",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -118,6 +111,7 @@
           "icon": "🧾",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -126,6 +120,7 @@
           "labelKey": "nav.item.salesWorkbench",
           "icon": "💼",
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -135,6 +130,7 @@
           "icon": "🎯",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -144,6 +140,7 @@
           "icon": "🌐",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         }
@@ -161,6 +158,7 @@
           "icon": "🏷️",
           "platformOps": true,
           "hideForTenant": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -171,6 +169,7 @@
           "super": true,
           "hideForTenant": true,
           "exact": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -178,6 +177,7 @@
           "path": "/routing-v2/credentials",
           "labelKey": "nav.item.credentialMonitor",
           "icon": "📊",
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         },
@@ -185,6 +185,7 @@
           "path": "/routing-v2/auto-ops",
           "labelKey": "nav.item.autoOps",
           "icon": "♻️",
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         },
@@ -202,6 +203,7 @@
           "icon": "📈",
           "super": true,
           "hideForTenant": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -212,6 +214,7 @@
           "super": true,
           "hideForTenant": true,
           "external": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         }
@@ -276,6 +279,7 @@
           "path": "/my/sessions",
           "labelKey": "nav.item.mySessions",
           "icon": "🗂️",
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         },
@@ -283,6 +287,7 @@
           "path": "/my/usage",
           "labelKey": "nav.item.myUsage",
           "icon": "📈",
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         },
@@ -299,6 +304,7 @@
           "icon": "📊",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -308,6 +314,7 @@
           "icon": "🔄",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -315,6 +322,7 @@
           "path": "/admin/session-analytics/users",
           "labelKey": "nav.item.sessionAnalytics",
           "icon": "📊",
+          "management": true,
           "tenantScope": "*",
           "pluginScope": "*"
         },
@@ -331,6 +339,7 @@
           "icon": "📑",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -340,6 +349,7 @@
           "icon": "🔗",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         }
@@ -364,6 +374,7 @@
           "icon": "⚙️",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -373,6 +384,7 @@
           "icon": "⬆️",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -382,6 +394,7 @@
           "icon": "🌐",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -391,6 +404,7 @@
           "icon": "💾",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -400,6 +414,7 @@
           "icon": "⚠️",
           "super": true,
           "hideForTenant": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -409,6 +424,7 @@
           "icon": "🛰️",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -418,6 +434,7 @@
           "icon": "🔎",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -427,6 +444,7 @@
           "icon": "🧩",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -436,6 +454,7 @@
           "icon": "🛡️",
           "super": true,
           "hideForTenant": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -446,6 +465,7 @@
           "super": true,
           "hideForTenant": true,
           "piAnalysis": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -455,6 +475,7 @@
           "icon": "📕",
           "super": true,
           "hideForTenant": true,
+          "userFacing": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -463,6 +484,7 @@
           "labelKey": "sessionAnalytics.nav.userRanking",
           "icon": "👥",
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -471,6 +493,7 @@
           "labelKey": "sessionAnalytics.nav.agentRanking",
           "icon": "🧑‍💼",
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -479,6 +502,7 @@
           "labelKey": "sessionAnalytics.nav.modelRanking",
           "icon": "🧠",
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -488,6 +512,7 @@
           "icon": "📦",
           "platformOps": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -497,6 +522,7 @@
           "icon": "💬",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -506,6 +532,7 @@
           "icon": "🤖",
           "super": true,
           "hideForTenant": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -548,6 +575,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -559,6 +587,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -570,6 +599,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -581,6 +611,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -592,6 +623,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -604,6 +636,7 @@
           "opsPlatform": true,
           "external": true,
           "activateWhenNotActivated": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -614,6 +647,7 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
+          "management": true,
           "tenantScope": "default",
           "pluginScope": "*"
         }
@@ -655,14 +689,6 @@
           "activateWhenNotActivated": true,
           "tenantScope": "*",
           "pluginScope": "*"
-        },
-        {
-          "path": "/maintain/donate",
-          "labelKey": "nav.item.supportDonate",
-          "icon": "💖",
-          "external": true,
-          "tenantScope": "*",
-          "pluginScope": "*"
         }
       ],
       "tenantScope": "*",
@@ -684,5 +710,5 @@
       "pluginScope": "*"
     }
   ],
-  "exported_fingerprint": "sha256:7005fbdf6ed2d466"
+  "exported_fingerprint": "sha256:498c1aacc40a4a2e"
 }

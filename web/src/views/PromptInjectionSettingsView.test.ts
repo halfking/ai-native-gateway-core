@@ -47,6 +47,15 @@ const mocks = vi.hoisted(() => ({
   listModels: vi.fn(),
 }))
 
+// ★ 2026-11-27 非管理员菜单轮：页面引入 isSuperAdmin 守卫（写按钮/开关仅 super
+//   可见）⇒ 本文件必须 mock store 并置 super=true，否则真 store 无 JWT 返回
+//   false ⇒ 保存按钮消失，三条「保存体形状」用例红（它们测的是保存语义，
+//   不是角色闸；角色闸由 PromptInjectionSettingsView 的挂载断言另测）。
+vi.mock('../store', () => ({
+  isSuperAdmin: () => true,
+  isPlatformOpsView: () => true,
+}))
+
 vi.mock('../api/promptInjection', () => ({
   getPolicy: mocks.getPolicy,
   updatePolicy: mocks.updatePolicy,

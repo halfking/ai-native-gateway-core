@@ -2583,6 +2583,17 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		tenantID = GetTenantID(r)
 		isSuper = false
 	}
+	// ★ 2026-11-27 非管理员菜单重构轮（P0 越权修复）：普通 role=user 原先
+	//   tenantID="" + isSuper=false ⇒ redis store 的 `!isSuper && tenantID != ""`
+	//   条件全部不成立 ⇒ 直接读全局键 `llmgw:live:main`（跨租户全平台流量）。
+	//   /live 实时拓扑菜单对非管理员放开后，user 档必须与 tenant_admin 同样
+	//   收进本租户键（租户内可见；本人级过滤由前端 topology 面板按需做，
+	//   数据面不越租户即守住底线）。
+	if !isSuper && tenantID == "" {
+		if tid := GetTenantID(r); tid != "" {
+			tenantID = tid
+		}
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

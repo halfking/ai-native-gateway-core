@@ -1097,6 +1097,14 @@ func (h *Handler) formatAnomalyTenantAdmin(fn http.HandlerFunc) http.HandlerFunc
 	return FormatAnomalyTenantAdminMiddleware(fn, h.db, h.secret)
 }
 
+// modelCatalogRead wraps the model-catalog page's read endpoints
+// (/api/catalog, /api/tags, /api/routing/featured GET) with
+// modelCatalogReadGate: three roles read, only super writes
+// (2026-11-27 非管理员菜单重构轮第二轮).
+func (h *Handler) modelCatalogRead(fn http.HandlerFunc) http.HandlerFunc {
+	return modelCatalogReadGate(fn, h.db, h.secret)
+}
+
 // modelIntegrityTenantAdmin wraps the model-integrity handler with the
 // same dual-role middleware as format-anomalies. (批 157, 2026-10-16)
 func (h *Handler) modelIntegrityTenantAdmin(fn http.HandlerFunc) http.HandlerFunc {
@@ -1554,7 +1562,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/identity-pool/max", h.superAdmin(h.setIdentityPoolMax))
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))
 	mux.HandleFunc("/api/routing/policy", h.superAdmin(h.handleRoutingPolicy))
-	mux.HandleFunc("/api/routing/featured", h.superAdmin(h.handleRoutingFeatured))
+	// 「模型与目录」页读面（2026-11-27 非管理员菜单重构轮第二轮）：
+	// GET 三角色放行（super/ta/user），featured PATCH 仍在闸内 method 拦下
+	// （仅 super 可写）；handler 侧 RequireSuperAdminForWrite 双保险。
+	mux.HandleFunc("/api/routing/featured", h.modelCatalogRead(h.handleRoutingFeatured))
 	mux.HandleFunc("/api/routing/available-models", admin(h.handleRoutingAvailableModels))
 	mux.HandleFunc("/api/routing/available-models/raw", admin(h.handleRoutingAvailableModelsRaw))
 	mux.HandleFunc("/api/routing/decisions", admin(h.handleRoutingDecisions))
@@ -1671,9 +1682,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// publicly accessible. The handler is nil-safe (returns 503 when
 	// attachment storage was not configured at startup).
 	mux.HandleFunc("/api/attachments/", admin(h.handleAttachmentsDownload))
-	mux.HandleFunc("/api/catalog", h.superAdmin(h.handleCatalogRoot))
-	mux.HandleFunc("/api/catalog/", h.superAdmin(h.handleCatalog))
-	mux.HandleFunc("/api/tags", h.superAdmin(h.handleTags))
+	mux.HandleFunc("/api/catalog", h.modelCatalogRead(h.handleCatalogRoot))
+	mux.HandleFunc("/api/catalog/", h.modelCatalogRead(h.handleCatalog))
+	mux.HandleFunc("/api/tags", h.modelCatalogRead(h.handleTags))
 	mux.HandleFunc("/api/system/background-tasks", h.admin(h.handleSystemTasks))
 	// /api/system/version is registered as public route above
 	mux.HandleFunc("/api/system/memora-status", h.admin(h.handleMemoraStatus))

@@ -92,6 +92,8 @@ vi.mock('vue-router', () => ({
 // 实际是断言量具停在了另一个页签上。
 vi.mock('../store', () => ({
   isPlatformOpsView: () => true,
+  // ★ 2026-11-27 非管理员菜单轮：ModelsView 引入 isSuperAdmin 只读守卫 ⇒ mock 补导出
+  isSuperAdmin: () => true,
   isReadOnlyMode: () => false,
   store: { get: () => null, set: () => {} },
   clearApiKey: () => {},

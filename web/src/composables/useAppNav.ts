@@ -108,6 +108,13 @@ export function _resetUseAppNavForTests() {
 
 export function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null): NavGroup[] {
   if (!remote || !remote.length) return localGroups
+  // ★ 2026-11-27 非管理员菜单重构轮（owner 指令「非管理员不需要运维中心」）：
+  //   远端运维菜单是 refreshOpsMenu **后台无凭据拉取**的整组管理面数据——
+  //   它对所有角色拉取，合并与否是纯前端决策 ⇒ 非管理视角必须**整组不合并**
+  //   （本地 opsplatform 条目已带 management 标记走 canShowNavItem 裁剪；
+  //   远端条目没有本地 NavItem 可挂标记，只能在合并入口处按视角拦截）。
+  //   ❌ 不能只靠 isHiddenNavPath 逐条筛：那只藏单条路径，藏不住整组。
+  if (!checkPlatformOps()) return localGroups
   const merged: NavGroup[] = []
   for (const g of localGroups) {
     if (g.id === 'opsplatform') continue
@@ -158,6 +165,14 @@ export function useAppNav() {
   // 2026-09-04: 供应商控制台（super_admin 或 default 租户 tenant_admin）
   const isProviderConsole = computed(() => checkProviderConsole())
   const isTenantPortal = computed(() => !isPlatformOps.value)
+  // ★ 2026-11-27 非管理员菜单重构轮：管理视角 = isPlatformOps
+  //   （super_admin ∧ default 租户）。owner 需求原文把 tenant_admin 明确列为
+  //   「非系统管理员」被裁剪对象 ⇒ tenant_admin **不**进管理视角
+  //   （maintain-web navLoader 同轮已对齐该口径）。
+  //   非管理视角（tenant_admin / user / 非 default 租户门户）⇒ management
+  //   条目（运营工具/运维中心/管理设置）全部隐藏；用户面（userFacing /
+  //   无标记）条目不受影响。
+  const isManagementView = computed(() => isPlatformOps.value)
 
   const visibilityOpts = computed(() => ({
     isSuperAdmin: isSuperAdmin.value,
@@ -166,6 +181,7 @@ export function useAppNav() {
     isProviderConsole: isProviderConsole.value,
     isActivated: isActivated.value,
     piAnalysisAvailable: piAnalysisAvailable.value,
+    isManagementView: isManagementView.value,
   }))
 
   // V5.1: dynamic plugin nav (plugin-runtime /api/v1/plugin-nav). The merge

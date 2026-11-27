@@ -556,8 +556,15 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 // the second case, where EffectiveTenantIDAll returns the caller's own
 // tenantID, satisfying withTenantOrAllReadOnlyTx's "bypass only on
 // empty tenantID" constraint.
+//
+// ★ 2026-11-27 非管理员菜单重构轮：普通 role=user 也放行读（菜单本轮对
+//   非管理员放开「格式异常监控」）。数据面安全性由既有租户收窄承载：
+//   EffectiveTenantIDAll 对 user 走 GetTenantID 分支前的判定不足——
+//   本轮在 formatAnomalyTenantID 收口（user → 本租户，绝不返回空串 =
+//   绝不 bypass RLS）；resolve 写端点保持 super_admin-only。
+//   （原实现直接 403 拒 user——菜单放开后按三档口径放宽读、收数据。）
 func FormatAnomalyTenantAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
-	return tenantAdminOrSuperAdmin(next, db, secretKey, "format-anomalies")
+	return formatAnomalyOrSuperAdmin(next, db, secretKey)
 }
 
 // ModelIntegrityTenantAdminMiddleware guards /api/admin/model-integrity*:
@@ -623,6 +630,164 @@ func tenantAdminOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKey,
 			return
 		default:
 			writeError(w, http.StatusForbidden, "super_admin or tenant_admin role required for this endpoint")
+			return
+		}
+	}
+}
+
+// formatAnomalyOrSuperAdmin 是 tenantAdminOrSuperAdmin 的四档变体
+//（2026-11-27 非管理员菜单重构轮）：前三档（super_admin / admin_key /
+// tenant_admin）与共享实现逐字同链（认证 → 撤销探针 → 改密拦截）；
+// 第四档放行**普通 role=user 的读**——「格式异常监控」菜单本轮对非管理员
+// 放开（owner 指令），数据面由 formatAnomalyTenantID 收进本租户
+//（绝不返回空串 ⇒ 绝不 bypass RLS）；写端点（resolve）在
+// handleFormatAnomalySubrouter 内另有 super 闸，与本中间件无关。
+func formatAnomalyOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenStr, ok := extractBearerOrCookieToken(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		claims, err := VerifyToken(tokenStr, secretKey)
+		if err != nil || claims.UserID <= 0 {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		issuedAt := time.Time{}
+		if claims.IssuedAt != nil {
+			issuedAt = claims.IssuedAt.Time
+		}
+		if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+			writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+			return
+		}
+		if enforceMustChangePassword(w, r, claims) {
+			return
+		}
+		switch {
+		case claims.Role == "super_admin" || claims.Role == "admin_key" || claims.Role == "tenant_admin":
+			if claims.Role == "tenant_admin" && claims.TenantID == "" {
+				// 同 tenantAdminOrSuperAdmin：无租户绑定的 tenant_admin
+				// 无法安全隔离 ⇒ 拒绝而非冒 bypass 风险。
+				writeError(w, http.StatusForbidden, "tenant_admin must have a tenant binding to access format-anomalies")
+				return
+			}
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		default:
+			// 普通 role=user：只放行 GET（读）。写端点族后续由 handler 侧
+			// method 判定兜底（format-anomalies 读 handler 只接受 GET；
+			// resolve 是 POST 且另有 super 闸）。
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				writeError(w, http.StatusForbidden, "write operations require super_admin")
+				return
+			}
+			if claims.TenantID == "" {
+				// user 档必须有租户绑定：无租户 ⇒ 无法收窄 ⇒ 拒绝
+				//（否则 formatAnomalyTenantID 会退化为空串 = bypass RLS）。
+				writeError(w, http.StatusForbidden, "user must have a tenant binding to access format-anomalies")
+				return
+			}
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		}
+	}
+}
+
+// modelCatalogReadGate 是「模型与目录」页非管理员读面的统一闸
+//（2026-11-27 非管理员菜单重构轮第二轮）：
+//
+//	super_admin / admin_key / tenant_admin → 全放行（GET/HEAD；写面在
+//	  handler 侧由 RequireSuperAdminForWrite 兜底，ta 无租户绑定拒）
+//	role=user → 仅 GET/HEAD 放行且必须有租户绑定（写 403）；
+//	  其他角色（channel 等）→ 403 维持旧口径
+//
+// ★ 为什么需要它：「模型与目录」页（owner 指令对非管理员放开）调用四个
+//   元数据端点，其中 /api/catalog、/api/routing/featured、/api/tags 原先
+//   挂 SuperAdminMiddleware —— ta 落在该页默认「提供商目录」页签即 403
+//   （真机实证：GET /api/catalog → 403 "super_admin role required"）。
+//   三个端点均为**纯读元数据**（供应商目录模板 / 精选模型列表 / 标签
+//   命名空间），不含凭据、key、租户敏感数据；featured 的 PATCH（写）由
+//   本闸 method 判定拦下（仅 super 有写权），catalog/tags 的写方法由
+//   handler 侧判定兜底（handleCatalog/handleTags 只分 GET，其余
+//   405/404；handleCatalogRoot 纯 GET）。数据面收窄沿用各 handler 既有
+//   口径：catalog 全量公开目录、featured 是 default 租户的路由策略
+//   配置、tags 是模型标签聚合（均为「模型与目录」页展示所需的最小面）。
+func modelCatalogReadGate(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenStr, ok := extractBearerOrCookieToken(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		claims, err := VerifyToken(tokenStr, secretKey)
+		if err != nil || claims.UserID <= 0 {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		issuedAt := time.Time{}
+		if claims.IssuedAt != nil {
+			issuedAt = claims.IssuedAt.Time
+		}
+		if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+			writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+			return
+		}
+		if enforceMustChangePassword(w, r, claims) {
+			return
+		}
+		switch {
+		case claims.Role == "super_admin" || claims.Role == "admin_key" || claims.Role == "tenant_admin":
+			if claims.Role == "tenant_admin" && claims.TenantID == "" {
+				writeError(w, http.StatusForbidden, "tenant_admin must have a tenant binding to access model catalog")
+				return
+			}
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		case claims.Role == "user":
+			// 普通 role=user：仅 GET/HEAD（读）。
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				writeError(w, http.StatusForbidden, "write operations require super_admin")
+				return
+			}
+			if claims.TenantID == "" {
+				// user 档必须有租户绑定（与 formatAnomalyOrSuperAdmin 同判据）。
+				writeError(w, http.StatusForbidden, "user must have a tenant binding to access model catalog")
+				return
+			}
+			authReq := SetAuthContext(r, &AuthContext{
+				UserID:   claims.UserID,
+				TenantID: claims.TenantID,
+				Username: claims.Username,
+				Role:     claims.Role,
+				IsJWT:    true,
+			})
+			next(w, authReq)
+			return
+		default:
+			writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
 			return
 		}
 	}

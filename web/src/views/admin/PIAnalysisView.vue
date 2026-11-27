@@ -3,7 +3,7 @@
     <div class="header">
  <h1>{{ t('common.piAnalysis.page.title') }}</h1>
       <div class="actions">
-        <button @click="triggerAnalysis" class="btn-primary" :disabled="isTriggering">
+        <button v-if="superAdmin" @click="triggerAnalysis" class="btn-primary" :disabled="isTriggering">
           {{ isTriggering ? t('common.piAnalysis.page.triggering') : t('common.piAnalysis.page.triggerManual') }}
         </button>
         <button @click="refreshData" class="btn-secondary">
@@ -153,7 +153,7 @@
         <strong>{{ t('common.piAnalysis.forensics.parseFailedBannerTitle', { n: parseFailedCount }) }}</strong>
         <span>{{ t('common.piAnalysis.forensics.parseFailedBannerBody') }}</span>
         <span v-if="bulkReparseNote" data-testid="pi-parse-failed-result">{{ bulkReparseNote }}</span>
-        <button class="btn-secondary" :disabled="bulkReparsing" @click="reparseAll">
+        <button v-if="superAdmin" class="btn-secondary" :disabled="bulkReparsing" @click="reparseAll">
           {{ bulkReparsing ? '…' : t('common.piAnalysis.forensics.reparseAllButton') }}
         </button>
       </div>
@@ -442,7 +442,7 @@
               <div class="view-only-note" v-if="parseFailed" data-testid="pi-parse-failed-note">
                 <p>{{ t('common.piAnalysis.forensics.parseFailedBanner') }}</p>
                 <div class="actions-section">
-                  <button class="btn-secondary" :disabled="reparsing" @click="reparseThis">
+                  <button v-if="superAdmin" class="btn-secondary" :disabled="reparsing" @click="reparseThis">
                     {{ reparsing ? '…' : t('common.piAnalysis.forensics.reparseButton') }}
                   </button>
                   <div class="view-only-note" v-if="reparseFailed" data-testid="pi-reparse-failed">{{ t('common.piAnalysis.forensics.reparseFailed') }}</div>
@@ -633,7 +633,7 @@
                 <div class="detail-item" v-if="showJudgeOption">
                   <label><input type="checkbox" v-model="verifyIncludeJudge" data-testid="pi-verify-include-judge" /> {{ t('common.piAnalysis.forensics.verifyIncludeJudge') }}</label>
                 </div>
-                <button class="btn-secondary" :disabled="verifying" @click="runVerify" data-testid="pi-verify-run">
+                <button v-if="superAdmin" class="btn-secondary" :disabled="verifying" @click="runVerify" data-testid="pi-verify-run">
                   {{ verifying ? t('common.piAnalysis.forensics.verifyRunning') : t('common.piAnalysis.forensics.verifyButton') }}
                 </button>
                 <div class="view-only-note" v-if="verifyResult?.error" data-testid="pi-verify-failed">{{ t('common.piAnalysis.forensics.verifyFailed') }}</div>
@@ -694,7 +694,7 @@
               <template v-if="!detailData">
                 <div class="view-only-note" v-if="analyzeQueued" data-testid="pi-analyze-queued">{{ t('common.piAnalysis.forensics.analyzeQueued') }}</div>
                 <!-- 定向分析：只分析这一条（批量触发按优先级领取，不保证轮到它）。 -->
-                <button class="btn-primary" :disabled="analyzing || analyzeQueued" @click="analyzeThis" data-testid="pi-analyze-this">
+                <button v-if="superAdmin" class="btn-primary" :disabled="analyzing || analyzeQueued" @click="analyzeThis" data-testid="pi-analyze-this">
                   {{ analyzing ? '…' : t('common.piAnalysis.detail.triggerForThis') }}
                 </button>
               </template>
@@ -705,10 +705,10 @@
                     {{ blockerLabel(b, detailData.confidence_score ?? 0) }}
                   </div>
                 </template>
-                <button class="btn-primary" :disabled="!canApply || applying" @click="applyFix">
+                <button v-if="superAdmin" class="btn-primary" :disabled="!canApply || applying" @click="applyFix">
                   {{ applying ? '…' : t('common.piAnalysis.detail.applyButton') }}
                 </button>
-                <button class="btn-secondary" :disabled="analyzing || analyzeQueued" @click="analyzeThis" data-testid="pi-reanalyze">
+                <button v-if="superAdmin" class="btn-secondary" :disabled="analyzing || analyzeQueued" @click="analyzeThis" data-testid="pi-reanalyze">
                   {{ t('common.piAnalysis.forensics.reanalyzeButton') }}
                 </button>
                 <div class="view-only-note" v-if="analyzeQueued">{{ t('common.piAnalysis.forensics.analyzeQueued') }}</div>
@@ -731,7 +731,7 @@
                     </div>
                   </div>
                 </div>
-                <button class="btn-secondary danger" :disabled="reverting" @click="revertFix">
+                <button v-if="superAdmin" class="btn-secondary danger" :disabled="reverting" @click="revertFix">
                   {{ t('common.piAnalysis.detail.revertButton') }}
                 </button>
               </template>
@@ -772,9 +772,14 @@ import {
   verdictOf,
 } from '@/lib/piAnalysisForensics'
 import { createLatestRequestGuard } from '@/utils/latestRequestGuard'
+import { isSuperAdmin } from '../../store'
 import { openRequestDetailPage } from '@/utils/openRequestDetailPage'
 
 const { t } = useI18n()
+// ★ 2026-11-27 非管理员菜单轮：读面对所有登录用户开放（piTenantFilter 三档
+// 收窄）；写动作（trigger/analyze/verify/apply/revert/reparse）后端已过
+// piRequireSuperAdminForWrite ⇒ 页面写按钮对非 super 隐藏（体验层前置）。
+const superAdmin = isSuperAdmin()
 
 // 状态管理
 const activeTab = ref<'queue' | 'results'>('queue')

@@ -84,6 +84,12 @@ const NAV_ITEMS = [
  * 同一对 key 在不同语种可能撞（zh-CN 不撞、de-DE 撞），键不变。
  */
 const KNOWN_LABEL_COLLISIONS: Record<string, string> = {
+  'nav.item.mySessions|nav.item.sessionAnalyticsUsers':
+    '2026-11-27 非管理员菜单重构轮：owner 指令「用户会话分析」更名「我的会话」' +
+    '（/admin/session-analytics/users/overview，userFacing 对非管理员保留），' +
+    '而 /my/sessions（旧「我的会话」，本轮已加 management）在管理视角下与其同时可见 ⇒ 同名。' +
+    '非管理视角两者恰好都只见其一（/my/sessions 被藏）⇒ 撞名只在 super 视角成立；' +
+    '/my/sessions 本就是本轮对非管理员隐藏的条目，待 owner 拍板是否整体退役后自然消解，本轮登记不改文案。',
   'nav.item.opsAutoUpdate|nav.item.opsAutoUpdate':
     '上游既有：「自动更新」路径 /maintain/ops/autoupdate 跨 opsplatform 与 guide 两组各挂一次（同一路径、同一 labelKey）。' +
     '该事实已被 navCounts.test.ts 显式钉住（EXPECTED_ITEMS 67 / EXPECTED_PATHS 66，差值 1 即此条）；' +

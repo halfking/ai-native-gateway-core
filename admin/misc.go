@@ -179,6 +179,15 @@ func (h *Handler) handleTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
+		// 写面双保险（2026-11-27 非管理员菜单重构轮第二轮）：/api/tags 的
+		// 闸从 superAdmin 换成 modelCatalogReadGate（user 档读放行）后，
+		// POST（createTag）不能跟着放开——标签写仍仅 super_admin / legacy
+		// admin_key。tenant_admin 与 user 在闸层已带 AuthContext 进来，
+		// 此处按角色拦。
+		if !IsSuperAdminOrLegacy(r) {
+			writeError(w, http.StatusForbidden, "write operations require super_admin")
+			return
+		}
 		h.createTag(ctx, w, r)
 		return
 	}

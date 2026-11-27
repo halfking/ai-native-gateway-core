@@ -8,6 +8,7 @@
 // /admin/prompt-injection 完整页处理。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { isSuperAdmin } from '../store'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useActionMessage } from '../composables/useActionMessage'
@@ -147,6 +148,9 @@ function showSavedFlash() {
   notifySuccess(t('sessions.config.promptInjectionPolicySaveSuccess'))
 }
 
+// ★ 2026-11-27 非管理员菜单轮：写动作（policy PUT / rule toggle）super-only。
+const superAdmin = isSuperAdmin()
+
 function schedulePolicySave() {
   if (!policy.value || savingPolicy.value) return
   flushPolicySave(true)
@@ -174,7 +178,9 @@ watch(
       policyWatchReady = true
       return
     }
-    if (policy.value) schedulePolicySave()
+    // ★ 2026-11-27 非管理员菜单轮：policy PUT 是 super-only 写端点 ⇒
+    //   非 super 不触发自动保存（表单只作只读展示）。
+    if (policy.value && superAdmin) schedulePolicySave()
   },
   { deep: true },
 )
@@ -506,7 +512,7 @@ const thresholdInvalid = computed(() => {
                 <input
                   type="checkbox"
                   :checked="rule.enabled"
-                  :disabled="ruleBusy.has(rule.id)"
+                  :disabled="ruleBusy.has(rule.id) || !superAdmin"
                   @change="onToggleRule(rule, ($event.target as HTMLInputElement).checked)"
                 />
                 <span class="track"><span class="knob" /></span>

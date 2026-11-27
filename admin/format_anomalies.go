@@ -61,7 +61,7 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 	// (bypass RLS, see all); tenant_admin → own tenantID (RLS policy
 	// filters to that tenant). The three read helpers below dispatch
 	// via withTenantOrAllReadOnlyTx.
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := formatAnomalyTenantID(r)
 
 	limit := queryInt(r, "limit", 50)
 	if limit <= 0 {
@@ -206,7 +206,7 @@ func (h *Handler) handleFormatAnomalySummary(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// 批 157 (2026-10-16): tenant isolation, parallel to handleFormatAnomalies.
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := formatAnomalyTenantID(r)
 
 	hours := queryInt(r, "hours", 24)
 	if hours <= 0 {
@@ -294,7 +294,7 @@ func (h *Handler) handleFormatAnomalyCount(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	tenantID := EffectiveTenantIDAll(r)
+	tenantID := formatAnomalyTenantID(r)
 	// NewToday 的日界与 reqprobe.Today() 同口径：进程本地时区的今天零点。
 	y, m, d := time.Now().Local().Date()
 	dayStart := time.Date(y, m, d, 0, 0, 0, 0, time.Local).UTC()
@@ -367,7 +367,7 @@ func (h *Handler) handleFormatAnomalySubrouter(w http.ResponseWriter, r *http.Re
 			    resolution_notes = $2
 			WHERE id = $1
 			  AND ($3 = '' OR tenant_id = $3)
-		`, id, body.ResolutionNotes, EffectiveTenantIDAll(r))
+		`, id, body.ResolutionNotes, formatAnomalyTenantID(r))
 		return err
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")

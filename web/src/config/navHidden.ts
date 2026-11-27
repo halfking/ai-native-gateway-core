@@ -63,6 +63,13 @@ export const HIDDEN_NAV_PATHS: readonly string[] = [
   // 结论落地前不再向用户宣传入口。/live 顶栏的「阶段树」按钮是**页面内**入口，
   // 不走菜单可见性链路 ⇒ 若也要藏需另改 LiveTopologyView（本轮未动，待 owner）。
   '/live2',                  // 请求阶段树（页面与路由保留，只藏菜单入口）
+
+  // 2026-11-27 非管理员菜单重构轮（owner 指令）：「套餐与充值」菜单隐藏。
+  // 隐藏 ≠ 删除：路由 /tenant/pricing 与 MaaSPricingView 页面保留，直链仍可
+  // 访问（租户账户页内的充值入口不受影响）；只是菜单不再宣传充值入口。
+  // 走本清单而不是从真源删除的理由同上：真源不动 ⇒ navCounts 口径门、
+  // menu-config.json 构建产物零漂移。
+  '/tenant/pricing',         // 套餐与充值（租户门户组，tenantOnly）
 ]
 
 /** 该路径的菜单项是否隐藏（本地与远端同尺）。 */

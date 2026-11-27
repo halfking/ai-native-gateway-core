@@ -297,7 +297,7 @@ func (h *PIAnalysisHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 	// ★ 2026-11-26 决策 1：租户过滤 ——
 	//   super_admin 看全平台数据（监控用），tenant_admin 只看自己租户的数据（安全/隐私）。
 	//   input_text 包含用户提示词，跨租户可见属于数据泄漏。
-	tenantFilter := EffectiveTenantIDAll(r)
+	tenantFilter := piTenantFilter(r)
 	if tenantFilter != "" {
 		query += fmt.Sprintf(" AND tenant_id = $%d", argPos)
 		args = append(args, tenantFilter)
@@ -416,7 +416,7 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ★ 2026-11-26 决策 1：租户过滤（与 GetQueue 同理）。
-	tenantFilter := EffectiveTenantIDAll(r)
+	tenantFilter := piTenantFilter(r)
 	query := `
 		SELECT 
 			r.id, r.analysis_id, r.queue_id,
@@ -534,7 +534,7 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 //
 // ★ 2026-11-26 决策 1：租户过滤 —— 结果详情同样需要租户校验。
 func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, queueID int64) {
-	tenantFilter := EffectiveTenantIDAll(r)
+	tenantFilter := piTenantFilter(r)
 	query := `
 		SELECT
 			r.id, r.analysis_id, r.queue_id,
@@ -657,7 +657,7 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 //
 // ★ 2026-11-26 决策 1：租户过滤 —— 降级路径同样需要租户校验。
 func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Request, queueID int64) {
-	tenantFilter := EffectiveTenantIDAll(r)
+	tenantFilter := piTenantFilter(r)
 	query := `
 		SELECT
 			r.id, r.analysis_id, r.queue_id,
@@ -778,7 +778,7 @@ func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Reque
 //
 // ★ 2026-11-26 决策 1：租户过滤 —— 单项详情同样需要租户校验。
 func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request, queueID int64) {
-	tenantFilter := EffectiveTenantIDAll(r)
+	tenantFilter := piTenantFilter(r)
 	query := `
 		SELECT
 			id, error_type, error_hash, priority,

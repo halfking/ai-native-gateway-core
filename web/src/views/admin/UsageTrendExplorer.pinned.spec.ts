@@ -80,8 +80,13 @@ describe('用量趋势：深链钉住的维度', () => {
   it('② ★ 被钉住的维度 ⇒ **收起**它对应的那张排行卡片（不多显示多余数据）', async () => {
     const src = await read('views/admin/UsageTrendExplorer.vue')
     for (const arm of ['models', 'clients', 'users', 'apiKeys', 'projects', 'tasks']) {
+      // ★ 2026-11-27 非管理员菜单轮：clients/users/apiKeys 三臂加了 showAdminFilters
+      //   前置（/api/providers、/api/keys 是 admin 档，非 super 会 403 ⇒ 整卡隐藏），
+      //   断言相应放宽为「两个 v-if 条件都在」——钉住收起语义不变。
+      const bare = src.includes(`v-if="!hiddenArms.has('${arm}')\"`)
+      const guarded = src.includes(`v-if="showAdminFilters && !hiddenArms.has('${arm}')\"`)
       expect(
-        src.includes(`v-if="!hiddenArms.has('${arm}')"`),
+        bare || guarded,
         `排行卡片 ${arm} 必须按钉住维度收起（被钉住后它必然只剩一行 = 多余数据）`,
       ).toBe(true)
     }

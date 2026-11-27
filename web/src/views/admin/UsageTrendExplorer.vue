@@ -184,6 +184,11 @@ function readMetricFromQuery(): UsageTrendMetric {
     : 'requests'
 }
 
+// 2026-11-27 非管理员菜单轮：菜单对普通 user 放开（owner 指令），核心数据链
+//   /api/admin/usage/v2/* 走 requestStatsV2Scope 三档收窄（user=本人）。
+//   但 provider/key 下拉的后端（/api/providers、/api/keys）是 admin 档 ⇒
+//   user 打开会 403：跳过加载并隐藏这两个筛选项（tenant 筛选已按 super 分流）。
+const showAdminFilters = isSuperAdmin()
 const showTenantFilter = isSuperAdmin()
 const presets = computed(() => makeDateRangePresets('date'))
 
@@ -217,6 +222,9 @@ const filterOptionsError = ref('')
 let filterOptionsPromise: Promise<void> | null = null
 
 async function loadFilterOptions() {
+  // 2026-11-27 非管理员菜单轮：user 档无 provider/key 下拉（后端 admin 档会 403），
+  // 直接返回——数据链 trend-series 照常走（三档收窄 user=本人）。
+  if (!showAdminFilters) return
   const problems: string[] = []
   try {
     // 2026-11-20 供应商选择统一轮：providers 列表改由 ProviderPicker 内聚加载；
@@ -647,7 +655,7 @@ onBeforeUnmount(() => {
            ⇒ 「条件区显示的条件」与「数据反映的条件」始终一致（口径不打架）；
            ✕ = 解除这条深链条件（清值 ⇒ 参数从 URL 消失 ⇒ 对应排行卡片重新出现）。
            ★ owner 诉求原文：「在页面的条件选择中自动选择相关的条件的下拉或选项」。 -->
-      <div class="ute__filter">
+      <div v-if="showAdminFilters" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
         <!-- 2026-11-20 供应商选择统一轮：el-select 换全局 ProviderPicker（id 模式）。
              truthy 空值防护（clearable el-select 在不同 EP 版本产出 undefined/''/null）
@@ -690,7 +698,7 @@ onBeforeUnmount(() => {
           @click="releaseTenant"
         >✕</button>
       </div>
-      <div class="ute__filter">
+      <div v-if="showAdminFilters" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterApiKey') }}</label>
         <el-select
           v-model="apiKeyId"
@@ -847,7 +855,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top 客户端 -->
-        <div v-if="!hiddenArms.has('clients')" class="ute__ranking-card">
+        <div v-if="showAdminFilters && !hiddenArms.has('clients')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 客户端</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_clients.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -871,7 +879,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top 用户 -->
-        <div v-if="!hiddenArms.has('users')" class="ute__ranking-card">
+        <div v-if="showAdminFilters && !hiddenArms.has('users')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 10 用户</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_users.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -894,7 +902,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top API Keys -->
-        <div v-if="!hiddenArms.has('apiKeys')" class="ute__ranking-card">
+        <div v-if="showAdminFilters && !hiddenArms.has('apiKeys')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 API Keys</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_api_keys.length === 0" class="ute__ranking-empty">暂无数据</div>

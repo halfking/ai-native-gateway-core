@@ -32,7 +32,7 @@
           <template #header>
             <div class="card-header">
               <span>{{ t('sessions.promptInjectionFull.enginesTitle') }}</span>
-              <el-button type="primary" size="small" @click="showAddEngine = true">
+              <el-button v-if="superAdmin" type="primary" size="small" @click="showAddEngine = true">
                 <el-icon><Plus /></el-icon> {{ t('sessions.promptInjectionFull.addEngine') }}
               </el-button>
             </div>
@@ -64,13 +64,13 @@
             </el-table-column>
             <el-table-column :label="t('sessions.promptInjectionFull.colEnabled')" width="80">
               <template #default="{ row }">
-                <el-switch v-model="row.enabled" @change="updateEngine(row)" />
+                <el-switch v-if="superAdmin" v-model="row.enabled" @change="updateEngine(row)" />
               </template>
             </el-table-column>
             <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="180" fixed="right">
               <template #default="{ row, $index }">
-                <el-button size="small" @click="editEngine(row)">{{ t('sessions.promptInjectionFull.edit') }}</el-button>
-                <el-button size="small" type="danger" @click="deleteEngine(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
+                <el-button v-if="superAdmin" size="small" @click="editEngine(row)">{{ t('sessions.promptInjectionFull.edit') }}</el-button>
+                <el-button v-if="superAdmin" size="small" type="danger" @click="deleteEngine(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -130,7 +130,7 @@
           <template #header>
             <div class="card-header">
               <span>{{ t('sessions.promptInjectionFull.severityTitle') }}</span>
-              <el-button type="primary" size="small" @click="saveSeverityMatrix">{{ t('sessions.promptInjectionFull.save') }}</el-button>
+              <el-button v-if="superAdmin" type="primary" size="small" @click="saveSeverityMatrix">{{ t('sessions.promptInjectionFull.save') }}</el-button>
             </div>
           </template>
 
@@ -255,7 +255,7 @@
                     <el-icon><Search /></el-icon>
                   </template>
                 </el-input>
-                <el-button type="primary" size="small" @click="showAddRule = true">
+                <el-button v-if="superAdmin" type="primary" size="small" @click="showAddRule = true">
                   <el-icon><Plus /></el-icon> {{ t('sessions.promptInjectionFull.addRule') }}
                 </el-button>
               </div>
@@ -308,7 +308,7 @@
             </el-table-column>
             <el-table-column :label="t('sessions.promptInjectionFull.colEnabled')" width="80">
               <template #default="{ row }">
-                <el-switch v-model="row.enabled" @change="toggleRule(row)" />
+                <el-switch v-if="superAdmin" v-model="row.enabled" @change="toggleRule(row)" />
               </template>
             </el-table-column>
             <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="200" fixed="right">
@@ -316,7 +316,7 @@
                 <el-button size="small" type="primary" link @click="openRuleDetail(row)">
                   {{ t('sessions.promptInjectionFull.viewDetail') }}
                 </el-button>
-                <el-button v-if="!row.is_system" size="small" type="danger" @click="deleteRule(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
+                <el-button v-if="superAdmin && !row.is_system" size="small" type="danger" @click="deleteRule(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
                 <span v-else class="meta">{{ t('sessions.promptInjectionFull.lockedHint') }}</span>
               </template>
             </el-table-column>
@@ -334,7 +334,7 @@
           <template #header>
             <div class="card-header">
               <span>{{ t('sessions.promptInjectionFull.canaryTitle') }}</span>
-              <el-button type="primary" size="small" @click="showAddCanary = true">
+              <el-button v-if="superAdmin" type="primary" size="small" @click="showAddCanary = true">
                 <el-icon><Plus /></el-icon> {{ t('sessions.promptInjectionFull.createToken') }}
               </el-button>
             </div>
@@ -379,12 +379,12 @@
             </el-table-column>
             <el-table-column :label="t('sessions.promptInjectionFull.colEnabled')" width="80">
               <template #default="{ row }">
-                <el-switch v-model="row.active" @change="updateCanaryToken(row)" />
+                <el-switch v-if="superAdmin" v-model="row.active" @change="updateCanaryToken(row)" />
               </template>
             </el-table-column>
             <el-table-column :label="t('sessions.promptInjectionFull.colActions')" width="120" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" type="danger" @click="deleteCanaryToken(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
+                <el-button v-if="superAdmin" size="small" type="danger" @click="deleteCanaryToken(row)">{{ t('sessions.promptInjectionFull.delete') }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -634,7 +634,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showAddEngine = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
-        <el-button type="primary" @click="createEngine">{{ t('sessions.promptInjectionFull.create') }}</el-button>
+        <el-button v-if="superAdmin" type="primary" @click="createEngine">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
     </AppModal>
 
@@ -669,7 +669,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showAddRule = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
-        <el-button type="primary" @click="createRule">{{ t('sessions.promptInjectionFull.create') }}</el-button>
+        <el-button v-if="superAdmin" type="primary" @click="createRule">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
     </AppModal>
 
@@ -747,7 +747,7 @@
       <template #footer>
         <el-button @click="showRuleDetail = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
         <el-button
-          v-if="ruleDetail && !ruleDetail.is_system"
+          v-if="superAdmin && ruleDetail && !ruleDetail.is_system"
           type="primary"
           :disabled="ruleDetailSaving"
           @click="saveRuleDetail"
@@ -788,7 +788,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showAddCanary = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
-        <el-button type="primary" @click="createCanaryToken">{{ t('sessions.promptInjectionFull.create') }}</el-button>
+        <el-button v-if="superAdmin" type="primary" @click="createCanaryToken">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
     </AppModal>
 
@@ -820,8 +820,13 @@ import {
   type UpdateRulePatch,
 } from '../api/promptInjection'
 import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
+import { isSuperAdmin } from '../store'
 
 const { t } = useI18n()
+// ★ 2026-11-27 非管理员菜单轮：读面（policy GET / rules GET / detections /
+// stats）对登录用户开放（detections/stats 后端收本租户）；写面（策略/规则/
+// 引擎/Canary/矩阵）后端 writeWrap 已收 super ⇒ 页面写按钮对非 super 隐藏。
+const superAdmin = isSuperAdmin()
 const route = useRoute()
 const router = useRouter()
 

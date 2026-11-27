@@ -23,6 +23,19 @@ func (h *Handler) registerSanitizeRuleRoutes(mux *http.ServeMux) {
 
 // handleSanitizeRules authorizes each operation after the shared JWT middleware.
 // AdminMiddleware authenticates ordinary users as well, so role checks belong here.
+//
+// ★ 2026-11-27 非管理员菜单重构轮：读面档位放宽 ——
+//   「敏感信息规则」菜单本轮对非管理员放开（owner 指令），普通 role=user
+//   需要能看「我为什么被拦」：
+//     - events（拦截事件，本租户）与 blocked-reviews（拦截审核队列，
+//       本租户）对 user 开放**只读**；
+//     - 规则管理面（rules/validate/publish/rollback/versions/instances/
+//       hardblock/egress 写/output-check 写）仍 super_admin-only；
+//     - tenant_admin 维持原放行面（eventRead/eventReview/egressReleaseRead/
+//       blockedReviewRead，租户过滤在各 handler 内收本租户）。
+//   租户过滤真值：listSanitizeRuleEvents / handleBlockedReviews /
+//   handleBlockReviewInsights 对「非 super」一律用 auth.TenantID 收口
+//   （本轮把 IsTenantAdmin 分支扩为「非 super 即收租户」，user 同样命中）。
 func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	auth := GetAuthContext(r)
 	if auth == nil {
@@ -44,7 +57,11 @@ func (h *Handler) handleSanitizeRules(w http.ResponseWriter, r *http.Request) {
 	//（那是「我为什么老被拦」的答案）。
 	blockedReviewRead := path == "/blocked-reviews" || path == "/blocked-reviews/" ||
 		path == "/blocked-reviews/insights"
-	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead || blockedReviewRead)) {
+	// ★ 2026-11-27：user 档的只读放行面 = events + blocked-reviews（含 insights）。
+	//   与 tenant_admin 的差异：不给 egress-releases（放行表有租户管理员语义，
+	//   user 无此职责）、不给 /events/{id}/review（复核是管理动作，写语义）。
+	userRead := auth.Role == "user" && auth.TenantID != "" && (eventRead || blockedReviewRead)
+	if !super && !(auth.Role == "tenant_admin" && auth.TenantID != "" && (eventRead || eventReview || egressReleaseRead || blockedReviewRead)) && !userRead {
 		writeError(w, 403, "insufficient permission for rule management")
 		return
 	}
@@ -213,7 +230,10 @@ func (h *Handler) listSanitizeRuleEvents(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	f := sanitizerules.EventFilter{Status: r.URL.Query().Get("status"), Action: r.URL.Query().Get("action"), Limit: limit}
-	if IsTenantAdmin(r) {
+	// ★ 2026-11-27：租户过滤从 IsTenantAdmin 扩为「非 super 即收租户」——
+	//   user 档读 events 时同样收本租户（菜单放开后 user 也能看「我为什么被拦」；
+	//   事件含 sample_masked 掩码原文 ⇒ 绝不跨租户）。
+	if !IsSuperAdminOrLegacy(r) {
 		f.TenantID = GetAuthContext(r).TenantID
 	}
 	if f.Status != "" && f.Status != "pending" && f.Status != "confirmed_sensitive" && f.Status != "false_positive" && f.Status != "ignored" {

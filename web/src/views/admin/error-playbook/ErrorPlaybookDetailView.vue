@@ -67,7 +67,7 @@
         </dl>
 
         <div class="ep-actions">
-          <button class="ep-btn ep-btn--primary" type="button" @click="openExecute">
+          <button v-if="superAdmin" class="ep-btn ep-btn--primary" type="button" @click="openExecute">
             {{ t('errorPlaybook.action.execute') }}
           </button>
           <label class="ep-radio">
@@ -86,7 +86,7 @@
             />
             <span>{{ t('errorPlaybook.form.entryAutoExecute') }}</span>
           </label>
-          <button class="ep-btn ep-btn--danger" type="button" @click="deleteOpen = true">
+          <button v-if="superAdmin" class="ep-btn ep-btn--danger" type="button" @click="deleteOpen = true">
             {{ t('errorPlaybook.action.delete') }}
           </button>
         </div>
@@ -108,7 +108,7 @@
         />
         <PlanEditor :key="planEditorKey" :initial-kind="entry.plan_kind" :initial-plan="entry.plan" />
         <div class="ep-actions">
-          <button class="ep-btn ep-btn--primary" type="button" :disabled="saving" @click="savePlan">
+          <button v-if="superAdmin" class="ep-btn ep-btn--primary" type="button" :disabled="saving" @click="savePlan">
             {{ t('errorPlaybook.action.savePlan') }}
           </button>
         </div>
@@ -161,8 +161,7 @@
               <span class="ep-chip">{{ t(`errorPlaybook.trigger.${x.trigger_source}`) }}</span>
               <span class="ep-timeline__time">{{ formatTime(x.created_at) }}</span>
               <span class="ep-timeline__duration">{{ t('errorPlaybook.col.duration') }}: {{ x.duration_ms }}ms</span>
-              <button
-                v-if="x.status === 'succeeded' || x.status === 'failed'"
+              <button v-if="superAdmin && (x.status === 'succeeded' || x.status === 'failed')"
                 class="ep-btn ep-btn--ghost"
                 type="button"
                 :disabled="revertingId === x.id"
@@ -256,6 +255,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { isSuperAdmin } from '../../../store'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
 import SaStateBanner from '../session-analytics/components/SaStateBanner.vue'
@@ -274,6 +274,10 @@ import {
 } from '../../../api/errorPlaybook'
 
 const { t } = useI18n()
+// ★ 2026-11-27 非管理员菜单轮：读面（entries/executions/stats GET）对所有
+// 登录用户开放；写动作（PUT/DELETE/execute/analyze/revert）后端已过
+// RequireSuperAdminForWrite ⇒ 页面写按钮对非 super 隐藏。
+const superAdmin = isSuperAdmin()
 const route = useRoute()
 const router = useRouter()
 const { loading: detailLoading, error: detailError, run } = useErrorPlaybookLoader()

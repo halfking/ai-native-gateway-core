@@ -15,7 +15,7 @@ export default {
   sessionsCard: 'Lista de sesiones',
   colTitle: 'Título',
   colSessionKey: 'Clave de sesión',
-  colTenant: 'Tenant',
+  colTenant: 'Inquilino',
   colRequests: 'Solicitudes',
   colCost: 'Costo total',
   colUpdatedAt: 'Última actualización',

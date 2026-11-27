@@ -59,6 +59,10 @@ func fdRequest(t *testing.T, h *Handler, method, path string, body any) *httptes
 	}
 	req := httptest.NewRequest(method, path, reader)
 	req.SetPathValue("id", fdPathID(path))
+	// ★ 2026-11-27 非管理员菜单重构轮：RequireSuperAdminForWrite 收严为
+	//   「非 super 一律拦写」后，POST/PUT 用例必须带 super_admin 上下文，
+	//   否则校验类判据（400）会被写闸 403 提前截断。
+	req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default", Username: "tester", IsJWT: true})
 	rec := httptest.NewRecorder()
 
 	var handler http.HandlerFunc

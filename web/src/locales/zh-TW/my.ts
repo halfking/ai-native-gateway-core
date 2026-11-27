@@ -1,7 +1,7 @@
 // my.ts — 使用者層級端點頁面文案（資料權限稽核 P2，2026-11-26）。
 export default {
   sessionsTitle: '我的會話',
-  usageTitle: '我的用量',
+  usageTitle: '我的用量統計',
   roleSuperAdmin: '超級管理員（全平台）',
   roleTenantAdmin: '租戶管理員（本租戶）',
   roleUser: '一般使用者（個人）',
@@ -18,7 +18,7 @@ export default {
   colTenant: '租戶',
   colRequests: '請求數',
   colCost: '總費用',
-  colUpdatedAt: '最近更新',
+  colUpdatedAt: '最近更新時間',
   untitled: '（無標題）',
   empty: '暫無資料',
   usagePeriod: '統計週期：近 30 天',

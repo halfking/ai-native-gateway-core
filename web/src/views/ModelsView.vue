@@ -26,7 +26,7 @@ import ModelPicker from '../components/ModelPicker.vue'
 import { useFilterChips } from '../composables/useFilterChips'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
-import { isReadOnlyMode, isPlatformOpsView } from '../store'
+import { isSuperAdmin, isPlatformOpsView } from '../store'
 import { normalizeTags, resolveVendor, matchesModelCatalogSearch } from '../utils/modelCatalog'
 import { confirmDialog } from '../composables/useConfirmDialog'
 
@@ -47,7 +47,9 @@ function tabFromQuery(q: unknown): PageTab | null {
 }
 
 function setTab(tab: PageTab) {
-  if (tab === 'canonical' && !isPlatformOps.value) return
+  // 名称映射与规范模型同属平台运维面（后端 name-mapping 写面 super-only、
+  // 读面对非管理员无业务意义 ⇒ 2026-11-27 轮与非管理员一起拦在页签层）。
+  if (tab !== 'catalog' && !isPlatformOps.value) return
   activeTab.value = tab
   const nextQuery = { ...route.query }
   if (tab === 'canonical') delete nextQuery.tab
@@ -57,7 +59,7 @@ function setTab(tab: PageTab) {
 
 function syncTabFromRoute() {
   const fromQuery = tabFromQuery(route.query.tab)
-  if (fromQuery === 'canonical' && !isPlatformOps.value) {
+  if (fromQuery && fromQuery !== 'catalog' && !isPlatformOps.value) {
     router.replace({ path: '/models', query: { tab: 'catalog' } })
     activeTab.value = 'catalog'
     return
@@ -71,7 +73,11 @@ function syncTabFromRoute() {
 
 watch(() => route.query.tab, syncTabFromRoute)
 
-const readOnly = computed(() => isReadOnlyMode())
+// ★ 2026-11-27 非管理员菜单轮：写守卫从「非 default 租户只读」扩为
+//   「非 super 一律只读」—— 菜单本轮对普通 user 放开（只读查询，
+//   owner 指令「不能够修改，只能查询」）；后端写闸
+//   RequireSuperAdminForWrite 已收严为非 super 拦写，本守卫是体验层前置。
+const readOnly = computed(() => !isSuperAdmin())
 
 type ModelStatus = 'active' | 'disabled' | 'deprecated' | 'hidden'
 
@@ -391,6 +397,13 @@ async function removeNameMapping(id: number) {
 }
 
 async function reloadAll() {
+  // 平台运维视角才加载 canonical 面专属数据（模型/标签/家族/供应商）；
+  // 非管理员落「提供商目录」页签，只发 catalog 元数据请求。
+  // （2026-11-27 轮：/api/routing/featured 等超管面请求非管理员不发。）
+  if (!isPlatformOps.value) {
+    loading.value = false
+    return
+  }
   await Promise.all([loadTags(), loadFamilies(), loadModels(), loadProviders()])
 }
 
@@ -823,6 +836,9 @@ onMounted(async () => {
 })
 
 watch(activeTab, async (tab) => {
+  // 懒加载只发生在平台运维视角（2026-11-27 轮：非管理员已拦在页签层，
+  // 不会进入 canonical/name-mapping ⇒ 不发这两个面的专属请求）。
+  if (!isPlatformOps.value) return
   if (tab === 'name-mapping' && nameMappings.value.length === 0) {
     await loadNameMappings()
   }
@@ -950,7 +966,7 @@ watch(activeTab, async (tab) => {
 
     <template v-else>
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
-      📖 您是租户管理员，当前为只读模式。模型目录仅供查看，不能创建、编辑或删除模型。
+      📖 您是只读视角。模型目录仅供查看，不能创建、编辑或删除模型。
     </div>
 
     <!-- 发现任务状态 -->

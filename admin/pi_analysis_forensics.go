@@ -49,6 +49,23 @@ func piRequireSuperAdminForWrite(w http.ResponseWriter, r *http.Request) bool {
 	return RequireSuperAdminForWrite(w, r)
 }
 
+// piTenantFilter 返回本处理面读 SQL 的租户过滤值（2026-11-27 三档收窄）：
+//
+//	super_admin / admin_key → ""（全平台，监控用）
+//	tenant_admin            → 本租户（安全/隐私；input_text 含用户提示词）
+//	普通 role=user          → 本租户。原先 EffectiveTenantIDAll 对 user 返回
+//	  空串 = 全平台队列/结果可读，属越权读；user 档与 tenant_admin 同样收本租户。
+//	  （queue 表无 owner 列 ⇒ 本人级收窄需加列，属 owner 决策，本轮不虚构。）
+func piTenantFilter(r *http.Request) string {
+	if IsSuperAdminOrLegacy(r) {
+		return ""
+	}
+	if tid := GetTenantID(r); tid != "" && tid != "default" {
+		return tid
+	}
+	return ""
+}
+
 // SetEvidenceGatherer 注入取证采集面（装配侧调用；nil ⇒ 端点回 503）。
 func (h *PIAnalysisHandler) SetEvidenceGatherer(g *PIEvidenceGatherer) {
 	if h == nil {

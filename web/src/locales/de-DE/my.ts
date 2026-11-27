@@ -15,7 +15,7 @@ export default {
   sessionsCard: 'Sitzungsliste',
   colTitle: 'Titel',
   colSessionKey: 'Sitzungsschlüssel',
-  colTenant: 'Tenant',
+  colTenant: 'Mandant',
   colRequests: 'Anfragen',
   colCost: 'Gesamtkosten',
   colUpdatedAt: 'Zuletzt aktualisiert',

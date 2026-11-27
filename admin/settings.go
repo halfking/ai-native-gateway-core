@@ -265,7 +265,12 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		return
 	}
 	// Permission gate.
-	if sp.DangerLevel >= settings.Dangerous && !IsSuperAdminOrLegacy(r) {
+	// ★ 2026-11-27 非管理员菜单重构轮（P1 越权修复）：原先只拦 >=Dangerous，
+	//   Warning 级设置（如 sanitize.output_check_enabled —— 全局输出合规开关）
+	//   对 tenant_admin / 普通 user 全部可写 ⇒ 非管理员可改全局运行时行为。
+	//   修复口径：任何写 PUT/POST 都要求 super_admin（settings 是平台级面，
+	//   没有「租户内自服务」语义；Safe 级的读不受影响）。
+	if !IsSuperAdminOrLegacy(r) {
 		writeError(w, http.StatusForbidden, "super_admin required for this setting")
 		return
 	}

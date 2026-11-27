@@ -108,14 +108,28 @@ func (h *PromptInjectionHandler) RegisterRoutes(mux *http.ServeMux) {
 	wrap := func(fn http.HandlerFunc) http.HandlerFunc {
 		return AdminMiddleware(fn, h.pool, h.secret)
 	}
+	// ★ 2026-11-27 非管理员菜单重构轮（P1 越权修复）：本族全部端点原先只有
+	//   AdminMiddleware（放行所有 JWT 角色），handler 内零写闸 ⇒ 普通用户可以
+	//   改策略、发规则、配引擎、动 severity-matrix / canary-tokens。
+	//   写面（POST/PUT/PATCH/DELETE）统一过 RequireSuperAdminForWrite；
+	//   读面（GET / detections / stats）保持 admin 档（放开菜单后
+	//   detections/stats 是租户/用户数据，配 piTenantFilter 同款思路收口）。
+	writeWrap := func(fn http.HandlerFunc) http.HandlerFunc {
+		return AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			if RequireSuperAdminForWrite(w, r) {
+				return
+			}
+			fn(w, r)
+		}, h.pool, h.secret)
+	}
 
 	// 策略配置
-	mux.HandleFunc("/api/admin/prompt-injection/policy", wrap(h.handlePolicy))
-	mux.HandleFunc("/api/admin/prompt-injection/policy/", wrap(h.handlePolicy))
+	mux.HandleFunc("/api/admin/prompt-injection/policy", writeWrap(h.handlePolicy))
+	mux.HandleFunc("/api/admin/prompt-injection/policy/", writeWrap(h.handlePolicy))
 
 	// 检测规则
-	mux.HandleFunc("/api/admin/prompt-injection/rules", wrap(h.handleRules))
-	mux.HandleFunc("/api/admin/prompt-injection/rules/", wrap(h.handleRuleSubrouter))
+	mux.HandleFunc("/api/admin/prompt-injection/rules", writeWrap(h.handleRules))
+	mux.HandleFunc("/api/admin/prompt-injection/rules/", writeWrap(h.handleRuleSubrouter))
 
 	// 检测日志
 	mux.HandleFunc("/api/admin/prompt-injection/detections", wrap(h.handleDetections))
@@ -124,21 +138,21 @@ func (h *PromptInjectionHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/prompt-injection/stats", wrap(h.handleStats))
 
 	// LLM 引擎管理
-	mux.HandleFunc("/api/admin/prompt-injection/engines", wrap(h.handleEngines))
-	mux.HandleFunc("/api/admin/prompt-injection/engines/", wrap(h.handleEngineSubrouter))
+	mux.HandleFunc("/api/admin/prompt-injection/engines", writeWrap(h.handleEngines))
+	mux.HandleFunc("/api/admin/prompt-injection/engines/", writeWrap(h.handleEngineSubrouter))
 
 	// 严重等级矩阵
-	mux.HandleFunc("/api/admin/prompt-injection/severity-matrix", wrap(h.handleSeverityMatrix))
+	mux.HandleFunc("/api/admin/prompt-injection/severity-matrix", writeWrap(h.handleSeverityMatrix))
 
 	// Canary Token 管理
-	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens", wrap(h.handleCanaryTokens))
-	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens/", wrap(h.handleCanaryTokenSubrouter))
+	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens", writeWrap(h.handleCanaryTokens))
+	mux.HandleFunc("/api/admin/prompt-injection/canary-tokens/", writeWrap(h.handleCanaryTokenSubrouter))
 
 	// 审批队列 - 复用现有 /api/admin/session-approvals 系统
 	// 不在此处注册审批相关路由
 
 	// 攻击向量库
-	mux.HandleFunc("/api/admin/prompt-injection/attack-vectors", wrap(h.handleAttackVectors))
+	mux.HandleFunc("/api/admin/prompt-injection/attack-vectors", writeWrap(h.handleAttackVectors))
 }
 
 // ==================== 策略配置 ====================

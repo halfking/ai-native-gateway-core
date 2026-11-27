@@ -1,7 +1,11 @@
 /** Sidebar navigation — grouped menus with role / tenant visibility flags. */
 
 import { showOpsPlatform } from './edition'
-import { isHiddenNavPath } from './navHidden'
+import { isHiddenNavPath, HIDDEN_NAV_PATHS } from './navHidden'
+
+// 2026-11-27：re-export 给构建链（export-menu-config.mjs）——menu-config.json
+// 与渲染层共用同一份隐藏清单，下游（maintain-web 内嵌兜底）不再宣传已隐藏入口。
+export { HIDDEN_NAV_PATHS }
 
 export type NavItem = {
   path: string
@@ -63,6 +67,26 @@ export type NavItem = {
    * 避免未激活用户点进去看不到 license / 升级通道。
    */
   activateWhenNotActivated?: boolean
+  /**
+   * ★ 2026-11-27 非管理员菜单重构轮：管理面标记。
+   *
+   * 带此标记的条目 = 「管理面菜单」—— 运营管理工具、运维中心、系统设置
+   * 等**管理职责**入口。只有管理视角可见：
+   *   - super_admin（平台管理员）
+   *   - default 租户的 tenant_admin（平台侧协管，沿用 isPlatformOps 视角）
+   * 非 default 租户门户与普通 role=user 一律隐藏。
+   *
+   * 为什么是「标记」而不是把条目挪进某个组：管理员现有工作流不动
+   * （操作习惯零回归），非管理员看到的是**按角色裁剪后**的形态；
+   * 同一条目不需要在两份真源里各写一遍（那是漂移温床）。
+   */
+  management?: boolean
+  /**
+   * ★ 2026-11-27 非管理员菜单重构轮：用户面标记 —— 所有已登录用户可见，
+   * 数据范围由后端按角色收窄（super→平台 / tenant_admin→本租户 / user→本人）。
+   * 与 management 互斥使用：不带任何标记的条目维持原有角色语义不变。
+   */
+  userFacing?: boolean
 }
 
 export type NavGroup = {
@@ -76,10 +100,15 @@ export type NavGroup = {
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
   // 2026-11-19: 简易模式顶栏顺序调整 —— 总览是首页，放最左；实时拓扑次之。
   // 按使用频率排序：总览（首页） → 实时拓扑 → 阶段树。
-  { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
+  // ★ 2026-11-27 非管理员菜单重构轮：总览与实时拓扑改为 userFacing ——
+  //   所有已登录用户可见（owner 指令「将原来的总览放出来…并且保留实时拓扑」）。
+  //   数据面后端已收窄：board/usage v2 走 requestStatsV2Scope 三档
+  //   （super→平台 / tenant_admin→本租户 / user→本租户+本人）；
+  //   live SSE user 档已收进本租户键（本轮 P0 修复）。
+  { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, userFacing: true, exact: true },
   // 2026-10-16: live-topology home. Placed before "Overview" — it is a NEW entry;
   // `/` and `/dashboard` stay untouched (the old home page is fully preserved, ADR §7 G7).
-  { path: '/live', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, exact: true },
+  { path: '/live', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, userFacing: true, exact: true },
   // 2026-11-16: 请求阶段树（live2）—— 与 /live 并存一个版本周期。
   // 入口放在 /live 旁边（同一分组），并由 /live 页顶栏的「阶段树」按钮直达。
   // 2026-11-17: owner 要求暂时隐藏菜单（路由/页面保留；直达 /live2 仍可用）。
@@ -155,40 +184,56 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.operations',
     items: [
       // ── 我的服务（非 default 租户可见）──
+      // ★ 2026-11-27 非管理员菜单重构轮：
+      //   /tenant/pricing（套餐与充值）owner 指令隐藏 —— 走 navHidden 路径清单
+      //   （隐藏 ≠ 删除，直链仍可用；菜单不宣传充值入口）。
       { path: '/tenant/models', labelKey: 'nav.item.tenantModels', icon: '🤖', tenantOnly: true },
       { path: '/tenant/pricing', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
       { path: '/tenant/usage', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
       { path: '/tenant/bills', labelKey: 'nav.item.tenantBills', icon: '🧾', tenantOnly: true },
       { path: '/tenant/account', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
       // ── 运营工具（平台可见）──
-      { path: '/admin/board-operational', labelKey: 'nav.item.operationsOverview', icon: '🧭', super: true, hideForTenant: true },
-      { path: '/pricing', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
-      { path: '/model-pricing', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
+      // ★ 2026-11-27：以下平台运营工具全部加 management 标记 ——
+      //   非 default 租户门户与普通 user 不再看到「运营管理」组（owner 指令：
+      //   「非管理员不需要运营管理的功能」）；super/default-tenant 协管视角不变。
+      { path: '/admin/board-operational', labelKey: 'nav.item.operationsOverview', icon: '🧭', super: true, hideForTenant: true, management: true },
+      { path: '/pricing', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true, management: true },
+      { path: '/model-pricing', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true, management: true },
       // 结算与对账：页面内含 provider/internal 双视角页签（ReconciliationReport.vue
       // view === 'internal'）⇒ tenant-users 组的 ?view=internal 独立菜单项删除
       // （防双入口，W1-T3）；此处直开默认 provider 视角。
-      { path: '/admin/reconciliation', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
+      { path: '/admin/reconciliation', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true, management: true },
       // 2026-11-05 W1-T2 前端轮：报价系统 MVP 工作台（供给池/需求池/报价单；
       // 内部运营面 requiresAuth，供给登记写权限是 super-only（应用层闸），
       // 需求/报价动作带 owner 语义 ⇒ 菜单项不设 super 门，由服务端按角色收）。
-      { path: '/operations/sales', labelKey: 'nav.item.salesWorkbench', icon: '💼', hideForTenant: true },
+      { path: '/operations/sales', labelKey: 'nav.item.salesWorkbench', icon: '💼', hideForTenant: true, management: true },
       // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动；superAdmin）。
-      { path: '/operations/marketing', labelKey: 'nav.item.operationsMarketing', icon: '🎯', platformOps: true, hideForTenant: true }, // 2026-11-12 A-8 权限对齐：super → platformOps（与组内 pricing 页同档）
+      { path: '/operations/marketing', labelKey: 'nav.item.operationsMarketing', icon: '🎯', platformOps: true, hideForTenant: true, management: true }, // 2026-11-12 A-8 权限对齐：super → platformOps（与组内 pricing 页同档）
       //2026-11-13 A-17 收口 M3-T1：市场价格采集面（registry 管理 + 同步台账）。2026-11-19 合并轮：价格对比面并入 /model-pricing（菜单更名「比较与定价」），price-compare菜单项删除。
-      { path: '/operations/market-prices', labelKey: 'nav.item.marketPrices', icon: '🌐', platformOps: true, hideForTenant: true },
+      { path: '/operations/market-prices', labelKey: 'nav.item.marketPrices', icon: '🌐', platformOps: true, hideForTenant: true, management: true },
     ],
   },
   {
     id: 'models-routing',
     labelKey: 'nav.group.modelsRouting',
     items: [
-      { path: '/models', labelKey: 'nav.item.models', icon: '🏷️', platformOps: true, hideForTenant: true },
-      { path: '/routing-v2', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true },
-      { path: '/routing-v2/credentials', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
+      // ★ 2026-11-27 非管理员菜单重构轮（owner 指令：「供应商与模型」组保留
+      //   「模型与目录」「路由全景」给非管理员，只读查询）：
+      //   ① /models 与 /routing-v2 加 userFacing —— 所有已登录用户可见。
+      //     页面内写操作仍由 isSuperAdmin 守卫（RoutingDashboardView 已有；
+      //     ModelsView 本轮补只读守卫）；后端写闸本轮已收严为「非 super 拦写」。
+      //     注意：/routing-v2 后端 analytics 五端点仍是 superAdmin 档 ⇒ 普通用户
+      //     打开路由全景页时 KPI 卡会 403 降级（页面已按错误处理渲染其余面板），
+      //     数据面放开是 owner 决策项，本轮先收菜单形态（只读面板可渲染部分）。
+      //   ② 其余管理工具（凭据监控/自动路由闭环/供应商控制台/用量趋势/FreeLLM）
+      //     加 management 或维持原有闸。
+      { path: '/models', labelKey: 'nav.item.models', icon: '🏷️', platformOps: true, hideForTenant: true, userFacing: true },
+      { path: '/routing-v2', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true, userFacing: true },
+      { path: '/routing-v2/credentials', labelKey: 'nav.item.credentialMonitor', icon: '📊', management: true },
       // 2026-10-02 整合轮：原四项（人工标注/标注统计/任务档案/路由调参）收敛
       // 为 AUTO 路由闭环统一工作台。标注两页签全员可用；任务档案/调参审批
       // 页签 super_admin 专属（宿主 AutoRoutingOpsView normalizeTab 门控）。
-      { path: '/routing-v2/auto-ops', labelKey: 'nav.item.autoOps', icon: '♻️' },
+      { path: '/routing-v2/auto-ops', labelKey: 'nav.item.autoOps', icon: '♻️', management: true },
       // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.
       // 2026-10-02: 「系统自检」菜单入口去掉（看板横条仍可进 /dashboard?tab=selfcheck）。
@@ -198,12 +243,15 @@ export const NAV_GROUPS: NavGroup[] = [
       // 切换；结算报表（internal 视角）入口见「租户用户」组同名项。
       // 2026-10-02 看板轮：全页用量趋势分析（按模型分线 + 供应商/租户/API Key/
       // 模型/指标过滤）。看板「用量趋势」卡时间范围右侧「更多」按钮跳同一页；
-      // 路由 meta 仅 requiresAuth（服务端按角色收租户范围），菜单入口超管可见。
-      { path: '/admin/usage-trends', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true },
+      // ★ 2026-11-27：用量趋势对非管理员放开（owner 指令）；核心数据链
+      //   /api/usage/v2/* 走 requestStatsV2Scope 三档收窄（user=本人），
+      //   零后端改动。侧栏供应商/密钥下拉 403 时前端容错隐藏（本轮补）。
+      { path: '/admin/usage-trends', labelKey: 'nav.item.usageTrends', icon: '📈', super: true, hideForTenant: true, userFacing: true },
       // 2026-11-04 W1-T1：/pricing、/model-pricing、/admin/reconciliation 迁入
       // 「运营管理」组（operations，见上）—— path 不变，仅组归属变化。
       // 2026-11-02 S0：免费资源/免费发现归档 → 外链 freellm.itestu.cn（统一走网关会话 auth_request）
-      { path: 'https://freellm.itestu.cn', labelKey: 'nav.item.freellm', icon: '🎁', super: true, hideForTenant: true, external: true },
+      // ★ 2026-11-27：FreeLLM 免费模型对非管理员放开（owner 指令）。
+      { path: 'https://freellm.itestu.cn', labelKey: 'nav.item.freellm', icon: '🎁', super: true, hideForTenant: true, external: true, userFacing: true },
     ],
   },
   {
@@ -224,13 +272,18 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'requests-sessions',
     labelKey: 'nav.group.requestsSessions',
     items: [
-      // 2026-11-26 数据权限审计 P2：用户级端点入口（所有已登录用户可见）。
-      // 数据范围由后端按角色收窄（user→自己 / tenant_admin→本租户 / super_admin→全平台）。
-      { path: '/my/sessions', labelKey: 'nav.item.mySessions', icon: '🗂️' },
-      { path: '/my/usage', labelKey: 'nav.item.myUsage', icon: '📈' },
+      // ★ 2026-11-27 非管理员菜单重构轮（owner 指令）：
+      //   「请求与会话」不再暴露 我的会话(/my/sessions)、我的用量(/my/usage)、
+      //   会话分析中心(/admin/session-analytics/users) 等子菜单；
+      //   「用户会话分析」(/admin/session-analytics/users/overview) 更名
+      //   「我的会话」（i18n 键 nav.item.sessionAnalyticsUsers 的值本轮更新）。
+      //   数据面三档收窄已就绪（v2/users、overview 排行卡 user 档 403 是
+      //   后端既有闸；本轮 overview 对 user 放开属 owner 决策项，先收菜单）。
+      { path: '/my/sessions', labelKey: 'nav.item.mySessions', icon: '🗂️', management: true },
+      { path: '/my/usage', labelKey: 'nav.item.myUsage', icon: '📈', management: true },
       { path: '/request-logs', labelKey: 'nav.item.requestLogs', icon: '📋' },
-      { path: '/dispatch/waterfall', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
-      { path: '/admin/turns', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
+      { path: '/dispatch/waterfall', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true, management: true },
+      { path: '/admin/turns', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true, management: true },
       // 2026-10-01 R85-C P1：会话聚合观测「可交付未交付」——
       // cmd/gateway/main.go:6901-6906 的 /api/admin/session-analytics 三端点
       // 与真库 session_dim（121 万行）均已就绪，但本组原先没有任何入口挂载，
@@ -238,17 +291,19 @@ export const NAV_GROUPS: NavGroup[] = [
       // /users/:owner 成为硬孤儿路由（只能手敲 URL）。
       // 挂载列表页即让整族可达：/clients/:id 与 /tasks/:id 是其子路由，
       // 由 UserProfileListView / UserProfileView 内部跳转。
-      // 权限对齐 router.ts:257 的 meta.requiresAuth（任何已登录用户）。
-      { path: '/admin/session-analytics/users', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
+      // ★ 2026-11-27：本项（会话分析中心）从非管理员菜单隐藏（management）。
+      { path: '/admin/session-analytics/users', labelKey: 'nav.item.sessionAnalytics', icon: '📊', management: true },
       // ★ 2026-11-23 L14 轮：★ 整合页（★ 上游 95e44dc15 新增的「Dashboard 会话统计
       // ＋ Top10 用户排行」）另立菜单项 ⇒ ★ 它原先**没有**任何菜单入口
       // （★ 上游只把本 URL 从列表页改指过去 ⇒ ★ 导航能到、★ 但代价是列表页能力消失）。
-      // ★ 标签键用上游已加好的 `nav.item.sessionAnalyticsUsers`（★ 8 语种齐全）
+      // ★ 标签键用上游已加好的 `nav.item.sessionAnalyticsUsers`
       // ⇒ ★ **不新增任何 i18n 键**。
+      // ★ 2026-11-27（owner 指令）：本项对非管理员**保留**且更名「我的会话」
+      //   （zh-CN 词条本轮更新；其余语种同键同步）。
       { path: '/admin/session-analytics/users/overview', labelKey: 'nav.item.sessionAnalyticsUsers', icon: '📈' },
       // T9 — 请求注册表 + 连接注册台（mock stage）
-      { path: '/admin/request-registry', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
-      { path: '/admin/connection-registry', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
+      { path: '/admin/request-registry', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true, management: true },
+      { path: '/admin/connection-registry', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true, management: true },
       // V5.1: plugin-runtime nav (ai-session-manager etc.) is now injected
       // dynamically via /api/v1/plugin-nav. See mergeRemotePluginNav in
       // AppTopbar.vue — the request-sessions group above is the merge target.
@@ -258,26 +313,33 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'data-ops',
     labelKey: 'nav.group.dataOps',
     items: [
+      // ★ 2026-11-27 非管理员菜单重构轮（owner 指令）：「数据运维」组对
+      //   非管理员收敛为「系统设置」五项：敏感信息规则 / 提示词注入检测 /
+      //   格式异常监控 / PI错误分析 / 错误处理手册。其余管理工具加 management
+      //   （管理员视角不变）；组文案 zh-CN 同轮更新（数据运维 → 系统设置，
+      //   仅对非管理员语义生效——管理员看到的是同一组条目，标签同步更新）。
       { path: '/admin/sanitize-rules', labelKey: 'sanitizeRules.title', icon: '🔒' },
-      { path: '/admin/settings', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      { path: '/admin/settings', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true, management: true },
       // 2026-11-16：自更新与升级（自动检索最新版本 → 提醒 → 点击安装升级）。
       // 后端是 /api/admin/releases 族（super admin 档）⇒ 菜单项同档 super。
       // 与「更新与激活」（/customer/update-activate）是两件事：后者是 license 激活，
       // 前者是本节点自身的二进制升级（会替换二进制并重启服务）。
-      { path: '/admin/self-update', labelKey: 'nav.item.selfUpdate', icon: '⬆️', super: true, hideForTenant: true },
-      { path: '/admin/proxy', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
-      { path: '/admin/data-lifecycle', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
-      { path: '/format-anomalies', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
-      { path: '/model-integrity', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true },
-      { path: '/model-credibility', labelKey: 'nav.item.modelCredibility', icon: '🔎', super: true, hideForTenant: true },
-      { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
-      { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
-      { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true, piAnalysis: true },
+      { path: '/admin/self-update', labelKey: 'nav.item.selfUpdate', icon: '⬆️', super: true, hideForTenant: true, management: true },
+      { path: '/admin/proxy', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true, management: true },
+      { path: '/admin/data-lifecycle', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true, management: true },
+      { path: '/format-anomalies', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true, userFacing: true },
+      { path: '/model-integrity', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true, management: true },
+      { path: '/model-credibility', labelKey: 'nav.item.modelCredibility', icon: '🔎', super: true, hideForTenant: true, management: true },
+      { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true, management: true },
+      { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true, userFacing: true },
+      { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true, piAnalysis: true, userFacing: true },
       // 2026-11-21：错误处理手册（后端 admin/error_playbook_handler.go + domains/errorplaybook）。
       // 已知错误按预定方案标准执行、未知错误 PI 分析后落手册；本入口提供
       // 条目 CRUD、三形态方案编辑、执行留痕时间线与按快照回滚。
-      // 权限档与 pi-analysis 同族（管理面处置工具）⇒ super + hideForTenant。
-      { path: '/admin/error-playbook', labelKey: 'nav.item.errorPlaybook', icon: '📕', super: true, hideForTenant: true },
+      // ★ 2026-11-27：对非管理员放开菜单入口（读面 admin 档可读；写面
+      //   entries/execute/revert/analyze 本轮已加 super 闸）。页面内写按钮
+      //   需按角色隐藏（本轮补只读守卫）。
+      { path: '/admin/error-playbook', labelKey: 'nav.item.errorPlaybook', icon: '📕', super: true, hideForTenant: true, userFacing: true },
       // 2026-11-20：会话分析系统（后端 admin/session_analytics 的端点族）。
       // ★ 2026-11-23 审计轮：**移除「/admin/session-analytics」总览页菜单项**。
       //   理由：① 该页已按 owner 指令取消——路由改为重定向到
@@ -293,12 +355,12 @@ export const NAV_GROUPS: NavGroup[] = [
       //   与 router 的 requiresAuth 对齐；真正的权限真源在后端。
       // ★ 详情页（/user-ranking/:owner）不单独挂菜单：由 navCovers 的前缀匹配
       //   被「人员排行」项覆盖，且入口在排行表里。
-      { path: '/admin/session-analytics/user-ranking', labelKey: 'sessionAnalytics.nav.userRanking', icon: '👥', hideForTenant: true },
-      { path: '/admin/session-analytics/agent-ranking', labelKey: 'sessionAnalytics.nav.agentRanking', icon: '🧑‍💼', hideForTenant: true },
-      { path: '/admin/session-analytics/model-ranking', labelKey: 'sessionAnalytics.nav.modelRanking', icon: '🧠', hideForTenant: true },
-      { path: '/admin/compression', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
-      { path: '/admin/modules?module=wechat_bot', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
-      { path: '/admin/agents', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
+      { path: '/admin/session-analytics/user-ranking', labelKey: 'sessionAnalytics.nav.userRanking', icon: '👥', hideForTenant: true, management: true },
+      { path: '/admin/session-analytics/agent-ranking', labelKey: 'sessionAnalytics.nav.agentRanking', icon: '🧑‍💼', hideForTenant: true, management: true },
+      { path: '/admin/session-analytics/model-ranking', labelKey: 'sessionAnalytics.nav.modelRanking', icon: '🧠', hideForTenant: true, management: true },
+      { path: '/admin/compression', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true, management: true },
+      { path: '/admin/modules?module=wechat_bot', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true, management: true },
+      { path: '/admin/agents', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true, management: true },
       // 非核心节点：合并站点/激活/许可/协议 →「更新与激活」
       { path: '/customer/update-activate', labelKey: 'nav.item.updateActivate', icon: '🔄' },
       { path: '/customer/offline-activation', labelKey: 'nav.item.licenseOffline', icon: '🔌', notActivatedOnly: true },
@@ -309,14 +371,18 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'opsplatform',
     labelKey: 'nav.group.opsplatform',
     items: [
+      // ★ 2026-11-27 非管理员菜单重构轮（owner 指令）：「运维中心」对
+      //   非系统管理员整体隐藏 —— 全组条目加 management（本地条目）；
+      //   远端 ai-native-maintain 下发的运维菜单由 mergeRemoteOps 对
+      //   非管理视角整组剔除（见 canShowNavItem/mergeRemoteOps 同轮改动）。
       // Dynamically shown only when ai-native-maintain is reachable.
-      { path: '/maintain/ops/overview', labelKey: 'nav.item.opsOverview', icon: '🧭', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/center', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/downloads', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/licenses', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/faults', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/autoupdate', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true, activateWhenNotActivated: true },
-      { path: '/ops/vibecoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true, opsPlatform: true },
+      { path: '/maintain/ops/overview', labelKey: 'nav.item.opsOverview', icon: '🧭', super: true, hideForTenant: true, opsPlatform: true, external: true, management: true },
+      { path: '/maintain/ops/center', labelKey: 'nav.item.opsCenter', icon: '🖥️', super: true, hideForTenant: true, opsPlatform: true, external: true, management: true },
+      { path: '/maintain/ops/downloads', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hideForTenant: true, opsPlatform: true, external: true, management: true },
+      { path: '/maintain/ops/licenses', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true, opsPlatform: true, external: true, management: true },
+      { path: '/maintain/ops/faults', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true, opsPlatform: true, external: true, management: true },
+      { path: '/maintain/ops/autoupdate', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true, activateWhenNotActivated: true, management: true },
+      { path: '/ops/vibecoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true, opsPlatform: true, management: true },
     ],
   },
   {
@@ -353,12 +419,42 @@ type NavVisibilityOpts = {
    * 口径见 config/piAnalysis.ts。
    */
   piAnalysisAvailable?: boolean
+  /**
+   * ★ 2026-11-27 非管理员菜单重构轮：管理视角开关。
+   *
+   * true = 调用方是「管理视角」：super_admin ∧ default 租户（= isPlatformOps）。
+   *   ★ owner 需求原文把 tenant_admin 明确列为「非系统管理员」被裁剪对象
+   *     ⇒ tenant_admin **不**进管理视角（useAppNav 同轮已按此口径实现；
+   *     maintain-web navLoader 同轮对齐）。
+   * false = tenant_admin / 普通 role=user / 非 default 租户门户 ⇒ management
+   *   条目隐藏。
+   * undefined = 兼容旧调用（视同 true，保持既有测试与调用点零改动）。
+   */
+  isManagementView?: boolean
 }
 
 export function canShowNavItem(item: NavItem, opts: NavVisibilityOpts): boolean {
   // ★ 2026-11-23 owner 指令：隐藏清单（config/navHidden.ts）—— 路径级隐藏
   //   优先于一切角色/租户判据（藏了就是藏了，与谁登录无关）。
   if (isHiddenNavPath(item.path)) return false
+  // ★ 2026-11-27 非管理员菜单重构轮：管理面条目只对管理视角可见。
+  //   判据在 super/platformOps 之前：management 是「视角」判据，
+  //   旧字段是「角色」判据；视角不满足时无论角色字段是什么都藏
+  //   （普通 user 即使某条目恰好没带 super 也不该看到管理工具）。
+  if (item.management && opts.isManagementView === false) return false
+  // ★ 2026-11-27 非管理员菜单重构轮：userFacing 穿透 —— 带 userFacing 的条目
+  //   语义是「所有已登录用户可见，数据范围由后端按角色收窄」⇒ 旧的角色/租户
+  //   闸（super/platformOps/providerConsole/tenantOnly/hideForTenant）对它
+  //   **不再生效**（否则 /dashboard 等条目加了标记仍被旧闸藏掉 —— 本轮真红
+  //   过一次的教训：标记必须接到判据上才算数）。可用性闸（maintain 探测 /
+  //   PI 分析探测 / 激活态）≠ 角色闸，照常生效：一个因后端 fail-closed 而
+  //   不存在的页面对任何角色都不该出现在菜单里。
+  if (item.userFacing) {
+    if (item.opsPlatform && !showOpsPlatform()) return false
+    if (item.piAnalysis && opts.piAnalysisAvailable === false) return false
+    if (item.notActivatedOnly && opts.isActivated) return false
+    return true
+  }
   if (item.opsPlatform && !showOpsPlatform()) return false
   if (item.piAnalysis && opts.piAnalysisAvailable === false) return false
   if (item.super && !opts.isSuperAdmin) return false

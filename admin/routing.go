@@ -2769,6 +2769,15 @@ func (h *Handler) handleRoutingFeatured(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if r.Method == http.MethodPatch {
+		// 写面双保险（2026-11-27 非管理员菜单重构轮第二轮）：/api/routing/featured
+		// 的闸从 superAdmin 换成 modelCatalogReadGate（ta/user 档 GET 放行）后，
+		// PATCH（改精选模型 = default 租户路由策略写）不能跟着放开——写仍仅
+		// super_admin / legacy admin_key。tenant_admin 与 user 在闸层已带
+		// AuthContext 进来，此处按角色拦。
+		if !IsSuperAdminOrLegacy(r) {
+			writeError(w, http.StatusForbidden, "write operations require super_admin")
+			return
+		}
 		var patch struct {
 			FeaturedModels []string `json:"featured_models"`
 			Actor          string   `json:"actor"`

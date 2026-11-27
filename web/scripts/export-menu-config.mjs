@@ -61,7 +61,7 @@ async function loadNavData() {
   const appNavPath = path.resolve(__dirname, '../src/config/appNav')
   await build({
     stdin: {
-      contents: `import { NAV_PRIMARY_ITEMS, NAV_GROUPS } from ${JSON.stringify(appNavPath)}\nexport const navData = { primary: NAV_PRIMARY_ITEMS, groups: NAV_GROUPS }\n`,
+      contents: `import { NAV_PRIMARY_ITEMS, NAV_GROUPS, HIDDEN_NAV_PATHS } from ${JSON.stringify(appNavPath)}\nexport const navData = { primary: NAV_PRIMARY_ITEMS, groups: NAV_GROUPS, hiddenPaths: HIDDEN_NAV_PATHS }\n`,
       resolveDir: path.resolve(__dirname, '..'),
       loader: 'ts',
     },
@@ -85,7 +85,11 @@ async function loadNavData() {
   }
 }
 
-const { primary: NAV_PRIMARY_ITEMS, groups: NAV_GROUPS } = await loadNavData()
+const { primary: NAV_PRIMARY_ITEMS, groups: NAV_GROUPS, hiddenPaths: HIDDEN_NAV_PATHS } = await loadNavData()
+if (!Array.isArray(HIDDEN_NAV_PATHS)) {
+  console.error('❌ navHidden.ts HIDDEN_NAV_PATHS 导出缺失，拒绝在未知隐藏面下生成菜单配置')
+  process.exit(1)
+}
 if (!Array.isArray(NAV_PRIMARY_ITEMS) || !Array.isArray(NAV_GROUPS) || NAV_GROUPS.length === 0) {
   console.error('❌ appNav.ts 导出为空，拒绝生成空菜单配置')
   process.exit(1)
@@ -93,11 +97,17 @@ if (!Array.isArray(NAV_PRIMARY_ITEMS) || !Array.isArray(NAV_GROUPS) || NAV_GROUP
 
 // 为每个分组计算 tenantScope
 function annotateGroup(group) {
-  const items = group.items.map((item) => ({
-    ...item,
-    tenantScope: computeTenantScope(item),
-    pluginScope: computePluginScope(item),
-  }))
+  // ★ 2026-11-27 非管理员菜单重构轮：menu-config 是**给下游（maintain-web
+  //   内嵌兜底）的投递物**，与渲染层共用同一份隐藏清单（navHidden.ts）——
+  //   藏了的路径不再进配置，否则下游会宣传一个网关侧已隐藏的入口。
+  //   management/userFacing 透传给下游做角色裁剪（navLoader 2026-11-27 起消费）。
+  const items = group.items
+    .filter((item) => !HIDDEN_NAV_PATHS.includes(item.path))
+    .map((item) => ({
+      ...item,
+      tenantScope: computeTenantScope(item),
+      pluginScope: computePluginScope(item),
+    }))
 
   // 计算分组的整体可见性
   // - 如果所有 item 都是 'default'，分组也是 'default'
@@ -143,7 +153,13 @@ const menuConfig = {
     plugin: '依赖 plugin 运行时探测（按 plugin 字段名匹配）',
     '*': '始终可用，无 plugin 依赖',
   },
-  primary: NAV_PRIMARY_ITEMS.map((item) => ({
+  // ★ 2026-11-27 非管理员菜单重构轮：角色维度标注（与 tenantScope 正交）。
+  roleScopeLegend: {
+    management: '仅管理视角可见（super_admin ∧ default 租户；tenant_admin 不属管理视角）',
+    userFacing: '所有已登录用户可见（数据范围由后端按角色收窄）',
+    '*': '维持原有角色语义',
+  },
+  primary: NAV_PRIMARY_ITEMS.filter((item) => !HIDDEN_NAV_PATHS.includes(item.path)).map((item) => ({
     ...item,
     tenantScope: computeTenantScope(item),
     pluginScope: computePluginScope(item),

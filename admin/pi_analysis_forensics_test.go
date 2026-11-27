@@ -242,8 +242,12 @@ func TestQueueItemRoutes_Dispatch(t *testing.T) {
 		}
 	}
 	// 分析器未配置 ⇒ 503（POST 打到 analyze）。
+	// ★ 2026-11-27 非管理员菜单重构轮：RequireSuperAdminForWrite 收严为
+	//   「非 super 一律拦写」后，无 AuthContext 的裸请求在写闸即 403
+	//   （闸先于分析器配置检查）⇒ 本用例改带 super_admin 上下文打进去，
+	//   保持原判据「分析器未配置 ⇒ 503」不被新的写闸语义淹没。
 	rec := httptest.NewRecorder()
-	h.handleQueueItem(rec, httptest.NewRequest(http.MethodPost, "/api/admin/pi-analysis/queue/1/analyze", nil))
+	h.handleQueueItem(rec, piAdminRequest(http.MethodPost, "/api/admin/pi-analysis/queue/1/analyze", "super_admin", "default"))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("POST analyze（分析器未配置）⇒ %d, want 503", rec.Code)
 	}

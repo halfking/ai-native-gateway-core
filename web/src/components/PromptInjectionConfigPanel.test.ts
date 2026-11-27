@@ -32,6 +32,13 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
 }))
 
+// ★ 2026-11-27 非管理员菜单轮：组件引入 isSuperAdmin（规则开关 disabled +
+//   policy 自动保存跳过）⇒ mock store 置 super=true 保持「写路径可测」原语义。
+vi.mock('../store', () => ({
+  isSuperAdmin: () => true,
+  isPlatformOpsView: () => true,
+}))
+
 const ElMessageMock = { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }
 // 2026-09-13 P5：组件补齐了 ElTag 实际导入，mock 需提供组件桩
 vi.mock('element-plus', () => ({

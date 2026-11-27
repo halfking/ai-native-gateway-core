@@ -64,7 +64,12 @@ interface ResolveLogEntry {
 
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve' | 'smart'>('analytics')
+// ★ 2026-11-27 非管理员菜单轮：默认 tab 按角色分流 —— analytics tab 背后的
+// matrix/flow 端点是 superAdmin 档（admin/handler.go:1820 传 h.superAdmin wrap）
+// ⇒ 非管理员默认落 overview（路由全景只读面板）；URL 显式带 tab 时仍尊重
+// 深链（非 super 打开 analytics 会 403 降级为空面板，属登记过的 owner 决策项）。
+const superAdmin = isSuperAdmin()
+const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve' | 'smart'>(superAdmin ? 'analytics' : 'overview')
 
 /** Map the synthetic __specified__ task key to its display label. */
 function displayTaskKey(key: string): string {
@@ -466,8 +471,6 @@ const nodeDrawerNode = ref<LiveNodeStatus | null>(null)
 const nodeDrawerModel = ref('')
 const nodeDrawerTab = ref<'detail' | 'availability' | 'requests' | 'settings'>('availability')
 const nodeDrawerSeed = ref<RoutingCandidate | null>(null)
-const superAdmin = isSuperAdmin()
-
 function candidateToNode(c: RoutingCandidate): LiveNodeStatus {
   const live = nodesRef.value.find(n => n.credential_id === c.credential_id)
   if (live) return live

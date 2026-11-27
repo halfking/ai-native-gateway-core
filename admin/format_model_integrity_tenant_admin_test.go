@@ -63,25 +63,59 @@ func TestFormatAnomalyTenantAdminMiddleware_AllowsTenantAdmin(t *testing.T) {
 }
 
 func TestFormatAnomalyTenantAdminMiddleware_RejectsUserRole(t *testing.T) {
-	// user role is neither super_admin nor tenant_admin → 403.
+	// ★ 2026-11-27 非管理员菜单重构轮：user 档读面放行（菜单放开「格式异常
+	//   监控」）——GET 放行且注入本租户 AuthContext；**写方法仍拒**。
 	token, _, err := SignToken(99, "default", "joe", "user", "test-secret-fa-3", false)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
-	var nextCalled bool
+	// GET：放行，next 收到带 TenantID 的 AuthContext。
+	var gotTenant string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
+		gotTenant = GetTenantID(r)
+		w.WriteHeader(http.StatusOK)
 	})
 	mw := FormatAnomalyTenantAdminMiddleware(next, nil, "test-secret-fa-3")
 	req := httptest.NewRequest("GET", "/api/admin/format-anomalies", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 	mw(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("user: got %d, want 403", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("user GET: %d %s, want 200", rr.Code, rr.Body.String())
+	}
+	if gotTenant != "default" {
+		t.Errorf("user GET tenant context: %q, want default (tenant narrowing)", gotTenant)
+	}
+	// POST（resolve 形态）：仍 403 —— user 档只读。
+	var nextCalled bool
+	writeNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+	})
+	mwW := FormatAnomalyTenantAdminMiddleware(writeNext, nil, "test-secret-fa-3")
+	reqW := httptest.NewRequest("POST", "/api/admin/format-anomalies/1/resolve", nil)
+	reqW.Header.Set("Authorization", "Bearer "+token)
+	rrW := httptest.NewRecorder()
+	mwW(rrW, reqW)
+	if rrW.Code != http.StatusForbidden {
+		t.Errorf("user POST: %d, want 403", rrW.Code)
 	}
 	if nextCalled {
-		t.Error("next handler should NOT have been called")
+		t.Error("next handler should NOT have been called for user write")
+	}
+	// 无租户绑定的 user：拒绝（否则收窄值退化为空串 = bypass RLS）。
+	noTenantToken, _, err := SignToken(98, "", "joe-no-tenant", "user", "test-secret-fa-3", false)
+	if err != nil {
+		t.Fatalf("SignToken: %v", err)
+	}
+	mwNT := FormatAnomalyTenantAdminMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next should not be reached for user without tenant")
+	}), nil, "test-secret-fa-3")
+	reqNT := httptest.NewRequest("GET", "/api/admin/format-anomalies", nil)
+	reqNT.Header.Set("Authorization", "Bearer "+noTenantToken)
+	rrNT := httptest.NewRecorder()
+	mwNT(rrNT, reqNT)
+	if rrNT.Code != http.StatusForbidden {
+		t.Errorf("user without tenant: %d, want 403", rrNT.Code)
 	}
 }
 

@@ -276,7 +276,7 @@ export const router = createRouter({
     { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresProviderConsole: true } },
     { path: '/key-applications',   component: KeyApplicationsView, meta: { requiresSuper: true } },
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
-    { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
+    { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：菜单放开（userFacing），读面 admin 档租户收窄；页内写操作 isSuperAdmin 守卫
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
     // 2026-09-07 probe-health integration: the standalone page folds into the
     // credential monitor's super-only「探测健康」tab; keep /probe-health/detail
@@ -310,13 +310,13 @@ export const router = createRouter({
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
-    { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresSuper: true } },
+    { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：菜单放开；后端中间件四档化（user 只读本租户）
     { path: '/model-integrity',  component: ModelIntegrityView,   meta: { requiresSuper: true } },
     { path: '/model-credibility', component: ModelCredibilityView, meta: { requiresSuper: true } },
 
     // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
-    { path: '/models',             component: ModelsView, meta: { requiresPlatformOps: true } },
+    { path: '/models',             component: ModelsView, meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：菜单放开（userFacing）；后端 /api/models 读 admin 档、写 RequireSuperAdminForWrite；页内写按钮守卫本轮补
     { path: '/pricing',            component: PricingManagementView, meta: { requiresPlatformOps: true } },
     { path: '/model-pricing',      component: StandardModelPricingView, meta: { requiresPlatformOps: true } },
 
@@ -382,13 +382,13 @@ export const router = createRouter({
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
-    { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresSuper: true } },
-    { path: '/admin/pi-analysis', component: PIAnalysisView, meta: { requiresSuper: true } },
+    { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：读面 admin 档（detections/stats 本租户）；写面 super 闸已收严，页内写按钮 isSuperAdmin 守卫
+    { path: '/admin/pi-analysis', component: PIAnalysisView, meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：读面 piTenantFilter 三档收窄（user=本租户）；写动作 piRequireSuperAdminForWrite
     // 错误处理手册（2026-11-21）：列表 + 条目详情（执行留痕/快照回滚/方案编辑）。
     // ★ 权限档与 pi-analysis 同族（管理面处置工具）：requiresSuper 只是体验层，
     //   真源在后端 AdminMiddleware（鉴权材料齐备才注册路由，fail-closed）。
-    { path: '/admin/error-playbook', name: 'error-playbook-list', component: ErrorPlaybookListView, meta: { requiresSuper: true } },
-    { path: '/admin/error-playbook/:id', name: 'error-playbook-detail', component: ErrorPlaybookDetailView, meta: { requiresSuper: true } },
+    { path: '/admin/error-playbook', name: 'error-playbook-list', component: ErrorPlaybookListView, meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：读面 admin 档可读；entries 写/execute/analyze/revert 已加 super 闸，页内写按钮 isSuperAdmin 守卫
+    { path: '/admin/error-playbook/:id', name: 'error-playbook-detail', component: ErrorPlaybookDetailView, meta: { requiresAuth: true } },
     // 会话分析（2026-11-20）：总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行
     // 2026-11-23：重定向 overview 到整合后的 users 页面（整合任务：将 overview 内容移到 /admin/session-analytics/users）
     // ★ 2026-11-23 L30 轮·补②④：★ 重定向目标由 `/admin/session-analytics/users`

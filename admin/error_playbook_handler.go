@@ -72,11 +72,24 @@ func (h *ErrorPlaybookHandler) RegisterRoutes(mux *http.ServeMux, prefix string)
 	wrap := func(fn http.HandlerFunc) http.HandlerFunc {
 		return AdminMiddleware(fn, h.pool, h.secret)
 	}
-	mux.HandleFunc(prefix+"/entries", wrap(h.handleEntries))
-	mux.HandleFunc(prefix+"/entries/", wrap(h.handleEntryItem))
+	// ★ 2026-11-27 非管理员菜单重构轮（P0 越权修复）：本族原先仅
+	//   AdminMiddleware，handler 内零写闸 ⇒ 普通用户可 POST/PUT/DELETE
+	//   条目，更可以 **execute / analyze**（真改网关动作，高危）。
+	//   写面统一过 RequireSuperAdminForWrite（本轮已收严为「非 super 拦写」）；
+	//   读面（entries GET / executions GET / stats）保持 admin 档。
+	writeWrap := func(fn http.HandlerFunc) http.HandlerFunc {
+		return AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			if RequireSuperAdminForWrite(w, r) {
+				return
+			}
+			fn(w, r)
+		}, h.pool, h.secret)
+	}
+	mux.HandleFunc(prefix+"/entries", writeWrap(h.handleEntries))
+	mux.HandleFunc(prefix+"/entries/", writeWrap(h.handleEntryItem))
 	mux.HandleFunc(prefix+"/executions", wrap(h.handleExecutions))
-	mux.HandleFunc(prefix+"/executions/", wrap(h.handleExecutionItem))
-	mux.HandleFunc(prefix+"/analyze", wrap(h.handleAnalyze))
+	mux.HandleFunc(prefix+"/executions/", writeWrap(h.handleExecutionItem))
+	mux.HandleFunc(prefix+"/analyze", writeWrap(h.handleAnalyze))
 	mux.HandleFunc(prefix+"/stats", wrap(h.handleStats))
 }
 

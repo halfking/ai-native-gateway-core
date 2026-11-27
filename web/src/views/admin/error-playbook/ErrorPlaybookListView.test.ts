@@ -15,7 +15,13 @@ vi.mock('../../../api/errorPlaybook', () => ({
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../../store', async () => {
   const { reactive } = await import('vue')
-  return { store: reactive({ userInfo: { role: 'super_admin', tenant_id: 'default' } }) }
+  return {
+    store: reactive({ userInfo: { role: 'super_admin', tenant_id: 'default' } }),
+    // ★ 2026-11-27 非管理员菜单轮：页面引入 isSuperAdmin 写守卫 ⇒ mock 补导出
+    //   （本文件 store.userInfo.role 已是 super_admin ⇒ isSuperAdmin 同值保持一致）。
+    isSuperAdmin: () => true,
+    isPlatformOpsView: () => true,
+  }
 })
 
 function openPlaybook() {

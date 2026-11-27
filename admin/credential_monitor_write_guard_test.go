@@ -78,8 +78,11 @@ func TestCredentialMonitorWriteFamily_RoleGate(t *testing.T) {
 				if rr.Code != http.StatusForbidden {
 					t.Fatalf("status=%d body=%s, want 403", rr.Code, rr.Body.String())
 				}
-				if !strings.Contains(rr.Body.String(), "read-only") {
-					t.Fatalf("403 理由应为「tenant_admin 只读」，实际=%s", rr.Body.String())
+				// ★ 2026-11-27 非管理员菜单重构轮：RequireSuperAdminForWrite 收严后
+				//   403 理由统一为「write operations require super_admin」
+				//   （tenant_admin 与 user 同文案；只读语义不变）。
+				if !strings.Contains(rr.Body.String(), "write operations require super_admin") {
+					t.Fatalf("403 理由应为「write operations require super_admin」，实际=%s", rr.Body.String())
 				}
 			})
 
