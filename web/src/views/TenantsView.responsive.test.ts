@@ -4,7 +4,8 @@
 // 本文件是**第一个让 compact 卡片形态挂在真实业务页上的证据**。
 //
 // 三条不可省的断言：
-// 1. **桌面表格结构未变**（桌面零回归红线）—— 9 列表头与行内元素逐字核对。
+// 1. **桌面表格结构未变**（桌面零回归红线）—— 10 列表头与行内元素逐字核对
+//    （2026-11-27 三级配额制轮：原 9 列 +「余额/信用额度」列）。
 // 2. **两种形态读同一份 `tenants` 数组** —— 切形态不重新打接口。
 // 3. **卡片字段走 `format` 钩子** —— 否则千分位/本地化日期/状态译名全丢。
 import { flushPromises, mount } from '@vue/test-utils'
@@ -55,6 +56,7 @@ const MESSAGES = {
         title: '租户', createBtn: '新建租户', statusLabel: '状态', allStatuses: '全部',
         colName: '名称', colCode: '编码', colStatus: '状态', colUsers: '用户数',
         colKeys: '密钥数', colCost7d: '7 天费用', colRequests: '请求数',
+        colBalance: '余额 / 信用额度',
         colContact: '联系邮箱', colCreated: '创建时间',
         loading: '加载中…', empty: '暂无租户', loadFailed: '加载失败',
       },
@@ -102,12 +104,13 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 
 describe('TenantsView：桌面表格零回归', () => {
-  it('渲染 9 列表头，顺序与列名不变', async () => {
+  // 2026-11-27 三级配额制轮：+余额列 ⇒ 9→10 列（列序锁定继续由本判据钉住）。
+  it('渲染 10 列表头，顺序与列名不变', async () => {
     const w = await factory()
     const ths = w.findAll('table thead th')
-    expect(ths).toHaveLength(9)
+    expect(ths).toHaveLength(10)
     expect(ths.map((th) => th.text())).toEqual([
-      '名称', '编码', '状态', '用户数', '密钥数', '7 天费用', '请求数', '联系邮箱', '创建时间',
+      '名称', '编码', '状态', '余额 / 信用额度', '用户数', '密钥数', '7 天费用', '请求数', '联系邮箱', '创建时间',
     ])
   })
 

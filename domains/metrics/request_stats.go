@@ -118,6 +118,14 @@ func buildRequestStatsQuery(query RequestStatsQuery) (string, []any, error) {
 	if query.Model != "" {
 		addFilter("outbound_model", query.Model)
 	}
+	// ★ 三级配额制维度（2026-11-27）：org_id / user_id 直推投影列
+	//   （org_id 由 owner→users→org 投影归因；user_id 为 end_user_id 派生）。
+	if query.OrgID != nil && *query.OrgID != "" {
+		addFilter("org_id", *query.OrgID)
+	}
+	if query.UserID != nil && *query.UserID != "" {
+		addFilter("user_id", *query.UserID)
+	}
 	const trendModel = requestModelKey
 	if len(query.Models) != 0 {
 		args = append(args, query.Models)

@@ -185,6 +185,26 @@ var (
 		Name: "bindings_lookup_misses_total",
 		Help: "Backend binding lookups for keys absent from the remote ledger (legacy name).",
 	})
+
+	// ────────────────────────────────────────────────────────────────────────
+	// registry 联邦同步（ADR 2026-11-27 §6 D4；W2）。
+	// ────────────────────────────────────────────────────────────────────────
+
+	// registrySyncTotal 同步逐条处置计数（含跳过：stdio / api_key_ref 缺口）。
+	registrySyncTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "mcp_gateway_registry_sync_total",
+		Help: "Registry federation sync per-entry outcomes (ok/disabled/skip_stdio/skip_auth_ref/error).",
+	}, []string{"outcome"})
+	// registrySyncErrorsTotal 同步整轮失败次数（fetch/落 Store 失败；退避重试前累计）。
+	registrySyncErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "mcp_gateway_registry_sync_errors_total",
+		Help: "Registry federation sync rounds that failed entirely (fetch or store write).",
+	})
+	// registrySnapshotEntries 最近一次成功同步快照的条目数（gauge）。
+	registrySnapshotEntries = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "mcp_gateway_registry_snapshot_entries",
+		Help: "Entries in the last successful registry federation snapshot.",
+	})
 )
 
 // RefreshUptimeMetric 在**抓取时刻**把网关运行时长写进 uptimeSeconds。

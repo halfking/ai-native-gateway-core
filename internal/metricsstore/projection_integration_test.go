@@ -51,6 +51,8 @@ CREATE TABLE public.credentials (id bigint PRIMARY KEY, provider_id bigint, labe
 CREATE TABLE public.api_keys (id bigint PRIMARY KEY, tenant_id text, key_prefix text, owner_user text);
 CREATE TABLE public.users (id bigint PRIMARY KEY, tenant_id text, username text,
  updated_at timestamptz DEFAULT now(), UNIQUE (tenant_id, username));
+-- 1003 依赖 tenants(code)（organizations.tenant_id 外键）⇒ fixture 建同形表＋两租户行。
+CREATE TABLE public.tenants (code text PRIMARY KEY, name text, status text DEFAULT 'active');
 CREATE TABLE public.session_summaries (session_key text PRIMARY KEY, tenant_id text, user_intent text);
 CREATE TABLE public.request_context_attrs (request_id text, tenant_id text, ts timestamptz,
  gw_session_id text, gw_task_id text, virtual_client_id text, owner_user text, application_code text,
@@ -73,12 +75,19 @@ INSERT INTO public.providers VALUES (9,'supplier','Supplier');`)
 	}
 	apply("537_usage_facts.sql")
 	apply("983_request_metrics.sql")
+	// 1003（三级配额制轮）：organizations + users.org_id —— 投影 SQL 的归因
+	// JOIN（owner_user → users → org_id）依赖 users.org_id 列。
+	apply("1003_org_hierarchy_and_wallets.sql")
 	exec(`
 INSERT INTO public.request_context_attrs VALUES
  ('r1','tenant-a','2026-11-23 00:10Z','shared-session','task','client','owner','app','test-agent','192.0.2.1','identity-a'),
  ('r1','tenant-c','2026-11-23 00:20Z','wrong-tenant',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
  ('r1','tenant-b','2026-11-23 00:10Z','shared-session',NULL,NULL,'owner',NULL,NULL,NULL,NULL);
 INSERT INTO public.users (id,tenant_id,username) VALUES (1,'tenant-a','owner'), (2,'tenant-b','owner');
+INSERT INTO public.tenants (code, name) VALUES ('tenant-a','Tenant A'), ('tenant-b','Tenant B');
+-- 归因判据夹具：tenant-a 的 owner 挂 org-a（users.org_id），tenant-b 的 owner 不挂。
+INSERT INTO public.organizations (tenant_id, code, name) VALUES ('tenant-a','org-a','Org A');
+UPDATE public.users SET org_id = (SELECT id FROM public.organizations WHERE code='org-a') WHERE id = 1;
 INSERT INTO public.request_metrics
  (request_id,tenant_id,occurred_at,occurred_date,billing_date,total_tokens,status,source)
 VALUES
@@ -134,6 +143,14 @@ VALUES
 		projectedRows != 2 || historyTokens != 14 {
 		t.Fatalf("upgrade did not project both tenants: rows=%d tokens=%d err=%v",
 			projectedRows, historyTokens, err)
+	}
+	// ★ 归因判据（2026-11-27 三级配额制轮）：owner_user='owner' + users(1) 挂在
+	//   org ⇒ 投影行的 org_id 必须带上该组织 code（org 维度非空）；org 外用户
+	//   （users(2)，无 org）投影行 org_id 必须为 NULL。JOIN 断链/列缺失即红。
+	var orgAttrRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.request_metrics
+		WHERE fact_request_id='r1' AND org_id IS NOT NULL`).Scan(&orgAttrRows); err != nil || orgAttrRows < 1 {
+		t.Fatalf("projection must attribute org_id via owner_user→users→org: rows=%d err=%v", orgAttrRows, err)
 	}
 	// An old slot must still be able to write the original key, while a new
 	// slot must ignore that row in all V2 aggregates.

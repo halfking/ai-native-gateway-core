@@ -2017,6 +2017,25 @@ var channelsCustomers492 []byte
 //go:embed embeddata/startup/492_channels_customers.down.sql
 var channelsCustomers492Down []byte
 
+// 1003（2026-11-27 三级配额制轮）：组织层级 + 组织/用户积分钱包。
+//	租户→组织→用户三级额度链的数据面：organizations ＋ users.org_id
+//	＋ org_credit_wallets ＋ user_credit_wallets（范式 = 007 钱包 + 1000 信用额度/策略）。
+//go:embed embeddata/startup/1003_org_hierarchy_and_wallets.sql
+var orgHierarchyWallets1003 []byte
+
+//go:embed embeddata/startup/1003_org_hierarchy_and_wallets.down.sql
+var orgHierarchyWallets1003Down []byte
+
+// 1004（2026-11-27 三级配额制轮）：三级模型过滤。
+//	tenant_model_policies.mode（allow/deny 双模，缺省 deny=既有语义）＋
+//	org_model_policies / user_model_policies（组织/用户级策略表，
+//	范式 = 024 tenant_model_policies：软删 + active 视图 + 审计触发器）。
+//go:embed embeddata/startup/1004_three_tier_model_policies.sql
+var threeTierModelPolicies1004 []byte
+
+//go:embed embeddata/startup/1004_three_tier_model_policies.down.sql
+var threeTierModelPolicies1004Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2838,6 +2857,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/1001_bill_payment_tracking.down.sql":           billPaymentTracking1001Down,
 	"startup/1002_billing_retry_queue.sql":                  billingRetryQueue1002,
 	"startup/1002_billing_retry_queue.down.sql":             billingRetryQueue1002Down,
+	"startup/1003_org_hierarchy_and_wallets.sql":            orgHierarchyWallets1003,
+	"startup/1003_org_hierarchy_and_wallets.down.sql":       orgHierarchyWallets1003Down,
+	"startup/1004_three_tier_model_policies.sql":            threeTierModelPolicies1004,
+	"startup/1004_three_tier_model_policies.down.sql":       threeTierModelPolicies1004Down,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
 	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。

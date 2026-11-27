@@ -28,7 +28,7 @@ export default {
   modelScopeLoading: '直近 3 日間の注目モデルと人気モデルを読み込んでいます…',
   queueAwaitingStream: 'ライブストリームに接続中です。接続後、このエリアのデータは自動的に読み込まれます…',
   refreshScope: 'Refresh scope',
-  modelGroupLayerTitle: 'Available nodes grouped by model',
+  modelGroupLayerTitle: '利用可能なノードをモデル別にグループ化',
   modelGroupCount: '{count} models',
   modelScopeSaving: 'Saving…',
   outOfScopeModels: '{models} にはノードがありますが、注目／直近 3 日間の人気の範囲外です（このパネルは範囲内のモデルだけを表示します）。したがってグループは表示されません。',

@@ -38,10 +38,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -117,6 +119,16 @@ type AudioService struct {
 	// ★ 2026-11-22 审计轮修正（P0）：音频面同样产生 MaaS 花费 ⇒ 必须过租户级
 	// 预算闸，否则 hard 模式可被音频面绕过。SetMaas 时自动接入。
 	tenantBudgetGate audioTenantBudgetGate
+	// tieredBalanceGate 可选：组织/用户级余额预检（三级配额制，2026-11-27）。
+	// SetMaas 时自动接入（同 audioTenantBudgetGate 范式）。
+	tieredBalanceGate audioTieredBalanceGate
+	// modelPolicy (2026-11-27 三级配额制轮)：音频三面的租户/组织/用户模型
+	// 策略检查——此前面从不检查（审计发现）。与 chat 面共享同一 Checker
+	// 单例。nil 禁用（fail-open，2026-11-27 前行为）。
+	modelPolicy *modelpolicy.Checker
+	// policyResolver 模型名 → canonical 的解析器（与 chat 面同实例）。
+	// nil ⇒ canonical 为空 ⇒ 策略检查跳过（fail-open）。
+	policyResolver *resolve.Resolver
 	// usageLog 可选：把 audio_seconds / credits 写入 _request_logs_hot。
 	usageLog AudioUsageLogger
 }
@@ -133,6 +145,36 @@ func NewAudioService(resolver AudioProviderResolver, upstreamClient *upstream.Cl
 func (s *AudioService) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimiter ratelimit.RPMLimiter) {
 	s.keyVerifier = keyVerifier
 	s.rateLimiter = rateLimiter
+}
+
+// SetModelPolicy wires the shared tenant/org/user model policy Checker
+// and the canonical-name resolver (2026-11-27 三级配额制轮).  nil
+// checker disables enforcement.
+func (s *AudioService) SetModelPolicy(mp *modelpolicy.Checker, resolver *resolve.Resolver) {
+	if s == nil {
+		return
+	}
+	s.modelPolicy = mp
+	s.policyResolver = resolver
+}
+
+// enforceAudioModelPolicy runs the shared three-tier model policy
+// judgement body for an audio request.  Returns true when the request
+// is denied AND the 403 has already been written.  audioModel is the
+// client-requested model name (audio surfaces have no auto route).
+func (s *AudioService) enforceAudioModelPolicy(ctx context.Context, w http.ResponseWriter, requestID string, keyInfo *authentication.KeyInfo, audioModel, profile string) bool {
+	if s == nil || s.modelPolicy == nil || keyInfo == nil {
+		return false
+	}
+	if denied, canonical, _ := enforceTenantModelPolicy(
+		ctx, audioModel, keyInfo, s.modelPolicy, s.policyResolver, profile,
+	); denied {
+		msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
+		writeErrorJSON(w, http.StatusForbidden, requestID, msg,
+			"permission_error", "model_forbidden")
+		return true
+	}
+	return false
 }
 
 // SetFailureLogger wires the shared candidate-failure ledger writer. Pass nil
@@ -1406,6 +1448,25 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 	}
 	if !tenantBillingExempt(r.Context(), keyInfo) && !applyTenantMonthlyBudgetGate(r.Context(), w, s.tenantBudgetGate, keyInfo, requestID, onBudgetReject, nil) {
 		return nil, false
+	}
+	// ── 组织/用户级余额预检（三级配额制，2026-11-27）──────────────────
+	//	租户级闸放行后逐级检查组织/用户钱包；任一级 block ⇒ 402。
+	//	豁免口径与租户级同源（default 租户 + 内部 key 在 gate 内自判）。
+	if s.tieredBalanceGate != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+		owner := ""
+		if keyInfo.OwnerUser != nil {
+			owner = *keyInfo.OwnerUser
+		}
+		if blocked, err := s.tieredBalanceGate.PreCheckOrgAndUserForOwner(r.Context(), owner, 0); err != nil {
+			// fail-open：预检查询失败不阻断音频请求（同租户级预检纪律）。
+			slog.Warn("tiered balance precheck failed on audio surface, allowing (fail-open)",
+				"request_id", requestID, "owner_user", owner, "error", err)
+		} else if blocked != nil && !blocked.Allow {
+			slog.Warn("tiered balance precheck rejected audio request",
+				"request_id", requestID, "owner_user", owner, "reason", blocked.Reason)
+			writeErrorJSON(w, http.StatusPaymentRequired, requestID, blocked.Reason, "insufficient_quota", "billing_insufficient_balance")
+			return nil, false
+		}
 	}
 	return keyInfo, true
 }

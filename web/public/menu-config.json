@@ -236,6 +236,15 @@
           "pluginScope": "*"
         },
         {
+          "path": "/orgs",
+          "labelKey": "nav.item.orgs",
+          "icon": "🏛️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
           "path": "/users",
           "labelKey": "nav.item.users",
           "icon": "👤",
@@ -710,5 +719,5 @@
       "pluginScope": "*"
     }
   ],
-  "exported_fingerprint": "sha256:498c1aacc40a4a2e"
+  "exported_fingerprint": "sha256:bf2a43c31381dbd2"
 }

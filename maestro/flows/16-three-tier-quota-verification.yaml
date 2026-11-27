@@ -1,0 +1,113 @@
+# 三级配额制验证（2026-11-27 L138 轮交付验收）
+#
+# 验证范围（admin 角色）：
+#   1. admin 登录（SPA 弹窗 ?login=1）
+#   2. /tenants 列表带「余额 / 信用额度」列
+#   3. /orgs 组织管理列表页可达（导航入口）
+#   4. /orgs/:id 组织详情页可达（钱包卡 + 成员表 + 调整表单）
+#
+# 用法：
+#   maestro test maestro/flows/16-three-tier-quota-verification.yaml \
+#     -e BASE_URL=https://llm.itestu.cn --format junit --output results.xml
+
+url: ${BASE_URL}
+---
+# ── 登录（admin / super_admin）───────────────────────────────────────
+# ★ 登录形态（22:4x 实测定型）：?login=1 深链由 App.vue watcher（immediate:true）
+#   直接弹登录框 —— 不需要任何点击。首版 runFlow(安装激活→tap 登录控制面) 分支
+#   会命中「落地页多个登录形文本」里的错误元素（hero CTA / 导航链接同源异义）⇒
+#   点击后导航漂移、弹框反而没出 ⇒ 已删。cold start 慢（openLink 实测 40–60s）
+#   ⇒ 等弹框超时给足 60s。
+- launchApp:
+    clearState: true
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 60000
+# 兜底：深链弹框偶发被落地页接管时，点顶栏右上「登录」按钮（login.submit，
+# guest-login-btn —— 与 hero CTA「登录控制面」不同元素，避免同源异义误点）。
+- runFlow:
+    when:
+      notVisible:
+        id: "login-modal-title"
+    commands:
+      - tapOn:
+          text: "登录控制面"
+      - extendedWaitUntil:
+          visible:
+            id: "login-modal-title"
+          timeout: 20000
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "admin"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Veritrans&9527"
+- pressKey: Enter
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      text: "系统管理员"
+    timeout: 20000
+
+# ── /tenants：余额列 ────────────────────────────────────────────────
+# 「发现新版本」横幅（deploy-seq-update-banner）在多轮部署后必然出现（本地缓存的
+# 旧 bundle 对比新 build_seq）⇒ 不关掉会一直吸走页面底部空间并可能遮挡断言元素
+# ⇒ 先点「稍后」关横幅，再等页面内容。
+- runFlow:
+    when:
+      visible:
+        id: "deploy-seq-update-banner"
+    commands:
+      - tapOn:
+          text: "稍后"
+- openLink: ${BASE_URL}/tenants
+- extendedWaitUntil:
+    visible:
+      text: "余额 / 信用额度"
+    timeout: 30000
+
+# ── /orgs：导航入口 + 列表页 ─────────────────────────────────────────
+- openLink: ${BASE_URL}/orgs
+- extendedWaitUntil:
+    visible:
+      text: "组织管理"
+    timeout: 20000
+# 新建按钮在位（页面骨架完整）；locale 值是半角 + ⇒ textRegex 兜底
+- extendedWaitUntil:
+    visible:
+      text: ".*新建组织.*"
+    timeout: 10000
+
+# ── /orgs/{id}：组织详情页（钱包卡 + 成员表 + 调整表单）──────────────
+# 前置：验收前已通过 API 建组织（id=3，租户 chenb / code=platform）。
+# 先走列表页点进详情（真实用户路径），验证钱包卡与成员表渲染。
+- openLink: ${BASE_URL}/orgs
+- extendedWaitUntil:
+    visible:
+      text: "平台组"
+    timeout: 15000
+- tapOn:
+    text: "平台组"
+- extendedWaitUntil:
+    visible:
+      text: "组织钱包"
+    timeout: 15000
+- extendedWaitUntil:
+    visible:
+      text: ".*组织成员.*"
+    timeout: 10000
+- extendedWaitUntil:
+    visible:
+      text: ".*返回组织列表.*"
+    timeout: 10000

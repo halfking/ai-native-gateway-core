@@ -12,6 +12,7 @@ export default {
     colKeys: "金鑰數",
     colCost7d: "7天費用",
     colRequests: "總請求",
+    colBalance: '餘額 / 信用額度',
     colContact: "聯絡郵箱",
     colCreated: "建立時間",
     empty: '還沒有租戶',
@@ -84,6 +85,8 @@ export default {
     cancel: '取消操作',
     create: '建立',
     lastLoginCol: '最後登入',
+    userBalanceCol: '使用者餘額',
+    orgBalanceCol: '組織餘額',
   },
   dashboard: {
     title: "儀表板",

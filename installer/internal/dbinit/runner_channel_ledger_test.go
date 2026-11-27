@@ -281,11 +281,16 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//   ★ 2026-11-27（计费迁移 1000-1002 轮）：三条同时落两通道（files=() +
 		//     StartupFiles）⇒ **交集 +4**（★ 348 → 352 ★★；+4 = 1000/1001/1002
 		//     三条 + 633 补接线一条）；两通道独有清单不变（25 / 63）。
-		//   ★ 上游已把 1000-1002 登记进安装器 TSV 清单（manifest 411→412）⇒
-		//     本轮补全其余五点（embeddata/go:embed/StartupFiles/files=()/nonplain 册）。
-		wantBoth          = 352
-		wantOnlyDeploy    = 25
-		wantOnlyInstaller = 63
+	//   ★ 上游已把 1000-1002 登记进安装器 TSV 清单（manifest 411→412）⇒
+	//     本轮补全其余五点（embeddata/go:embed/StartupFiles/files=()/nonplain 册）。
+	//   ★ 2026-11-27（三级配额制轮 ＋ W4.3 渠道商车道轮）：三条同时落两通道
+	//     （492_channels_customers ＋ 1003_org_hierarchy_and_wallets ＋
+	//     1004_three_tier_model_policies，files=() + StartupFiles）
+	//     ⇒ **交集 +3**（★ 352 → 355 ★★）；两通道独有清单不变（25 / 63）。
+	//     三条都自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；TSV manifest 412→417。
+	wantBoth          = 355
+	wantOnlyDeploy    = 25
+	wantOnlyInstaller = 63
 	)
 	if both != wantBoth || onlyDeploy != wantOnlyDeploy || onlyInstaller != wantOnlyInstaller {
 		t.Errorf("★ 两条投递通道的文件集合变了：★ 交集 %d（期望 %d）/ 仅部署通道有 %d（期望 %d）/ 仅安装器有 %d（期望 %d）\n"+

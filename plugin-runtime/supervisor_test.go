@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/gocache"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/limiter"
 )
 
 // gocacheRoot 返回仓根（★ 用于定位本包的【专用 GOCACHE】目录）。
@@ -428,5 +429,188 @@ func TestSupervisor_StartAlreadyRunningRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("error should mention already running, got: %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ResourceLimiter 集成（2026-11-27 resource-limiter-integration-plan 阶段 1）
+//
+// 变异臂说明：摘掉 Start 中「limiter 创建 + 登记」即本组测试红
+// （limiters map 恒空）；摘掉 Stop/Restart/Upgrade 的 limiter 清理则
+// LimiterOf 断言红。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Manifest 声明 resource_limits 时：Start 创建 limiter 并登记，Stop 清理。
+func TestSupervisor_StartWithResourceLimits(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir(), ContextSecret: []byte("s")})
+	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath}
+	}
+	m := &Manifest{
+		PluginID:      "limited",
+		PluginVersion: "0.1.0",
+		ResourceLimits: &ResourceLimits{
+			Memory:       &MemoryLimit{Limit: "128M"},
+			CPU:          &CPULimit{Limit: "25%"},
+			MaxProcesses: 3,
+		},
+	}
+	if _, err := s.Start(context.Background(), m); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	rl := s.LimiterOf("limited")
+	if rl == nil {
+		t.Fatal("ResourceLimiter not created for manifest with resource_limits")
+	}
+	if rl.Mode() != limiter.ModeMonitor && rl.Mode() != limiter.ModeCgroup {
+		t.Errorf("unexpected limiter mode: %s", rl.Mode())
+	}
+	if err := s.Stop("limited"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if s.LimiterOf("limited") != nil {
+		t.Error("limiter should be deregistered after Stop")
+	}
+}
+
+// 未配置 limits（且无 DefaultLimits）时：不创建 limiter，行为与历史一致。
+func TestSupervisor_StartWithoutResourceLimits(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir(), ContextSecret: []byte("s")})
+	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath}
+	}
+	if _, err := s.Start(context.Background(), &Manifest{PluginID: "plain", PluginVersion: "0.1.0"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if rl := s.LimiterOf("plain"); rl != nil {
+		t.Fatal("no limiter should be created without resource_limits config")
+	}
+	if err := s.Stop("plain"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+}
+
+// DefaultLimits 兜底：Manifest 未声明时应用全局默认；Manifest 声明时优先于默认。
+func TestSupervisor_DefaultLimitsFallback(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{
+		SocketDir:     t.TempDir(),
+		ContextSecret: []byte("s"),
+		DefaultLimits: &ResourceLimits{Memory: &MemoryLimit{Limit: "512M"}, MaxProcesses: 10},
+	})
+	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath}
+	}
+	// a) Manifest 无声明 → 用默认
+	if _, err := s.Start(context.Background(), &Manifest{PluginID: "fallback", PluginVersion: "0.1.0"}); err != nil {
+		t.Fatalf("start fallback: %v", err)
+	}
+	if s.LimiterOf("fallback") == nil {
+		t.Fatal("DefaultLimits should create a limiter when manifest omits resource_limits")
+	}
+	_ = s.Stop("fallback")
+
+	// b) Manifest 有声明 → Manifest 优先（两者都非 nil，limiter 一定存在；
+	//    这里断言的是配置路径不会因双份来源而冲突报错）
+	own := &Manifest{
+		PluginID:       "own",
+		PluginVersion:  "0.1.0",
+		ResourceLimits: &ResourceLimits{Memory: &MemoryLimit{Limit: "64M"}, MaxProcesses: 2},
+	}
+	if _, err := s.Start(context.Background(), own); err != nil {
+		t.Fatalf("start own: %v", err)
+	}
+	if s.LimiterOf("own") == nil {
+		t.Fatal("manifest resource_limits should create a limiter even with DefaultLimits set")
+	}
+	_ = s.Stop("own")
+}
+
+// Restart / Upgrade 都绕过 Stop，必须同样清理旧 limiter 并为新进程重建。
+func TestSupervisor_RestartUpgradeLimiterLifecycle(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir(), ContextSecret: []byte("s")})
+	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath}
+	}
+	m := &Manifest{
+		PluginID:       "lc",
+		PluginVersion:  "0.1.0",
+		Runtime:        Runtime{Entrypoint: "v1"},
+		ResourceLimits: &ResourceLimits{MaxProcesses: 4},
+	}
+	if _, err := s.Start(context.Background(), m); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if s.LimiterOf("lc") == nil {
+		t.Fatal("limiter missing after initial start")
+	}
+
+	// Restart：旧 limiter 清理，新 limiter 登记
+	if err := s.Restart("lc"); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if s.LimiterOf("lc") == nil {
+		t.Fatal("limiter should be re-created after Restart")
+	}
+
+	// Upgrade：同上，且新 manifest 生效
+	next := &Manifest{
+		PluginID:       "lc",
+		PluginVersion:  "0.2.0",
+		Runtime:        Runtime{Entrypoint: "v2"},
+		ResourceLimits: &ResourceLimits{MaxProcesses: 8},
+	}
+	if err := s.Upgrade(context.Background(), next); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if s.LimiterOf("lc") == nil {
+		t.Fatal("limiter should be re-created after Upgrade")
+	}
+	if got := s.ManifestOf("lc").PluginVersion; got != "0.2.0" {
+		t.Errorf("after upgrade version = %q, want 0.2.0", got)
+	}
+
+	// 收口 Stop：limiter 清理
+	if err := s.Stop("lc"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if s.LimiterOf("lc") != nil {
+		t.Error("limiter should be deregistered after final Stop")
+	}
+}
+
+// 真实 exec 路径：execCommand.prepare 注入 ResourceLimiter.Apply。
+// 本机 macOS/非 cgroup 环境 Apply 是 no-op，断言「Start 全链路不被限制配置阻断」；
+// prepare 是否真的接到 Apply 由 limiter 包的单元测试覆盖。
+func TestSupervisor_RealExecWithLimits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real-exec test in short mode")
+	}
+	dir := t.TempDir()
+	helper := filepath.Join(dir, "helper")
+	src := filepath.Join(dir, "helper.go")
+	if err := os.WriteFile(src, []byte("package main\nimport (\n\t\"os\"\n)\nfunc main() {\n\tos.WriteFile(os.Args[1], []byte(\"ok\"), 0o644)\n\tselect {}\n}\n"), 0o644); err != nil {
+		t.Fatalf("write helper source: %v", err)
+	}
+	out, err := exec.Command("go", "build", "-o", helper, src).CombinedOutput()
+	if err != nil {
+		t.Fatalf("build helper: %v\n%s", err, out)
+	}
+
+	s := NewSupervisor(SupervisorConfig{SocketDir: dir, ContextSecret: []byte("s")})
+	// 真实 execCommand（不替换 commandFactory）
+	m := &Manifest{
+		PluginID:       "reallim",
+		PluginVersion:  "0.1.0",
+		Runtime:        Runtime{Entrypoint: helper},
+		ResourceLimits: &ResourceLimits{Memory: &MemoryLimit{Limit: "64M"}, MaxProcesses: 5},
+	}
+	if _, err := s.Start(context.Background(), m); err != nil {
+		t.Fatalf("start real exec with limits: %v", err)
+	}
+	if s.LimiterOf("reallim") == nil {
+		t.Fatal("limiter missing for real-exec start")
+	}
+	if err := s.Stop("reallim"); err != nil {
+		t.Fatalf("stop: %v", err)
 	}
 }

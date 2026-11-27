@@ -28,7 +28,7 @@ export default {
   modelScopeLoading: 'Cargando los modelos destacados y populares de los últimos 3 días…',
   queueAwaitingStream: 'Conectando al flujo en vivo, los datos de esta área se cargan automáticamente al conectarse…',
   refreshScope: 'Refresh scope',
-  modelGroupLayerTitle: 'Available nodes grouped by model',
+  modelGroupLayerTitle: 'Nodos disponibles agrupados por modelo',
   modelGroupCount: '{count} models',
   modelScopeSaving: 'Saving…',
   outOfScopeModels: '{models} tiene nodos pero queda fuera del alcance (destacados / 3 días de popularity). Este panel solo muestra modelos dentro del alcance, así que no aparece ningún grupo.',

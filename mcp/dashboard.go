@@ -66,6 +66,15 @@ const dashboardHTML = `<!DOCTYPE html>
 </section>
 
 <section>
+  <h2>registry 联邦（memora）</h2>
+  <div class="sub" id="registry-meta">-</div>
+  <table>
+    <thead><tr><th>条目</th><th>传输</th><th>鉴权</th><th>处置</th><th>凭据</th><th>适配器</th><th>说明</th></tr></thead>
+    <tbody id="registry"><tr><td colspan="7">加载中…</td></tr></tbody>
+  </table>
+</section>
+
+<section>
   <h2>Top 工具（按调用量）</h2>
   <table>
     <thead><tr><th>工具</th><th>调用次数</th></tr></thead>
@@ -127,6 +136,31 @@ const dashboardHTML = `<!DOCTYPE html>
       fail('健康信息加载失败', e);
       document.getElementById('adapters').innerHTML =
         '<tr><td colspan="5">加载失败</td></tr>';
+    });
+
+    api('/mcp/control/registry/status').then(function (st) {
+      if (!st.enabled) {
+        set('registry-meta', '未启用（MCP_GATEWAY_REGISTRY_SYNC_ENABLED=false）');
+        document.getElementById('registry').innerHTML =
+          '<tr><td colspan="7">联邦未启用</td></tr>';
+        return;
+      }
+      set('registry-meta', '快照 ' + (st.snapshot_count || 0) + ' 条 · 上次同步 ' +
+        esc(st.last_sync || '-') + (st.last_error ? ' · 最近错误：' + esc(st.last_error) : ''));
+      var rows = (st.entries || []).map(function (e) {
+        var outcome = esc(e.outcome || '');
+        if (e.skipped_reason) { outcome += '（' + esc(e.skipped_reason) + '）'; }
+        return '<tr><td>' + esc(e.name) + '</td><td>' + esc(e.transport) + '</td><td>' +
+          esc(e.auth_mode) + '</td><td>' + outcome + '</td><td>' +
+          (e.credential_resolved ? '<span class="ok">已解析</span>' : '未解析') + '</td><td>' +
+          esc(e.adapter_name || '-') + '</td><td>' + esc(e.enabled ? '启用' : 'registry 侧停用') + '</td></tr>';
+      }).join('');
+      document.getElementById('registry').innerHTML = rows ||
+        '<tr><td colspan="7">registry 无条目</td></tr>';
+    }).catch(function (e) {
+      if (!document.getElementById('err').textContent) { fail('联邦状态加载失败', e); }
+      document.getElementById('registry').innerHTML =
+        '<tr><td colspan="7">加载失败</td></tr>';
     });
 
     api('/mcp/control/audit?limit=200').then(function (a) {

@@ -85,9 +85,11 @@ type Gateway struct {
 	redactor   *Redactor
 	upstream   *UpstreamClient
 	bootstrap  *BootstrapService
-	logger     *slog.Logger
-	now        func() time.Time
-	startedAt  time.Time
+	// registrySync 联邦同步器（ADR 2026-11-27 §3；env 未启用时为 nil）。
+	registrySync *RegistrySyncer
+	logger       *slog.Logger
+	now          func() time.Time
+	startedAt    time.Time
 
 	catalogMu sync.RWMutex
 	catalog   map[string]*Tool
@@ -102,6 +104,21 @@ type Gateway struct {
 type toolCacheEntry struct {
 	tools   []ToolView
 	expires time.Time
+}
+
+// RegistrySyncStatus 返回联邦同步器状态（未启用时返回 nil）。
+// 控制面 /mcp/control/registry/status 只读消费（ADR §4 D2b）。
+func (g *Gateway) RegistrySyncStatus() *RegistrySyncStatus {
+	if g.registrySync == nil {
+		return nil
+	}
+	st := g.registrySync.Status()
+	return &st
+}
+
+// RegistrySyncer 返回同步器实例（装配面用它启动 Run goroutine；未启用 nil）。
+func (g *Gateway) RegistrySyncer() *RegistrySyncer {
+	return g.registrySync
 }
 
 type toolCacheKey struct{ tenant, adapter, capability string }
@@ -463,6 +480,10 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 		return nil, Errorf(CodeInvalidParams, "tool name is required"), http.StatusOK
 	}
 
+	// mcp_call_id（ADR 2026-11-27 §6 D4）：本次调用的关联键，贯穿审计事件
+	// （AuditEvent.RequestID）与 llm_gateway 出站头（X-MCP-Call-ID）。
+	callID := newCallID()
+
 	args, err := decodeArgs(params.Arguments)
 	if err != nil {
 		return nil, RPCErrorOf(err), http.StatusOK
@@ -615,22 +636,26 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 		ProtocolVersion: ProtocolVersion,
 		Timeout:         time.Duration(timeout) * time.Millisecond,
 		Retries:         g.retriesFor(tool),
+		WriteGranted:    g.writeGranted(id, tool, adapter),
+		KeyID:           id.KeyID,
+		CallID:          callID,
 	})
 	if err != nil {
 		g.breaker.Failure(adapter.Name)
 		upstreamErrorsTotal.Inc()
 		g.audit.Record(AuditEvent{
-			Kind:     AuditKindUpstream,
-			Outcome:  OutcomeError,
-			TenantID: id.TenantID,
-			OrgID:    id.OrgID,
-			UserID:   id.UserID,
-			KeyID:    id.KeyID,
-			AgentID:  id.AgentID,
-			Tool:     params.Name,
-			Adapter:  adapter.Name,
-			Reason:   "upstream_error",
-			Detail:   map[string]any{"error": err.Error()},
+			Kind:      AuditKindUpstream,
+			Outcome:   OutcomeError,
+			TenantID:  id.TenantID,
+			OrgID:     id.OrgID,
+			UserID:    id.UserID,
+			KeyID:     id.KeyID,
+			AgentID:   id.AgentID,
+			Tool:      params.Name,
+			Adapter:   adapter.Name,
+			RequestID: callID,
+			Reason:    "upstream_error",
+			Detail:    map[string]any{"error": err.Error()},
 		})
 		// ★ 超时**不单列错误码**：既有的上游错误（含超时）统一是 -32000 ⇒
 		//   拆码会打断既有客户端的 -32000 分支。超时用 data.timeout 区分。
@@ -671,6 +696,7 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 		Tool:      params.Name,
 		Adapter:   adapter.Name,
 		Method:    "tools/call",
+		RequestID: callID,
 		LatencyMS: latency,
 	})
 	return out, nil, http.StatusOK

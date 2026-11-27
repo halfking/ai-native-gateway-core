@@ -48,45 +48,17 @@ var KnownUndelivered = map[string]map[string]KnownEntry{
 		},
 	},
 	// ── 存量缺口（待 owner：投递迁移，或改代码）─────────────────────────────────
-	// ── 上游 W4.3 新特性的投递面缺口（2026-11-26 审计轮登记，待 owner）────────
+	// ── 上游 W4.3 新特性的投递面缺口（2026-11-26 审计轮登记 ⇒ 2026-11-27 删）────
 	//
-	// ★ 登记 ≠ 认可它没问题：★ 上游补完投递面后**必须回来删登记**、★ 门有 stale
-	//   检查会自动红（★ 防免死金牌纪律 ★★）。
-	"admin/channels.go": {
-		"customers": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：本文件的渠道/客户读端 SQL 读 customers 表，" +
-				"而定义它的 sql/migrations/startup/492_channels_customers.sql **不在两条投递通道里**" +
-				"（★ 四条通道逐条实测全无：211 通道 scripts/apply-db-revision-sequence.sh 的 files=() 无、★ 安装器清单 " +
-				"sql/schema/installed_startup_migrations.tsv 无、★ installer/cmd/llm-gw-installer/embeddata/startup 无、★ " +
-				"installer/migrations 无 ★）" +
-				"⇒ ★ 实测（2026-11-26，211 生产库 acc-pg17/llm_gateway）：表不存在 ⇒ ⇒ 这些端点在部署后会报 **42P01（表不存在）**。" +
-				"★ 2026-11-26 只读实测（154 生产库）：public.schema_migrations 无 '492' 行、public.customers 不存在。" +
-				"★★ 而【两道投递通道覆盖门都没拦住它】：★ 它们只断言【最大编号附近的近邻窗口】（★ 当前最大号 999）" +
-				"⇒ ★ 492 远在窗口外 ⇒ ★★ 门根本没看它（★ 这就是「拿旧编号当新迁移的编号」会绕过门的原因 ★★）。" +
-				"★ 出路：把 492 搬进投递通道并登记（这是 schema 交付决策，owner 决定），或读端改读已有形状。" +
-				"★ **该修法属 W4.3 车道的产品口径，本车道只登记不代决策**。" +
-				"★ 处置：本条登记不阻断部署（scripts/deploy-test-gate.sh 的包清单不含 scripts/ursmcheck ⇒ 交付门不在部署闸门内；" +
-				"且 211 本轮部署已实测通过）。",
-			// ★ 空串 = **整表**登记：本文件有 4 处是整表引用（SELECT 1 FROM customers /
-			//   SELECT id FROM customers / FROM customers），不带列名 ⇒ 逐列登记匹配不上
-			//   ⇒ 台账按「文件⇒表⇒列」匹配（knownEntry），整表引用需要空串这一项。
-			Cols: []string{"", "channel_id", "code", "created_at", "enabled", "id", "name"},
-		},
-		"channel_users": {
-			Since: "2026-11-26",
-			Reason: "存量缺口（★ 上游 W4.3 渠道商车道引入，★ 非本车道）：同 492_channels_customers.sql 建出的渠道-用户关联表，" +
-				"同样不在投递通道里 ⇒ 部署后读端 42P01。出路与 customers 同条：把 492 搬进投递通道并登记，或读端改读已有形状。" +
-				"★ 本车道只登记不代决策。" +
-				"★ 2026-11-26 只读实测（154 生产库）：public.channel_users 不存在。" +
-				"★★ 近邻窗口缺口同 customers 那条：★ 投递通道覆盖门只断言【最大编号附近的近邻窗口】⇒ ★ 492 远在窗口外 ⇒ ★★ 门没看它。",
-			Cols: []string{"", "channel_id", "user_id"},
-		},
-		// ★ request_logs 那条登记已按「防免死金牌」纪律删除（2026-11-26 审计轮）：
-		//   admin/channels.go 的三处读点已改指 canonical 视图 request_logs_with_current_month
-		//   （v1 底表 public.request_logs 已被迁移 890 物理删除 ⇒ 运行时 42P01）⇒
-		//   ⇒ 该登记不再被任何引用命中 ⇒ 留着就是「登记了却不再命中」⇒ 门会判 Stale 而红。
-	},
+	// ★ 492（customers / channel_users）两条登记已按「防免死金牌」纪律删除
+	//   （2026-11-27 三级配额制轮代上游收口）：上游 1357e62917 已把
+	//   492_channels_customers.sql 搬进投递通道（五点同步：embeddata 副本 /
+	//   go:embed / StartupFiles / apply 脚本 / TSV manifest 415 行）⇒
+	//   ⇒ 本仓 fresh 新装建造器 418/418 全绿（含 492）⇒ 两表在新装与升级库都可达
+	//   ⇒ 原登记「不再被命中」⇒ 留着就是「登记了却不再命中」⇒ 门判 Stale 而红。
+	//   ★ 历史缘由（原 customers 登记的教训仍在）：四条通道当时全无 492、
+	//   两道投递通道覆盖门只断言【最大编号附近的近邻窗口】⇒ 492 远在窗口外
+	//   ⇒ 门没看它（「拿旧编号当新迁移的编号」绕过了门）。
 	// ── 存量缺口三组（2026-11-26 存量缺口收口轮 · 第 31 轮已修 ⇒ 登记已删）──────
 	// ★ 历史（本轮之前的三条登记，★ 本轮修完 ⇒ 按「两头核账」的规则删掉登记）：
 	//   ① bg/systemmonitor/audit.go → system_probe_runs.total_tokens

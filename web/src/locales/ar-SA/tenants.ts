@@ -12,6 +12,7 @@ export default {
     colKeys: "عدد المفاتيح",
     colCost7d: "تكلفة 7 أيام",
     colRequests: "إجمالي الطلبات",
+    colBalance: 'الرصيد / حد الائتمان',
     colContact: "البريد الإلكتروني للتواصل",
     colCreated: "تاريخ الإنشاء",
     empty: 'لا يوجد مستأجرون بعد',
@@ -84,6 +85,8 @@ export default {
     cancel: 'إلغاء',
     create: 'إنشاء',
     lastLoginCol: 'آخر تسجيل دخول',
+    userBalanceCol: 'رصيد المستخدم',
+    orgBalanceCol: 'رصيد المؤسسة',
   },
   dashboard: {
     title: "لوحة المعلومات",

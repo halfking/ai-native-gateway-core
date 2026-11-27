@@ -160,6 +160,7 @@ export default {
     standardName: 'Standardname',
     email: 'E-Mail',
     role: 'Rolle',
+    org: 'Organisation',
     username: 'Benutzername',
     operator: 'Ausführender',
     note: 'Erläuterung',

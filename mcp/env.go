@@ -46,6 +46,28 @@ const (
 	//   口径）；on ⇒ 业务 key 可按 mcp.register / mcp.manage / mcp.analyze /
 	//   mcp.topology 访问控制面。
 	EnvControlScope = "MCP_GATEWAY_CONTROL_SCOPE"
+
+	// ---- registry 联邦（ADR 2026-11-27 §3 D1 / §4 D2a）----
+	// 全部默认关闭/为空 ⇒ 不配置时同步器不存在，行为与引入前完全一致
+	// （装配面默认关，对齐 W3 既定口径）。
+	// EnvRegistrySyncEnabled 联邦同步总开关（默认 false，fail-closed）。
+	EnvRegistrySyncEnabled = "MCP_GATEWAY_REGISTRY_SYNC_ENABLED"
+	// EnvRegistryURL memora 基址（如 http://memora:8080）。
+	EnvRegistryURL = "MCP_GATEWAY_REGISTRY_URL"
+	// EnvRegistryToken 调 memora /api/v2 的 service JWT（长令牌或网关自签均可，
+	// 由部署侧保证 memora verifier 认它）。
+	EnvRegistryToken = "[REDACTED:secret]"
+	// EnvRegistryIntervalSeconds 轮询间隔（默认 60）。
+	EnvRegistryIntervalSeconds = "MCP_GATEWAY_REGISTRY_INTERVAL_SECONDS"
+	// EnvRegistryJWTSecret 出站 service JWT 签名密钥（= memora JWT_SECRET 同值，
+	// ADR §8 R1）。空 ⇒ llm_gateway 模式适配器调用必失败（fail-closed）。
+	EnvRegistryJWTSecret = "MCP_GATEWAY_REGISTRY_JWT_SECRET"
+	// EnvRegistryJWTIssuer 出站 JWT iss（默认 llm-gateway-mcp；须与 memora
+	// V2JWTIssuer 同源配置）。
+	EnvRegistryJWTIssuer = "MCP_GATEWAY_REGISTRY_JWT_ISSUER"
+	// EnvRegistryJWTAudience 出站 JWT aud（须与 memora V2JWTAudience 同源，
+	// memora 默认 memora-api）。
+	EnvRegistryJWTAudience = "MCP_GATEWAY_REGISTRY_JWT_AUDIENCE"
 )
 
 // EnvConfig 是从环境变量解析出的网关配置。
@@ -72,6 +94,10 @@ type EnvConfig struct {
 	MaxBodyBytes int
 	// ControlScopeDisabled 控制面 scope 鉴权被关闭（只认管理令牌）。
 	ControlScopeDisabled bool
+	// RegistrySync 联邦同步配置（ADR 2026-11-27 §3）；Enabled=false 时零值即不装配。
+	RegistrySync RegistrySyncConfig
+	// RegistryJWT 出站 service JWT 签发配置（ADR §4 D2a）；Secret 为空即不装配签发器。
+	RegistryJWT RegistryJWTConfig
 	// LocalTools 是网关本地工具注册表（由网关自己执行，不经上游适配器）。
 	//
 	// ★ 零值 / nil ⇒ 没有任何本地工具 ⇒ 行为与引入本字段前完全一致。
@@ -112,6 +138,17 @@ func LoadEnvConfig() (EnvConfig, error) {
 			TenantID:           strings.TrimSpace(os.Getenv(EnvDefaultTenant)),
 		},
 		ControlScopeDisabled: !envBool(EnvControlScope, true),
+		RegistrySync: RegistrySyncConfig{
+			Enabled:  envBool(EnvRegistrySyncEnabled, false),
+			URL:      strings.TrimSpace(os.Getenv(EnvRegistryURL)),
+			Token:    os.Getenv(EnvRegistryToken),
+			Interval: time.Duration(envInt(EnvRegistryIntervalSeconds, 60)) * time.Second,
+		},
+		RegistryJWT: RegistryJWTConfig{
+			Secret:   os.Getenv(EnvRegistryJWTSecret),
+			Issuer:   strings.TrimSpace(os.Getenv(EnvRegistryJWTIssuer)),
+			Audience: strings.TrimSpace(os.Getenv(EnvRegistryJWTAudience)),
+		},
 	}
 	if cfg.DefaultTenantID == "" {
 		cfg.DefaultTenantID = "default"
@@ -121,6 +158,22 @@ func LoadEnvConfig() (EnvConfig, error) {
 	}
 	if cfg.LedgerURL != "" && cfg.LedgerToken == "" {
 		return EnvConfig{}, fmt.Errorf("mcp: %s is set but %s is empty", EnvLedgerURL, EnvLedgerToken)
+	}
+	// 联邦装配校验（ADR §3）：开同步必须有 URL 与 Token；配了 JWT secret 则
+	// audience 必须显式给（aud 必须与 memora verifier 同源，猜默认=鉴权错位）。
+	if cfg.RegistrySync.Enabled {
+		if cfg.RegistrySync.URL == "" {
+			return EnvConfig{}, fmt.Errorf("mcp: %s is set but %s is empty", EnvRegistrySyncEnabled, EnvRegistryURL)
+		}
+		if cfg.RegistrySync.Token == "" {
+			return EnvConfig{}, fmt.Errorf("mcp: %s is set but %s is empty", EnvRegistrySyncEnabled, EnvRegistryToken)
+		}
+		if cfg.RegistrySync.Interval <= 0 {
+			cfg.RegistrySync.Interval = 60 * time.Second
+		}
+	}
+	if cfg.RegistryJWT.Secret != "" && cfg.RegistryJWT.Audience == "" {
+		return EnvConfig{}, fmt.Errorf("mcp: %s is set but %s is empty (audience must match memora %s)", EnvRegistryJWTSecret, EnvRegistryJWTAudience, "V2JWT_AUDIENCE")
 	}
 	return cfg, nil
 }
@@ -167,6 +220,18 @@ func (e EnvConfig) Build() (*Gateway, error) {
 	g, err := NewGateway(cfg)
 	if err != nil {
 		return nil, err
+	}
+	// 联邦装配（ADR 2026-11-27 §4/§3）：出站 JWT 签发器注入 UpstreamClient；
+	// 同步器挂 Gateway 供控制面取状态（驱动在 cmd/gateway 装配面 goroutine）。
+	if e.RegistryJWT.Secret != "" {
+		issuer, err := NewServiceJWTIssuer(e.RegistryJWT.Secret, e.RegistryJWT.Issuer, e.RegistryJWT.Audience, 0)
+		if err != nil {
+			return nil, err
+		}
+		g.upstream.SetServiceJWTIssuer(issuer)
+	}
+	if e.RegistrySync.Enabled {
+		g.registrySync = NewRegistrySyncer(e.RegistrySync, store)
 	}
 	if err := g.LoadCatalog(context.Background(), e.DefaultTenantID); err != nil {
 		return nil, err

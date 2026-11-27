@@ -15,6 +15,7 @@ export default {
     colKeys: '密钥数',
     colCost7d: '7天费用',
     colRequests: '总请求',
+    colBalance: '余额 / 信用额度',
     colContact: '联系邮箱',
     colCreated: '创建时间',
     empty: '还没有租户',
@@ -87,6 +88,8 @@ export default {
     cancel: '取消',
     create: '创建',
     lastLoginCol: '最后登录',
+    userBalanceCol: '用户余额',
+    orgBalanceCol: '组织余额',
   },
   dashboard: {
     title: '仪表盘',

@@ -57,6 +57,7 @@ export default {
     freePool: '免费资源',
     freeDiscovery: '免费发现',
     tenants: '租户管理',
+    orgs: '组织管理',
     users: '用户管理',
     keys: 'API 密钥',
     keyApplications: '密钥申请',

@@ -24,9 +24,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 )
 
 // mcpProtocolVersion 是本实现声明的 MCP 协议版本（streamable HTTP 传输
@@ -324,6 +327,18 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 		if args.AudioBase64 == "" || args.Model == "" {
 			return rpcErr(mcpErrParams, "audio_base64 and model are required")
 		}
+		// ── 模型策略（2026-11-27 三级配额制轮）：MCP 面同三面口径；
+		//    JSON-RPC 无独立 HTTP 状态位 ⇒ 策略拒绝走 -32603 信封
+		//    （消息体与 HTTP 面逐字一致，客户端可按文案判别）。
+		//    keyInfo 经 servePost 的 withModalityAttemptKey 进 ctx（同
+		//    observeModalityRequest 的读法）。
+		if keyInfo, _ := r.Context().Value(modalityKeyContext{}).(*authentication.KeyInfo); keyInfo != nil {
+			if denied, canonical, _ := enforceTenantModelPolicy(
+				r.Context(), args.Model, keyInfo, h.svc.modelPolicy, h.svc.policyResolver, "",
+			); denied {
+				return rpcErr(mcpErrInternal, fmt.Sprintf("Model '%s' is not available for your account", canonical))
+			}
+		}
 		audio, derr := base64.StdEncoding.DecodeString(args.AudioBase64)
 		if derr != nil {
 			return rpcErr(mcpErrParams, "audio_base64 is not valid base64: "+derr.Error())
@@ -364,6 +379,14 @@ func (h *AudioMCPHandler) toolsCall(r *http.Request, requestID string, req jsonR
 		}
 		if args.Text == "" || args.Model == "" {
 			return rpcErr(mcpErrParams, "text and model are required")
+		}
+		// ── 模型策略（2026-11-27 三级配额制轮）：同 transcribe_audio 口径。
+		if keyInfo, _ := r.Context().Value(modalityKeyContext{}).(*authentication.KeyInfo); keyInfo != nil {
+			if denied, canonical, _ := enforceTenantModelPolicy(
+				r.Context(), args.Model, keyInfo, h.svc.modelPolicy, h.svc.policyResolver, "",
+			); denied {
+				return rpcErr(mcpErrInternal, fmt.Sprintf("Model '%s' is not available for your account", canonical))
+			}
 		}
 		res, serr := h.svc.Synthesize(r.Context(), SynthesizeRequest{
 			Model: args.Model, Input: args.Text, Voice: args.Voice, ResponseFormat: args.Format,
