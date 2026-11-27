@@ -453,7 +453,7 @@ export default {
     fieldBaseUrl: "Base URL",
     fieldProtocol: "Protocole",
     protocolHint: "Format de fil utilisé vers l'amont. En Adaptatif, chaque requête résout le protocole recommandé de sa famille de modèles ; s'il n'est pas autorisé, le protocole de base s'applique.",
-    protocolAdaptiveNeedsAllowed: "Sans liste de protocoles autorisés déclarée, Adaptatif se comporte exactement comme OpenAI Completions (comme avant cette option).",
+    protocolAdaptiveNeedsAllowed: "Aucun protocole autorisé n'est déclaré : Adaptatif se comporte comme OpenAI Completions. Si le fournisseur n'utilise pas ce protocole actuellement, l'enregistrement changera son comportement ; déclarez d'abord les protocoles.",
     optionProtocolAdaptive: "Adaptatif (natif par modèle)",
     fieldAdaptiveAllowed: "Protocoles autorisés (adaptatif)",
     adaptiveAllowedHint: "Déclarez les protocoles réellement pris en charge par ce fournisseur. La première entrée est le protocole de base, utilisé pour les modèles sans famille reconnue.",

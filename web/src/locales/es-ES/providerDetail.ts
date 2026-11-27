@@ -453,7 +453,7 @@ export default {
     fieldBaseUrl: "Base URL",
     fieldProtocol: "Protocolo",
     protocolHint: "Formato de cable usado para hablar con el upstream. Con Adaptativo, cada petición resuelve el protocolo recomendado de su familia de modelos; si no está permitido, se usa el protocolo base.",
-    protocolAdaptiveNeedsAllowed: "Sin una lista declarada de protocolos permitidos, Adaptativo se comporta igual que OpenAI Completions (igual que antes de esta opción).",
+    protocolAdaptiveNeedsAllowed: "Aún no hay protocolos permitidos declarados: Adaptativo se comporta como OpenAI Completions. Si el proveedor no usa ese protocolo ahora, guardar cambiará su comportamiento; declara primero los protocolos.",
     optionProtocolAdaptive: "Adaptativo (nativo por modelo)",
     fieldAdaptiveAllowed: "Protocolos permitidos (adaptativo)",
     adaptiveAllowedHint: "Declara los protocolos que este proveedor admite realmente. La primera entrada es el protocolo base, usado para modelos sin familia reconocida.",

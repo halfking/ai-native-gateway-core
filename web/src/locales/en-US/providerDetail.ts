@@ -467,7 +467,7 @@ export default {
     fieldBaseUrl: "Base URL",
     fieldProtocol: "Protocol",
     protocolHint: "Wire format used to talk to the upstream. With Adaptive, each request resolves its model family's recommended protocol; if that is not in the allowed list, the base protocol is used.",
-    protocolAdaptiveNeedsAllowed: "Without a declared allowed-protocol list, Adaptive behaves exactly like OpenAI Completions (same as before this option existed).",
+    protocolAdaptiveNeedsAllowed: "No allowed-protocol list declared yet: Adaptive behaves exactly like OpenAI Completions. If this provider is not currently on that protocol, saving will change its behavior — declare the allowed protocols before switching.",
     optionProtocolAdaptive: "Adaptive (per-model native protocol)",
     fieldAdaptiveAllowed: "Adaptive allowed protocols",
     adaptiveAllowedHint: "Declare the protocols this provider actually supports. The first entry is the base protocol, used for models with no family match.",

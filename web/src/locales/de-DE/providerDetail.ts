@@ -453,7 +453,7 @@ export default {
     fieldBaseUrl: "Base URL",
     fieldProtocol: "Protokoll",
     protocolHint: "Wire-Format für die Kommunikation mit dem Upstream. Bei Adaptiv wird pro Anfrage das empfohlene Protokoll der Modellfamilie ermittelt; ist es nicht freigegeben, gilt das Basisprotokoll.",
-    protocolAdaptiveNeedsAllowed: "Ohne deklarierte Liste freigegebener Protokolle verhält sich Adaptiv exakt wie OpenAI Completions (wie vor dieser Option).",
+    protocolAdaptiveNeedsAllowed: "Noch keine freigegebenen Protokolle deklariert: Adaptiv verhält sich wie OpenAI Completions. Läuft der Anbieter derzeit nicht auf diesem Protokoll, ändert das Speichern sein Verhalten — bitte zuerst die Protokolle deklarieren.",
     optionProtocolAdaptive: "Adaptiv (modellspezifisch nativ)",
     fieldAdaptiveAllowed: "Freigegebene Protokolle (adaptiv)",
     adaptiveAllowedHint: "Deklarieren Sie die Protokolle, die dieser Anbieter tatsächlich unterstützt. Der erste Eintrag ist das Basisprotokoll für Modelle ohne Familienzuordnung.",

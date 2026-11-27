@@ -452,7 +452,7 @@ export default {
     fieldBaseUrl: "Base URL",
     fieldProtocol: "協定",
     protocolHint: "依協定決定與上游通訊的線格式。選「自適應」時，每次請求依其模型解析原廠推薦協定（推薦協定不在清單內則用基協定）。",
-    protocolAdaptiveNeedsAllowed: "尚未宣告可用協定清單時，自適應等價於 OpenAI Completions（與啟用前行為一致）。",
+    protocolAdaptiveNeedsAllowed: "尚未宣告可用協定：此時自適應等同 OpenAI Completions。若本供應商目前不是該協定，儲存後行為會隨之改變——請先宣告可用協定再切換。",
     optionProtocolAdaptive: "自適應（依模型選原廠協定）",
     fieldAdaptiveAllowed: "自適應可用協定",
     adaptiveAllowedHint: "宣告這家供應商實際支援的協定集合。清單首項是基協定，用於無家族命中的模型。",

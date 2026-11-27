@@ -448,7 +448,7 @@ async function runHealthCheck() {
               <option value="adaptive">{{ ps('optionProtocolAdaptive') }}</option>
             </select>
             <div class="form-hint">{{ ps('protocolHint') }}</div>
-            <div v-if="editProtocol === 'adaptive'" class="form-hint">
+            <div v-if="editProtocol === 'adaptive' && adaptiveAllowed === null" class="form-hint">
               {{ ps('protocolAdaptiveNeedsAllowed') }}
             </div>
           </div>

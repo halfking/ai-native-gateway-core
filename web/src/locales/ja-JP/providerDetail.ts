@@ -453,7 +453,7 @@ export default {
     fieldBaseUrl: "Base URL",
     fieldProtocol: "プロトコル",
     protocolHint: "上流との通信に使うワイヤーフォーマット。アダプティブではリクエストごとにモデル系列の推奨プロトコルを解決し、許可リストに無ければ基本プロトコルを使います。",
-    protocolAdaptiveNeedsAllowed: "許可プロトコルの宣言が無い場合、アダプティブは OpenAI Completions と同じ動作になります（導入前と同一）。",
+    protocolAdaptiveNeedsAllowed: "許可プロトコルが未宣言です。この状態ではアダプティブは OpenAI Completions と同じ動作になります。現在このプロトコルでない場合、保存すると挙動が変わります。先に許可プロトコルを宣言してください。",
     optionProtocolAdaptive: "アダプティブ（モデル別ネイティブ）",
     fieldAdaptiveAllowed: "アダプティブ許可プロトコル",
     adaptiveAllowedHint: "このプロバイダが実際に提供するプロトコルを宣言します。先頭が基本プロトコルで、系列が一致しないモデルに使われます。",
