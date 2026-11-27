@@ -133,7 +133,7 @@ func recordUpdateStatements(t *testing.T, entry *RequestLogEntry) []string {
 
 	mockDB.ExpectBegin()
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs(anyArgs(5)...).
+		WithArgs(anyArgs(9)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectCommit()
 

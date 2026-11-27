@@ -37,7 +37,7 @@ func TestUpdateRequestLog_TerminalPathEmitsIdempotentOpened(t *testing.T) {
 	mockDB.ExpectBegin()
 	// 无 token 用量 ⇒ latency-only 的 usage_ledger UPDATE 分支（5 参）。
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-opened-terminal", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-opened-terminal", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// opened 先于 completed：event_type 实参钉死为 session.opened.v1。
 	mockDB.ExpectExec(`INSERT INTO outbox_events[\s\S]*ON CONFLICT \(event_id\) DO NOTHING`).
@@ -82,7 +82,7 @@ func TestUpdateRequestLog_NonTerminalOrNoWriterDoesNotTouchOutbox(t *testing.T) 
 
 	mockDB.ExpectBegin()
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-no-writer", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-no-writer", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectCommit()
 

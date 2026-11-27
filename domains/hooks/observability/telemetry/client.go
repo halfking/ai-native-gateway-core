@@ -1699,6 +1699,15 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// internal/sessionv2mirror/abandoned_turn.go 里，且打标本身只可能发生在
 	// 终态路径上——不需要第二个函数来复述这件事。
 
+	// The initial ledger row can name the provisional candidate. Use the
+	// actual provider, credential and model from the terminal success.
+	var servingProviderID, servingCredentialID, servingCanonicalID *int
+	var servingOutboundModel *string
+	if entry.Success && requestLogEntryTerminal(entry) && intValue(entry.ProviderID) > 0 {
+		servingProviderID, servingCredentialID, servingCanonicalID = entry.ProviderID, entry.CredentialID, entry.CanonicalID
+		servingOutboundModel = firstString(entry.OutboundModel, entry.ClientModel)
+	}
+
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
 		// operations require heap storage with row-level UPDATE support.
@@ -1714,7 +1723,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			       cost_usd = COALESCE($7, cost_usd),
 			       latency_ms = COALESCE($8, latency_ms),
 			       success = COALESCE($9, success),
-			       error_kind = COALESCE($10, error_kind)
+			       error_kind = COALESCE($10, error_kind),
+			       provider_id = COALESCE($11, provider_id),
+			       credential_id = COALESCE($12, credential_id),
+			       canonical_id = COALESCE($13, canonical_id),
+			       raw_model_name = COALESCE($14, raw_model_name)
 			 WHERE request_id = $1
 		`,
 			entry.RequestID,
@@ -1727,6 +1740,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			entry.LatencyMs,
 			boolptr(entry.Success),
 			entry.ErrorKind,
+			servingProviderID, servingCredentialID, servingCanonicalID, servingOutboundModel,
 		)
 		if err != nil {
 			return err
@@ -1738,7 +1752,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			   SET latency_ms = COALESCE($2, latency_ms),
 			       success = COALESCE($3, success),
 			       error_kind = COALESCE($4, error_kind),
-			       cost_usd = COALESCE($5, cost_usd)
+			       cost_usd = COALESCE($5, cost_usd),
+			       provider_id = COALESCE($6, provider_id),
+			       credential_id = COALESCE($7, credential_id),
+			       canonical_id = COALESCE($8, canonical_id),
+			       raw_model_name = COALESCE($9, raw_model_name)
 			 WHERE request_id = $1
 		`,
 			entry.RequestID,
@@ -1746,6 +1764,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			boolptr(entry.Success),
 			entry.ErrorKind,
 			entry.CostUSD,
+			servingProviderID, servingCredentialID, servingCanonicalID, servingOutboundModel,
 		)
 		if err != nil {
 			return err

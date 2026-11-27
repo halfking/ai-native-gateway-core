@@ -59,7 +59,7 @@ func TestCorrectEstimatedUsage_RetiredWithV1UsageSource(t *testing.T) {
 	// ── 正向对照：同一个录制器必须抓得到语句 ──
 	mock.ExpectBegin()
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs(anyArgs(5)...).
+		WithArgs(anyArgs(9)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 	require.NoError(t, client.updateRequestLog(&RequestLogEntry{
@@ -108,7 +108,7 @@ func TestCorrectEstimatedUsage_NeverReportsACorrection(t *testing.T) {
 			// 正向对照：录制器必须抓得到语句。
 			mock.ExpectBegin()
 			mock.ExpectExec(`UPDATE usage_ledger_hot`).
-				WithArgs(anyArgs(5)...).
+				WithArgs(anyArgs(9)...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			mock.ExpectCommit()
 			require.NoError(t, client.updateRequestLog(&RequestLogEntry{
@@ -153,7 +153,7 @@ func TestCorrectEstimatedUsage_SkipsWhenNoRealUsage(t *testing.T) {
 // `COALESCE($n, <该列自己>)`——写成 `col = $n` 就是「用 NULL 覆盖旧值」的
 // 回归（而且它不会报错，只会静默丢数）。
 //
-// 正向对照：正则必须真的匹配到生产 SQL 里的 9 个 SET 列——否则「全部匹配」
+// 正向对照：正则必须真的匹配到两个生产 SQL 变体的 21 个 SET 列——否则「全部匹配」
 // 可能只是「什么也没匹配到」。
 func TestUpdateRequestLog_NeverOverwritesStoredUsageWithNull(t *testing.T) {
 	src, err := os.ReadFile("client.go")
@@ -193,8 +193,8 @@ func TestUpdateRequestLog_NeverOverwritesStoredUsageWithNull(t *testing.T) {
 			totalChecked++
 		}
 	}
-	require.GreaterOrEqual(t, totalChecked, 9,
-		"正向对照失效：应当至少核对到 9 个 SET 列（10 参变体 9 列 + 5 参变体 4 列），实际 %d", totalChecked)
+	require.GreaterOrEqual(t, totalChecked, 21,
+		"正向对照失效：应当至少核对到 21 个 SET 列（14 参变体 13 列 + 9 参变体 8 列），实际 %d", totalChecked)
 }
 
 // setColumnNames 解析 UPDATE 的 SET 段，返回被赋值的列名（按出现顺序）。
