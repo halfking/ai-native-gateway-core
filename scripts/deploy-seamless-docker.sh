@@ -479,8 +479,12 @@ while [[ $# -gt 0 ]]; do
     # ★ 双活副节点生命周期（2026-11-27 多节点轮）：起/停在役主槽之外的
     #   第二个流量节点（traffic-only）。两个模式在远端引擎里独立分派，
     #   与常规蓝绿部署互斥（见各自实现段的守卫）。
-    --start-secondary) MODE=start-secondary; shift ;;
-    --stop-secondary)  MODE=stop-secondary;  shift ;;
+    # ★ 2026-11-27 真机修正：必须进 DD_ARGS。--via 非 deploy 模式只把
+    #   DD_ARGS 转发到目标机（:632 bash '$_dd_tmp' ${_dd_args}）；只设 MODE
+    #   不进 DD_ARGS ⇒ 远端引擎以默认 MODE=deploy 启动 ⇒ 同步树无 .git ⇒
+    #   撞 DD_BUILD_SHA 身份门 die（--start-secondary 实测三次 FATAL 的根因）。
+    --start-secondary) MODE=start-secondary; DD_ARGS+=(--start-secondary); shift ;;
+    --stop-secondary)  MODE=stop-secondary;  DD_ARGS+=(--stop-secondary);  shift ;;
     --redis-db)   FORCE_REDIS_DB="${2:?--redis-db N}"; DD_ARGS+=(--redis-db "$FORCE_REDIS_DB"); shift 2 ;;
     --via)        VIA="${2:?--via HOST}"; shift 2 ;;
     # ★ --force **不转发**给远端（它是**部署机侧**的本地锁恢复，不是远端动作）。
