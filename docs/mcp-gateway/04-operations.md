@@ -160,3 +160,73 @@ export MCP_GATEWAY_ADMIN_TOKEN="***"
 ★ 给**业务 key**用的统计出口是 `GET /mcp/control/stats`（需 `mcp.analyze`），
   返回 MCP 网关自己的指标族快照（JSON）；全局 `/metrics` 仍是 Prometheus 抓取面
   （运维网络域，不在 key 的 scope 体系内）。
+
+## 8. registry 联邦（memora）（2026-11-27 W2/W3，ADR 2026-11-27-mcp-gateway-memora-federation.md）
+
+网关周期拉取 memora registry（`GET /api/v2/mcp/servers` 租户级口径）映射为适配器：
+**registry = 目录真源，网关 Store = 运行时+治理真源**。同步失败退避（30s→300s）沿用快照，
+目录联邦故障不影响数据面。`Manual=true` 的适配器只同步骨架字段（Endpoint/Enabled），
+治理字段（限流/敏感度/审批）不被覆盖；registry 侧删除/停用 ⇒ 网关侧软删保位。
+
+### 8.1 装配矩阵（env 七键，默认全关 fail-closed）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `MCP_GATEWAY_REGISTRY_SYNC_ENABLED` | false | 联邦总开关；不配=行为与引入前完全一致 |
+| `MCP_GATEWAY_REGISTRY_URL` | 空 | memora 基址（如 `http://memora-server:8080`） |
+| `MCP_GATEWAY_REGISTRY_TOKEN` | 空 | 调 registry API 的 service JWT |
+| `MCP_GATEWAY_REGISTRY_INTERVAL_SECONDS` | 60 | 轮询间隔 |
+| `MCP_GATEWAY_REGISTRY_JWT_SECRET` | 空 | 出站 service JWT 签名密钥（= memora `JWT_SECRET` 同值，ADR R1） |
+| `MCP_GATEWAY_REGISTRY_JWT_ISSUER` | **memora** | 出站 iss。★必须= memora `MEMORA_V2_JWT_ISSUER`（见 8.3） |
+| `MCP_GATEWAY_REGISTRY_JWT_AUDIENCE` | 空（必填） | 出站 aud= memora `MEMORA_V2_JWT_AUDIENCE`（生产 `memora-api`）；配了 SECRET 不配 AUDIENCE 启动报错 |
+
+★ 开了 SYNC_ENABLED 但 URL/TOKEN 为空 ⇒ 启动报错（fail-closed）。
+
+### 8.2 出站凭据（auth_mode=llm_gateway）
+
+registry 条目 `auth_mode=llm_gateway` ⇒ 网关对上游动态签 5min service JWT
+（claims: iss/aud/sub=llm-gateway-mcp/tenant_id=调用方租户/scope=只读 7 域逐字锁定），
+并透传 `X-MCP-Gateway-Key-ID` / `X-MCP-On-Behalf-Of` / `X-MCP-Call-ID`（对账键，
+网关审计 `request_id` 字段同源）。`memory.write` 默认不可达：只有 key 显式携带
+`mcp.write`（admin 不隐含）+ 工具/适配器非 high + 非审批工具才扩入。
+
+### 8.3 ★ 双 verifier 实证（W3 E2E 定谳，2026-11-27）
+
+memora 两个面的入站校验**不同**：
+
+| memora 面 | verifier | iss 匹配 |
+|---|---|---|
+| `/api/v2/*`（含 registry API） | `MultiIssuerV2Auth`：primary 失败后回退 `IDENTITY_SHARED_SECRET` + issuer allowlist | allowlist 里的 iss 都能过 |
+| MCP 面（`:9002/mcp`） | 只用 primary `ServiceJWTVerifier` | iss **精确匹配** `MEMORA_V2_JWT_ISSUER` |
+
+⇒ 网关出站 iss **必须**配 `memora`（生产值）。用「allowlist 里随便挑一个 iss」
+的 token 打 registry API 能过、打 MCP 面 401——E2E 对照实证，这也是网关默认 iss
+从 `llm-gateway-mcp` 改 `memora` 的依据。
+
+### 8.4 go-sdk 上游协议形状（W3 E2E 实证）
+
+网关出站请求必须携带（`injectProtocolMeta` 统一处理）：
+- JSON-RPC `id`（无 id 按 notification 被拒：`missing id`）；
+- `params._meta["io.modelcontextprotocol/protocolVersion"]`；
+- `params._meta["io.modelcontextprotocol/clientCapabilities"]`（空对象即合法）。
+- endpoint 兼容两种注册形态：末段已是 `mcp` 原样用；基址仍补 `/mcp`。
+
+### 8.5 指标与看板
+
+| 族 | 说明 |
+|---|---|
+| `mcp_gateway_registry_sync_total{outcome}` | 逐条处置：ok / disabled / skip_stdio / skip_auth_ref |
+| `mcp_gateway_registry_sync_errors_total` | 整轮失败（fetch/落 Store） |
+| `mcp_gateway_registry_snapshot_entries` | 最近成功快照条数（gauge） |
+
+看板 `/mcp/admin` 「registry 联邦（memora）」区：快照数/上次同步/最近错误 +
+逐条目（处置+跳过原因/凭据解析态/映射适配器）。控制面只读两端点：
+`GET /mcp/control/registry/status`、`GET /mcp/control/registry/servers`（需 `mcp.analyze`）。
+
+### 8.6 跳过规则
+
+| registry 条目 | 网关侧处置 |
+|---|---|
+| `transport=stdio` | 跳过（网关不代理 stdio），看板标原因 |
+| `auth_mode=api_key_ref` | 跳过并登记缺口（ADR R3：ref 解析属部署面），看板标 `credential=unresolved` |
+| `enabled=false` | 软删保位（Adapter disabled，审计/bindings 不断） |
