@@ -42,6 +42,10 @@
 #   bash scripts/deploy-211.sh --dry-run       # 打印目标合同 JSON
 #   bash scripts/deploy-211.sh --force         # 转交引擎：目标机锁恢复（陈旧锁判定后抢回；引擎 deploy_lib lock_recover_remote）
 #
+#   部署凭据：DD_ADMIN_PASSWORD 自动从 ${HOME}/.llm-gateway-211.env 装载
+#   （见下方 _dd_load_admin_credentials；DD_ADMIN_CREDENTIALS_FILE 可指他处；
+#   调用方显式 export 优先，值不回显也不入仓）。
+#
 # ── 双通道 ssh（2026-11-12 内外网双位置轮）──────────────────────────────
 #   211 有两条 ssh 通道（~/.ssh/config）：
 #     · 内网/路由  211      → 192.168.31.211（31 网段直连；从外网/其他网段走
@@ -138,6 +142,42 @@ export DD_HOST="${DD_HOST:-192.168.31.211}"
 # stale inherited value so unrelated shell configuration cannot block a key-only
 # deployment or leak into child processes.
 unset SSHPASS
+
+# ── 部署凭据自动装载（2026-11-27）────────────────────────────────────
+#   830af07c42 把候选槽 V2 日对账验收设为 cutover 硬门后，没有
+#   DD_ADMIN_PASSWORD ⇒ 验收段登录 stdin 为空 ⇒ 部署失败自动回滚
+#   （2026-11-27 第三次部署实测）。本块从操作员本机的私有凭据文件自动
+#   装载，让 `bash scripts/deploy-211.sh` 无需每次手工前缀。
+#   · 文件：${HOME}/.llm-gateway-211.env（DD_ADMIN_CREDENTIALS_FILE 可覆盖）
+#   · 形状：KEY=value 每行一条，# 注释；**绝不 source**——值里出现 shell
+#     元字符（如口令中的 &）时 source 会截断值并把余段当命令执行
+#     （deploy-local-lib.sh dl_load_env_file:1021 记录的 2026-09-07 §5.5
+#     事故）；这里用同款逐行 `export "KEY=value"`：bash 把该词按赋值
+#     处理，元字符只是字面量。
+#   · 优先级：调用方已设置（非空）的键**不覆盖**——显式传递保持权威
+#     （与 dl_load_project_env 的 caller-provided-wins 同语义）。
+#   · 文件缺失或无键 ⇒ 静默跳过，行为与改动前逐字一致；值永不回显，
+#     装载成功只报键数；键名必须匹配 [A-Za-z_][A-Za-z0-9_]*。
+_dd_load_admin_credentials() {
+  local file="${DD_ADMIN_CREDENTIALS_FILE:-${HOME}/.llm-gateway-211.env}"
+  [[ -f "$file" ]] || return 0
+  local line key imported=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if [[ -z "${!key:-}" ]]; then
+      export "$line"
+      imported=$((imported + 1))
+    fi
+  done < "$file"
+  if (( imported > 0 )); then
+    echo "[deploy-211] 已从 ${file} 装载部署凭据 ${imported} 项（值不回显；调用方已设置的键未覆盖）" >&2
+  fi
+}
+_dd_load_admin_credentials
+unset -f _dd_load_admin_credentials
 
 # scripts/deploy-lib is a repo-relative symlink that dangles in temporary
 # worktrees (/private/tmp/lgw-merge-*); resolve the SSOT robustly instead of
