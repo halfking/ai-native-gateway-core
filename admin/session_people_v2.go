@@ -22,9 +22,22 @@ func (h *Handler) handleSessionPeopleV2(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	q := r.URL.Query()
+	// ★ 2026-11-27 非管理员菜单重构轮：user 档 scope.owner 恒非空（本人
+	//   username）⇒ 面板查询按 owner 收窄（people SQL $5，rank_peers=false）；
+	//   PathValue("owner") 只在 detail/projects/tasks 段有值，ranking 段为空
+	//   ⇒ 不能覆盖 user 档注入的本人 username（三段 detail 页面 user 档
+	//   从排行点击进入 ⇒ owner 即本人，两者同值）。
+	// owner 取值：user 档 scope.owner 恒非空（本人 username，面板收窄到自己
+	//   且 detail 三段直达别人的 URL 对 user 无意义 ⇒ 恒盖掉 PathValue）；
+	//   管理员档 scope.owner 恒空 ⇒ 保留 PathValue("owner")（detail/projects/
+	//   tasks 段从排行点击进入，owner 即目标人；ranking/overview 段为空）。
+	windowOwner := scope.owner
+	if windowOwner == "" {
+		windowOwner = r.PathValue("owner")
+	}
 	window := metrics.SessionPeopleQuery{
 		Start: scope.start, End: scope.end, PreviousStart: scope.start, Tenant: scope.tenant,
-		Owner: r.PathValue("owner"), Timezone: settings.SystemTimezoneName(),
+		Owner: windowOwner, Timezone: settings.SystemTimezoneName(),
 		Section: section, SortBy: q.Get("sort_by"), Order: q.Get("order"),
 		Limit: queryInt(r, "limit", 50), Offset: queryInt(r, "offset", 0),
 	}

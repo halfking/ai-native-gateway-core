@@ -60,7 +60,11 @@ func TestE2ECgroupHardLimits(t *testing.T) {
 	requireLinuxCgroupWrite(t)
 
 	plugins, path := fixture(t) // two real helper-process plugins, bundle 无限制
-	// 128M / 25% / 3：值足够小便于精确断言（§4.2 验收值）。
+	// 128M / 25% / 64：memory/cpu 用小值便于精确断言（§4.2 验收值）；
+	// max_processes 取 64——裸金属多核宿主上 CGO Go 进程 runtime 启动即需
+	// 多线程（GOMAXPROCS=核数），pids.max=3 会在 pthread_create 直接 SIGABRT
+	// （211 PVE 宿主 32 核实测撞死；容器虚拟化层线程少侥幸通过）。断言跟随
+	// 声明值，不硬编码 3。
 	limits := `
   resource_limits_enabled: true
   default_resource_limits:
@@ -68,7 +72,7 @@ func TestE2ECgroupHardLimits(t *testing.T) {
       limit: "128M"
     cpu:
       limit: "25%"
-    max_processes: 3
+    max_processes: 64
 `
 	data := "server:\n  host: localhost\n  port: 8080\nplugins:\n  directory: " + `"` + plugins + `"` + "\n  enabled: [one, two]\n" + limits
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
@@ -117,9 +121,10 @@ func TestE2ECgroupHardLimits(t *testing.T) {
 				t.Errorf("cpu.max = %q, want %q", got, "25000 100000")
 			}
 
-			// 4) pids.max = 3
-			if got := readCgroupFile(t, filepath.Join(cgDir, "pids.max")); got != "3" {
-				t.Errorf("pids.max = %q, want 3", got)
+			// 4) pids.max = 64（声明值；fixtures 上文注释——CGO Go 进程需要
+			//    线程配额，不能压到 3）
+			if got := readCgroupFile(t, filepath.Join(cgDir, "pids.max")); got != "64" {
+				t.Errorf("pids.max = %q, want 64", got)
 			}
 
 			// 5) 进程已归组：cgroup.procs 非空（插件进程或其线程已被收编）。

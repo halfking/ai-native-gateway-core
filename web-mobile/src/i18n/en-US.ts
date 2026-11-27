@@ -31,7 +31,7 @@ export const enUS = {
       modelsRouting: 'Providers & Models',
       tenantUsers: 'Keys & Users',
       requestsSessions: 'Requests & Sessions',
-      dataOps: 'Data Operations',
+      dataOps: 'System Settings',
     },
     sanitizeRules: 'Sanitize rules',
     maasRates: 'MaaS credit rates',

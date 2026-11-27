@@ -4,7 +4,7 @@
 
 - **创建日期**: 2026-11-27
 - **版本**: v1.4
-- **状态**: 阶段 1 已实施并通过审计（§3.5/§3.6）；§5.3 监控埋点已落地（§3.7）；Linux cgroup 硬限制 e2e 容器真机 PASS + 3 缺陷修复（§3.8）；OOM-kill 断言待裸金属补验；§8.2 性能基线全达标（§3.9）；§5.1 灰度链路已实机闭环（v1.6，清单步 1-3 全通 + collector 接线缺陷修复），24h 水位观察待长驻环境（§5.1）
+- **状态**: 阶段 1 已实施并通过审计（§3.5/§3.6）；§5.3 监控埋点已落地（§3.7）；**§8.1 功能验收完整闭环**——Linux 容器 + 裸金属（211 PVE 宿主）双环境 e2e 全 PASS 含 oom_kill≥1（§3.8）；§8.2 性能基线全达标（§3.9，容器+裸金属双基线）；§5.1 灰度链路实机闭环（v1.6，清单步 1-3 全通 + collector 接线缺陷修复），24h 水位观察待长驻环境（§5.1）
 - **优先级**: P0
 - **相关审计**: [插件化框架审计报告 2026-11-26](../../audit/llm-gateway-plugin-framework-audit-2026-11-26.html)
 
@@ -459,7 +459,7 @@ Linux 环境（Docker Desktop VM 内 linux/arm64 + cgroup v2 容器，`--cgroupn
 **验收结论**（§8.1 功能验收，硬限制部分）：
 
 - ✅ `TestE2ECgroupHardLimits` 完整 PASS（多次运行收敛后）：controller 扫描→真实插件进程→**memory.max=134217728（128M）**、**memory.high=120795136（90% 软限，内核 page 4K 对齐）**、**memory.swap.max=0（默认禁 swap）**、**cpu.max=25000 100000（25%）**、**pids.max=3**、cgroup.procs 归组、memory.events 可读、停止后 cgroup 清理
-- ⚠️ `TestE2ECgroupOOMKill`：**限制执行通道已证实**（8MB 限制下 64MB 分配被内核拦停，`memory.events max` 事件 300+ 次、memory.current 被压回限额），但 `oom_kill ≥ 1` 的最终断言在 Docker Desktop 虚拟化层无法触发——该层委派的 memory 控制器让进程在 ENOMEM 上自行退出而非内核 OOM kill。**裸金属 Linux 主机补验 §8.1 OOM 行为仍是开放项**（`sudo go test ./plugin-runtime/controller/ -run TestE2ECgroup -v`）
+- ✅ `TestE2ECgroupOOMKill`：**2026-11-28 已在裸金属 Linux 宿主（211，PVE 32 核 64GB）闭环**——`oom_kill count = 1`，内核 OOM killer 在 8MB memory.max 下击杀 64MB 分配进程，§8.1 OOM 行为验收**完成**。此前 Docker Desktop 虚拟化层无法触发的原因是该层 memory 委派让进程 ENOMEM 自退而非内核 kill（虚拟化 artifact，非产品缺陷）。复现命令：真实 git 仓库内 `sudo go test ./plugin-runtime/controller/ -run TestE2ECgroup -v`（⚠️ 必须是完整 git clone——部分测试需 git 解析仓根，tar 解包会红）
 - 附注：测试内 helper 进程拉起（`go test -test.run` 自 exec 模式）在 Rosetta 转译下偶发 readiness 超时（模拟层开销，非产品代码问题）——重试收敛即可；裸金属无此噪音
 
 **测试增量**：e2e 两项（Linux only）；`scripts/test-resource-limits.sh` 在容器内实跑通过（单元/集成 + 硬限制 e2e + 指标冒烟全绿）。
@@ -476,6 +476,18 @@ Linux 环境（Docker Desktop VM 内 linux/arm64 + cgroup v2 容器，`--cgroupn
 | `readCgroupUint` 单文件读回（§5.3 采样，5s/次×每插件） | **7µs** | —（macOS 无 cgroup） | 监控 CPU <1% | ✅ 占空比 0.14%，可忽略 |
 | `Supervisor.Start` 带 limits 净开销（对照不带） | — | **+1.8µs**（3.6µs vs 1.8µs，fake 进程） | 插件启动增加 <50ms | ✅ |
 | 网关启动影响 | — | 零——limiter 按插件懒创建，无启动期集中成本 | Gateway 启动增加 <100ms | ✅ |
+
+**裸金属基线（2026-11-28，211 PVE 宿主 linux/amd64 32 核 64GB，真实 git 仓库）**：
+
+| 基准 | 裸金属 | 对照（容器） | 备注 |
+|------|--------|------------|------|
+| `NewResourceLimiter` | 207µs | 67µs | 裸金属含真实 cgroupfs 慢路径（内核 cgroup 委派），仍在 <50ms 预算内 240× |
+| `Apply`（五文件写） | 82µs | 25µs | 同上；每次插件启动一次，可忽略 |
+| limiter 常驻内存 | 7.1KB | 3.3KB | <10MB 预算内 |
+| `readCgroupUint` | 20µs | 7µs | 5s 周期占空比 0.4%，可忽略 |
+| `Supervisor.Start` 带/不带 | 272µs vs 3.5µs（真实 exec 全链路） | — | 净开销 <300µs，远低于 50ms |
+
+裸金属数据略高于容器（cgroupfs 真实内核路径 vs 虚拟化缓存），全部仍满足 §8.2 验收线。**§8.2 四项验收线在两类 Linux 环境均达标。**
 
 **采集过程中发现并修复 1 个缺陷**：`applyCgroupLimits(nil)` 在 cgroup 模式写 `cmd.SysProcAttr` 时 nil 解引用 panic（benchmark 传入 nil 暴露；生产路径 Supervisor 始终传非 nil，但 Apply 作为公开 API 需 nil 安全）——nil 时以空 `exec.Cmd` 注入，限制文件写入照常执行。
 
@@ -915,3 +927,4 @@ plugins:
 | v1.4 | 2026-11-27 | 插件化框架审计工作组 | Linux 真机 e2e 首轮执行（Docker Desktop VM cgroup v2）：发现并修复 3 个真机缺陷（subtree_control 未启用 / Stop 顺序颠倒致 rmdir EBUSY / RemoveAll 清不掉 cgroupfs）；硬限制验收完整 PASS；OOM-kill 断言受限虚拟化层待裸金属补验；§3.8 执行记录 |
 | v1.5 | 2026-11-27 | 插件化框架审计工作组 | §8.2 性能基线采集全达标（构造 67µs/Apply 25µs/足迹 3.3KB/读回 7µs，余量 3 个数量级）；顺手修 Apply(nil) panic；§5.1 灰度物料模板入库；§3.9 基线表 |
 | v1.6 | 2026-11-28 | 插件化框架审计工作组 | §5.1 灰度链路实机闭环：真实 gateway + canary 插件 + 灰度块在 Linux 容器全通（清单步 1-3，7 序列上线）；发现并修复 v1.3 collector 只挂 legacy 分支、生产 controller 路径恒缺序列的接线缺陷；scripts/canary-run.sh + cmd/canary-plugin 入库 |
+| v1.7 | 2026-11-28 | 插件化框架审计工作组 | **§8.1 验收完整闭环（裸金属）**：211 PVE 宿主（32 核 64GB cgroup v2）实跑全套验收 6/6 绿——`TestE2ECgroupOOMKill` `oom_kill count = 1`（内核 OOM killer 确认），HardLimits PASS，-race 全绿；发现并修复 e2e fixture 缺陷：pids.max=3 在多核裸金属上让 CGO Go helper pthread_create SIGABRT（裸金属 GOMAXPROCS=核数），改 64；§3.9 补裸金属基线 |

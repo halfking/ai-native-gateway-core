@@ -33,7 +33,7 @@ export const zhCN = {
       modelsRouting: '供应商与模型',
       tenantUsers: '密钥与用户',
       requestsSessions: '请求与会话',
-      dataOps: '数据运维',
+      dataOps: '系统设置',
     },
     sanitizeRules: '脱敏规则',
     maasRates: 'MaaS 积分价',
