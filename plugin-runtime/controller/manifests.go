@@ -166,10 +166,22 @@ func (c *Controller) snapshot(m *root.Manifest) (*root.Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !sameManifest(m, frozen) {
+	// scan() 会把 gateway.yaml 的 default_resource_limits 合并进内存态
+	// Manifest（资源限制是网关的装配决定，不属于插件 bundle），磁盘上的
+	// frozen 自然没有这一字段——比对前把内存版默认值剥离；磁盘版若自带
+	// resource_limits（manifest 显式声明）则保留，仍参与比对。
+	merged := copyManifest(m)
+	if merged.ResourceLimits != nil && frozen.ResourceLimits == nil {
+		merged.ResourceLimits = nil
+	}
+	if !sameManifest(merged, frozen) {
 		return nil, fmt.Errorf("plugin %s changed while snapshotting", m.PluginID)
 	}
 	frozen.Runtime.Entrypoint = filepath.Join(dir, frozen.Runtime.Entrypoint)
+	// 快照钉住的是 bundle 文件；默认限制源自网关配置（§3.4），回填到
+	// frozen 让 sup.Start 照常创建 limiter。指针共享安全：scan 每轮新建
+	// ResourceLimits，此后只读。
+	frozen.ResourceLimits = m.ResourceLimits
 	failed = false
 	return frozen, nil
 }

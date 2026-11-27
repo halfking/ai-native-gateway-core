@@ -182,6 +182,11 @@ func (r *ResourceLimiter) writeCgroup(file, value string) error {
 
 // AssignProcess assigns a running process to the cgroup (Linux) or starts monitoring (macOS).
 func (r *ResourceLimiter) AssignProcess(pid int) error {
+	if pid <= 0 {
+		// 进程未真正拉起（测试 fake / 启动半途失败）时没有可分配的对象：
+		// cgroup 模式写 0 会被内核拒绝，monitor 模式会对 pid 0 空转轮询。
+		return fmt.Errorf("invalid pid %d", pid)
+	}
 	switch r.mode {
 	case ModeCgroup:
 		if r.cgroupPath == "" {

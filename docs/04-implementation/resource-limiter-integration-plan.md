@@ -3,8 +3,8 @@
 ## 文档信息
 
 - **创建日期**: 2026-11-27
-- **版本**: v1.1
-- **状态**: 阶段 1 已实施（2026-11-27，见 §3.5 落地记录）
+- **版本**: v1.2
+- **状态**: 阶段 1 已实施并通过审计（2026-11-27，见 §3.5/§3.6）
 - **优先级**: P0
 - **相关审计**: [插件化框架审计报告 2026-11-26](../../audit/llm-gateway-plugin-framework-audit-2026-11-26.html)
 
@@ -420,6 +420,17 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 **验证**：`go build ./...` 全仓通过；`go vet` plugin-runtime 全树干净；limiter 7/7、根包全量（含新增 5 项）、config 4 项新增、controller 全量（含新增 5 项）全部 PASS；`cmd/gateway` 构建通过；vendor 已刷新。
 
 **遗留到验收阶段**（§8）：Linux cgroup 硬限制与 OOM 行为需 Linux 环境实测（本机 macOS 仅监控模式）；§8.2 性能指标与 §5.1 灰度推进未开始。
+
+### 3.6 审计与修复记录（2026-11-27，阶段 1 交付后审计）
+
+对阶段 1 交付做全链路审计，发现并修复 2 个问题：
+
+| 级别 | 问题 | 修复 |
+|------|------|------|
+| P0 | `controller.snapshot()` 丢失 `scan()` 合并的默认限制：内存态 Manifest 带 `resource_limits` 而磁盘 bundle 没有，`sameManifest` JSON 比对误判「manifest 在快照期间被改变」⇒ **配置默认限制后全部插件拒启**。首日 controller 测试只覆盖了 `scan()` 单点，未覆盖 scan→snapshot→start 全链路 | `snapshot()` 比对前剥离内存版默认限制（磁盘版 manifest 自带声明仍参与比对，bundle 完整性不放松）；frozen 回填 `m.ResourceLimits` 让 sup.Start 照常建 limiter。新增端到端回归测试 `TestControllerStartsWithDefaultResourceLimits`（真实进程 ready + LimiterOf 断言）与 `TestSnapshotKeepsManifestDeclaredLimitsInComparison` |
+| P1 | `limiter.AssignProcess` 未防御 pid≤0：fake command（`Pid()=0`）会进 monitor 轮询空转 | 入口拒绝 pid≤0（`TestAssignProcessRejectsInvalidPid`） |
+
+审计确认无问题的点：`Manifest.ResourceLimits` 在严格 schema（v3 DisallowUnknownFields）下合法解析；`cloneManifestMap` 浅拷贝 + scan 每轮新建 ResourceLimits 使指针共享无变异风险；Upgrade/Restart 回滚路径的 limiter 清理时序正确。
 
 ---
 
@@ -841,3 +852,4 @@ plugins:
 |------|------|------|------|
 | v1.0 | 2026-11-27 | 插件化框架审计工作组 | 初始版本 |
 | v1.1 | 2026-11-27 | 插件化框架审计工作组 | 阶段 1 实施完成（main: 3b7f6be54 + 6a0a434e7）：limiter 包/Manifest 扩展/Supervisor 四路径接线/config 默认限制 + 总开关/controller 装配；新增测试 21 项全绿；§3.5 落地记录 |
+| v1.2 | 2026-11-27 | 插件化框架审计工作组 | 交付后审计：修复 P0（snapshot 丢默认限制致插件拒启）与 P1（AssignProcess pid≤0 空转）；新增 3 项回归测试；§3.6 审计记录 |
