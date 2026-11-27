@@ -34,6 +34,9 @@ type jsonrpcResponse struct {
 // UpstreamClient 负责把 JSON-RPC 请求转发到上游 MCP 适配器。
 type UpstreamClient struct {
 	http *http.Client
+	// jwtIssuer 为 auth_mode=llm_gateway 的适配器签发出站 service JWT
+	// （ADR 2026-11-27 §4 D2a）。nil ⇒ 该模式不可用（装配时必须显式给）。
+	jwtIssuer *ServiceJWTIssuer
 }
 
 // NewUpstreamClient 构造上游客户端。timeout 为单次请求超时上限。
@@ -44,6 +47,11 @@ func NewUpstreamClient(timeout time.Duration) *UpstreamClient {
 	return &UpstreamClient{
 		http: &http.Client{Timeout: timeout},
 	}
+}
+
+// SetServiceJWTIssuer 注入 llm_gateway 模式的出站签发器（装配面调用）。
+func (c *UpstreamClient) SetServiceJWTIssuer(i *ServiceJWTIssuer) {
+	c.jwtIssuer = i
 }
 
 // CallContext 是一次上游调用的上下文参数。
@@ -66,6 +74,14 @@ type CallContext struct {
 	Timeout time.Duration
 	// Retries 重试次数（仅对幂等方法有意义）。
 	Retries int
+	// WriteGranted 调用方 key 具备显式 write 授权（仅 llm_gateway 模式消费：
+	// true 才在出站 service JWT scope 里扩入 memory.write；ADR §4 默认不可达）。
+	WriteGranted bool
+	// KeyID 调用方 mcp key 的 ID（llm_gateway 模式透传 X-MCP-Gateway-Key-ID 归因）。
+	KeyID string
+	// CallID 网关侧调用关联键 ULID（llm_gateway 模式透传 X-MCP-Call-ID，
+	// ADR §6 三本日志对账键）。
+	CallID string
 }
 
 // UpstreamResult 是上游返回结果。
@@ -164,6 +180,29 @@ func (c *UpstreamClient) do(ctx context.Context, cc CallContext, body []byte, pr
 	case "apikey":
 		if cc.Adapter.AuthSecret != "" {
 			req.Header.Set("X-Api-Key", cc.Adapter.AuthSecret)
+		}
+	case AuthModeLLMGateway:
+		// ADR 2026-11-27 §4 D2a：网关动态签短 service JWT（memora 入站唯一
+		// 凭据形态），scope 恒只读最小集；write 扩入由 writeGranted 决定
+		// （缺签发器 ⇒ 调用失败：该模式配置了就必须能签，静默降级=凭据黑洞）。
+		if c.jwtIssuer == nil {
+			return nil, fmt.Errorf("mcp: adapter %q auth_mode=%s but no service jwt issuer configured", cc.Adapter.Name, AuthModeLLMGateway)
+		}
+		token, err := c.jwtIssuer.Issue(cc.Adapter.TenantID, cc.WriteGranted)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: issue service jwt for adapter %q: %w", cc.Adapter.Name, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		// 归因透传（ADR §4/§6）：tenant/账户维度只作归因记录，memora 鉴权
+		// 与 RLS 钉的是 JWT claim 本身。
+		if cc.Adapter.TenantID != "" {
+			req.Header.Set("X-MCP-On-Behalf-Of", cc.Adapter.TenantID)
+		}
+		if cc.KeyID != "" {
+			req.Header.Set("X-MCP-Gateway-Key-ID", cc.KeyID)
+		}
+		if cc.CallID != "" {
+			req.Header.Set("X-MCP-Call-ID", cc.CallID)
 		}
 	}
 
