@@ -11,6 +11,7 @@
 package main
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -25,6 +26,7 @@ type pluginMetricsCollector struct {
 	interval time.Duration
 	cancel   chan struct{}
 	done     chan struct{}
+	started  atomic.Bool // ★ stopguard（2026-11-28 代上游收口）：未 Start 就 Stop 时不得等一个永远不会 close 的 done
 }
 
 // newPluginMetricsCollector 构造导出器（interval<=0 用默认 15s——gauge 刷新
@@ -43,6 +45,7 @@ func newPluginMetricsCollector(sup *pluginruntime.Supervisor, interval time.Dura
 
 // Start 启动后台刷新循环（立即刷一次，之后按 interval）。多次调用不支持。
 func (c *pluginMetricsCollector) Start() {
+	c.started.Store(true)
 	go func() {
 		defer close(c.done)
 		ticker := time.NewTicker(c.interval)
@@ -61,6 +64,12 @@ func (c *pluginMetricsCollector) Start() {
 
 // Stop 停止刷新循环（等当前一轮刷完）。幂等。
 func (c *pluginMetricsCollector) Stop() {
+	// ★ stopguard 守卫（2026-11-28 代上游收口）：未 Start 的构造件直接返回，
+	//   不得等一个永远不会 close 的 done（扫描器识别 !started.Load() 早退形态）。
+	if !c.started.Load() {
+		return
+	}
+	c.started.Store(false)
 	select {
 	case <-c.cancel:
 	default:

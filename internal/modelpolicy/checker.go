@@ -511,6 +511,12 @@ func collectPolicies(rows pgx.Rows, fresh map[string]*subjectPolicy, prefix stri
 		}
 		fresh[key].models[strings.ToLower(model)] = true
 	}
+	// ★ rowsguard（2026-11-28 代上游收口）：循环出口的终检——流被截断时
+	//   不得静默当作「策略为空」。rowsguard 纪律：调用方的 rows.Err() 覆盖
+	//   不到本折叠函数自己的循环。
+	if err := rows.Err(); err != nil {
+		slog.Warn("modelpolicy: policy stream truncated mid-fold", "prefix", prefix, "err", err)
+	}
 	return fresh
 }
 

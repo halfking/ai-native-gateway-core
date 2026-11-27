@@ -91,13 +91,14 @@ func (f Finding) String() string {
 // livenessFields are the receiver field names this repo uses to express
 // "has this worker started?".
 var livenessFields = map[string]bool{
-	"started":    true,
-	"cancel":     true,
-	"done":       true,
-	"stop":       true,
-	"stopCh":     true,
-	"workerDone": true,
-	"stopped":    true,
+	"started":       true,
+	"cancel":        true,
+	"done":          true,
+	"stop":          true,
+	"stopCh":        true,
+	"workerDone":    true,
+	"stopped":       true,
+	"monitorActive": true, // ★ 2026-11-28：ResourceLimiter 的监控活性字段（plugin-runtime/limiter，V2 合并代上游收口补录）
 }
 
 // ScanDir walks dir and reports every unguarded terminal wait inside a
@@ -355,7 +356,9 @@ func (s *stopScanner) trueImpliesStarted(e ast.Expr) bool {
 			return s.trueImpliesStarted(x.X) || s.trueImpliesStarted(x.Y)
 		}
 	}
-	if name := s.livenessName(e); name == "started" {
+	// ★ 2026-11-28：任意登记过的 liveness 字段（started/monitorActive/…）为真
+	//   即「已启动」——此前硬编码 =="started"，漏掉同语义的其它字段名。
+	if name := s.livenessName(e); name != "" {
 		return true
 	}
 	return false
