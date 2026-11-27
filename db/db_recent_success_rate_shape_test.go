@@ -27,4 +27,13 @@ func TestRecentSuccessRateExistsSQLShape(t *testing.T) {
 	if !strings.Contains(recentSuccessRateExistsSQL, "WHERE NOT EXISTS") {
 		t.Error("probe must keep the NOT EXISTS shape the fnMissing branch relies on")
 	}
+	// ★ 2026-11-28（42P01 噪声收口轮）：探测必须含**函数体检查**——
+	//   pg_get_functiondef 体内不得含 request_logs_hot。背景：老二进制的
+	//   boot ensure 会把 406 形态函数体（FROM request_logs_hot）写回库；
+	//   890 删族后该函数体被调用即 42P01（CROSS JOIN LATERAL ⇒ 候选查询
+	//   全失败）。只查签名时坏函数体永久存活；查体后 fnMissing 走
+	//   DROP+CREATE，同 boot 自愈（ensure 每 boot CREATE OR REPLACE 现役体）。
+	if !strings.Contains(recentSuccessRateExistsSQL, "position('request_logs_hot' in pg_get_functiondef(p.oid)) = 0") {
+		t.Error("probe must also verify the function body no longer references request_logs_hot (406-shape body from an old binary must be self-healed at boot, not kept by a signature-only match)")
+	}
 }

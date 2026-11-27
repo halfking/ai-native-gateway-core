@@ -136,6 +136,25 @@ fi
 grep -q 'DD_DUAL_ACTIVE_EXTRA="$(dd_dual_active_ports' "$ENGINE" \
   && ok "⑥ 部署主入口有双活守卫（dd_dual_active_ports 判定）" \
   || bad "⑥ 部署主入口缺双活守卫"
+# ★ 2026-11-28：守卫从「die 拦截」升级为「自动收挂」（默认开）——
+#   检测到双活 ⇒ dd_stop_secondary 收流再部署；完成标记前重挂。
+grep -q 'DD_AUTO_MANAGE_SECONDARY="${DD_AUTO_MANAGE_SECONDARY:-1}"' "$ENGINE" \
+  && ok "⑥ 双活自动收挂默认开（DD_AUTO_MANAGE_SECONDARY 默认 1）" \
+  || bad "⑥ 双活自动收挂默认值缺失或非 1"
+grep -q 'DD_DUAL_ACTIVE_WAS_ACTIVE=1' "$ENGINE" \
+  && ok "⑥ 收副节点后置状态位（部署前形态账本）" \
+  || bad "⑥ 自动收挂缺状态位"
+grep -q 'DD_AUTO_MANAGE_SECONDARY" == "1"' "$ENGINE" \
+  && ok "⑥ 显式禁用形态保留（≠1 走 die 拦截）" \
+  || bad "⑥ 缺 DD_AUTO_MANAGE_SECONDARY 判定分支"
+# 重挂必须在完成标记**之前**（fail-closed：重挂 die ⇒ 部署判失败）。
+_dd_rehook_line=$(grep -n 'if \[\[ "${DD_DUAL_ACTIVE_WAS_ACTIVE:-0}" == "1" \]\]' "$ENGINE" | head -1 | cut -d: -f1)
+_dd_completed_line=$(grep -n '^DD_DEPLOY_COMPLETED=1$' "$ENGINE" | tail -1 | cut -d: -f1)
+if [[ -n "$_dd_rehook_line" && -n "$_dd_completed_line" ]] && (( _dd_rehook_line < _dd_completed_line )); then
+  ok "⑥ 自动重挂段位于完成标记之前（重挂失败=部署失败，fail-closed）"
+else
+  bad "⑥ 自动重挂段不在完成标记之前——会把「副节点没起来」洗成成功"
+fi
 grep -q '== "start-secondary"' "$ENGINE" \
   && ok "⑥ start-secondary 模式分派在场" \
   || bad "⑥ start-secondary 模式分派缺失"
