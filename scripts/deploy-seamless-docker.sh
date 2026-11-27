@@ -2275,13 +2275,18 @@ dd_start_secondary() {
     printf 'export LLM_GATEWAY_SESSION_RAW_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/session-archive"
     # 全量照抄段：从 gateway.env 逐行搬运（跳过将被覆盖的四个键与注释/空行）。
     # 值原样搬运（仍是 %q 形态）——docker 注入时逐键 _dd_unq 解码。
+    # ★ 2026-11-27 真机修正：gateway.env 的行**本身带 `export ` 前缀** ⇒ 先剥
+    #   掉再统一写一层；首版直接 `printf 'export %s\n' "$_line"` 产出
+    #   `export export KEY=…` ⇒ 注入循环剥一层后 _k=「export KEY」，docker
+    #   收到垃圾键名 ⇒ 副节点容器只剩覆盖段 4 键活着（no DB / no Redis ⇒
+    #   readyz 不通 FATAL）。211 实测：secondary.env 45 行、容器只挂 4 键。
     local _line _key
     while IFS= read -r _line || [[ -n "$_line" ]]; do
       case "$_line" in
         ''|'#'*) continue ;;
       esac
-      _key="${_line#export }"
-      _key="${_key%%=*}"
+      _line="${_line#export }"
+      _key="${_line%%=*}"
       case "$_key" in
         LLM_GATEWAY_RUNTIME_ROLE|LLM_GATEWAY_DB_MAX_CONNS|LLM_GATEWAY_LOG_INDEX_DIR|LLM_GATEWAY_SESSION_RAW_DIR) continue ;;
       esac
@@ -2300,6 +2305,14 @@ dd_start_secondary() {
     _line="${_line#export }"
     _k="${_line%%=*}"
     _v="${_line#*=}"
+    # ★ 键名合法性守卫（2026-11-27 真机教训）：双层 export 产出的
+    #   「export KEY」这类垃圾键名在此处必须当场拒绝——静默注入会让容器
+    #   缺键、症状延迟到 readyz 才暴露（中间隔着 no DB/no Redis 误导链）。
+    if [[ "$_k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      :
+    else
+      die "secondary.env 出现非法键名「${_k:0:40}」—— env 派生层或 %q 解码层损坏 ⇒ 拒绝注入（宁可不起副节点）"
+    fi
     _val="$(_dd_unq "$_v")"
     _env_args+=( -e "${_k}=${_val}" )
   done < "$_env_file"

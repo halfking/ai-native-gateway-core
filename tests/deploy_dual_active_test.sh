@@ -151,6 +151,26 @@ grep -q -- '--remove-server "$_port"' "$ENGINE" \
 grep -q 'LLM_GATEWAY_RUNTIME_ROLE=traffic-only' "$ENGINE" \
   && ok "⑥ 副节点 env 覆盖段钉 traffic-only 角色" \
   || bad "⑥ 副节点 env 未钉 traffic-only"
+
+# ★ 派生循环单层 export（2026-11-27 真机教训）：gateway.env 的行本身带
+#   `export ` 前缀，派生时必须先剥再写 ⇒ 输出是单层 export。首版产出
+#   `export export KEY=…` ⇒ 注入循环剥一层后键名=「export KEY」⇒ 容器
+#   只剩覆盖段 4 键活着（no DB/no Redis ⇒ readyz FATAL）。判据钉两点：
+#   ① 搬运前先剥前缀（`_line="${_line#export }"` 在循环内）；
+#   ② 注入循环有键名合法性守卫（垃圾键名 die 不静默注入）。
+dd_secondary_derive_block() {
+  awk '/^dd_start_secondary\(\) \{/,/^\}$/' "$ENGINE"
+}
+_dd_derive="$(dd_secondary_derive_block)"
+printf '%s' "$_dd_derive" | grep -q 'while IFS= read -r _line' \
+  && printf '%s' "$_dd_derive" | grep -q '_line="\${_line#export }"' \
+  && printf '%s' "$_dd_derive" | grep -q "printf 'export %s" \
+  && ok "⑥ 派生循环先剥再写单层 export（防 export export 双层）" \
+  || bad "⑥ 派生循环缺「先剥 export 前缀」步骤——会产出双层 export"
+grep -q '非法键名' "$ENGINE" \
+  && grep -q 'env 派生层或 %q 解码层损坏' "$ENGINE" \
+  && ok "⑥ 注入循环有键名合法性守卫（垃圾键名 die）" \
+  || bad "⑥ 注入循环缺键名合法性守卫"
 grep -q 'dd_register_goacos "$_port" 1' "$ENGINE" \
   && ok "⑥ 副节点 goacos 注册带 keep=1（不注销主槽条目）" \
   || bad "⑥ 副节点 goacos 注册缺 keep 参数"
