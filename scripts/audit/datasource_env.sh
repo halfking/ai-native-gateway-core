@@ -160,7 +160,6 @@ export TEST_RETIREMENT_HTTP_DSN="$__datasource_dsn"
 #   ⇒ 产品侧自己的守卫（trace_retirement_test.go 等四处）会拒绝这种 DSN
 #   ⇒ 事实源默认注入它，只会把「真库腿跑不起来」变成「门禁红」。
 
-export MY_ENDPOINTS_TEST_DSN="$__datasource_dsn"
 
 unset __datasource_dsn
 
