@@ -4,7 +4,7 @@
 
 - **创建日期**: 2026-11-27
 - **版本**: v1.4
-- **状态**: 阶段 1 已实施并通过审计（2026-11-27，见 §3.5/§3.6）；§5.3 监控埋点已落地（v1.3，见 §3.7）；Linux cgroup 硬限制 e2e 已在容器真机验证 PASS + 3 缺陷修复（v1.4，见 §3.8）；OOM-kill 断言待裸金属补验；§8.2 性能基线已采集全达标（v1.5，见 §3.9）；§5.1 灰度物料就绪待环境负责人执行（canary 模板见 plugin-runtime/config/）
+- **状态**: 阶段 1 已实施并通过审计（§3.5/§3.6）；§5.3 监控埋点已落地（§3.7）；Linux cgroup 硬限制 e2e 容器真机 PASS + 3 缺陷修复（§3.8）；OOM-kill 断言待裸金属补验；§8.2 性能基线全达标（§3.9）；§5.1 灰度链路已实机闭环（v1.6，清单步 1-3 全通 + collector 接线缺陷修复），24h 水位观察待长驻环境（§5.1）
 - **优先级**: P0
 - **相关审计**: [插件化框架审计报告 2026-11-26](../../audit/llm-gateway-plugin-framework-audit-2026-11-26.html)
 
@@ -712,7 +712,9 @@ kill $GATEWAY_PID
 3. 验证功能正常，无性能退化
 4. 收集监控数据
 
-**灰度物料已就绪（2026-11-27，v1.5）**：配置模板 `plugin-runtime/config/gateway-canary-resource-limits.yaml`（合并进开发环境 gateway.yaml 的 plugins: 节即可；含 4 步验证清单——日志确认 cgroup/monitor 模式、plugin-nav 无 degraded、/metrics 出现 `llmgw_plugin_*` 序列、24h 观察 violations 增速与 usage/limit 水位；回滚 = `resource_limits_enabled: false` 热重载即关，无需重启）。**执行条件**：开发环境网关需 PostgreSQL + Redis 完整栈（本机 Docker 仅 DB，无网关进程）——由运维环境负责人执行模板合入，观察数据回填本节。
+**灰度物料已就绪（2026-11-27，v1.5）**：配置模板 `plugin-runtime/config/gateway-canary-resource-limits.yaml`（合并进开发环境 gateway.yaml 的 plugins: 节即可；含 4 步验证清单——日志确认 cgroup/monitor 模式、plugin-nav 无 degraded、/metrics 出现 `llmgw_plugin_*` 序列、24h 观察 violations 增速与 usage/limit 水位；回滚 = `resource_limits_enabled: false` 热重载即关，无需重启）。
+
+**灰度链路已实机闭环（2026-11-28，v1.6）**：真实 gateway 二进制（CGO/lite 存储模式）+ canary 插件（`cmd/canary-plugin`）+ 本模板灰度块，在 Linux 容器（cgroup v2）实跑 `scripts/canary-run.sh`，清单步 1-3 全部通过——① 日志 `cgroup resource limits enabled for plugin canary`；② cgroup 四文件 memory.max=512M/memory.high=90%/swap=0/cpu.max=50%/pids.max=10、进程归组；③ /metrics 出现完整 7 序列（`llmgw_plugin_memory_usage_bytes{plugin_id="canary"}`、`_memory_limit_bytes`、`_cpu_usage_percent`、`_threads`、`_limiter_mode_info{mode="cgroup"}=1`、violations/oom 计数器）。期间发现并修复 v1.3 接线缺陷：**metrics collector 只挂在 legacy supervisor 分支，生产主路径（LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG / controller 管理）从未挂载 ⇒ plugin 序列恒缺**——collector 已提升为两路径共用。清单步 4（24h 真实负载水位观察）仍需长驻网关环境由环境负责人执行；plugin-nav API 就绪面验证在 lite 无 DB 模式不可达（JWT 会话依赖 DB），以 cgroup 状态 + 日志替代确认。
 
 #### Phase 2: 灰度发布（1-2 周）
 
@@ -911,3 +913,5 @@ plugins:
 | v1.2 | 2026-11-27 | 插件化框架审计工作组 | 交付后审计：修复 P0（snapshot 丢默认限制致插件拒启）与 P1（AssignProcess pid≤0 空转）；新增 3 项回归测试；§3.6 审计记录 |
 | v1.3 | 2026-11-27 | 插件化框架审计工作组 | §5.3 监控埋点落地：7 个 `llmgw_plugin_*` 指标（metrics/plugin_resource_metrics.go）、limiter cgroup 采样读回 + OOM/violation 回调、cmd/gateway 导出器（15s）、12 项新测试全绿（含 -race）；§4.2/§4.3 Linux e2e（TestE2ECgroupHardLimits/OOMKill + scripts/test-resource-limits.sh）；§3.7 落地记录 |
 | v1.4 | 2026-11-27 | 插件化框架审计工作组 | Linux 真机 e2e 首轮执行（Docker Desktop VM cgroup v2）：发现并修复 3 个真机缺陷（subtree_control 未启用 / Stop 顺序颠倒致 rmdir EBUSY / RemoveAll 清不掉 cgroupfs）；硬限制验收完整 PASS；OOM-kill 断言受限虚拟化层待裸金属补验；§3.8 执行记录 |
+| v1.5 | 2026-11-27 | 插件化框架审计工作组 | §8.2 性能基线采集全达标（构造 67µs/Apply 25µs/足迹 3.3KB/读回 7µs，余量 3 个数量级）；顺手修 Apply(nil) panic；§5.1 灰度物料模板入库；§3.9 基线表 |
+| v1.6 | 2026-11-28 | 插件化框架审计工作组 | §5.1 灰度链路实机闭环：真实 gateway + canary 插件 + 灰度块在 Linux 容器全通（清单步 1-3，7 序列上线）；发现并修复 v1.3 collector 只挂 legacy 分支、生产 controller 路径恒缺序列的接线缺陷；scripts/canary-run.sh + cmd/canary-plugin 入库 |
