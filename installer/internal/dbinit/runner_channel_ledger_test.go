@@ -278,8 +278,12 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     total_tokens ／ tool_usage_stats 族的 134 形状列 ／ licenses 与
 		//     releases 的 tenant_id），来源是第 30 轮新立的
 		//     「生产 SQL 引用的表与列必须有投递来源创建」门第一次校准抓出的存量缺口。
-		// Migration 633 is delivered by the installer and the deployment channel.
-		wantBoth          = 349
+		//   ★ 2026-11-27（计费迁移 1000-1002 轮）：三条同时落两通道（files=() +
+		//     StartupFiles）⇒ **交集 +4**（★ 348 → 352 ★★；+4 = 1000/1001/1002
+		//     三条 + 633 补接线一条）；两通道独有清单不变（25 / 63）。
+		//   ★ 上游已把 1000-1002 登记进安装器 TSV 清单（manifest 411→412）⇒
+		//     本轮补全其余五点（embeddata/go:embed/StartupFiles/files=()/nonplain 册）。
+		wantBoth          = 352
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)

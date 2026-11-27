@@ -3493,7 +3493,9 @@ func (h *ChatHandler) serveWithExecutor(
 	// authentication and model parsing, but before any streaming starts.
 	if h.maasSvc != nil && h.maasSvc.Enabled() && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		// 1. Estimate request cost
-		estimatedCost := h.EstimateRequestCostCredits(r, clientModel)
+		// ★ 2026-11-27 12h 审计轮：bodyBytes 是 handler.go:3189 已读入的
+		//   请求体（r.Body 此后已排空，不能再读），改用 FromBody 变体。
+		estimatedCost := h.EstimateRequestCostCreditsFromBody(bodyBytes, clientModel)
 
 		// 2. Pre-check balance
 		decision, err := h.maasSvc.PreCheckBalance(r.Context(), keyInfo.TenantID, estimatedCost)
@@ -11885,6 +11887,18 @@ func isClientInterruptError(err error) bool {
 //   - requestID: 请求ID（用于幂等性）
 //   - credits: 要扣减的积分数
 func (h *ChatHandler) deductCreditsAsync(ctx context.Context, tenantID, ownerUser, requestID string, credits int64) {
+	// ★ 2026-11-27 12h 审计轮（P2-G）：裸 goroutine 加 panic 防护——扣减路径
+	//   一旦 panic（DB 驱动/上游 nil 解引用）会崩掉整个网关进程。失败已由
+	//   调用方入 billing_retry_queue，这里 recover 只是把 panic 降级为日志。
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("deductCreditsAsync panicked",
+				"request_id", requestID,
+				"tenant_id", tenantID,
+				"panic", r)
+		}
+	}()
+
 	if h.maasSvc == nil || credits <= 0 {
 		return
 	}

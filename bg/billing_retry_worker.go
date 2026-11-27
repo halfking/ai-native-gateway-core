@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -18,7 +19,8 @@ type BillingRetryWorker struct {
 	interval     time.Duration
 	batchSize    int
 	stopped      chan struct{}
-	statsLog     bool // 是否记录统计日志
+	stopOnce     sync.Once // ★ 2026-11-27 12h 审计轮（P2-H）：防 Stop 与 ctx.Done 双 close panic
+	statsLog     bool      // 是否记录统计日志
 }
 
 // NewBillingRetryWorker 创建计费重试worker
@@ -71,9 +73,11 @@ func (w *BillingRetryWorker) Start(ctx context.Context) {
 	}
 }
 
-// Stop 停止worker
+// Stop 停止worker。
+// ★ 2026-11-27 12h 审计轮（P2-H）：sync.Once 防双 close——ctx.Done 分支与
+//   外部 Stop() 都会 close(w.stopped)，第二次 close 会 panic。
 func (w *BillingRetryWorker) Stop() {
-	close(w.stopped)
+	w.stopOnce.Do(func() { close(w.stopped) })
 }
 
 // processOnce 处理一批重试任务

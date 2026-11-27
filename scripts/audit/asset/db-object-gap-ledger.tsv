@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-26T07:26:18+00:00
-# ★ expected=989 envs=local,fresh,252,211 gaps_by_env={"211": 52, "252": 59, "fresh": 49, "local": 60} production_gaps=69
+# ★ generated_at=2026-11-26T19:55:06+00:00
+# ★ expected=1003 envs=local,fresh,252,211 gaps_by_env={"211": 53, "252": 60, "fresh": 49, "local": 61} production_gaps=70
 999d	idx_licenses_tenant_created	licenses	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
 395b	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 999d	idx_releases_tenant_published	releases	missing	present	missing	missing	gap	prod-full-gap
@@ -585,6 +585,7 @@
 632	idx_audit_attachments_filesystem_cleanup_request	audit_attachments_filesystem_cleanup	present	present	present	present	complete	none
 632	idx_audit_attachments_filesystem_cleanup_run	audit_attachments_filesystem_cleanup	present	present	present	present	complete	none
 632	idx_audit_attachments_filesystem_cleanup_tenant_ts	audit_attachments_filesystem_cleanup	present	present	present	present	complete	none
+633	idx_tenant_attachment_quotas_updated_at	tenant_attachment_quotas	retired	present	retired	retired	complete	none
 639	idx_ped_tenant_credential	provider_error_details	present	present	present	present	complete	none
 640	idx_session_turns_hot_client_protocol	session_turns_hot	present	present	present	present	complete	none
 646	idx_provider_domains_catalog	provider_domains	present	present	present	present	complete	none
@@ -996,3 +997,17 @@
 999	idx_summary_layers_hash	session_summary_layers	retired	present	present	present	complete	none
 999	idx_summary_layers_session	session_summary_layers	retired	present	present	present	complete	none
 999	idx_summary_layers_type	session_summary_layers	retired	present	present	present	complete	none
+1000	idx_billing_precheck_log_decision	billing_precheck_log	retired	present	retired	retired	complete	none
+1000	idx_billing_precheck_log_tenant	billing_precheck_log	retired	present	retired	retired	complete	none
+1000	idx_session_turns_billing_failed	session_turns	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
+1000	idx_session_turns_billing_pending	session_turns	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
+1000	idx_tenant_credit_wallets_negative_balance	tenant_credit_wallets	missing	present	missing	missing	gap	prod-full-gap
+1001	idx_maas_bill_status_audit_bill	maas_bill_status_audit	retired	present	retired	retired	complete	none
+1001	idx_maas_bill_status_audit_time	maas_bill_status_audit	retired	present	retired	retired	complete	none
+1001	idx_maas_monthly_bills_overdue	maas_monthly_bills	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
+1001	idx_maas_monthly_bills_paid	maas_monthly_bills	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
+1001	idx_maas_monthly_bills_voided	maas_monthly_bills	retired-by-column-drop	present	retired-by-column-drop	retired-by-column-drop	complete	none
+1002	idx_billing_retry_queue_pending	billing_retry_queue	retired	present	retired	retired	complete	none
+1002	idx_billing_retry_queue_request	billing_retry_queue	retired	present	retired	retired	complete	none
+1002	idx_billing_retry_queue_tenant	billing_retry_queue	retired	present	retired	retired	complete	none
+1002	uq_billing_retry_queue_inflight	billing_retry_queue	retired	present	retired	retired	complete	none

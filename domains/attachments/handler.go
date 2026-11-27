@@ -230,20 +230,22 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 // 从 request_logs.attachments JSONB 中查询该路径是否被该租户的任一请求引用。
 // P0 安全修复 (2026-11-26): 防止跨租户附件访问。
 func (h *Handler) verifyAttachmentOwnership(ctx context.Context, relPath, tenantID string) (bool, error) {
-	// 构造 JSONB 查询：检查 attachments 数组中是否包含指定路径的对象
-	// attachments @> '[{"path": "..."}]'::jsonb
-	pathJSON := fmt.Sprintf(`[{"path":"%s"}]`, relPath)
-
+	// ★ 2026-11-27 12h 审计轮（P2-D）：探针 JSON 改为 SQL 侧 jsonb_build_array
+	//   参数化构造。此前 fmt.Sprintf(`[{"path":"%s"}]`, relPath) 在应用层拼
+	//   JSON——relPath 来自用户可控的 URL 路径（TrimPrefix(r.URL.Path,...)），
+	//   内嵌 `"` 或 `\` 可破坏 JSON 结构，使 @> 探针语义漂移（伪造/漏配
+	//   path 键）。jsonb_build_array($2)::jsonb 把整个字符串作为一个 text
+	//   值安全转义进 JSON，探针语义恒为「完整 path 等值包含」。
 	query := `
 		SELECT EXISTS(
-			SELECT 1 FROM request_logs_with_current_month 
-			WHERE tenant_id = $1 
-			AND attachments @> $2::jsonb
+			SELECT 1 FROM request_logs_with_current_month
+			WHERE tenant_id = $1
+			AND attachments @> jsonb_build_array(jsonb_build_object('path', $2::text))
 		)
 	`
 
 	var exists bool
-	err := h.dbPool.QueryRow(ctx, query, tenantID, pathJSON).Scan(&exists)
+	err := h.dbPool.QueryRow(ctx, query, tenantID, relPath).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("ownership query failed: %w", err)
 	}

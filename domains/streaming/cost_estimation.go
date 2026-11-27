@@ -1,9 +1,7 @@
 package streaming
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"unicode/utf8"
@@ -24,14 +22,24 @@ type messageForEstimation struct {
 //  4. 加安全余量（+20%），宁可高估也不能低估
 //
 // 注意：这是粗略预估，真实扣费在请求完成后基于实际token数
-func (h *ChatHandler) EstimateRequestCostCredits(r *http.Request, modelName string) int64 {
-	// 1. 解析请求体（需要恢复body供后续使用）
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		slog.Warn("failed to read request body for cost estimation", "error", err)
+//
+// ★ 2026-11-27 12h 审计轮（P1-D 根修）：改为接收 handler 已读入的
+//   bodyBytes（handler.go:3189 readRequestBody 的返回值）。此前签名收
+//   *http.Request 并重读 r.Body——预检点之前请求体已被 readRequestBody
+//   消费且该变体不回填（回填版 readRequestBodyRestore 只用于
+//   messages/responses 入口）⇒ 这里读到空 body ⇒ json.Unmarshal 恒失败
+//   ⇒ 恒走 getDefaultEstimate(50)，输入 token 估算成死代码，且每请求
+//   打一条 Warn 噪声。
+func (h *ChatHandler) EstimateRequestCostCredits(_ *http.Request, modelName string) int64 {
+	return h.EstimateRequestCostCreditsFromBody(nil, modelName)
+}
+
+// EstimateRequestCostCreditsFromBody 用已读入的请求体字节预估成本。
+// body 为空/不可解析时走默认估算（预检 fail-open 口径，不阻断）。
+func (h *ChatHandler) EstimateRequestCostCreditsFromBody(body []byte, modelName string) int64 {
+	if len(body) == 0 {
 		return getDefaultEstimate(modelName)
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body)) // 恢复body
 
 	var req struct {
 		Messages            []messageForEstimation `json:"messages"`

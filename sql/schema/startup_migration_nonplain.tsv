@@ -116,3 +116,9 @@ embeddata/999d_tenant_ops_scope.sql	installer	-	★ embeddata 宇宙里的同一
 # ★★ `680b` / `682b` / `683b` / `706b` / `707b` / `983b` / `983c` / `341b` ★★）
 # ★★ ⇒ ★★ **⇒ 「没有空号」的准确表述是「【没有纯数字三位数空号】、★ 但【号段＋字母后缀】
 # ★★ 仍可开」★★ ⇒ ★★ ⇒ ★★ **⇒ 而 `999a` 正是上游把【999 号段】的后缀位开出来的第一个 ★★★**
+canonical/1000_billing_status_and_credit_limit.sql	both	-	计费状态追踪 ＋ 信用额度（2026-11-26 上游计费 P0 轮）。★ 四位数前缀（1000_）对两道按文件名解析的门隐形（sqlguard migrationNumPrefix 钉死 ^[0-9]{3}_）⇒ 必须登记投递腿。★ 上游已登记进安装器 TSV 清单（manifest 411→412）；本轮补全五点同步（embeddata 副本/go:embed/StartupFiles/部署通道 files=()/本册）＋ BEGIN/COMMIT 事务包裹 ＋ 5s lock_timeout 守卫。★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS、ADD COLUMN IF NOT EXISTS）⇒ 从未在任何环境应用过（schema_migrations 无 '1000' 行）⇒ 零已应用字节变更。
+canonical/1001_bill_payment_tracking.sql	both	-	账单付款追踪字段（2026-11-26 上游计费 P0 轮）。★ 同 1000：四位数前缀对按文件名解析的门隐形 ⇒ 登记投递腿 ＋ 五点同步。★ 依赖 1000（读 billing_status）⇒ 排序不可打乱。
+canonical/1002_billing_retry_queue.sql	both	-	计费重试队列表（2026-11-26 上游计费 P0 轮）。★ 同 1000：四位数前缀对按文件名解析的门隐形 ⇒ 登记投递腿 ＋ 五点同步。★ 幂等（CREATE TABLE IF NOT EXISTS）。
+embeddata/1000_billing_status_and_credit_limit.sql	installer	-	同 canonical/1000 行：安装器 embeddata 副本的登记键（embeddata 宇宙按 embeddata/ 前缀单独成行）。
+embeddata/1001_bill_payment_tracking.sql	installer	-	同 canonical/1001 行：安装器 embeddata 副本的登记键。
+embeddata/1002_billing_retry_queue.sql	installer	-	同 canonical/1002 行：安装器 embeddata 副本的登记键。

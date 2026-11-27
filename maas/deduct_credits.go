@@ -107,30 +107,45 @@ func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, reques
 	var subConsumed, grantedConsumed, purchasedConsumed int64
 
 	// 5.1 优先扣减订阅配额
+	//
+	// ★ 2026-11-27 12h 审计轮（P0-A 根修）：此前 UPDATE 引用不存在的
+	//   quota_used 列（tenant_subscriptions 只有 quota_remaining，
+	//   007_maas_billing.sql:57-68 + census 实证）⇒ 订阅租户每次扣费
+	//   事务直接 SQL 报错回滚 → ledger 也不写 → 进重试队列 10 次全败
+	//   → 标 failed，订阅租户用量持续漏计费。改回与旧路径
+	//   （service.go ChargeRequestMultimodalWithMultiplier）一致写法：
+	//   quota_remaining 原子递减 + WHERE 守卫（配额不足时不消费订阅，
+	//   溢出部分自然落进 5.2/5.3 的钱包扣减）。
 	if subID > 0 && quota > 0 {
 		consume := remaining
 		if consume > quota {
 			consume = quota
 		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE tenant_subscriptions
+			   SET quota_remaining = quota_remaining - $1, updated_at = now()
+			 WHERE id = $2 AND quota_remaining >= $1
+		`, consume, subID)
+		if err != nil {
+			return 0, err
+		}
+		if tag.RowsAffected() == 0 {
+			// 并发下配额已被别处扣空：本次不消费订阅，全部走钱包。
+			consume = 0
+		}
 		subConsumed = consume
 		remaining -= consume
 
-		// 写入订阅消费记录
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO credit_ledger 
-			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, subscription_id, created_at)
-			VALUES ($1, $2, 'consume', $3, 'request', $4, $5, NOW())
-		`, tenantID, ownerUser, -subConsumed, requestID, subID); err != nil {
-			return 0, err
-		}
-
-		// 更新订阅配额
-		if _, err := tx.Exec(ctx, `
-			UPDATE tenant_subscriptions
-			SET quota_used = quota_used + $1
-			WHERE id = $2
-		`, subConsumed, subID); err != nil {
-			return 0, err
+		if subConsumed > 0 {
+			// 写入订阅消费记录
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO credit_ledger
+				(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, subscription_id, created_at)
+				VALUES ($1, $2, 'consume', $3, 'request', $4, $5, NOW())
+			`, tenantID, ownerUser, -subConsumed, requestID, subID); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -213,7 +228,44 @@ func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, reques
 		}
 	}
 
-	// 6. 提交事务
+	// 6. 同事务回写 balance_credits 派生列 + 消费分桶（对齐旧路径语义）
+	//
+	// ★ 2026-11-27 12h 审计轮（P0-B 根修）：此前只改 granted/purchased 两个
+	//   分量、不回写 balance_credits ⇒ PreCheckBalance（读 balance_credits，
+	//   balance_precheck.go:48）的读数永不下降 ⇒ 余额≥0 分支恒命中，
+	//   P0-1 的负余额/信用额度阻断对走本路径的流量永不触发，钱包/账单展示
+	//   口径漂移。旧路径同一事务内 balance_credits = granted+purchased
+	//   （service.go:272-280），此处保持同一口径。
+	//
+	// ★ 2026-11-27 12h 审计轮（P1-C 补齐）：月账单出账数据源
+	//   maas_credit_consumption_buckets 此前断流（旧路径同事务 UPSERT，
+	//   maas/bills.go 与 credit_buckets.go 均读它）⇒ 账单金额系统性偏低。
+	//   补同事务 UPSERT（与扣费同一事务时钟）。
+	if subConsumed+grantedConsumed+purchasedConsumed > 0 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE tenant_credit_wallets
+			   SET balance_credits = granted_balance + purchased_balance,
+			       updated_at = now()
+			 WHERE tenant_id = $1
+		`, tenantID); err != nil {
+			return 0, err
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO maas_credit_consumption_buckets
+				(tenant_id, bucket_start, credits, request_count, updated_at)
+			VALUES
+				($1, date_trunc('hour', now(), 'UTC'), $2, 1, now())
+			ON CONFLICT (tenant_id, bucket_start) DO UPDATE
+				SET credits       = maas_credit_consumption_buckets.credits + EXCLUDED.credits,
+				    request_count = maas_credit_consumption_buckets.request_count + 1,
+				    updated_at    = now()
+		`, tenantID, subConsumed+grantedConsumed+purchasedConsumed); err != nil {
+			return 0, fmt.Errorf("post request consumption bucket: %w", err)
+		}
+	}
+
+	// 7. 提交事务
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}

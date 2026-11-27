@@ -37,7 +37,7 @@
 
 #### 1.1 路由概览 - `handleRoutingOverview`
 
-**文件**: `admin/routing.go:2145`
+**文件**: `admin/routing.go:2181`
 
 **实施的权限控制**:
 
@@ -50,11 +50,11 @@
    ```
 
 2. **凭据脱敏** (按角色):
-   - **User**: 隐藏所有凭据详情（ID、标签、配额、健康分数、余额、可用性状态）
+   - **User**: 隐藏凭据详情（ID、标签、配额状态与恢复时间、可用性状态与恢复时间、余额、熔断状态与冷却时间、生效/过期时间、并发上限）—— ★ 2026-11-27 订正：**不清零** `SuccessRate` / `P95LatencyMs`（健康分数按权限模型保留）
    - **Tenant Admin**: 隐藏凭据 ID/标签/余额，但**保留** quota_state 和 availability_state（用于监控）
    - **Super Admin**: 看全部信息
 
-**代码位置**: `admin/routing.go:2253-2277`
+**代码位置**: `admin/routing.go:2433`
 
 #### 1.2 路由解析 - `handleRoutingResolve`
 
@@ -71,8 +71,12 @@
            candidates[i].QuotaState = ""
            candidates[i].AvailabilityState = ""
            candidates[i].BalanceUSD = nil
-           candidates[i].SuccessRate = 0
-           candidates[i].P95LatencyMs = 0
+           candidates[i].EffectiveAt = nil
+           candidates[i].ExpiresAt = nil
+           candidates[i].ConcurrencyLimit = nil
+           candidates[i].EffectiveConcurrency = nil
+           // ★ 2026-11-27 订正：原示例里的 `SuccessRate = 0` / `P95LatencyMs = 0`
+           // ★ 在实现里**并不存在**（`admin/routing.go:700-715` 显式保留这两个字段）
        } else if auth.Role == RoleTenantAdmin {
            candidates[i].CredentialID = 0
            candidates[i].CredentialLabel = ""
@@ -117,7 +121,7 @@
 
 #### 2.1 模型树 - `handleRoutingModelTree`
 
-**文件**: `admin/routing.go:2319`
+**文件**: `admin/routing.go:2384`
 
 **实施的权限控制**:
 
@@ -133,7 +137,7 @@
    - Tenant Admin 和 User: 看到模型列表和可用性，但看不到具体凭据详情
    - 已有实现 `hideCredentialDetails` 保持不变
 
-**代码位置**: `admin/routing.go:2325-2358`
+**代码位置**: `admin/routing.go:2400`（脱敏判定；应用点 `:2608`）
 
 #### 2.2 特色模型 - `handleRoutingFeatured`
 
@@ -143,7 +147,7 @@
 
 **代码位置**: 
 - `admin/handler.go:1557` (superAdmin 包装)
-- `admin/routing.go:4159` (租户过滤)
+- `admin/routing.go:4238` (租户过滤)
 
 #### 2.3 策略端点保护验证
 

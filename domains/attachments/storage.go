@@ -361,8 +361,14 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	ctx := context.Background()
 
 	// 去重：检查文件是否已存在
+	// ★ 2026-11-27 12h 审计轮（P2-F 配套）：以下任一失败路径都须释放
+	//   CheckAndReserve 的预留（否则预留只增不减，实际用量远低于
+	//   current+reserved 却持续拒绝新上传）。
 	exists, err := backend.Exists(ctx, relPath)
 	if err != nil {
+		if tenant != "" && quotaManager != nil {
+			quotaManager.ReleaseReservation(ctx, tenant, counter.n)
+		}
 		return nil, fmt.Errorf("attachments: check exists: %w", err)
 	}
 
@@ -370,10 +376,17 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	actuallyWrote := false
 	if exists {
 		// 文件已存在，跳过写入
+		// ★ 去重命中：预留未消费也不转销 —— 释放回池，避免虚占。
+		if tenant != "" && quotaManager != nil {
+			quotaManager.ReleaseReservation(ctx, tenant, counter.n)
+		}
 		deduped = true
 	} else {
 		// 保存文件到存储后端
 		if err := backend.Save(ctx, relPath, content); err != nil {
+			if tenant != "" && quotaManager != nil {
+				quotaManager.ReleaseReservation(ctx, tenant, counter.n)
+			}
 			return nil, fmt.Errorf("attachments: save: %w", err)
 		}
 		actuallyWrote = true

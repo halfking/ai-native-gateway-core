@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-26T07:25:28+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 989, "indexes_created": 1041, "indexes_dropped_somewhere": 93, "migration_files": 681, "non_numeric_prefix_files": 19, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-27T00:40:15+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 1004, "indexes_created": 1056, "indexes_dropped_somewhere": 93, "migration_files": 685, "non_numeric_prefix_files": 19, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 0	idx_request_logs_session	request_logs	000_base_tables.sql	session_id,ts	
 1	idx_users_tenant	users	001_users_table.sql	tenant_id	
 1	idx_users_username	users	001_users_table.sql	username	
@@ -580,6 +580,7 @@
 632	idx_audit_attachments_filesystem_cleanup_request	audit_attachments_filesystem_cleanup	632_audit_attachments_filesystem_cleanup.sql	request_id,cleaned_at	
 632	idx_audit_attachments_filesystem_cleanup_run	audit_attachments_filesystem_cleanup	632_audit_attachments_filesystem_cleanup.sql	cleanup_run_id	
 632	idx_audit_attachments_filesystem_cleanup_tenant_ts	audit_attachments_filesystem_cleanup	632_audit_attachments_filesystem_cleanup.sql	tenant_id,cleaned_at	
+633	idx_tenant_attachment_quotas_updated_at	tenant_attachment_quotas	633_tenant_attachment_quotas.sql	updated_at	
 639	idx_ped_tenant_credential	provider_error_details	639_provider_error_details_credential.sql	tenant_id,credential_id,last_seen_at	
 640	idx_session_turns_hot_client_protocol	session_turns_hot	640_session_turns_protocol_fields.sql	tenant_id,client_protocol,ts	
 646	idx_provider_domains_catalog	provider_domains	646_proxy_management_canonical.sql	catalog_code	
@@ -995,3 +996,17 @@
 999	idx_summary_layers_type	session_summary_layers	999_session_summary_layers.sql	tenant_id,layer_type,created_at	
 999d	idx_licenses_tenant_created	licenses	999d_tenant_ops_scope.sql	tenant_id,created_at	
 999d	idx_releases_tenant_published	releases	999d_tenant_ops_scope.sql	tenant_id,published_at,build_seq	
+1000	idx_billing_precheck_log_decision	billing_precheck_log	1000_billing_status_and_credit_limit.sql	decision,created_at	
+1000	idx_billing_precheck_log_tenant	billing_precheck_log	1000_billing_status_and_credit_limit.sql	tenant_id,created_at	
+1000	idx_session_turns_billing_failed	session_turns	1000_billing_status_and_credit_limit.sql	billing_status,ts	
+1000	idx_session_turns_billing_pending	session_turns	1000_billing_status_and_credit_limit.sql	billing_status,ts	
+1000	idx_tenant_credit_wallets_negative_balance	tenant_credit_wallets	1000_billing_status_and_credit_limit.sql	balance_credits	
+1001	idx_maas_bill_status_audit_bill	maas_bill_status_audit	1001_bill_payment_tracking.sql	bill_id,created_at	
+1001	idx_maas_bill_status_audit_time	maas_bill_status_audit	1001_bill_payment_tracking.sql	created_at	
+1001	idx_maas_monthly_bills_overdue	maas_monthly_bills	1001_bill_payment_tracking.sql	period_end,status	
+1001	idx_maas_monthly_bills_paid	maas_monthly_bills	1001_bill_payment_tracking.sql	payment_date	
+1001	idx_maas_monthly_bills_voided	maas_monthly_bills	1001_bill_payment_tracking.sql	voided_at	
+1002	idx_billing_retry_queue_pending	billing_retry_queue	1002_billing_retry_queue.sql	next_retry_at,status	
+1002	idx_billing_retry_queue_request	billing_retry_queue	1002_billing_retry_queue.sql	request_id,status	
+1002	idx_billing_retry_queue_tenant	billing_retry_queue	1002_billing_retry_queue.sql	tenant_id,created_at	
+1002	uq_billing_retry_queue_inflight	billing_retry_queue	1002_billing_retry_queue.sql	request_id	

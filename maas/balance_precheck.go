@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // BillingDecision 计费预检决策结果
@@ -102,7 +103,21 @@ func (s *Service) PreCheckBalance(ctx context.Context, tenantID string, estimate
 	}
 
 	// 5. 异步记录预检日志（不阻塞主流程）
-	go s.logBillingPrecheck(context.Background(), tenantID, "", decision)
+	// ★ 2026-11-27 12h 审计轮（P2-E）：日志 goroutine 加 panic 防护与 5s
+	//   超时——裸 go + context.Background() 下，Exec panic 会崩掉整个进程
+	//   （既往教训：裸 go 无 recover 崩进程），DB 变慢时 goroutine 会无界
+	//   堆积。日志是 best-effort 旁路：失败/超时只降级为 Warn，绝不影响
+	//   预检决策路径。
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Warn("billing precheck log goroutine panicked", "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.logBillingPrecheck(ctx, tenantID, "", decision)
+	}()
 
 	return decision, nil
 }

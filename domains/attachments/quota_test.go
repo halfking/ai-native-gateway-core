@@ -1,6 +1,8 @@
 package attachments
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -214,4 +216,62 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestQuotaManager_AtomicReservationSQLShape 钉住原子预留 SQL 形态
+// （2026-11-27 12h 审计轮 P2-F）。
+//
+// 为什么是读源钉测而非 mock：配额防超卖的关键是「检查＋预留必须在同一条
+// 条件 UPSERT 里」，任何把 WHERE 拆掉、或把 reserved 累加搬出 UPDATE 的
+// 改动都会静默复活 check-then-act 竞态。钉四点：
+//  1. CheckAndReserve 的 INSERT 带 ON CONFLICT + WHERE（条件失败=拒绝）
+//  2. WHERE 同时约束容量（current+reserved+new<=max）与日文件数
+//  3. CommitUsage 转销预留（GREATEST 防负）
+//  4. ReleaseReservation 存在（失败路径释放）
+func TestQuotaManager_AtomicReservationSQLShape(t *testing.T) {
+	src, err := os.ReadFile("quota.go")
+	if err != nil {
+		t.Fatalf("read quota.go: %v", err)
+	}
+	s := string(src)
+
+	// 1) 预留是条件 UPSERT：ON CONFLICT ... DO UPDATE ... WHERE 缺一不可
+	if !strings.Contains(s, "ON CONFLICT (tenant_id) DO UPDATE SET") {
+		t.Error("CheckAndReserve 必须用 ON CONFLICT (tenant_id) DO UPDATE 原子预留")
+	}
+	if !strings.Contains(s, "reserved_bytes = q.reserved_bytes + $3") {
+		t.Error("预留必须在 UPDATE 分支原子累加 reserved_bytes（写回数据库，不能只在内存判断）")
+	}
+
+	// 2) WHERE 同时约束容量与日文件数（拆掉任一即超卖/超条）
+	if !strings.Contains(s, "q.current_bytes + q.reserved_bytes + $3 <= $4") {
+		t.Error("预留 WHERE 必须含容量约束 current+reserved+new <= max")
+	}
+	if !strings.Contains(s, "reserved_files_today + 1") {
+		t.Error("预留 WHERE 必须含日文件数约束（reserved_files_today 参与）")
+	}
+
+	// 3) CommitUsage 转销预留（GREATEST 防重复 Commit 打穿负数）
+	if !strings.Contains(s, "GREATEST(tenant_attachment_quotas.reserved_bytes - $2, 0)") {
+		t.Error("CommitUsage 必须转销 reserved_bytes（GREATEST 防负数）")
+	}
+
+	// 4) 失败路径有释放
+	if !strings.Contains(s, "func (qm *QuotaManager) ReleaseReservation") {
+		t.Error("必须存在 ReleaseReservation（保存失败/去重命中时释放预留）")
+	}
+}
+
+// TestQuotaManager_ReservedColumnsInMigration 钉住 633 迁移带 reserved 两列。
+func TestQuotaManager_ReservedColumnsInMigration(t *testing.T) {
+	src, err := os.ReadFile("../../sql/migrations/startup/633_tenant_attachment_quotas.sql")
+	if err != nil {
+		t.Fatalf("read 633 migration: %v", err)
+	}
+	s := string(src)
+	for _, col := range []string{"reserved_bytes", "reserved_files_today"} {
+		if !strings.Contains(s, "ADD COLUMN IF NOT EXISTS "+col) {
+			t.Errorf("633 迁移必须幂等补列 %s（存量库兼容）", col)
+		}
+	}
 }

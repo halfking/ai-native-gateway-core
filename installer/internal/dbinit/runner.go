@@ -2167,8 +2167,23 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"999b_system_probe_run_tokens.sql",
 			"999c_tool_usage_stats_columns.sql",
 			"999d_tenant_ops_scope.sql",
-			// Keep the attachment-quota migration in the installed startup manifest.
+			// ★ 633（2026-11-27 一周审计轮投递收口的安装器五点补全）：
+			//   tenant_attachment_quotas —— quota.go 的读写面此前在
+			//   **全新安装链路上没有建表来源**（633 只投了序列通道/安装器 TSV/
+			//   embeddata 副本/installer/migrations 四点 ⇒ 新装库缺表 ⇒ 42P01）。
+			//   ★ 幂等 DDL（CREATE TABLE/INDEX IF NOT EXISTS）⇒ 补接线零重复应用风险；
+			//   ★ 633 从未在任何环境应用过 ⇒ 零已应用字节变更。
 			"633_tenant_attachment_quotas.sql",
+			// ★ 1000-1002（2026-11-26 上游计费 P0 轮）：计费状态追踪 ＋ 账单付款
+			//   追踪 ＋ 计费重试队列。上游已把三条登记进安装器 TSV 清单
+			//   （manifest 411 → 412）⇒ 五点同步补全（embeddata 副本/go:embed/
+			//   embeddedSQLFiles/StartupFiles/parity 豁免）。
+			//   ★ 三条自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫（999a/999d 口径）。
+			//   ★ 相对顺序：1001 读 1000 的 billing_status ⇒ 顺序不可打乱；
+			//     1002 建 billing_retry_queue 表 ⇒ 排在 1000 之后即可。
+			"1000_billing_status_and_credit_limit.sql",
+			"1001_bill_payment_tracking.sql",
+			"1002_billing_retry_queue.sql",
 		},
 	}
 }
