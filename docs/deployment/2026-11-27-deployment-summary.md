@@ -1,5 +1,14 @@
 # 部署任务完成总结
 
+> ★★ **订正头（2026-11-27 两周审计整理轮追加；以下原文一字不动）** ★★
+> 本文自称「迁移误应用 211、待修正 252」——与主档 AGENTS.md L137 的实测口径冲突：
+> 1000-1002 三迁移已于 2026-11-27 04:20（commit `1076e93dc1`）完成**五点投递收口**
+> （安装器 embeddata/go:embed/StartupFiles/部署通道 files=()/nonplain 登记册，
+> 并修正 1000 引用的假列 `created_at`→`ts`，fresh 新装 415/415 实证）。
+> 「252/恢复模式」叙述未经主档拓扑核实（主档登记 154/245 共用 172.16.2.210）。
+> 本文的部署脚本部分**不要复用**（绕过投递通道）；权威口径以主档 L137 与
+> `internal/schemadelivery/known_undelivered.go` 台账为准。
+
 **提交哈希**: b10fea029  
 **提交时间**: 2026-11-27 14:31  
 **状态**: ✅ 代码已提交，⚠️ 数据库位置需修正
@@ -106,7 +115,7 @@ sql/migrations/startup/
 docs/deployment/
 └── 2026-11-27-database-correction-plan.md  ← 修正方案
 
-tmp/
+docs/audit/evidence/2026-11-27-billing-deploy-superseded/   ← （2026-11-27 整理轮自 tmp/ 收编）
 ├── DEPLOYMENT-COMPLETION-SUMMARY.md        ← 完整总结
 ├── PRODUCTION-FINAL-REPORT.md              ← 生产报告
 └── deploy-*.sh                              ← 部署脚本
@@ -143,7 +152,7 @@ git reset --hard c512f089d  # 上一个提交
 
 **紧急问题**: 联系DBA团队  
 **修正方案**: docs/deployment/2026-11-27-database-correction-plan.md  
-**技术细节**: tmp/DEPLOYMENT-COMPLETION-SUMMARY.md
+**技术细节**: docs/audit/evidence/2026-11-27-billing-deploy-superseded/DEPLOYMENT-COMPLETION-SUMMARY.md
 
 ---
 
