@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // ---- ServiceJWTIssuer（ADR §7 W1：claims 最小 scope / write 默认拒）----
@@ -348,5 +349,93 @@ func TestRegistrySyncFailureKeepsSnapshot(t *testing.T) {
 	}
 	if s.Status().LastError == "" {
 		t.Fatal("last_error must be recorded")
+	}
+}
+
+// ---- W2：指标族（ADR §6：mcp_gateway_registry_sync_total / _errors_total / _snapshot_entries）----
+
+// gatherRegistryMetrics 从默认 registry 抓联邦三族的当前读数。
+// 注意：指标是包级全局，同一测试进程里其它用例也会推高计数 ⇒ 断言一律用
+// 「本轮前后的差值」，不用绝对值。
+func gatherRegistryMetrics(t *testing.T) (map[string]float64, float64) {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counters := map[string]float64{}
+	var gauge float64 = -1
+	for _, mf := range mfs {
+		switch mf.GetName() {
+		case "mcp_gateway_registry_sync_total":
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "outcome" {
+						counters[lp.GetValue()] += m.GetCounter().GetValue()
+					}
+				}
+			}
+		case "mcp_gateway_registry_sync_errors_total":
+			for _, m := range mf.GetMetric() {
+				counters["errors"] += m.GetCounter().GetValue()
+			}
+		case "mcp_gateway_registry_snapshot_entries":
+			for _, m := range mf.GetMetric() {
+				gauge = m.GetGauge().GetValue()
+			}
+		}
+	}
+	return counters, gauge
+}
+
+func TestRegistrySyncMetricsVisible(t *testing.T) {
+	payload := `{"servers":[` +
+		`{"id":"mcp-memora","name":"memora","transport":"http","endpoint":"http://m","auth_mode":"llm_gateway","enabled":true},` +
+		`{"id":"mcp-edge","name":"edge","transport":"stdio","endpoint":"/bin/x","auth_mode":"none","enabled":true}` +
+		`],"count":2,"scope":"tenant"}`
+	srv := registryTestServer(t, 200, payload)
+	defer srv.Close()
+	store := NewMemoryStore()
+	s := NewRegistrySyncer(RegistrySyncConfig{Enabled: true, URL: srv.URL, Token: "t"}, store)
+	ctx := context.Background()
+
+	before, _ := gatherRegistryMetrics(t)
+	if err := s.SyncOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncOnce(ctx); err != nil { // 第二轮：差值应为 2
+		t.Fatal(err)
+	}
+	after, gauge := gatherRegistryMetrics(t)
+
+	if d := after["ok"] - before["ok"]; d != 2 {
+		t.Fatalf("sync_total{ok} delta = %v, want 2", d)
+	}
+	if d := after["skip_stdio"] - before["skip_stdio"]; d != 2 {
+		t.Fatalf("sync_total{skip_stdio} delta = %v, want 2", d)
+	}
+	if d := after["errors"] - before["errors"]; d != 0 {
+		t.Fatalf("sync_errors_total delta = %v, want 0", d)
+	}
+	if gauge != 2 {
+		t.Fatalf("snapshot_entries = %v, want 2 (gauge is absolute)", gauge)
+	}
+}
+
+func TestRegistrySyncMetricsErrorCounted(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+	}))
+	defer bad.Close()
+	store := NewMemoryStore()
+	s := NewRegistrySyncer(RegistrySyncConfig{Enabled: true, URL: bad.URL, Token: "t"}, store)
+
+	before, _ := gatherRegistryMetrics(t)
+	if err := s.SyncOnce(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+	after, _ := gatherRegistryMetrics(t)
+	if d := after["errors"] - before["errors"]; d < 1 {
+		t.Fatalf("sync_errors_total delta = %v, want >=1", d)
 	}
 }

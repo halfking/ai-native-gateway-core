@@ -188,6 +188,7 @@ func (s *RegistrySyncer) SyncOnce(ctx context.Context) error {
 	servers, tenantID, err := s.fetch(ctx)
 	if err != nil {
 		s.setError(err)
+		registrySyncErrorsTotal.Inc()
 		return err
 	}
 
@@ -256,6 +257,7 @@ func (s *RegistrySyncer) SyncOnce(ctx context.Context) error {
 	for _, a := range toUpsert {
 		if err := s.store.PutAdapter(ctx, a); err != nil {
 			s.setError(err)
+			registrySyncErrorsTotal.Inc()
 			return fmt.Errorf("mcp: registrysync put adapter %q: %w", a.Name, err)
 		}
 	}
@@ -267,6 +269,11 @@ func (s *RegistrySyncer) SyncOnce(ctx context.Context) error {
 	s.entries = entries
 	s.mu.Unlock()
 	s.setError(nil)
+	// 逐条处置计数（ADR §6：outcome ∈ ok|disabled|skip_stdio|skip_auth_ref）。
+	for _, e := range entries {
+		registrySyncTotal.WithLabelValues(e.Outcome).Inc()
+	}
+	registrySnapshotEntries.Set(float64(len(servers)))
 	return nil
 }
 
