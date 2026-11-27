@@ -121,6 +121,7 @@ WITH state AS (
 		request_id, fact_request_id, tenant_id, occurred_at, occurred_date, billing_date,
 		provider_id, credential_id, credential_label, provider_code, provider_name, outbound_model, canonical_id, raw_model_name,
 		user_id, person_key, client_id, client_model, agent_name, client_ip, identity_hash, task_type, owner_user,
+		org_id,
 		session_id, task_id, api_key_id, api_key_prefix, api_key_owner_user, application_id, application_code, work_type, session_intent, compression_applied, client_cancelled,
 		protocol, modality, attachment_count,
 		prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens, cache_input_tokens,
@@ -139,6 +140,11 @@ WITH state AS (
 		NULLIF(c.virtual_client_id,''), NULLIF(l.client_model,''), COALESCE(NULLIF(c.agent_name,''), NULLIF(l.agent_name,'')),
 		COALESCE(c.client_ip,l.client_ip), COALESCE(NULLIF(c.identity_hash,''), NULLIF(l.identity_hash,'')),
 		NULLIF(l.task_type,''), COALESCE(NULLIF(c.owner_user,''), NULLIF(k.owner_user,'')),
+		-- ★ 归因（2026-11-28 审计轮修复：V2 投影重写时从 4aa482821d 丢失回归）：
+		--   org_id = api_key owner_user → users → org。owner 与上行 owner_user 同源：
+		--   先请求侧属性（c.owner_user），回落 api_keys.owner_user（k.owner_user）。
+		--   users.username 匹配不到（平台/外部 owner）或用户未关联组织 ⇒ NULL=未归因。
+		u.org_id::text,
 		COALESCE(NULLIF(c.gw_session_id,''), NULLIF(l.gw_session_id,'')),
 		COALESCE(NULLIF(c.gw_task_id,''), NULLIF(l.gw_task_id,'')), f.api_key_id, k.key_prefix, COALESCE(NULLIF(l.api_key_owner_user,''),NULLIF(k.owner_user,'')), f.application_id, NULLIF(c.application_code,''),
 		NULLIF(l.work_type,''), NULLIF(btrim(s.user_intent),''), l.compression_applied, l.client_cancelled,
@@ -185,6 +191,11 @@ WITH state AS (
 		  AND r.ts >= f.occurred_at - interval '24 hours' AND r.ts < f.occurred_at + interval '24 hours'
 		ORDER BY abs(extract(epoch FROM r.ts-f.occurred_at)), r.ts DESC LIMIT 1
 	) l ON true
+	-- ★ 归因 JOIN（2026-11-28 审计轮修复，4aa482821d 原形移植）：owner → users → org_id
+	--   （组织级配额/账目维度）。位置在 c/l 两个 LATERAL 之后（42P02 c/l 未定义教训）。
+	LEFT JOIN public.users u
+		ON u.username = COALESCE(NULLIF(c.owner_user,''), NULLIF(k.owner_user,''))
+		AND u.org_id IS NOT NULL
 	LEFT JOIN public.session_summaries s ON s.tenant_id=f.tenant_id
 		AND s.session_key=COALESCE(NULLIF(c.gw_session_id,''),NULLIF(l.gw_session_id,''))
 	ON CONFLICT (request_id, occurred_at) DO UPDATE SET
@@ -195,6 +206,7 @@ WITH state AS (
 		person_key=EXCLUDED.person_key, client_id=EXCLUDED.client_id,
 		client_model=EXCLUDED.client_model, agent_name=EXCLUDED.agent_name, client_ip=EXCLUDED.client_ip,
 		identity_hash=EXCLUDED.identity_hash, task_type=EXCLUDED.task_type, owner_user=EXCLUDED.owner_user,
+		org_id=EXCLUDED.org_id,
 		session_id=EXCLUDED.session_id, task_id=EXCLUDED.task_id, api_key_owner_user=EXCLUDED.api_key_owner_user,
 		api_key_id=EXCLUDED.api_key_id, api_key_prefix=EXCLUDED.api_key_prefix,
 		application_id=EXCLUDED.application_id, application_code=EXCLUDED.application_code,

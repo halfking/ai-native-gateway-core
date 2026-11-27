@@ -210,8 +210,12 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if keyInfo.DefaultClientProfile != nil {
 			profile = *keyInfo.DefaultClientProfile
 		}
+		// ★ 2026-11-28 审计轮修复（chat 面 AfterAuto 复检同型）：判定体必须看
+		//   auto 重写后的目标模型——clientModel 保持 "auto" 供归因，但 auto 豁免
+		//   会放行判定体，若仍传 clientModel，deny 名单上的模型可借 auto 直达
+		//   上游（该面无 AfterAuto 钩子，重写就发生在上方内联块）。
 		if denied, canonical, _ := enforceTenantModelPolicy(
-			r.Context(), clientModel, keyInfo, h.modelPolicy, h.policyResolver, profile,
+			r.Context(), model, keyInfo, h.modelPolicy, h.policyResolver, profile,
 		); denied {
 			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
 			writeErrorJSON(w, http.StatusForbidden, requestID, msg,

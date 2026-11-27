@@ -343,10 +343,13 @@ type Handler struct {
 	// → relay would be ugly; relay → admin already exists).
 	// 2026-11-27 三级配额制轮：加 InvalidateOrg/InvalidateUser（组织/用户
 	// 级策略写路径的缓存失效；*modelpolicy.Checker 同时满足三方法）。
+	// 2026-11-28 L144 轮：加 InvalidateApplication（application/Key 级
+	// allowed_models_json allowlist 写路径同款失效）。
 	modelPolicy interface {
 		Invalidate(tenantID string)
 		InvalidateOrg(orgID int64)
 		InvalidateUser(userID int64)
+		InvalidateApplication(appID int64)
 	}
 	// keyVerifier (2026-07-17) invalidates the KeyInfo cache when admin
 	// writes (update rate limits, enable/disable, revoke, patch profile)
@@ -593,11 +596,12 @@ func (h *Handler) SetAttachmentStorage(s AttachmentStorageService) {
 // entries.  Called from cmd/gateway/main.go after constructing both
 // the admin Handler and the modelpolicy.Checker.
 // 2026-11-27 三级配额制轮：接口加 InvalidateOrg/InvalidateUser（组织/用户
-// 级策略写路径同款失效）。
+// 级策略写路径同款失效）。2026-11-28 L144 轮：加 InvalidateApplication。
 func (h *Handler) SetModelPolicy(mp interface {
 	Invalidate(tenantID string)
 	InvalidateOrg(orgID int64)
 	InvalidateUser(userID int64)
+	InvalidateApplication(appID int64)
 }) {
 	h.modelPolicy = mp
 }
@@ -1186,6 +1190,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 三级配额制（2026-11-27）：组织管理 API（列表/CRUD/钱包/成员，super_admin）。
 	mux.HandleFunc("/api/admin/orgs", h.superAdmin(h.handleOrgs))
 	mux.HandleFunc("/api/admin/orgs/", h.superAdmin(h.handleOrgs))
+	// 三级配额制第四级（2026-11-28 L144 轮）：application（Key）级模型
+	// allowlist 读写（allowed_models_json 死列激活，super_admin）。
+	mux.HandleFunc("/api/admin/applications/", h.superAdmin(h.handleApplicationAllowedModels))
 	mux.HandleFunc("/api/admin/mobile-node/descriptor", h.superAdmin(h.handleMobileNodeDescriptor))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))

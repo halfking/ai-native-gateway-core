@@ -47,6 +47,8 @@
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 792 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 794 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 39 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 758 行逐字保留，含人工改判）
+#gen_prune	2026-11-28 L141 协议自适应轮 —— 删 1 条重复行（/api/admin/session-analytics/v2/filter-options GET，被删行 file:line=cmd/gateway/main.go:8837，保留行 =8763）：★ 上游 22ea8071ff（04:00，删 session-analytics/v2/filter-options 重复注册 + ServeMux 启动 panic 判据）把该路由的注册点从 2 处减为 1 处（现 main.go:8839 为唯一注册点）⇒ admin-routes.txt 797→796，★ 而台账未同步 ⇒ TestPostSurfaceLedgerCoversEveryRoute 红（797≠796）；★ 收口只删这 1 条重复行、不改既有裁决（不重跑生成器：重跑会把 16 处人工改判静默改回机器盲区）；★ 路由残留清单已复核：按路径比对 routes 753 / ledger 753、净缺口 0、陈旧 0、同路径重复仅此 1 处
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 796 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -80,6 +82,7 @@
 /api/admin/annotations/samples	ANY	admin/handler.go:1517	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/annotations/stats	ANY	admin/handler.go:1521	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/anomaly-reporter/stats	ANY	cmd/gateway/main.go:7527	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/admin/applications/	ANY	admin/handler.go:1195	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/approvals	ANY	cmd/gateway/main.go:7886	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/approvals/stats	ANY	cmd/gateway/main.go:7887	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/attachments	ANY	admin/handler.go:1105	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -398,7 +401,6 @@
 /api/admin/session-analytics/v2/clients	GET	admin/handler.go:1451	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-analytics/v2/clients/{id}	GET	admin/handler.go:1452	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8763	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
-/api/admin/session-analytics/v2/filter-options	GET	cmd/gateway/main.go:8837	read	json-decode			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-analytics/v2/model-ranking	ANY	admin/handler.go:1441	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-analytics/v2/overview	GET	admin/handler.go:1455	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/session-analytics/v2/provider-ranking	ANY	admin/handler.go:1442	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

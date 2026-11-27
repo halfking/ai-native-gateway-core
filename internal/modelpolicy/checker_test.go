@@ -261,6 +261,75 @@ func TestChecker_ScopeIsolation_OrgUser(t *testing.T) {
 	}
 }
 
+// Test 8d: application（Key）allowlist——第四级（2026-11-28 L144 轮死列
+// 激活）。“a:” 前缀独立命名空间；NULL/空数组=未启用=放行；非空数组=
+// allowlist；appID<=0 fail-open；四级互不串线。
+func TestChecker_ApplicationAllowlist(t *testing.T) {
+	c := New(nil)
+	c.mu.Lock()
+	// app 9: 非空 allowlist（glm-5.1 在名单内）。
+	c.cache["a:9"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{"glm-5.1": true}}
+	c.expires["a:9"] = time.Now().Add(time.Hour)
+	// app 10: 空数组（写入面清空语义）⇒ 未启用。
+	c.cache["a:10"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{}}
+	c.expires["a:10"] = time.Now().Add(time.Hour)
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	// Whitelisted model allowed; absent model forbidden.
+	if c.IsForbiddenForApplication(ctx, 9, "glm-5.1") {
+		t.Error("app 9 whitelisted model must be allowed")
+	}
+	if !c.IsForbiddenForApplication(ctx, 9, "minimax-m3") {
+		t.Error("app 9 non-whitelisted model must be forbidden")
+	}
+	// Empty allowlist = not engaged = allow（防「建了白名单没填条目 ⇒ 全锁死」）。
+	if c.IsForbiddenForApplication(ctx, 10, "minimax-m3") {
+		t.Error("app 10 empty allowlist must NOT engage (fail-open)")
+	}
+	// No policy row ⇒ allow.
+	if c.IsForbiddenForApplication(ctx, 11, "minimax-m3") {
+		t.Error("app 11 has no allowlist — must allow")
+	}
+	// appID <= 0（key 无归属 application）⇒ fail-open。
+	if c.IsForbiddenForApplication(ctx, 0, "minimax-m3") || c.IsForbiddenForApplication(ctx, -1, "minimax-m3") {
+		t.Error("unset application id must fail-open")
+	}
+	// 四级互不串线：a: 条目不得泄漏进 tenant/org/user 判定。
+	if c.IsForbidden(ctx, "9", "minimax-m3") {
+		t.Error("application allowlist must not leak into tenant scope")
+	}
+	if c.IsForbiddenForOrg(ctx, 9, "minimax-m3") || c.IsForbiddenForUser(ctx, 9, "minimax-m3") {
+		t.Error("application allowlist must not leak into org/user scopes")
+	}
+}
+
+// Test 8e: InvalidateApplication 精准清一个 “a:” 键（写路径的缓存失效）。
+func TestChecker_InvalidateApplication(t *testing.T) {
+	c := New(nil)
+	c.mu.Lock()
+	c.cache["a:9"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{"glm-5.1": true}}
+	c.expires["a:9"] = time.Now().Add(time.Hour)
+	c.cache["a:12"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{"kimi-k3": true}}
+	c.expires["a:12"] = time.Now().Add(time.Hour)
+	c.mu.Unlock()
+
+	c.InvalidateApplication(9)
+	c.mu.RLock()
+	_, has9 := c.cache["a:9"]
+	_, has12 := c.cache["a:12"]
+	c.mu.RUnlock()
+	if has9 {
+		t.Error("InvalidateApplication must clear a:9")
+	}
+	if !has12 {
+		t.Error("InvalidateApplication must not touch sibling a:12")
+	}
+	// nil-safe（与其它 Invalidate* 同款）。
+	var nilChecker *Checker
+	nilChecker.InvalidateApplication(9) // must not panic
+}
+
 // Test 9: Stop is idempotent.
 func TestChecker_StopIdempotent(t *testing.T) {
 	c := New(nil)

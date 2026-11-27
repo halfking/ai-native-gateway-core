@@ -87,9 +87,11 @@ func JWTExpiry() time.Duration {
 // SignToken creates a signed JWT string for the given user.
 // Returns an error if no JWT signing key is configured (rule 20 §8.2).
 //
-// roles（三级配额制 P1-b，2026-11-27）：有效角色集（可 nil）。nil/空 ⇒ 只写
-// 主角色 claim（与旧 token 逐字节同形）；非空 ⇒ Roles claim 带全量、Role 仍写
-// 主角色（roles[0]，存量读者/多 issuer 校验用）。
+// roles（三级配额制 P1-b，2026-11-27）：有效角色集（可 nil）。nil/空 ⇒ 经
+// effectiveLoginRoles 归一后仍写 "roles":[主角色]（语义上是旧 token 的超集：
+// 旧读者忽略未知 claim，新读者拿到规范数组——**不是**逐字节同形，2026-11-28
+// 审计轮订正此注释）；非空 ⇒ Roles claim 带全量、Role 仍写主角色（roles[0]，
+// 存量读者/多 issuer 校验用）。
 func SignToken(userID int, tenantID, username, role, secretKey string, mustChangePassword bool) (string, time.Time, error) {
 	return SignTokenWithRoles(userID, tenantID, username, role, nil, secretKey, mustChangePassword)
 }

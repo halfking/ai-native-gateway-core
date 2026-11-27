@@ -99,6 +99,15 @@ func enforceTenantModelPolicy(
 			}
 		}
 	}
+
+	// Level 4: application (Key) allowlist (2026-11-28 L144 轮死列激活).
+	// KeyInfo carries ApplicationID directly — no owner resolution
+	// needed.  NULL / empty allowed_models_json ⇒ not engaged
+	// (fail-open) ⇒ 存量 NULL 列的 keys 行为零变化；appID<=0（无归属
+	// application 的 key）⇒ skip。任一级 deny ⇒ 403（与 org/user 同链）。
+	if keyInfo.ApplicationID > 0 && mp.IsForbiddenForApplication(ctx, int64(keyInfo.ApplicationID), canonical) {
+		return true, canonical, tenantID
+	}
 	return false, canonical, tenantID
 }
 

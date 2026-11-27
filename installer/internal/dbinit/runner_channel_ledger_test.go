@@ -288,7 +288,13 @@ func TestChannelFileSetBaseline(t *testing.T) {
 	//     1004_three_tier_model_policies，files=() + StartupFiles）
 	//     ⇒ **交集 +3**（★ 352 → 355 ★★）；两通道独有清单不变（25 / 63）。
 	//     三条都自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；TSV manifest 412→417。
-	wantBoth          = 355
+	//   ★ 2026-11-28（42P01 根残留清理轮基线校准）：父提交 215aa4ead9 实测交集
+	//     已 365（期望 355 停留在三级配额制轮前）——+10 是上游多轮（含 983j-r
+	//     修复族与 W4.3 渠道商轮）陆续落两通道但基线未跟；本轮 1006 落两通道
+	//     ⇒ 366。两通道独有清单不变（25 / 63）。★ 本轮同时代上游收口 492 的
+	//     embeddedSQLFiles map 缺条目（1357e62917 半点遗留，
+	//     TestStartupFilesAreAllEmbedded 由红转绿的实锚）。
+	wantBoth          = 366
 	wantOnlyDeploy    = 25
 	wantOnlyInstaller = 63
 	)

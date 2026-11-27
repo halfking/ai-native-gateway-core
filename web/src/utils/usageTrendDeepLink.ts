@@ -48,6 +48,7 @@ export type PinnedDimension =
   | 'model'
   | 'client'
   | 'user'
+  | 'org'
   | 'project'
   | 'task'
   | 'apikeyPrefix'
@@ -90,6 +91,9 @@ export const DIMENSION_SPECS: Record<PinnedDimension, DimensionSpec> = {
   model: { param: 'model', arm: 'models', labelKey: 'usageTrend.filterModel', control: 'picker' },
   client: { param: 'client_model', arm: 'clients', labelKey: 'requests.list.filter.deepLink.clientModel', control: 'chip' },
   user: { param: 'end_user_id', arm: 'users', labelKey: 'requests.list.filter.deepLink.endUser', control: 'chip' },
+  // ★ org（三级配额制轮 2026-11-28）：request_metrics.org_id（owner→users→org 投影归因）。
+  //   没有对应排行卡片（页面不按组织排行）⇒ 钉住时不收卡片。
+  org: { param: 'org_id', arm: null, labelKey: 'requests.list.filter.deepLink.org', control: 'chip' },
   project: { param: 'application_code', arm: 'projects', labelKey: 'requests.list.filter.deepLink.application', control: 'chip' },
   task: { param: 'task_type', arm: 'tasks', labelKey: 'requests.list.filter.deepLink.task', control: 'chip' },
   apikeyPrefix: { param: 'api_key_prefix', arm: 'apiKeys', labelKey: 'requests.list.filter.deepLink.apiKey', control: 'chip' },

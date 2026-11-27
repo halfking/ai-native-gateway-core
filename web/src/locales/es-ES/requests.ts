@@ -53,6 +53,7 @@ export default {
       deepLink: {
         clientModel: 'Modelo de cliente',
         endUser: 'Usuario final',
+        org: 'Organización',
         apiKey: 'Clave de API',
         application: 'Código de aplicación',
         task: 'Tarea',

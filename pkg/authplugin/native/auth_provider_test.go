@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 )
 
@@ -43,15 +44,18 @@ func TestSignAndVerifyToken(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	secret := "test-jwt-secret"
 
-	token, expiresAt, err := signToken(1, "default", "testuser", "admin", secret, false)
+	// ★ 2026-11-28 审计轮：本地 signToken 已删除（jwtClaims 无 Roles 字段会签出
+	//   丢多角色的 token）——签发统一走 admin.SignTokenWithRoles（同一把密钥链），
+	//   本测试改为钉「admin 签发的 token native verifyToken 仍可验」。
+	token, expiresAt, err := admin.SignTokenWithRoles(1, "default", "testuser", "admin", []string{"admin"}, secret, false)
 	if err != nil {
-		t.Fatalf("signToken() error = %v", err)
+		t.Fatalf("SignTokenWithRoles() error = %v", err)
 	}
 	if token == "" {
-		t.Fatal("signToken() returned empty token")
+		t.Fatal("SignTokenWithRoles() returned empty token")
 	}
 	if expiresAt.Before(time.Now()) {
-		t.Fatal("signToken() returned past expiration time")
+		t.Fatal("SignTokenWithRoles() returned past expiration time")
 	}
 
 	claims, err := verifyToken(token, secret)

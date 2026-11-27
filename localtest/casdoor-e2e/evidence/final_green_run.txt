@@ -1,0 +1,43 @@
+
+== C0 前置健康 ==
+  ✓ 网关 healthz
+  ✓ casdoor health
+  ✓ admin 新密码直登（幂等重跑）
+
+== C1 回归门：/api/auth/me ==
+  ✓ /api/auth/me 200 (native 会话)
+
+== C2 providers 含 casdoor ==
+  ✓ plugin-providers 列出 casdoor
+
+== C3 PUT 热切换 → casdoor ==
+  ✓ PUT message=no restart required
+
+== C4 casdoor 登录 → re-signed ==
+  ✓ token_source=re-signed (断点①)
+  ✓ 拿到换发 JWT
+
+== C5 换发 token 会话不断链 ==
+  ✓ /api/auth/me 200 (换发 JWT)
+
+== C6 身份物化 + metadata 关联 ==
+  ✓ users 行物化 (id=2)
+  ✓ metadata.users_id=2 == users.id
+
+== C7 二次登录不重复物化 ==
+  ✓ users 行数恒 1
+  ✓ 映射恒 1 条
+  ✓ users_id 稳定
+  ✓ 二次换发 token 也能用
+
+== C8 撤销纪元隔离 + 回退 native ==
+  ✓ admin 强制重置 200
+  ✓ 旧 token 已撤销 (401, 撤销纪元对物化用户生效)
+  ✓ admin 会话不受影响 (隔离成立)
+  ✓ 回退 PUT 成功
+  ✓ 回切后 native 登录仍可用 (token_source=provider 本地签发)
+  ✓ 回切后 gwuser casdoor 口令被 native 拒绝 (401, 不可本地登录)
+
+== 总结 ==
+PASS=21 FAIL=0
+ALL GREEN

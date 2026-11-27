@@ -273,6 +273,19 @@ func (c *Checker) IsForbiddenForUser(ctx context.Context, userID int64, canonica
 	return c.isForbiddenForSubject(ctx, "u:"+strconv.FormatInt(userID, 10), "user", userID, canonicalName)
 }
 
+// IsForbiddenForApplication returns true if the model violates the
+// application's allowed_models_json allowlist — the fourth tier of the
+// model policy chain (2026-11-28 L144 轮：死列激活).  Scope key
+// "a:<applicationID>".  NULL / empty array ⇒ not engaged ⇒ allow
+// (fail-open; 存量 NULL 列零行为变化).  appID <= 0 (key without an
+// application) ⇒ allow.
+func (c *Checker) IsForbiddenForApplication(ctx context.Context, appID int64, canonicalName string) bool {
+	if c == nil || appID <= 0 || canonicalName == "" {
+		return false
+	}
+	return c.isForbiddenForSubject(ctx, "a:"+strconv.FormatInt(appID, 10), "application", appID, canonicalName)
+}
+
 // isForbiddenForSubject is the shared hot path for the three scopes.
 // scopeKind is for logging only; subjectKey is the cache key.
 func (c *Checker) isForbiddenForSubject(ctx context.Context, subjectKey, scopeKind string, subjectID interface{}, canonicalName string) bool {
@@ -344,6 +357,15 @@ func (c *Checker) InvalidateUser(userID int64) {
 		return
 	}
 	c.InvalidateSubject("u:" + strconv.FormatInt(userID, 10))
+}
+
+// InvalidateApplication clears the cached policy for one application
+// (Key allowlist write path, 2026-11-28 L144 轮).
+func (c *Checker) InvalidateApplication(appID int64) {
+	if c == nil || appID <= 0 {
+		return
+	}
+	c.InvalidateSubject("a:" + strconv.FormatInt(appID, 10))
 }
 
 // InvalidateSubject clears one raw cache key (scope-prefixed).
@@ -459,6 +481,43 @@ func (c *Checker) ReloadAll(ctx context.Context) error {
 	}
 	userRows.Close()
 
+	// 2026-11-28 L144 轮：application（Key）allowlist 一次拉全。行源是
+	// applications.allowed_models_json 单列 JSONB（非 (subject, model, mode)
+	// 形状）⇒ 不走 collectPolicies，专用循环直接构建 "a:" 前缀条目。
+	appRows, err := tx.Query(ctx, `
+		SELECT id, allowed_models_json
+		FROM applications
+		WHERE enabled
+		  AND allowed_models_json IS NOT NULL
+		  AND jsonb_typeof(allowed_models_json) = 'array'
+		  AND jsonb_array_length(allowed_models_json) > 0
+	`)
+	if err != nil {
+		return fmt.Errorf("query application allowlists: %w", err)
+	}
+	for appRows.Next() {
+		var appID int64
+		var raw []string
+		if err := appRows.Scan(&appID, &raw); err != nil {
+			appRows.Close()
+			return fmt.Errorf("scan application allowlist: %w", err)
+		}
+		models := make(map[string]bool, len(raw))
+		for _, m := range raw {
+			name := strings.ToLower(strings.TrimSpace(m))
+			if name != "" {
+				models[name] = true
+			}
+		}
+		if len(models) > 0 {
+			fresh["a:"+strconv.FormatInt(appID, 10)] = &subjectPolicy{mode: ModeAllow, models: models}
+		}
+	}
+	if err := appRows.Err(); err != nil {
+		return fmt.Errorf("app rows.Err: %w", err)
+	}
+	appRows.Close()
+
 	c.mu.Lock()
 	now := time.Now()
 	for subject, pol := range fresh {
@@ -532,6 +591,13 @@ func collectPolicies(rows pgx.Rows, fresh map[string]*subjectPolicy, prefix stri
 // 比 bypass 路径更窄、更安全（不能跨租户），且与同包其它读路径（denylist
 // cache refresh）一致。
 func (c *Checker) reloadSubject(ctx context.Context, subjectKey, scopeKind string) error {
+	// application（Key）allowlist 的行源不是 (subject, model, mode) 表——
+	// 是 applications.allowed_models_json 单列 JSONB 数组 ⇒ 走专用加载
+	// （2026-11-28 L144 轮死列激活）。
+	if strings.HasPrefix(subjectKey, "a:") {
+		return c.reloadApplicationPolicy(ctx, subjectKey)
+	}
+
 	// Dispatch on the scope prefix to (table, subject column, subject value).
 	var table, idCol, idVal string
 	switch {
@@ -597,6 +663,62 @@ func (c *Checker) reloadSubject(ctx context.Context, subjectKey, scopeKind strin
 	if len(pol.models) == 0 {
 		// No policy rows — drop the entry so we never look it up
 		// again until the next reload.
+		delete(c.cache, subjectKey)
+		delete(c.expires, subjectKey)
+	} else {
+		c.cache[subjectKey] = pol
+		c.expires[subjectKey] = time.Now().Add(c.ttl)
+	}
+	c.mu.Unlock()
+
+	return nil
+}
+
+// reloadApplicationPolicy loads one application's allowed_models_json
+// allowlist（scope "a:"，2026-11-28 L144 轮死列激活）.  NULL / empty
+// array / non-array JSON / disabled row ⇒ nothing cached ⇒ "not
+// engaged" ⇒ allow everything (fail-open).  Non-empty array ⇒
+// allowlist（不在名单即拒），与 org/user 的 allow 模式同语义.
+func (c *Checker) reloadApplicationPolicy(ctx context.Context, subjectKey string) error {
+	id, err := strconv.ParseInt(strings.TrimPrefix(subjectKey, "a:"), 10, 64)
+	if err != nil {
+		return fmt.Errorf("bad application subject key: %s", subjectKey)
+	}
+	rows, err := c.dbPool.Query(ctx, `
+		SELECT allowed_models_json
+		FROM applications
+		WHERE id = $1 AND enabled
+		  AND allowed_models_json IS NOT NULL
+		  AND jsonb_typeof(allowed_models_json) = 'array'
+		  AND jsonb_array_length(allowed_models_json) > 0
+	`, id)
+	if err != nil {
+		return fmt.Errorf("query application allowlist: %w", err)
+	}
+	pol := &subjectPolicy{mode: ModeAllow, models: make(map[string]bool)}
+	if rows.Next() {
+		var raw []string
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan allowed_models_json: %w", err)
+		}
+		for _, m := range raw {
+			name := strings.ToLower(strings.TrimSpace(m))
+			if name != "" {
+				pol.models[name] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("rows.Err: %w", err)
+	}
+	rows.Close()
+
+	c.mu.Lock()
+	if len(pol.models) == 0 {
+		// Not engaged（NULL/空数组/停用行）——与 org/user 同纪律：空白名单
+		// 不是「全锁死」，是「未启用」⇒ 删缓存键、下次写路径更新后重建。
 		delete(c.cache, subjectKey)
 		delete(c.expires, subjectKey)
 	} else {

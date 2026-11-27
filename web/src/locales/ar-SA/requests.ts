@@ -55,6 +55,7 @@ export default {
       deepLink: {
         clientModel: 'العميل',
         endUser: 'المستخدم النهائي',
+        org: 'المؤسسة',
         apiKey: 'مفتاح API',
         application: 'التطبيق',
         task: 'المهمة',

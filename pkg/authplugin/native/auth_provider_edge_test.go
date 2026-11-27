@@ -27,9 +27,9 @@ func TestAuthProvider_Authenticate_TenantCheckError(t *testing.T) {
 	
 	// User query succeeds
 	userRows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "enabled", "must_change_password",
+		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "roles", "enabled", "must_change_password",
 	}).AddRow(
-		1, "tenant1", "testuser", string(hash), "Test", "test@example.com", "user", true, false,
+		1, "tenant1", "testuser", string(hash), "Test", "test@example.com", "user", []string{"user"}, true, false,
 	)
 	
 	mock.ExpectQuery(`SELECT id, tenant_id, username, password_hash`).
@@ -61,9 +61,9 @@ func TestAuthProvider_Authenticate_TenantDisabled(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	
 	userRows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "enabled", "must_change_password",
+		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "roles", "enabled", "must_change_password",
 	}).AddRow(
-		1, "tenant1", "testuser", string(hash), "Test", "test@example.com", "user", true, false,
+		1, "tenant1", "testuser", string(hash), "Test", "test@example.com", "user", []string{"user"}, true, false,
 	)
 	
 	mock.ExpectQuery(`SELECT id, tenant_id, username, password_hash`).
@@ -96,9 +96,9 @@ func TestAuthProvider_Authenticate_SuccessWithMustChange(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	
 	userRows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "enabled", "must_change_password",
+		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "roles", "enabled", "must_change_password",
 	}).AddRow(
-		1, "tenant1", "testuser", string(hash), "Test", "test@example.com", "user", true, true, // must_change_password=true
+		1, "tenant1", "testuser", string(hash), "Test", "test@example.com", "user", []string{"user"}, true, true, // must_change_password=true
 	)
 	
 	mock.ExpectQuery(`SELECT id, tenant_id, username, password_hash`).

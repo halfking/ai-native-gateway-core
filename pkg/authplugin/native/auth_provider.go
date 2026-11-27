@@ -72,15 +72,19 @@ func (p *NativeAuthProvider) Authenticate(ctx context.Context, req *authplugin.A
 		DisplayName        string
 		Email              string
 		Role               string
+		Roles              []string
 		Enabled            bool
 		MustChangePassword bool
 	}
+	// ★ roles（P1-b 多角色，2026-11-28 审计轮补透传）：登录签发与 legacy 路径
+	//   （admin/auth.go 同款 SELECT COALESCE(roles,'{}')）口径一致——否则 plugin
+	//   路径签出的 token 无 roles claim、多角色在登录后到首次 /me 前不可见。
 	err := p.db.QueryRow(qctx, `
-		SELECT id, tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password
+		SELECT id, tenant_id, username, password_hash, display_name, email, role, COALESCE(roles, '{}'), enabled, must_change_password
 		FROM users WHERE username = $1
 	`, req.Username).Scan(
 		&u.ID, &u.TenantID, &u.Username, &u.PasswordHash,
-		&u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword,
+		&u.DisplayName, &u.Email, &u.Role, &u.Roles, &u.Enabled, &u.MustChangePassword,
 	)
 	if err != nil {
 		// user not found → map to ErrInvalidCredentials (don't leak existence)
@@ -107,7 +111,10 @@ func (p *NativeAuthProvider) Authenticate(ctx context.Context, req *authplugin.A
 	//nolint:errcheck
 	p.db.Exec(qctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
-	token, expiresAt, signErr := signToken(u.ID, u.TenantID, u.Username, u.Role, p.secretKey, u.MustChangePassword)
+	// ★ 2026-11-28 审计轮：改走 admin.SignTokenWithRoles（同一把 jwtSecret 链、
+	//   主角色恒前置、TTL 同一 SSOT）——本地 signToken 的 jwtClaims 无 Roles 字段，
+	//   签出的 token 无 roles claim ⇒ 多角色登录即丢。
+	token, expiresAt, signErr := admin.SignTokenWithRoles(u.ID, u.TenantID, u.Username, u.Role, u.Roles, p.secretKey, u.MustChangePassword)
 	if signErr != nil {
 		slog.Error("native auth: sign token failed", "error", signErr)
 		return nil, fmt.Errorf("native auth: sign token: %w", signErr)
@@ -120,6 +127,7 @@ func (p *NativeAuthProvider) Authenticate(ctx context.Context, req *authplugin.A
 		Username:           u.Username,
 		TenantID:           u.TenantID,
 		Role:               u.Role,
+		Roles:              u.Roles,
 		DisplayName:        u.DisplayName,
 		Email:              u.Email,
 		Enabled:            u.Enabled,

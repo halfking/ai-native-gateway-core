@@ -58,6 +58,7 @@ export default {
       deepLink: {
         clientModel: '客户端',
         endUser: '终端用户',
+        org: '组织',
         apiKey: 'API 密钥',
         application: '应用',
         task: '任务',

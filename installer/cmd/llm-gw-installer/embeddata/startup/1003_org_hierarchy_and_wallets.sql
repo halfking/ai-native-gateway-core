@@ -101,4 +101,12 @@ COMMENT ON COLUMN user_credit_wallets.credit_limit_credits IS
 COMMENT ON COLUMN user_credit_wallets.credit_policy IS
   '超额策略：warn=允许进入负债并告警 | block=余额<预估成本即阻断';
 
+
+-- ★ 台账自登记（≥952 双账本纪律：迁移必须自己把行写进 public.schema_migrations，
+--   否则部署通道应用后运行时台账无行 ⇒ 连续性门／漂移报告假红；492/633/983k 同款。
+--   2026-11-28 L142 轮补登记：本族四位数件此前每轮部署幂等重执行但从不落账）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('1003', 'org hierarchy + org/user credit wallets (three-tier quota)')
+ON CONFLICT (version) DO NOTHING;
+
 COMMIT;

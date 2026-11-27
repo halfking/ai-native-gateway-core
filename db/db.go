@@ -7319,18 +7319,32 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 // Runs at startup via ensureSchema so every gateway instance converges on the
 // same function definition without a separate migration runner.
 // recentSuccessRateExistsSQL 探测 recent_success_rate(bigint,text,int,int)
-// 的精确 4 参签名。R69：提为包级常量供 TestRecentSuccessRateExistsSQLShape
-// 钉形状——pronargtypes 拼写错误（09-23 引入、09-27 修复）之所以存活，
-// 正因为没有任何测试断言这条 SQL，错误分支静默走"每 boot DROP+CREATE"。
+// 的精确 4 参签名 **＋函数体是否已摘净 v1 腿**。R69：提为包级常量供
+// TestRecentSuccessRateExistsSQLShape 钉形状——pronargtypes 拼写错误
+// （09-23 引入、09-27 修复）之所以存活，正因为没有任何测试断言这条 SQL，
+// 错误分支静默走"每 boot DROP+CREATE"。
 // proargtypes 的 oidvector 20 25 23 23 = (int8, text, int4, int4)；
 // pronargtypes 在 pg_proc 中不存在（只有计数列 pronargs）。
+//
+// ★ 2026-11-28（42P01 噪声收口轮）加第二判据——函数体检查：老二进制
+//   （boot ensure 先于迁移 890 的版本）会把 **406 形态**的函数体
+//   （FROM request_logs_hot）写回库里；v1 族随后被 890 删除后，
+//   这个坏函数体在被调用时 42P01（CROSS JOIN LATERAL ⇒ 整条候选查询
+//   失败 ⇒ 100% 流量失败，见 recentSuccessRateEnsureSQL 的注释）。
+//   原探针只查签名 ⇒ 签名相同就跳过 ⇒ 坏函数体永久存活。
+//   现役 ensure（ensureRoutingRecentSuccessRate 每 boot CREATE OR
+//   REPLACE recentSuccessRateEnsureSQL）本来就是自愈通道——探针判定
+//   「函数体仍是 v1 形态」⇒ fnMissing>0 ⇒ 走 DROP+CREATE 路径 ⇒ 同一
+//   boot 内自愈。检查用 pg_get_functiondef 的文本包含判定（对齐既有
+//   惯例：函数体检查不追求解析，只钉「v1 热表名出现在体内」这一事实）。
 const recentSuccessRateExistsSQL = `
 		SELECT count(*) FROM (SELECT 1) AS one
 		WHERE NOT EXISTS (SELECT 1 FROM pg_proc p
 		  JOIN pg_namespace n ON n.oid = p.pronamespace
 		  WHERE n.nspname = 'public'
 		    AND p.proname = 'recent_success_rate'
-		    AND p.proargtypes = '20 25 23 23'::oidvector)
+		    AND p.proargtypes = '20 25 23 23'::oidvector
+		    AND position('request_logs_hot' in pg_get_functiondef(p.oid)) = 0)
 	`
 
 func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {

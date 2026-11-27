@@ -3,11 +3,8 @@ package native
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-
-	"github.com/kaixuan/llm-gateway-go/admin"
 )
 
 // jwtClaims is the internal JWT structure matching admin/jwt.go JWTClaims.
@@ -22,50 +19,9 @@ type jwtClaims struct {
 
 const audienceName = "llm-gateway-api"
 
-// signToken creates a JWT token matching the existing admin/jwt.go MakeToken logic.
-func signToken(userID int, tenantID, username, role, secretKey string, mustChange bool) (string, time.Time, error) {
-	key := resolveJWTSecret(secretKey)
-	if key == nil {
-		return "", time.Time{}, fmt.Errorf("JWT secret not configured")
-	}
-
-	now := time.Now()
-	// F-A2 (2026-11-14 audit relay): TTL must come from the admin SSOT
-	// (admin.JWTExpiry → LLM_GATEWAY_JWT_EXPIRY env override → 7d default).
-	// The previous hardcoded 7d silently dropped the env override, so a
-	// deployment tightening admin token lifetimes kept issuing 7d native
-	// tokens. native→admin is the established one-way dependency
-	// (user_manager.go already imports admin; no reverse edge).
-	// F-A2 (2026-11-14 audit relay): TTL must come from the admin SSOT
-	// (admin.JWTExpiry → LLM_GATEWAY_JWT_EXPIRY env override → 7d default).
-	// The previous hardcoded 7d silently dropped the env override, so a
-	// deployment tightening admin token lifetimes kept issuing 7d native
-	// tokens. native→admin is the established one-way dependency
-	// (user_manager.go already imports admin; no reverse edge).
-	expiresAt := now.Add(admin.JWTExpiry())
-
-	claims := &jwtClaims{
-		UserID:             userID,
-		TenantID:           tenantID,
-		Username:           username,
-		Role:               role,
-		MustChangePassword: mustChange,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "llm-gateway",
-			Audience:  jwt.ClaimStrings{audienceName},
-			Subject:   username,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(expiresAt),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, err := token.SignedString(key)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	return tokenStr, expiresAt, nil
-}
+// signToken 已删除（2026-11-28 审计轮）：本地 jwtClaims 无 Roles 字段，签出的
+// token 无 roles claim ⇒ 多角色登录即丢（admin.SignTokenWithRoles 是唯一签发
+// 口径，TTL/密钥链同一 SSOT；见 auth_provider.go 的调用点）。
 
 // verifyToken verifies a JWT token and returns the parsed claims.
 func verifyToken(tokenStr, secretKey string) (*jwtClaims, error) {

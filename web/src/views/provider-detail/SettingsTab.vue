@@ -42,11 +42,53 @@ const compressionMode = ref<string | null>(null)
 const cacheEnabled = ref<boolean | null>(null)
 const formatConversionEnabled = ref<boolean | null>(null)
 
+// 协议自适应（D2 声明白名单）
+//
+// 声明键 protocol.adaptive.allowed 的值是「有序协议数组」，首项即基协议
+// （= 无家族命中或推荐值不在名单内时使用的兜底协议）。UI 因此拆成两件
+// 正交控件：基协议单选 + 附加协议复选，保存时拼回 [base, ...rest]。
+// 「跟随全局」（未声明）与「声明为空数组」语义不同：前者让自适应惰性退回
+// openai-completions（与启用前逐字节等价），后者是形状错误、服务端拒收。
+const ADAPTIVE_SETTING_KEY = 'protocol.adaptive.allowed'
+const PROTOCOL_ADAPTIVE = 'adaptive'
+// 可选协议 = providers.protocol 的 canonical 枚举（不含选择器自身）。
+const adaptiveProtocolChoices = [
+  'openai-completions',
+  'openai-responses',
+  'anthropic-messages',
+  'gemini-generate',
+] as const
+const adaptiveAllowed = ref<string[] | null>(null)
+const adaptiveBase = ref<string>(adaptiveProtocolChoices[0])
+const adaptiveExtra = ref<string[]>([])
+const adaptiveSaving = ref(false)
+
+const protocolLabel = (p: string): string => {
+  switch (p) {
+    case 'openai-completions':
+      return 'OpenAI Completions'
+    case 'openai-responses':
+      return 'OpenAI Responses'
+    case 'anthropic-messages':
+      return 'Anthropic Messages'
+    case 'gemini-generate':
+      return 'Gemini Generate'
+    case PROTOCOL_ADAPTIVE:
+      return ps('optionProtocolAdaptive')
+    default:
+      return p
+  }
+}
+// google-gemini 是 gemini-generate 的别名（服务端归一后同值）。历史行可能
+// 仍存着别名，select 里不能再留重复项，否则显示成空/错项。
+const canonicalProtocolOption = (raw: string): string =>
+  raw === 'google-gemini' ? 'gemini-generate' : raw
+
 // Basic provider settings
 const editName = ref(props.provider.display_name)
 const editProviderName = ref(props.provider.name || '')
 const editBaseUrl = ref(props.provider.base_url)
-const editProtocol = ref(props.provider.protocol)
+const editProtocol = ref(canonicalProtocolOption(props.provider.protocol))
 const editKind = ref(props.provider.kind)
 const editCategory = ref(props.provider.category)
 const editDiscountRate = ref(props.provider.discount_rate)
@@ -86,6 +128,13 @@ async function loadProviderSettings() {
           cacheEnabled.value = s.value as boolean
         } else if (s.key === 'format_conversion.enabled' && s.enabled) {
           formatConversionEnabled.value = s.value as boolean
+        } else if (s.key === ADAPTIVE_SETTING_KEY && s.enabled) {
+          const list = Array.isArray(s.value) ? (s.value as string[]) : []
+          if (list.length > 0) {
+            adaptiveAllowed.value = list
+            adaptiveBase.value = list[0]
+            adaptiveExtra.value = list.slice(1)
+          }
         }
       })
     }
@@ -148,11 +197,48 @@ async function saveFormatConversion(enabled: boolean | null) {
   }
 }
 
+async function saveAdaptiveAllowed() {
+  clearSettingsMsg()
+  // 基协议恒在首位；其余按固定枚举顺序（不按点击顺序）⇒ 同一份勾选集合
+  // 恒产出同一份数组，避免「只是勾选次序不同」被当成一次改动。
+  const base = adaptiveBase.value
+  const rest = adaptiveProtocolChoices.filter(
+    (p) => p !== base && adaptiveExtra.value.includes(p),
+  )
+  const payload = [base, ...rest]
+  adaptiveSaving.value = true
+  try {
+    await setProviderSetting(props.provider.id, ADAPTIVE_SETTING_KEY, payload)
+    adaptiveAllowed.value = payload
+    notifySettingsOk(ps('adaptiveSaved'))
+  } catch (e: unknown) {
+    notifySettingsErr(ps('settingsSaveFailed', { msg: surfaceError(e) }))
+  } finally {
+    adaptiveSaving.value = false
+  }
+}
+
+async function clearAdaptiveAllowed() {
+  clearSettingsMsg()
+  adaptiveSaving.value = true
+  try {
+    await deleteProviderSetting(props.provider.id, ADAPTIVE_SETTING_KEY)
+    adaptiveAllowed.value = null
+    adaptiveBase.value = adaptiveProtocolChoices[0]
+    adaptiveExtra.value = []
+    notifySettingsOk(ps('settingsRestored'))
+  } catch (e: unknown) {
+    notifySettingsErr(ps('settingsSaveFailed', { msg: surfaceError(e) }))
+  } finally {
+    adaptiveSaving.value = false
+  }
+}
+
 function syncFromProvider(p: ProviderDetail) {
   editName.value = p.display_name
   editProviderName.value = p.name || ''
   editBaseUrl.value = p.base_url
-  editProtocol.value = p.protocol
+  editProtocol.value = canonicalProtocolOption(p.protocol)
   editKind.value = p.kind
   editCategory.value = p.category
   editDiscountRate.value = p.discount_rate
@@ -288,6 +374,49 @@ async function runHealthCheck() {
             {{ ps('formatHint') }}
           </div>
         </div>
+
+        <div class="form-group">
+          <label>{{ ps('fieldAdaptiveAllowed') }}</label>
+          <div class="form-hint" style="margin-bottom: 6px;">
+            {{ ps('adaptiveAllowedHint') }}
+          </div>
+          <div v-if="adaptiveAllowed === null" class="form-hint" style="color: var(--muted);">
+            {{ ps('adaptiveNotDeclared') }}
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <label style="font-size: 12px;">{{ ps('adaptiveBaseLabel') }}</label>
+            <select v-model="adaptiveBase" class="input" style="max-width: 220px;">
+              <option v-for="p in adaptiveProtocolChoices" :key="p" :value="p">
+                {{ protocolLabel(p) }}
+              </option>
+            </select>
+          </div>
+          <div class="adaptive-choice-grid">
+            <label v-for="p in adaptiveProtocolChoices" :key="p" class="adaptive-choice">
+              <input
+                type="checkbox"
+                :value="p"
+                :checked="p === adaptiveBase || adaptiveExtra.includes(p)"
+                :disabled="p === adaptiveBase"
+                @change="
+                  adaptiveExtra = ($event.target as HTMLInputElement).checked
+                    ? [...adaptiveExtra.filter((x) => x !== p), p]
+                    : adaptiveExtra.filter((x) => x !== p)
+                "
+              />
+              <span>{{ protocolLabel(p) }}</span>
+            </label>
+          </div>
+          <div class="form-hint">{{ ps('adaptiveBaseHint', { base: protocolLabel(adaptiveBase) }) }}</div>
+          <div style="display: flex; gap: 8px; margin-top: 8px;">
+            <button class="btn btn-sm" :disabled="adaptiveSaving" @click="saveAdaptiveAllowed">
+              {{ ps('adaptiveSave') }}
+            </button>
+            <button class="btn btn-sm" :disabled="adaptiveSaving" @click="clearAdaptiveAllowed">
+              {{ ps('followGlobal') }}
+            </button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -315,9 +444,13 @@ async function runHealthCheck() {
               <option value="openai-completions">OpenAI Completions</option>
               <option value="openai-responses">OpenAI Responses</option>
               <option value="anthropic-messages">Anthropic Messages</option>
-              <option value="google-gemini">Google Gemini</option>
               <option value="gemini-generate">Gemini Generate</option>
+              <option value="adaptive">{{ ps('optionProtocolAdaptive') }}</option>
             </select>
+            <div class="form-hint">{{ ps('protocolHint') }}</div>
+            <div v-if="editProtocol === 'adaptive' && adaptiveAllowed === null" class="form-hint">
+              {{ ps('protocolAdaptiveNeedsAllowed') }}
+            </div>
           </div>
           <div class="form-group">
             <label>{{ ps('fieldEgressProfile') }}</label>
@@ -465,6 +598,26 @@ async function runHealthCheck() {
 }
 .form-hint--error {
   color: var(--danger);
+}
+
+.adaptive-choice-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 8px 0 4px;
+}
+
+.adaptive-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+}
+
+.adaptive-choice input[type='checkbox'] {
+  margin: 0;
 }
 
 .info-grid {

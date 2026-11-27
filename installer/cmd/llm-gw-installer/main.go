@@ -2044,6 +2044,12 @@ var userRolesArray1005 []byte
 //go:embed embeddata/startup/1005_user_roles_array.down.sql
 var userRolesArray1005Down []byte
 
+//go:embed embeddata/startup/1006_drop_orphan_v1_promote_function.sql
+var dropOrphanV1PromoteFunction1006 []byte
+
+//go:embed embeddata/startup/1006_drop_orphan_v1_promote_function.down.sql
+var dropOrphanV1PromoteFunction1006Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2925,6 +2931,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/1004_three_tier_model_policies.down.sql":       threeTierModelPolicies1004Down,
 	"startup/1005_user_roles_array.sql":                     userRolesArray1005,
 	"startup/1005_user_roles_array.down.sql":                userRolesArray1005Down,
+	"startup/1006_drop_orphan_v1_promote_function.sql":      dropOrphanV1PromoteFunction1006,
+	"startup/1006_drop_orphan_v1_promote_function.down.sql": dropOrphanV1PromoteFunction1006Down,
+	// ★ 2026-11-28 42P01 根残留清理轮代上游收口：1357e62917（W4.3 渠道商车道轮）
+	//   为 492 加了 go:embed 变量与 StartupFiles 条目，但漏了本 map 条目
+	//   （五点同步的第 2 点半缺）⇒ setupSQLDir 物化不出 492 ⇒
+	//   TestStartupFilesAreAllEmbedded 红（974/975/976 同型先例）。
+	"startup/492_channels_customers.sql":                     channelsCustomers492,
+	"startup/492_channels_customers.down.sql":                channelsCustomers492Down,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
 	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。

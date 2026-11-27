@@ -16,8 +16,8 @@ package admin
 // cache.enabled is a boolean, format_conversion.enabled is a boolean).
 // Unknown keys are rejected; known keys are schema-validated.
 //
-// Self-contained: stdlib only + same-package helpers (writeJSON / writeError
-// / h.db). No internal/* deps; no new third-party imports.
+// Deps: stdlib + internal/jsonbody + provider/catalog (for the adaptive
+// protocol declaration key and its value validation).
 
 import (
 	"context"
@@ -25,9 +25,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 func (h *Handler) getProviderSettings(w http.ResponseWriter, r *http.Request, providerID int) {
@@ -117,16 +119,29 @@ func (h *Handler) getProviderSetting(w http.ResponseWriter, r *http.Request, pro
 	})
 }
 
+// writableSettingKeys 是 PUT /settings/{key} 接受的键集合。
+//
+// 这是一个**封闭枚举**，不是通用 KV 通道：每个键都要有读取方（生产调用点）
+// 与值校验规则，否则写进去就是一个无人消费的死配置——本仓已多次登记「登记
+// 了却没投递」同型缺陷。新增键时必须三件事一起做：本表 + validateSettingValue
+// 分支 + 读取方接线，缺一件就等于没做。
+var writableSettingKeys = map[string]bool{
+	"compression.mode":          true,
+	"cache.enabled":             true,
+	"format_conversion.enabled": true,
+	// 2026-11-28 协议自适应：声明该上游真实可用的协议（有序数组，首项为基协议）。
+	// 读取方 provider/adaptive_protocol.go:adaptiveAllowedByProvider。
+	ProviderSettingKeyAdaptiveAllowed: true,
+}
+
+// isWritableSettingKey reports whether the key is accepted on the write path.
+func isWritableSettingKey(key string) bool {
+	return writableSettingKeys[key]
+}
+
 // setProviderSetting sets or updates a provider-level setting override.
 func (h *Handler) setProviderSetting(w http.ResponseWriter, r *http.Request, providerID int, settingKey string) {
-	// Validate settingKey is in allowed list
-	allowedKeys := map[string]bool{
-		"compression.mode":          true,
-		"cache.enabled":             true,
-		"format_conversion.enabled": true,
-	}
-
-	if !allowedKeys[settingKey] {
+	if !isWritableSettingKey(settingKey) {
 		writeError(w, http.StatusBadRequest, "invalid setting key: "+settingKey)
 		return
 	}
@@ -239,6 +254,32 @@ func validateSettingValue(key string, valueJSON json.RawMessage) error {
 		var enabled bool
 		if err := json.Unmarshal(valueJSON, &enabled); err != nil {
 			return fmt.Errorf("must be a boolean")
+		}
+	case ProviderSettingKeyAdaptiveAllowed:
+		// 有序字符串数组，每项必须是 canonical 协议或已知别名。
+		// 拒绝空串、未知值、以及选择器本身（'adaptive' 作为「可用协议」会让
+		// 消解器自我引用，永远消解不出具体协议）。
+		//
+		// 用 *[]string 而非 []string 以区分 `null` 与 `[]`：encoding/json 把
+		// `null` 解进 slice 是不报错的（结果 nil），若直接接 []string 就会
+		// 静默通过——`[]` 是合法的「清空声明」，`null` 是形状错误。
+		var declared *[]string
+		if err := json.Unmarshal(valueJSON, &declared); err != nil {
+			return fmt.Errorf("must be an array of protocol strings")
+		}
+		if declared == nil {
+			return fmt.Errorf("must be an array of protocol strings, not null")
+		}
+		for i, entry := range *declared {
+			if strings.TrimSpace(entry) == "" {
+				return fmt.Errorf("entry %d is blank", i)
+			}
+			if providercatalog.IsAdaptiveProtocol(entry) {
+				return fmt.Errorf("entry %d: %q is a selection strategy, not a wire protocol", i, entry)
+			}
+			if _, err := providercatalog.NormalizeProviderProtocol(entry); err != nil {
+				return fmt.Errorf("entry %d: %v", i, err)
+			}
 		}
 	default:
 		return fmt.Errorf("unknown setting key")

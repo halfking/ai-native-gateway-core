@@ -26,9 +26,10 @@ import (
 
 // stubModelPolicyChecker 钉「写路径调用了 Invalidate*」。
 type stubModelPolicyChecker struct {
-	invalidatedTenants []string
-	invalidatedOrgs    []int64
-	invalidatedUsers   []int64
+	invalidatedTenants      []string
+	invalidatedOrgs         []int64
+	invalidatedUsers        []int64
+	invalidatedApplications []int64
 }
 
 func (s *stubModelPolicyChecker) Invalidate(tenantID string) {
@@ -39,6 +40,9 @@ func (s *stubModelPolicyChecker) InvalidateOrg(orgID int64) {
 }
 func (s *stubModelPolicyChecker) InvalidateUser(userID int64) {
 	s.invalidatedUsers = append(s.invalidatedUsers, userID)
+}
+func (s *stubModelPolicyChecker) InvalidateApplication(appID int64) {
+	s.invalidatedApplications = append(s.invalidatedApplications, appID)
 }
 
 func newOrgsTestFixture(t *testing.T) (*Handler, pgxmock.PgxPoolIface, *stubModelPolicyChecker) {
