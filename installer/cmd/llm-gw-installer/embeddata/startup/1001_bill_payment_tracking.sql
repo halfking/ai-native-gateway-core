@@ -201,4 +201,12 @@ UNION ALL
 SELECT format('Overdue bills: %s', COUNT(*))
 FROM v_overdue_bills;
 
+
+-- ★ 台账自登记（≥952 双账本纪律：迁移必须自己把行写进 public.schema_migrations，
+--   否则部署通道应用后运行时台账无行 ⇒ 连续性门／漂移报告假红；492/633/983k 同款。
+--   2026-11-28 L142 轮补登记：本族四位数件此前每轮部署幂等重执行但从不落账）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('1001', 'bill payment tracking fields (billing P0)')
+ON CONFLICT (version) DO NOTHING;
+
 COMMIT;

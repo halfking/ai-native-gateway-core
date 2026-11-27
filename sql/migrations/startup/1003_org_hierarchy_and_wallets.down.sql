@@ -12,4 +12,8 @@ ALTER TABLE users DROP COLUMN IF EXISTS org_id;
 
 DROP TABLE IF EXISTS organizations;
 
+
+-- ★ 台账自登记的回滚半边（与 up 件的 INSERT 对称；633.down 同款）。
+DELETE FROM public.schema_migrations WHERE version = '1003';
+
 COMMIT;
