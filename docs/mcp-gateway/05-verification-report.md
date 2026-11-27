@@ -22,6 +22,12 @@
 > 可见）⇒ **32/32 全绿**。
 > 控制面能力位轮：新增 **S25~S31**（业务 key 按 scope 走通注册/管理/统计，
 > 越权与权限放大被拒，拓扑单独口径）⇒ **46/46 全绿**。
+> registry 联邦轮（2026-11-28，ADR 2026-11-27-mcp-gateway-memora-federation.md W4）：
+>   新增 **S32~S35**（本地假 memora：registry API + go-sdk 形状 MCP 面一体——
+>   校验 iss=memora/aud=memora-api/id/_meta 协议形状）：同步处置三类
+>   （ok/skip_stdio/skip_auth_ref）/快照端点/llm_gateway 出站凭据 tools/list
+>   聚合/指标族可见 ⇒ **50/50 全绿**（L1 1 + L2 48 + L3 1）。另：2026-11-27
+>   真实 memora（211 沙箱）全链路 E2E 实证，见 04-operations.md §8。
 
 ## 2. 三层验证口径
 
