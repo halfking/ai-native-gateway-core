@@ -655,6 +655,20 @@ Built with ❤️ by the AI Native Gateway community
 ## 最近更新
 
 
+
+### 2026-11-28（24h 同步轮自动登记）
+
+- **fix**（45 笔）：fix(gateway): 删除 session-analytics/v2/filter-options 重复注册（ServeMux 启动 panic）+ 同块重复字面量路由判据
+- **docs**（35 笔）：docs(audit): 终态表述改为 SHA 无关（并行任务分钟级推主线，tip 会继续前移）
+- **feat**（16 笔）：feat(bg): 探针侧按模型消解自适应协议，与数据面同口径
+- **test**（6 笔）：test(limiter): 采样 goroutine 生命周期回归 + 注释 gofmt 规范化
+- **chore**（3 笔）：chore(migrations): 四位数迁移族 1000-1005 补台账自登记（L142）
+- **admin**（1 笔）：admin: 删 canonical 登记簿重复条目（known_undelivered 既有登记在先，汇合时误加第二份致 map 重键）
+- **partguard**（1 笔）：partguard: 补登 org_model_policies 审辩 UPDATE 动态站点（1003/1004 三张策略表为普通表非分区父表）
+- **perf**（1 笔）：perf(plugins): §8.2 性能基线采集 + Apply nil 安全（v1.5）
+- **deploy**（1 笔）：deploy-211: auto-load DD_ADMIN_PASSWORD from ~/.llm-gateway-211.env
+- 合计 109 笔提交（详见 git log --since='24 hours ago'）
+
 ### 2026-11-17（F3 残留地平线根修 + PI 错误分析系统 + 安全事件契约）
 
 - **F3 残留地平线三轮根修收口**：迁移 972 补 `model_offers_update_trigger` 丢 `unavailable_recover_at` 的根因（`032c76a27`）、三条直写 cmb 恢复路径补齐触发器管不到的半边（`f3a19fa44`）、监控部署基线校准（`c6c5a0f91`）、部署后 80 分钟实测观察窗记录（`d554eb19c`）与假阴性口径作废（`3d0f99426`）

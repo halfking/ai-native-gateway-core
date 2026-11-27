@@ -1018,7 +1018,8 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			continue
 		}
 		t.APIKey = apiKey
-		desc := probeDescriptorFor(t.Protocol)
+		// 2026-11-28 协议自适应：探针与数据面同口径（见 bg/adaptive_probe_protocol.go）。
+		desc := probeDescriptorFor(resolveProbeProtocol(timeout, r.db, t.ProviderID, t.Protocol, t.RawModel))
 		mode := ProbeModeChatPing
 		// 2026-09-25：按归一后协议选择探针形态——openai-responses 中转
 		// （vapeur）对 chat max_tokens=1 直接 400，Layer 4 必须走原生
@@ -1527,7 +1528,8 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	if t.BaseURL == "" {
 		return "skipped", probeCategorySkipped, 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
 	}
-	desc := probeDescriptorFor(t.Protocol)
+	// 2026-11-28 协议自适应：探针与数据面同口径（见 bg/adaptive_probe_protocol.go）。
+	desc := probeDescriptorFor(resolveProbeProtocol(ctx, r.db, t.ProviderID, t.Protocol, t.RawModel))
 	mode := ProbeModeModelsList
 	if desc.Protocol == "anthropic-messages" {
 		// Anthropic prefers its own /v1/messages endpoint for chat probes;
@@ -1845,7 +1847,8 @@ func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarg
 	if model == "" {
 		model = t.RawModel
 	}
-	desc := probeDescriptorFor(t.Protocol)
+	// 2026-11-28 协议自适应：探针与数据面同口径（见 bg/adaptive_probe_protocol.go）。
+	desc := probeDescriptorFor(resolveProbeProtocol(ctx, r.db, t.ProviderID, t.Protocol, t.RawModel))
 	endpoint := upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint)
 	probeCtx := withPlatformProbeBinding(ctx, t.ProviderID, t.CredentialID, t.RawModel)
 	result := ProbeModality(probeCtx, endpoint, t.APIKey, model, t.Modality, desc.Protocol == "anthropic-messages")
