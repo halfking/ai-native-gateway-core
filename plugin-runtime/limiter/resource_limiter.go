@@ -1,6 +1,7 @@
 package limiter
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,6 +84,20 @@ func NewResourceLimiter(pluginName string, limits ResourceLimits) (*ResourceLimi
 
 		// Check if cgroup v2 is mounted
 		if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+			// 父节点启用控制器委派（cgroup v2 「no internal process」约束：
+			// 子组要有 memory.max/cpu.max/pids.max 控制文件，父目录必须先在
+			// cgroup.subtree_control 打开 +memory +cpu +pids。不做这一步，
+			// MkdirAll 出来的子组只有 cgroup.* 元文件，所有 writeCgroup 全部
+			// ENOENT——真机 e2e 发现（Docker Desktop cgroup v2 VM 复现）。
+			// 幂等：重复写同值合法；父目录不存在则先建；写失败仅警告
+			// （受限委派环境下子组可能仍可工作，具体由 applyCgroupLimits
+			// 的逐文件 WARN 暴露）。
+			parent := "/sys/fs/cgroup/llm-gateway-plugins"
+			if mkErr := os.MkdirAll(parent, 0o755); mkErr != nil {
+				fmt.Printf("WARN: failed to create cgroup parent %s: %v (limits may not apply)\n", parent, mkErr)
+			} else if err := os.WriteFile(filepath.Join(parent, "cgroup.subtree_control"), []byte("+memory +cpu +pids"), 0o644); err != nil {
+				fmt.Printf("WARN: cannot enable subtree controllers for llm-gateway-plugins: %v (limits may not apply)\n", err)
+			}
 			// Try to create cgroup directory
 			if err := os.MkdirAll(cgroupPath, 0o755); err != nil {
 				fmt.Printf("WARN: failed to create cgroup %s: %v (falling back to monitor mode)\n", cgroupPath, err)
@@ -514,13 +529,39 @@ func (r *ResourceLimiter) Stop() error {
 
 	// Remove cgroup directory
 	if r.cgroupPath != "" {
-		if err := os.RemoveAll(r.cgroupPath); err != nil {
+		if err := r.removeCgroup(); err != nil {
 			return err
 		}
 		r.cgroupPath = ""
 	}
 
 	return nil
+}
+
+// removeCgroup 清理 cgroup 目录。cgroup v2 语义：
+//   - 目录内的控制文件（memory.max 等）是内核虚拟文件，**不可 unlink**——
+//     os.RemoveAll 会先尝试逐文件删除，被 EPERM 打断，永远走不到 rmdir
+//     （真机 e2e 发现：插件停止后 cgroup 目录残留）。必须直接 rmdir。
+//   - rmdir 要求目录内无存活进程（cgroup.procs 空）。插件进程刚被
+//     SIGTERM/kill 时可能有线程还挂在组里——短暂重试等内核回收，避免把
+//     「进程退出中」误报为清理失败。
+//
+// 虚拟化环境（如 Docker Desktop 的 cgroup v2 虚拟化层）可能对已空目录也拒绝
+// unlinkat（EPERM）——这类环境性拒绝同样经重试后仍失败时如实返回错误，
+// 由调用方（Supervisor.Stop）WARN 降级，不影响插件服务。
+func (r *ResourceLimiter) removeCgroup() error {
+	var err error
+	for i := 0; i < 15; i++ { // ~3s：等进程组内线程退出（SIGTERM 优雅窗口内）
+		err = syscall.Rmdir(r.cgroupPath)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.EPERM) {
+			return err // 非退出竞态/环境拒绝类错误，不重试
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return err
 }
 
 // parseMemory parses memory formats like "256Mi", "512MB", "1Gi", "1GB",

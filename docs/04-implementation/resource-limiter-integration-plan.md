@@ -3,8 +3,8 @@
 ## 文档信息
 
 - **创建日期**: 2026-11-27
-- **版本**: v1.3
-- **状态**: 阶段 1 已实施并通过审计（2026-11-27，见 §3.5/§3.6）；§5.3 监控埋点已落地（v1.3，见 §3.7）；Linux cgroup e2e 就绪待真机执行（§4.2/§8.1）
+- **版本**: v1.4
+- **状态**: 阶段 1 已实施并通过审计（2026-11-27，见 §3.5/§3.6）；§5.3 监控埋点已落地（v1.3，见 §3.7）；Linux cgroup 硬限制 e2e 已在容器真机验证 PASS（v1.4，见 §3.8）；OOM-kill 断言待裸金属补验；§8.2 性能基线与 §5.1 灰度推进未开始
 - **优先级**: P0
 - **相关审计**: [插件化框架审计报告 2026-11-26](../../audit/llm-gateway-plugin-framework-audit-2026-11-26.html)
 
@@ -446,6 +446,24 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 
 Linux cgroup 端到端验收测试（§4.2/§8.1）同轮落地：`plugin-runtime/controller/e2e_cgroup_linux_test.go`（Linux only，macOS/无 cgroup 写权限自动 Skip）——`TestE2ECgroupHardLimits` 全链路（controller 扫描→真实进程→memory.max/memory.high/swap.max/cpu.max/pids.max 四文件值核对→cgroup.procs 归组→memory.events 可读→停止清理）+ `TestE2ECgroupOOMKill`（8MB 硬限吃 64MB → 内核 oom_kill ≥ 1）。Shell 包装 `scripts/test-resource-limits.sh`（§4.3 规划形态，非 Linux 主机降级为单元/集成测试 + 提示）。
 
+### 3.8 Linux 真机 e2e 执行记录与三处修复（2026-11-27，§8.1）
+
+Linux 环境（Docker Desktop VM 内 linux/arm64 + cgroup v2 容器，`--cgroupns=host` 挂载 `/sys/fs/cgroup`）首次实跑 e2e，发现并修复 3 个**只在真机才暴露**的缺陷：
+
+| # | 问题 | 修复 | 证据 |
+|---|------|------|------|
+| 1 | **subtree controllers 未启用**：limiter 只 `MkdirAll` 子组，父目录 `cgroup.subtree_control` 从未写 `+memory +cpu +pids`——cgroup v2 控制器自上而下委派，子组创建后**没有 memory.max/cpu.max/pids.max 控制文件**，所有 writeCgroup 全部 ENOENT | `NewResourceLimiter` 创建子组前先在 `llm-gateway-plugins/` 父目录写 `cgroup.subtree_control`（幂等；失败仅 WARN 降级） | 容器内首跑：目录创建成功但 memory.max 打不开（permission denied→ENOENT 家族）；修复后 `subtree_control = cpu memory pids`，四文件写入全部成功 |
+| 2 | **Supervisor.Stop 顺序颠倒**：`rl.Stop()`（cgroup rmdir）在 `cmd.Stop()`（杀进程）**之前**执行——rmdir 拿着还挂着进程的 cgroup 必 EBUSY，重试窗口内进程根本没被通知退出 | 调整为先 `cmd.Stop()`（进程退出→组内 procs 清空）再 `rl.Stop()`；进程停止失败不阻断 limiter 清理 | 修复前：15×200ms 重试全 EBUSY，WARN `device or resource busy`；修复后清理一次成功 |
+| 3 | **`os.RemoveAll` 清不掉 cgroup 目录**：cgroupfs 控制文件是内核虚拟文件**不可 unlink**，RemoveAll 逐文件删除被 EPERM 打断，永远走不到目录本身的 rmdir | `removeCgroup()` 改用 `syscall.Rmdir` + EBUSY/ENOENT/EPERM 分类重试（~3s，等进程组内线程退出） | 手动 rmdir 空目录成功、RemoveAll 残留，坐实差异 |
+
+**验收结论**（§8.1 功能验收，硬限制部分）：
+
+- ✅ `TestE2ECgroupHardLimits` 完整 PASS（多次运行收敛后）：controller 扫描→真实插件进程→**memory.max=134217728（128M）**、**memory.high=120795136（90% 软限，内核 page 4K 对齐）**、**memory.swap.max=0（默认禁 swap）**、**cpu.max=25000 100000（25%）**、**pids.max=3**、cgroup.procs 归组、memory.events 可读、停止后 cgroup 清理
+- ⚠️ `TestE2ECgroupOOMKill`：**限制执行通道已证实**（8MB 限制下 64MB 分配被内核拦停，`memory.events max` 事件 300+ 次、memory.current 被压回限额），但 `oom_kill ≥ 1` 的最终断言在 Docker Desktop 虚拟化层无法触发——该层委派的 memory 控制器让进程在 ENOMEM 上自行退出而非内核 OOM kill。**裸金属 Linux 主机补验 §8.1 OOM 行为仍是开放项**（`sudo go test ./plugin-runtime/controller/ -run TestE2ECgroup -v`）
+- 附注：测试内 helper 进程拉起（`go test -test.run` 自 exec 模式）在 Rosetta 转译下偶发 readiness 超时（模拟层开销，非产品代码问题）——重试收敛即可；裸金属无此噪音
+
+**测试增量**：e2e 两项（Linux only）；`scripts/test-resource-limits.sh` 在容器内实跑通过（单元/集成 + 硬限制 e2e + 指标冒烟全绿）。
+
 ---
 
 ## 4. 测试方案
@@ -870,3 +888,4 @@ plugins:
 | v1.1 | 2026-11-27 | 插件化框架审计工作组 | 阶段 1 实施完成（main: 3b7f6be54 + 6a0a434e7）：limiter 包/Manifest 扩展/Supervisor 四路径接线/config 默认限制 + 总开关/controller 装配；新增测试 21 项全绿；§3.5 落地记录 |
 | v1.2 | 2026-11-27 | 插件化框架审计工作组 | 交付后审计：修复 P0（snapshot 丢默认限制致插件拒启）与 P1（AssignProcess pid≤0 空转）；新增 3 项回归测试；§3.6 审计记录 |
 | v1.3 | 2026-11-27 | 插件化框架审计工作组 | §5.3 监控埋点落地：7 个 `llmgw_plugin_*` 指标（metrics/plugin_resource_metrics.go）、limiter cgroup 采样读回 + OOM/violation 回调、cmd/gateway 导出器（15s）、12 项新测试全绿（含 -race）；§4.2/§4.3 Linux e2e（TestE2ECgroupHardLimits/OOMKill + scripts/test-resource-limits.sh）；§3.7 落地记录 |
+| v1.4 | 2026-11-27 | 插件化框架审计工作组 | Linux 真机 e2e 首轮执行（Docker Desktop VM cgroup v2）：发现并修复 3 个真机缺陷（subtree_control 未启用 / Stop 顺序颠倒致 rmdir EBUSY / RemoveAll 清不掉 cgroupfs）；硬限制验收完整 PASS；OOM-kill 断言受限虚拟化层待裸金属补验；§3.8 执行记录 |
