@@ -56,9 +56,11 @@ func boldStrCell(s string) cell { return cell{kind: cellString, style: styleBold
 
 // sheetSheet 单个 worksheet：名称、行、列宽（Excel 字符宽单位）。
 type sheetSheet struct {
-	name   string
-	rows   [][]cell
-	widths []float64
+	name      string
+	rows      [][]cell
+	widths    []float64
+	dataCount int
+	dataRow   func(int) []cell
 }
 
 // writeWorkbook 把 sheets 渲染为 xlsx 字节流写入 w。
@@ -70,28 +72,29 @@ func writeWorkbook(w io.Writer, sheets []sheetSheet) error {
 		return fmt.Errorf("workbook needs at least one sheet")
 	}
 	zw := zip.NewWriter(w)
-	files := map[string]string{
-		"[Content_Types].xml":        contentTypesXML(len(sheets)),
-		"_rels/.rels":                rootRelsXML(),
-		"xl/workbook.xml":            workbookXML(sheets),
-		"xl/_rels/workbook.xml.rels": workbookRelsXML(len(sheets)),
-		"xl/styles.xml":              stylesXML(),
+	files := []struct{ name, content string }{
+		{"[Content_Types].xml", contentTypesXML(len(sheets))},
+		{"_rels/.rels", rootRelsXML()},
+		{"xl/workbook.xml", workbookXML(sheets)},
+		{"xl/_rels/workbook.xml.rels", workbookRelsXML(len(sheets))},
+		{"xl/styles.xml", stylesXML()},
 	}
-	for i, s := range sheets {
-		files[fmt.Sprintf("xl/worksheets/sheet%d.xml", i+1)] = worksheetXML(s)
+	for _, file := range files {
+		f, err := zw.Create(file.name)
+		if err != nil {
+			return fmt.Errorf("zip create %s: %w", file.name, err)
+		}
+		if _, err := io.WriteString(f, file.content); err != nil {
+			return fmt.Errorf("zip write %s: %w", file.name, err)
+		}
 	}
-	// 固定顺序写入，保证输出字节稳定（测试快照友好）。
-	order := []string{"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml",
-		"xl/_rels/workbook.xml.rels", "xl/styles.xml"}
-	for i := range sheets {
-		order = append(order, fmt.Sprintf("xl/worksheets/sheet%d.xml", i+1))
-	}
-	for _, name := range order {
+	for i, sheet := range sheets {
+		name := fmt.Sprintf("xl/worksheets/sheet%d.xml", i+1)
 		f, err := zw.Create(name)
 		if err != nil {
 			return fmt.Errorf("zip create %s: %w", name, err)
 		}
-		if _, err := io.WriteString(f, files[name]); err != nil {
+		if err := writeWorksheet(f, sheet); err != nil {
 			return fmt.Errorf("zip write %s: %w", name, err)
 		}
 	}
@@ -109,8 +112,8 @@ const maxWorksheetRows = 1048576
 
 func buildWorkbookBytes(sheets []sheetSheet) ([]byte, error) {
 	for _, s := range sheets {
-		if len(s.rows) > maxWorksheetRows {
-			return nil, fmt.Errorf("sheet %q has %d rows, exceeding Excel limit %d; narrow the range or aggregation granularity", s.name, len(s.rows), maxWorksheetRows)
+		if rows := len(s.rows) + s.dataCount; rows > maxWorksheetRows {
+			return nil, fmt.Errorf("sheet %q has %d rows, exceeding Excel limit %d; narrow the range or aggregation granularity", s.name, rows, maxWorksheetRows)
 		}
 	}
 	var buf bytes.Buffer
@@ -161,10 +164,12 @@ func workbookRelsXML(n int) string {
 	return out
 }
 
-// worksheetXML 渲染单个 worksheet。行号/列号从 1 起；空 sheet 也要有一行
-// （Excel 兼容）。列宽通过 <cols> 声明。
-func worksheetXML(s sheetSheet) string {
+// writeWorksheet streams bounded XML chunks. Row number 1 is also written
+// for an empty sheet for Excel compatibility.
+func writeWorksheet(w io.Writer, s sheetSheet) error {
+	const chunkSize = 64 * 1024
 	var b bytes.Buffer
+	b.Grow(chunkSize)
 	b.WriteString(xmlDecl)
 	b.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`)
 	widthed := 0
@@ -185,32 +190,52 @@ func worksheetXML(s sheetSheet) string {
 		b.WriteString(`</cols>`)
 	}
 	b.WriteString(`<sheetData>`)
-	if len(s.rows) == 0 {
-		s.rows = [][]cell{{}}
-	}
-	for r, row := range s.rows {
-		b.WriteString(fmt.Sprintf(`<row r="%d">`, r+1))
+	var rowNum [24]byte
+	var number [64]byte
+	cols := make([]string, 0, len(s.widths))
+	for r := range max(1, len(s.rows)+s.dataCount) {
+		var row []cell
+		switch {
+		case r < len(s.rows):
+			row = s.rows[r]
+		case r < len(s.rows)+s.dataCount:
+			row = s.dataRow(r - len(s.rows))
+		}
+		for len(cols) < len(row) {
+			cols = append(cols, colName(len(cols)))
+		}
+		digits := strconv.AppendInt(rowNum[:0], int64(r+1), 10)
+		b.WriteString(`<row r="`)
+		b.Write(digits)
+		b.WriteString(`">`)
 		for c, cl := range row {
-			ref := fmt.Sprintf("%s%d", colName(c), r+1)
-			switch cl.kind {
-			case cellNumber:
-				if cl.style == styleBold {
-					b.WriteString(fmt.Sprintf(`<c r=%q s="1"><v>%s</v></c>`, ref, strconv.FormatFloat(cl.num, 'f', -1, 64)))
-				} else {
-					b.WriteString(fmt.Sprintf(`<c r=%q><v>%s</v></c>`, ref, strconv.FormatFloat(cl.num, 'f', -1, 64)))
-				}
-			default:
-				if cl.style == styleBold {
-					b.WriteString(fmt.Sprintf(`<c r=%q s="1" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, ref, xmlEscapeText(cl.str)))
-				} else {
-					b.WriteString(fmt.Sprintf(`<c r=%q t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>`, ref, xmlEscapeText(cl.str)))
-				}
+			b.WriteString(`<c r="`)
+			b.WriteString(cols[c])
+			b.Write(digits)
+			b.WriteByte('"')
+			if cl.style == styleBold {
+				b.WriteString(` s="1"`)
+			}
+			if cl.kind == cellNumber {
+				b.WriteString(`><v>`)
+				b.Write(strconv.AppendFloat(number[:0], cl.num, 'f', -1, 64))
+				b.WriteString(`</v></c>`)
+			} else {
+				b.WriteString(` t="inlineStr"><is><t xml:space="preserve">`)
+				_ = xml.EscapeText(&b, []byte(cl.str))
+				b.WriteString(`</t></is></c>`)
 			}
 		}
 		b.WriteString(`</row>`)
+		if b.Len() >= chunkSize {
+			if _, err := b.WriteTo(w); err != nil {
+				return err
+			}
+		}
 	}
 	b.WriteString(`</sheetData></worksheet>`)
-	return b.String()
+	_, err := b.WriteTo(w)
+	return err
 }
 
 // stylesXML 最小样式表：font0 默认 / font1 粗体，cellXfs 两项与

@@ -176,6 +176,7 @@ relying on it.
 | 630 | `630_session_aggregate_outbox.sql` | `da5c3cce36477be1a03dc64976e9384f37232fa83a48f34e577c7dcbb91da7f6` | pending deploy |
 | 631 | `631_provider_credential_soft_delete.sql` | `0fd2120475a78486e40d3fa2d082eade345aef74a952ccc030b95643db252804` | pending deploy |
 | 633 | `633_tenant_attachment_quotas.sql` | `c73502ddb0c5c79cd510197023009a1c905abb14fcff6c8d86c252fb13ac9ea2` | pending deploy。★ 2026-11-27 补登（此前**漏登记**，而本表是仓内唯一迁移登记册）：租户级附件配额表。★ 三条投递通道**均已接通** —— `sql/schema/installed_startup_migrations.tsv:429`、`installer/cmd/llm-gw-installer/embeddata/startup/633_tenant_attachment_quotas.sql`、`installer/migrations/633_tenant_attachment_quotas/`（提交 `43d530f52`）。 |
+| 633 | `633_tenant_attachment_quotas.sql` | `ffc1de66fc455d832395a2fb3a452c356c9fa6aba2c2ed8ea15a2ab07afa0fc5` | pending deploy（2026-11-27 V2 合并轮追登记：8deff3ac 12h 审计轮对 633 补投递腿注释后字节变更，原登记行 c73502dd… 保留——已应用库按旧字节核对仍有效，verify-migration-checksums 任一命中即过） |
 
 > 631: credentials.status CHECK 增加 `'deleted'` 终态；providers 新增
 > `deleted_at` 软删除列 + 存活行部分索引 `idx_providers_live`。二进制

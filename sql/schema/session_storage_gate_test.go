@@ -52,6 +52,24 @@ type destructiveFixture struct {
 }
 
 var destructiveGuardedDB = map[string]destructiveFixture{
+	"REQUEST_METRICS_TEST_DSN": {
+		path: "internal/metricsstore/projection_integration_test.go",
+		guard: func(body string) []string {
+			if !strings.Contains(body, `!strings.HasPrefix(database, "request_metrics_fixture_") || tables != 0`) ||
+				!strings.Contains(body, `t.Fatalf("expected an empty owned fixture`) {
+				return []string{"request metrics fixture must reject nonempty or differently named databases"}
+			}
+			return nil
+		},
+	},
+	"REQUEST_METRICS_POLL_TEST_DSN": {
+		path:  "internal/metricsstore/projection_load_test.go",
+		guard: requestMetricsLoadFixtureGuardProblems,
+	},
+	"REQUEST_METRICS_LOAD_DSN": {
+		path:  "internal/metricsstore/projection_load_test.go",
+		guard: requestMetricsLoadFixtureGuardProblems,
+	},
 	"NODE_PROBE_AUDIT_TEST_DSN": {
 		path: "bg/node_probe_audit_test.go",
 		guard: func(body string) []string {
@@ -162,6 +180,24 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "domains/streaming/executors/reconciliation_transport_integration_test.go",
 		guard: reconciliationTransportFixtureGuardProblems,
 	},
+}
+
+func requestMetricsLoadFixtureGuardProblems(body string) []string {
+	for _, token := range []string{
+		`cfg.ConnConfig.Host != "127.0.0.1"`,
+		`!strings.HasPrefix(cfg.ConnConfig.Database, "request_metrics_fixture_")`,
+		`fallback.Host != "127.0.0.1"`,
+		`t.Fatal("use an isolated loopback request_metrics_fixture_* database")`,
+		`t.Fatal("requires loopback-only fallback hosts")`,
+	} {
+		if !strings.Contains(body, token) {
+			return []string{"request metrics fixture guard missing: " + token}
+		}
+	}
+	if strings.Count(body, `cfg := requestMetricsFixtureConfig(t, dsn)`) != 2 {
+		return []string{"poll and load fixtures must both check the fixture configuration"}
+	}
+	return nil
 }
 
 // modelCredibilityPassiveGuardProblems 断言 modelcredibility 被动指纹基线真库腿的

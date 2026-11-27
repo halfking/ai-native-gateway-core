@@ -36,9 +36,9 @@ func readTerminalProjection(ctx context.Context, tx pgx.Tx, tenant string) (*Rep
 	p := &ReportProjection{Source: "request_metrics"}
 	var ready bool
 	err := tx.QueryRow(ctx, `SELECT backfill_complete, updated_at,
-		CASE WHEN backfill_complete THEN (SELECT min(enqueued_at) FROM public.request_metrics_pending
+		CASE WHEN backfill_complete THEN (SELECT min(enqueued_at) FROM public.request_metrics_pending_events
 			WHERE $1='' OR tenant_id=$1) END
-		FROM public.request_metrics_projection_state WHERE singleton`, tenant).Scan(&ready, &p.UpdatedAt, &p.PendingSince)
+		FROM public.request_metrics_repair_state WHERE singleton`, tenant).Scan(&ready, &p.UpdatedAt, &p.PendingSince)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !ready) {
 		return nil, ErrTerminalProjectionBackfill
 	}
@@ -51,33 +51,34 @@ func readTerminalProjection(ctx context.Context, tx pgx.Tx, tenant string) (*Rep
 const projectedUsageColumns = `CASE WHEN f.usage_source IN ('llm','corrected') THEN NULLIF(f.prompt_tokens, 0) END AS input_tokens,
 		CASE WHEN f.usage_source IN ('llm','corrected') THEN NULLIF(f.completion_tokens, 0) END AS output_tokens,
 		CASE WHEN f.usage_source IN ('llm','corrected') THEN NULLIF(f.total_tokens, 0) END AS total_tokens,
+		CASE WHEN f.status IN ('success','failure','rate_limited','cancelled') THEN f.status END AS projected_status,
 		` + requestAdmissionColumns
 
 const projectedUsageSource = `LEFT JOIN LATERAL (
 		SELECT CASE WHEN status IN ('failed','timeout') THEN 'failure' ELSE status END AS status,
 		       prompt_tokens, completion_tokens, total_tokens, usage_source, api_key_id, traffic_class
-		FROM public.request_metrics
-		WHERE fact_request_id = w.request_id AND tenant_id = w.tenant_id AND source_fact_id IS NOT NULL
+		FROM public.request_metrics_projection
+		WHERE request_id = w.request_id AND tenant_id = w.tenant_id AND source_fact_id IS NOT NULL
 		ORDER BY source_revision DESC NULLS LAST, source_finalized_at DESC NULLS LAST, source_fact_id DESC LIMIT 1
 	) f ON true
 	`
 
-const projectedReceiptTrafficClass = receiptTrafficPriority + ` ELSE coalesce(NULLIF(f.traffic_class, ''), ` + receiptKeyTraffic + `) END`
+const projectedPlatformTraffic = `traffic_class IN ('platform',` + operationalFactTrafficClasses + `)`
 
-const projectedReceiptFacts = requestClassificationStart + projectedReceiptTrafficClass +
-	requestClassificationEnd + projectedUsageColumns + requestEvidenceDimensions + projectedUsageSource + requestScopeFilter
+var projectedReceiptFacts = requestClassificationStart + `coalesce(f.traffic_class, ` + receiptTrafficClass + `)` +
+	requestClassificationEnd + projectedUsageColumns + requestEvidenceDimensions + projectedUsageSource + requestScopeFilter(projectedPlatformTraffic)
 
 const projectedTerminalStatuses = `('success','failure','failed','timeout','rate_limited','cancelled')`
 
-const projectedUsageWindowKeys = `SELECT tenant_id, fact_request_id AS request_id FROM public.request_metrics
+const projectedUsageWindowKeys = `SELECT tenant_id, request_id FROM public.request_metrics_projection
 	WHERE occurred_at >= $1 AND occurred_at < $2 AND ($3 = '' OR tenant_id = $3)
 	  AND source_fact_id IS NOT NULL AND status IN ` + projectedTerminalStatuses + `
 	`
 
 const projectedUsageReceiptJoin = `SELECT k.tenant_id, k.request_id, u.occurred_at
 	FROM keys k JOIN LATERAL (
-		SELECT occurred_at FROM public.request_metrics
-		WHERE tenant_id=k.tenant_id AND fact_request_id=k.request_id AND source_fact_id IS NOT NULL
+		SELECT occurred_at FROM public.request_metrics_projection
+		WHERE tenant_id=k.tenant_id AND request_id=k.request_id AND source_fact_id IS NOT NULL
 		  AND status IN ` + projectedTerminalStatuses + `
 		ORDER BY occurred_at LIMIT 1
 	) u ON true
@@ -86,18 +87,26 @@ const projectedUsageReceiptJoin = `SELECT k.tenant_id, k.request_id, u.occurred_
 func projectedReportSection(name string, section reportSection) reportSection {
 	switch name {
 	case "requests":
-		section.base = projectedReceiptFacts + requestDetailColumns + " total_tokens, " + requestDetailSends
-		section.totals = requestTotals + `count(total_tokens) AS measured_total_requests, sum(total_tokens) AS total_tokens,
-			count(*) FILTER (WHERE traffic_class NOT IN ('business','platform','unknown')) AS other_traffic_requests
+		section.base = projectedReceiptFacts + requestDetailColumns + " total_tokens, projected_status, " + requestDetailSends
+		section.totals = requestTotals(projectedPlatformTraffic) + `count(total_tokens) AS measured_total_requests, sum(total_tokens) AS total_tokens,
+			count(projected_status) AS requests_with_terminal_projection,
+			count(*) FILTER (WHERE NOT (` + projectedPlatformTraffic + `) AND traffic_class NOT IN ('business','unknown')) AS other_traffic_requests
 			FROM facts`
 		section.coverage = "recorded_wal_and_projected_terminal_usage_legacy_zeros_unverified"
-		section.columns = append(append([]string(nil), section.columns...), "total_tokens")
+		section.columns = append(append([]string(nil), section.columns...), "total_tokens", "projected_status")
 	case "sessions":
 		section.base = projectedReceiptFacts + sessionReportRows
 		section.coverage = "canonical_session_dimension_and_recorded_activity_with_projected_terminal_usage"
 	case "coverage":
 		section.base = coverageEvidenceKeys + projectedUsageWindowKeys + coverageReceiptKeys + projectedUsageReceiptJoin + coverageComparison
 		section.coverage = "projected_terminal_usage_and_retained_evidence_historical_supplier_population_unknown"
+	case "postings":
+		section.totals = postingTotals + `,
+			count(*) FILTER (WHERE entry_type='consume' AND net_credits > 0) AS recorded_debit_entries,
+			sum(net_credits) FILTER (WHERE entry_type='consume' AND net_credits > 0) AS recorded_gross_debit_credits,
+			count(*) FILTER (WHERE entry_type IN ('refund','reversal')) AS recorded_return_entries,
+			sum(-net_credits) FILTER (WHERE entry_type IN ('refund','reversal')) AS recorded_returned_credits
+			FROM facts`
 	}
 	return section
 }

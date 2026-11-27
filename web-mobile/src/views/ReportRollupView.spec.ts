@@ -9,6 +9,7 @@ import { fetchCapabilities } from '@/api/featureCapabilities'
 import {
   fetchReportRollupSummary,
   fetchReportRollupDimensions,
+  fetchReportDailyPage,
   REPORT_ROLLUP_DEGRADED_CODE,
   REPORT_ROLLUP_VIEWS,
   REPORT_ROLLUP_DEFAULT_VIEW,
@@ -138,7 +139,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => authState }))
 
 vi.mock('@/api/reportRollup', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/reportRollup')>()
-  return { ...actual, fetchReportRollupSummary: vi.fn(), fetchReportRollupDimensions: vi.fn() }
+  return { ...actual, fetchReportRollupSummary: vi.fn(), fetchReportRollupDimensions: vi.fn(), fetchReportDailyPage: vi.fn() }
 })
 
 vi.mock('@/api/dailyReconciliation', async (importOriginal) => {
@@ -233,6 +234,28 @@ it('reads live evidence for the selected reconciliation day without loading the 
   expect(evidence.text()).toContain('Asia/Shanghai')
   expect(evidence.text()).toContain('终态用量缺接收记录0')
   expect(evidence.text()).toContain('终态用量仍在同步')
+  wrapper.unmount()
+})
+
+it('keeps receipt status visible when the projected outcome is absent', async () => {
+  vi.mocked(fetchDailyEvidence).mockResolvedValue({
+    version: 'request-reconciliation-v2',
+    section: 'requests', day: '2026-11-23', timezone: 'Asia/Shanghai', platform_scope: true,
+    start: '2026-11-22T16:00:00Z', end: '2026-11-23T16:00:00Z',
+    summary: { requests: 1, business_requests: 1, platform_requests: 0, requests_with_terminal_projection: 0 },
+    limit: 20, offset: 0, read_at: '2026-11-25T00:00:00Z',
+    rows: [{ request_id: 'wal-only', status: 'success', projected_status: null }],
+  })
+  const wrapper = await mountView()
+  const evidence = byId(wrapper, 'rr-daily-evidence')
+  await evidence.get('input[type="date"]').setValue('2026-11-23')
+  await byId(wrapper, 'rr-evidence-section').setValue('requests')
+  await evidence.get('form').trigger('submit')
+  await flushPromises()
+  expect(evidence.text()).toContain('有投影终态的收件0')
+  expect(evidence.text()).toContain('平台运维收件0')
+  expect(evidence.text()).toContain('请求状态成功')
+  expect(evidence.text()).toContain('投影终态—')
   wrapper.unmount()
 })
 
@@ -717,17 +740,33 @@ describe('⑧ 参数下发', () => {
     expect(last.view).toBe('internal')
   })
 
-  it('⑧-3 ★★★ detail 恒发（true→`1`，false→`0`），且不发布尔字面量', async () => {
-    // ★ 真值集合是 `1`/`true`/`yes`/`daily`（`:194-200`）⇒ `true` 恰好也在集合里，
-    //   但 `0` 必须在**两个**端点上都是假 ⇒ 显式发 0 最稳。
+  it('loads a selected detail day independently of the range totals', async () => {
+    const projection = { from: '2026-09-30T16:00:00Z', through: '2026-10-07T16:00:00Z', timezone: 'Asia/Shanghai', updated_at: null, pending_since: null }
+    mSum.mockResolvedValue(summaryPayload({ source: 'request_metrics', projection, days: [{ date: '2026-10-01' }, { date: '2026-10-07' }] }))
+    const daily = vi.mocked(fetchReportDailyPage)
+    daily.mockClear()
+    daily.mockImplementation(async q => ({ day: q.day, group: q.group, projection, page: {
+      number: q.page, page_size: 50, total: 51, rows: [{ key: 'model-1', totals: totals({ usd_measured_requests: 1 }) }],
+    } }))
     const w = await mountView()
     await byId(w, 'rr-load').trigger('click')
     await flushPromises()
     expect(mSum.mock.calls[0]![0].detail).toBe('0')
+    expect(mSum.mock.calls[0]![0].summaryScope).toBe('totals')
+    const previous = mSum.mock.calls.length
     await byId(w, 'rr-detail').setValue(true)
     await flushPromises()
-    const last = mSum.mock.calls[mSum.mock.calls.length - 1]![0]
-    expect(last.detail).toBe('1')
+    expect(mSum).toHaveBeenCalledTimes(previous)
+    expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ start: '2026-10-01', end: '2026-10-07', day: '2026-10-07', group: 'model', page: 1 }), expect.anything())
+    expect(byId(w, 'rr-day-detail').text()).toContain('model-1')
+    expect(byId(w, 'rr-day-detail').text()).toContain('USD 12.34')
+    await byId(w, 'rr-detail-next').trigger('click')
+    await flushPromises()
+    expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ day: '2026-10-07', group: 'model', page: 2 }), expect.anything())
+    await byId(w, 'rr-detail-date').setValue('2026-10-01')
+    await byId(w, 'rr-detail-group').setValue('tenant')
+    await flushPromises()
+    expect(daily).toHaveBeenLastCalledWith(expect.objectContaining({ day: '2026-10-01', group: 'tenant', page: 1 }), expect.anything())
   })
 
   it('⑧-4 ★★ dimensions 只带区间与视角（不带 detail）', async () => {

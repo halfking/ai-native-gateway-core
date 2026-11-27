@@ -227,7 +227,7 @@ func parseRequestStatsV2WithDefaultDays(r *http.Request, tenant string, defaultD
 	case requestStatsV2Path + "/breakdown":
 		query.Group, query.Limit = params.Get("dimension"), 25
 		switch query.Group {
-		case "model", "provider", "key", "credential", "canonical", "application", "tenant", "person", "client", "owner", "task", "session", "modality", "protocol":
+		case "model", "provider", "key", "credential", "canonical", "application", "tenant", "person", "client", "owner", "task", "session", "modality", "protocol", "currency":
 		default:
 			return query, fmt.Errorf("unsupported breakdown dimension")
 		}

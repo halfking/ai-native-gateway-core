@@ -29,6 +29,7 @@ export interface BoardSummary {
   avg_latency_ms?: number
   failed_count?: number
   cost_rows_outside_usd?: number
+  usd_evidence_requests?: number
   active_api_keys?: number
   active_models?: number
   providers?: number

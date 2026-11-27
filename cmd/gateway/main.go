@@ -4502,7 +4502,6 @@ func main() {
 			"batch_size", metricsConfig.BatchSize,
 			"max_rounds_per_tick", metricsConfig.MaxRoundsPerTick)
 	}
-
 	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
 	// instances as well, not just on the active-role primary.
 	//
@@ -7168,9 +7167,7 @@ func main() {
 	mux.Handle("/healthz", healthHandler)
 	mux.Handle("/healthz/full",
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(healthHandler))
-	// 2026-08-29：/readyz + /version 端点，供 scripts/lifecycle/preflight.sh 三段检查。
-	//   /readyz  严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
-	//   /version 仅暴露 build metadata（version + git_sha + build_seq + build_date），无敏感信息。
+	// /readyz 用于网关基础健康检查，投影就绪单独由运维验证。
 	mux.Handle("/readyz", healthHandler)
 	mux.Handle("/readyz/request-metrics",
 		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(metricsstore.ProjectionReadinessHandler(requestMetricsDB)))
@@ -8807,9 +8804,9 @@ func main() {
 		// annotation, etc.). Keeping both caused ServeMux panic at startup.
 
 		// Phase 4: Session Analytics API (会话全景分析)
-		// 350 迁移修复 session_summaries 聚合链路后启用。
 		if adminHandler != nil {
 			mux.HandleFunc("/api/admin/session-analytics", wrapSessionAnalytics(adminHandler.HandleSessionAnalyticsList))
+			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-analytics/", wrapSessionAnalytics(adminHandler.RouteSessionAnalytics))
 			mux.HandleFunc("GET /api/admin/session-analytics/v2/filter-options", wrapSessionAnalytics(adminHandler.HandleSessionFilterOptionsV2))
 			mux.HandleFunc("/api/admin/session-clusters", wrapSessionAnalytics(adminHandler.HandleSessionClustersList))

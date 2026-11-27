@@ -573,19 +573,20 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "R172 会话族两臂直查 helper：canonical 视图名只出现在一条注释里（对比说明「canonical 视图没有反连接」）；本文件的读面是会话族 hot ∪ 父表，与 canonical 视图无关",
 	},
-	// internal/metricsstore/processor.go：**V2 投影器**（2026-11-26 合并轮：
-	//   codex/211-statistics-v2-release 的 feat(stats) 把旧「批量维增强」重写为
-	//   终态请求投影 Processor —— pending/history 双游标 + LATERAL 维补齐）。
-	// ★ 分类核定依据：投影 SQL 里 LEFT JOIN LATERAL 读双腿 canonical 视图
-	//   request_logs_with_current_month（ts ±1 天窗口按 request_id 点查）
-	//   ⇒ 读 gw_task_id（734 **details 腿**列）与 gw_session_id（视图里的
-	//   **CASE 表达式**列）⇒ 仍归 classNeedsDetailsLeg（窄投影须带上 details LEFT JOIN）。
+	"internal/metricsstore/projection.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "V2 投影 SQL（2026-11-27 V2 合并：投影 INSERT 主 SQL 从 processor.go 迁至本文件，含 12h 审计轮 clamp 列）—— pending/history 双游标逐 fact 用 LATERAL 点查 canonical 视图补齐维度",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base", "client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base", "egress_protocol:base", "error_kind:base", "failure_detail_code:base", "gw_session_id:expr", "gw_task_id:detail", "identity_hash:base", "outbound_model:base", "request_id:base", "stream_interrupted:base", "task_type:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "V2 投影 LATERAL 读点（21 列全量版）：按 (tenant_id, request_id, ts±1d) 点查双腿视图补齐维度 ⇒ 引用 734 details 腿列与视图 CASE 表达式列"},
+		},
+	},
 	"internal/metricsstore/processor.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "V2 终态请求投影：pending/history 双游标逐 fact 用 LATERAL 点查 canonical 视图补齐 21 列维度（读双腿视图 request_logs_with_current_month —— 迁移 890 已删 v1 母表，裸读 FROM request_logs 在生产上 42P01）",
+		Note:  "V2 合并后（2026-11-27）：投影 INSERT 主 SQL 迁至 projection.go（含 clamp 修复），本文件保留 enrichDimensionsSQL 批量维度增强读点",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"agent_name:base", "api_key_owner_user:detail", "api_key_prefix:detail", "attachment_count:base", "client_ip:expr", "client_model:detail", "client_protocol:base", "compression_strategy:base", "egress_protocol:base", "error_kind:base", "failure_detail_code:base", "gw_session_id:expr", "gw_task_id:detail", "identity_hash:base", "outbound_model:base", "request_id:base", "stream_interrupted:base", "task_type:base", "tenant_id:base", "ts:base", "work_type:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "V2 投影 LATERAL 读点：按 (tenant_id, request_id, ts±1d) 点查双腿视图补齐维度 ⇒ 引用 734 details 腿的列（gw_task_id/api_key_prefix）与视图里的 CASE 表达式列（gw_session_id）⇒ 窄投影须带上 details LEFT JOIN 并复刻 CASE 表达式"},
+			{Kind: "read", Columns: []string{"attachment_count:base", "client_protocol:base", "egress_protocol:base", "gw_session_id:expr", "gw_task_id:detail", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "enrichDimensionsSQL：按 request_id 数组点查双腿视图取 7 列维度（DISTINCT ON + ts DESC 取最新行）"},
 		},
 	},
 	"admin/providers.go": {
@@ -2682,7 +2683,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"admin/diagnostics_credential.go":            "凭据诊断明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/live_stream_sse.go":                   "SSE 实时流：① 全量事件行；② 按 request_id 数组取状态；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/memora_handlers.go":                   "memora 上下文：① 任务/会话头；② 最近一条模型；③ 计数；④ 轮次明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
-	"internal/metricsstore/processor.go":         "V2 终态请求投影（2026-11-26 合并轮补登）：pending/history 双游标逐 fact 用 LATERAL 按 (tenant_id, request_id, ts ±1 天) 点查 canonical 视图补齐维度；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响（★ 该窗口谓词就是为绕开逐分区扫描设的 ±1 天窄窗，实测逐 fact 点查走索引）",
+	"internal/metricsstore/projection.go":        "V2 投影 INSERT 主 SQL（2026-11-27 V2 合并补登）：投影 SELECT 带 occurred_at ±1 天 LATERAL 窗口点查 canonical 视图；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 受本缺陷影响（窗口谓词为绕开逐分区扫描的 ±1 天窄窗，逐 fact 点查走索引）",
 	"admin/model_routing_diagnostic.go":          "模型路由诊断的 24h 统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/model_status.go":                      "模型状态统计；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/no_topic_session.go":                  "无主题会话面：① 轮次明细；② 会话日志摘要；③ 按 request_id 取 api_key_id/tenant_id；④ 取 preview/work_type/request_mode；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

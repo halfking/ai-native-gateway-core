@@ -90,7 +90,13 @@ for f in "$SQL_DIR/migrations/startup"/[0-9]*.sql; do
     [[ "$f" == *.down.sql ]] && continue
     # 755 drops a function only after checking external jobs on the target DB.
     [[ "$(basename "$f")" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]] && continue
+    # Apply the immutable 973 file just after its 983c prerequisite.
+    [[ "$(basename "$f")" == "973_request_metrics_projection.sql" ]] && continue
     run_sql_file "$f" "startup/$(basename "$f")" || startup_fail=$((startup_fail + 1))
+    if [[ "$(basename "$f")" == "983c_add_occurred_cursor_index.sql" ]]; then
+        run_sql_file "$SQL_DIR/migrations/startup/973_request_metrics_projection.sql" \
+            "startup/973_request_metrics_projection.sql" || startup_fail=$((startup_fail + 1))
+    fi
 done
 ok "Startup 迁移应用完成（失败 $startup_fail 个，幂等警告已忽略）"
 

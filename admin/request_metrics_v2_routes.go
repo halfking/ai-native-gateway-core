@@ -1,0 +1,66 @@
+package admin
+
+import (
+	"net/http"
+
+)
+
+func (h *Handler) registerRequestMetricsV2Routes(mux *http.ServeMux) {
+	// ★ V2 合并收口（2026-11-27）：本文件登记的全部路由已在 handler.go 注册（含常量前缀拼装形态），重复注册会使 http.ServeMux panic ⇒ 逐条注释去重；保留空注册函数以稳住 handler.go 调用点。
+	_ = mux // 全部路由已由 handler.go 注册
+	// ★ "/api/admin/tenants/v2/{code}/stats" 已在 handler.go 注册（V2 合并去重：同路由同 handler handleTenantStatsV2，重复注册在 http.ServeMux 会 panic）。
+	// ★ 以下路由已在 handler.go 注册的以注释去重（V2 合并 2026-11-27：同路由同 handler，重复注册会使 http.ServeMux panic）
+	// [去重] handler.go 已注册: "/api/admin/dashboard/v2/session-overview", admin: dashboardSessionV2(SessionDashboardOverview)))
+	// [去重] handler.go 已注册: "/api/admin/dashboard/v2/session-trend", admin: dashboardSessionV2(SessionDashboardTrend)))
+	// [去重] handler.go 已注册: "/api/admin/dashboard/v2/session-health", admin: dashboardSessionV2(SessionDashboardHealth)))
+	// [去重] handler.go 已注册: "/api/admin/dashboard/v2/session-active", admin: dashboardSessionV2(SessionDashboardActive)))
+	// [去重] handler.go 已注册: "/api/admin/dashboard/v2/board", admin(h.handleDashboardBoardV2))
+	// [去重] handler.go 已注册: "/api/admin/dashboard/v2/board/error-drill", admin(h.handleDashboardBoardErrorDrillV2))
+	// [去重] handler.go 已注册: "/api/admin/analytics/v2/{dimension}/{identifier}", admin(h.handleAnalyticsDetailV2))
+	// [去重] handler.go 已注册 (requestStatsV2Path+"/..."): mux.HandleFunc("/api/admin/stats/v2/summary", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册 (requestStatsV2Path+"/..."): mux.HandleFunc("/api/admin/stats/v2/trend", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册 (requestStatsV2Path+"/..."): mux.HandleFunc("/api/admin/stats/v2/breakdown", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册 (requestStatsV2Path+"/..."): mux.HandleFunc("/api/admin/stats/v2/errors", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: "/api/admin/report-rollup/v2/{section}", h.superAdmin(h.handleReportRollupV2))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/users", admin(h.handleUserProfilesV2))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/users/usage-matrix", admin(h.handleUserProfilesV2))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/users/{owner}", admin(h.handleUserProfileDetailV2))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/users/{owner}/projects", admin(h.handleUserProfileDetailV2))
+	// [去重] handler.go 已注册: "/api/admin/session-analytics/v2/model-ranking", admin(h.handleSessionRequestRankingV2))
+	// [去重] handler.go 已注册: "/api/admin/session-analytics/v2/provider-ranking", admin(h.handleSessionRequestRankingV2))
+	// [去重] handler.go 已注册: "/api/admin/session-analytics/v2/agent-ranking", admin(h.handleSessionRequestRankingV2))
+	// [去重] handler.go 已注册: "/api/admin/session-analytics/v2/task-ranking", admin(h.handleSessionRequestRankingV2))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/user-ranking", admin(h.sessionPeopleV2("ranking")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/user-ranking/{owner}", admin(h.sessionPeopleV2("detail")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/user-ranking/{owner}/projects", admin(h.sessionPeopleV2("projects")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/user-ranking/{owner}/projects/{project}/tasks", admin(h.sessionPeopleV2("tasks")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/user-ranking/{owner}/models", admin(h.sessionPeopleV2("models")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/user-ranking/{owner}/api-keys", admin(h.sessionPeopleV2("api_keys")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/clients", admin(h.sessionDimensionV2("clients")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/clients/{id}", admin(h.sessionDimensionV2("clients")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/tasks", admin(h.sessionDimensionV2("tasks")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/tasks/{id}", admin(h.sessionDimensionV2("tasks")))
+	// [去重] handler.go 已注册: "GET /api/admin/session-analytics/v2/overview", admin(h.sessionPeopleV2("overview")))
+	// [去重] handler.go 已注册: "/api/admin/users/v2/usage-summary", admin(h.handleUserUsageSummaryV2))
+	// [去重] handler.go 已注册: "/api/admin/users/v2/{id}/stats", admin(h.handleUserStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/summary", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/by-model", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/by-provider", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/hot-keys", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/keys/{api_key_id}", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/keys/{api_key_id}/models", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/keys/{api_key_id}/trend", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/providers/export", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/providers/{provider_id}", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/providers/{provider_id}/trend", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/providers/{provider_id}/models", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/providers/{provider_id}/daily-models", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: mux.HandleFunc("/api/usage/v2/providers/{provider_id}/export", admin(h.handleRequestStatsV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/trend-series", h.admin(h.handleUsageTrendV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/trend-models", h.admin(h.handleUsageTrendV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/top-rankings", h.admin(h.handleUsageTrendV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/period-compare", h.admin(h.handleUsagePeriodCompareV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/cost-trend", h.admin(h.handleUsageEconomicsV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/cache-economics", h.admin(h.handleUsageEconomicsV2))
+	// [去重] handler.go 已注册: "/api/admin/usage/v2/request-reconciliation", h.admin(h.handleRequestReconciliationV2))
+}

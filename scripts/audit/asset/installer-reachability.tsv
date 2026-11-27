@@ -1,5 +1,6 @@
 # installer-reachability.tsv —— ★★「新装环境可达性」台账（★ 每条期望索引一行）
 # ★ 生成器：scripts/audit/db-object-census.py reachability
+# 采集早于 973 上线与 983j–983o。候选索引的实物由独立升级和新装验证。
 # ★ 列：index_name	table	creator_migration_no	creator_file	creator_reachable	present_envs	missing_envs	verdict	severity	note
 # ★ verdict：reachable-and-present | reachable-and-legitimately-retired | baseline-dependent | unreachable-and-missing | reachable-but-missing-in-fresh
 # ★ severity：none | baseline-dependent | new-install-gap | prod-gap | installer-bug

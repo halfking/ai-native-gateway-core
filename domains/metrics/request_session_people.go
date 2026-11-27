@@ -26,10 +26,10 @@ WITH params AS (
 		$8::integer AS page_size,$9::integer AS page_offset,$10::boolean AS rank_peers
 ), projection AS (
 	SELECT s.backfill_complete,s.updated_at,
-		(SELECT min(q.enqueued_at) FROM public.request_metrics_pending q
+		(SELECT min(q.enqueued_at) FROM public.request_metrics_pending_events q
 		 WHERE q.occurred_at >= p.start_at AND q.occurred_at < p.end_at
 		   AND (p.tenant='' OR q.tenant_id=p.tenant)) AS pending_since
-	FROM public.request_metrics_projection_state s CROSS JOIN params p WHERE s.singleton
+	FROM public.request_metrics_repair_state s CROSS JOIN params p WHERE s.singleton
 ), owners AS MATERIALIZED (
 	SELECT tenant FROM params WHERE owner<>'' AND tenant<>''
 	UNION
@@ -37,7 +37,7 @@ WITH params AS (
 		SELECT u.tenant_id AS tenant FROM public.users u CROSS JOIN params p
 		WHERE p.owner<>'' AND p.tenant='' AND u.username=p.owner
 		UNION
-		SELECT m.tenant_id FROM public.request_metrics m CROSS JOIN params p
+		SELECT m.tenant_id FROM public.request_metrics_projection m CROSS JOIN params p
 		WHERE p.owner<>'' AND p.tenant='' AND m.owner_user=p.owner
 		  AND m.occurred_at >= p.previous_start AND m.occurred_at < p.end_at
 		  AND m.source_fact_id IS NOT NULL AND m.traffic_class='business'
@@ -53,7 +53,7 @@ WITH params AS (
 		public.gw_resolve_project_ref(d.project_id,coalesce(nullif(d.application_code,''),m.application_code)) AS project,
 		m.total_tokens,m.credits_charged,CASE WHEN m.cost_currency='USD' THEN m.cost_amount END AS usd,
 		m.status,m.cached_tokens,m.latency_ms,m.api_key_id,m.api_key_prefix,` + requestModelKey + ` AS model
-	FROM public.request_metrics m CROSS JOIN params p CROSS JOIN identity_scope i
+	FROM public.request_metrics_projection m CROSS JOIN params p CROSS JOIN identity_scope i
 	LEFT JOIN public.session_dim d ON d.tenant_id=m.tenant_id AND d.gw_session_id=m.session_id
 	WHERE m.occurred_at >= p.previous_start AND m.occurred_at < p.end_at
 	  AND m.source_fact_id IS NOT NULL AND m.traffic_class='business' AND nullif(m.owner_user,'') IS NOT NULL
@@ -155,11 +155,11 @@ totals AS (
 ), positions AS (
 	SELECT max(position) FILTER (WHERE current) AS current_rank,max(position) FILTER (WHERE NOT current) AS prior_rank
 	FROM period_rank r CROSS JOIN params p WHERE r.owner=p.owner
-), daily_totals AS (
+), owner_totals_by_day AS (
 	SELECT o.owner,day,` + sessionPeopleMeasures + `
 	FROM current_rows o GROUP BY o.owner,day
 ), daily_rank AS (
-	SELECT *,row_number() OVER (PARTITION BY day ORDER BY total_tokens DESC,owner) AS position FROM daily_totals
+	SELECT *,row_number() OVER (PARTITION BY day ORDER BY total_tokens DESC,owner) AS position FROM owner_totals_by_day
 ), series AS (
 	SELECT
 		coalesce(jsonb_agg(jsonb_build_object('date',day,'count',session_count) ORDER BY day),'[]') AS sessions,

@@ -66,13 +66,14 @@ var sqlContextRE = regexp.MustCompile(
 		`|ON\s+CONFLICT\b` +
 		`|RETURNING\b)`)
 
-// cteNameRE = CTE（WITH x AS (...)）里的名字。
+// cteNameRE also accepts a CTE at the start of a SQL fragment, where the
+// caller supplies WITH or the preceding comma.
 //
 // ★★★ CTE 名【不是关系】⇒ 它出现在 `WITH base AS (…) SELECT … FROM base` 里
 //
 //	⇒ 若不排除 ⇒ `base` / `buckets` / `bucket_totals` / `agg` / `active_failures` …
 //	全被当成表名 ⇒ ⇒ ★★ 这正是第一版假阳性的一大类。
-var cteNameRE = regexp.MustCompile(`(?i)(?:\bWITH\s+(?:RECURSIVE\s+)?|,)\s*("?[A-Za-z_][\w$]*"?)\s*(?:\([^)]*\))?\s+AS\s*(?:NOT\s+MATERIALIZED\s+|MATERIALIZED\s*)?\(`)
+var cteNameRE = regexp.MustCompile(`(?i)(?:^|\bWITH\s+(?:RECURSIVE\s+)?|,)\s*("?[A-Za-z_][\w$]*"?)\s*(?:\([^)]*\))?\s+AS\s*(?:NOT\s+MATERIALIZED\s+|MATERIALIZED\s*)?\(`)
 
 // relPositionRE = SQL 里的【关系位置】⇒ 产品按名引用关系的最强证据。
 //
@@ -165,8 +166,8 @@ func extractRelationPositions(sqlText string, ddl *ddlRelations, globalCTEs glob
 		if name == "" {
 			continue
 		}
-		// ★ ① CTE 名排除（★ 本字面量内的 ＋ ★ 全仓全局的）
-		if ctes[bareName(name)] || globalCTEs[bareName(name)] {
+		// CTE names are unqualified. A schema-qualified reference still names a relation.
+		if ctes[name] || globalCTEs[name] {
 			continue
 		}
 		// ★ ② 函数调用排除：名字后面紧跟 `(` ⇒ 是函数不是表

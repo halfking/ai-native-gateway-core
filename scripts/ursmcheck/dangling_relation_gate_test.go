@@ -54,8 +54,6 @@ const repoRoot = "../.."
 //
 //	⇒ ⇒ 所以「提前豁免一个还不存在的问题」会在下一次运行时被抓出来。
 var exemptedDanglingRefs = map[string]string{
-	// ── 解析器假阳性（拼接 CTE）—— 2026-11-11 48h 审计第二轮定性 ──
-	"static": "解析器假阳性：CTE 名 `static` 由 bg/featured_sources.go 的 StaticFeaturedCTESQL() 拼接定义，引用点（bg/model_probe.go:457/:515 等）的查询头是 `WITH `+StaticFeaturedCTESQL()+`，运行时关系在场 ⇒ 静态提取器跨函数拼不出 WITH 体 ⇒ 非缺口",
 	// ★★ 2026-11-24（合并轮二十一 · 上游新增对账报表引入）：★ **别名限定的列名被当成关系名**
 	// ★★ `model`：★ 引用点＝`domains/reconciliation/invoice_report.go:106` 的
 	// ★ `SELECT a.credential_id, a.model, a.delivery, …`（★ FROM 的是

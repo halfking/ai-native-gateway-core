@@ -5,7 +5,7 @@
 //   - 用户取消分享 = 'cancelled'，不再兜底下载（取消后又弹下载是双打扰）；
 //   - 通道全失败 ⇒ 抛 ExportChannelError（D-4 如实报错的机制面）。
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { exportFile, setFileExportBridge, ExportChannelError } from './exportFile'
+import { downloadSameOriginFile, exportFile, setFileExportBridge, ExportChannelError } from './exportFile'
 
 interface NavShape {
   canShare?: (data: ShareData) => boolean
@@ -41,6 +41,20 @@ function clickSpy() {
     },
   }
 }
+
+it('lets the browser download a same-origin attachment without a blob URL', () => {
+  const anchor = clickSpy()
+  try {
+    downloadSameOriginFile('/api/admin/report-rollup/v2/export', 'report.xlsx')
+    expect(anchor.clicks).toEqual([{
+      href: `${window.location.origin}/api/admin/report-rollup/v2/export`, download: 'report.xlsx',
+    }])
+    expect(() => downloadSameOriginFile('https://example.invalid/file', 'report.xlsx')).toThrow(ExportChannelError)
+    expect(anchor.clicks).toHaveLength(1)
+  } finally {
+    anchor.restore()
+  }
+})
 
 describe('exportFile 降级链', () => {
   it('① canShare 为真 ⇒ 走系统分享面，不建下载锚（D-2 机制面）', async () => {

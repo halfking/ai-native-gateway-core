@@ -73,6 +73,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
   const showCost = computed(() => isPlatformOpsView())
   const hasData = computed(() => !!report.value && report.value.snapshot_dates.length > 0)
   const kxRange = computed(() => ({ start: range.value[0], end: range.value[1] }))
+  const dailyDetailQuery = computed(() => ({ ...kxRange.value, view: view.value, ...cleanFilters(filters.value) }))
   const coverageText = computed(() => {
     if (!report.value) return ''
     const base = report.value.source === 'request_metrics'
@@ -119,7 +120,7 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     countHeader.value, t('reports.success'), t('reports.errors'), t('reports.errorRate'), t('reports.totalTokens'), moneyHeader.value,
   ])
 
-  async function refresh() {
+  async function refresh(personPage = 1) {
     if (!active.value) return
     const gen = reportRace.begin()
     loading.value = true
@@ -130,6 +131,8 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
         end: range.value[1],
         view: view.value,
         detail: false,
+        summary_scope: 'distribution',
+        ...(view.value === 'internal' && { person_page: personPage }),
         ...cleanFilters(filters.value),
       })
       if (reportRace.stale(gen)) return
@@ -141,6 +144,10 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
     } finally {
       if (reportRace.current(gen)) loading.value = false
     }
+  }
+
+  function setPersonPage(page: number) {
+    if (view.value === 'internal' && page !== report.value?.person_page?.number) void refresh(page)
   }
 
   async function refreshDimensions() {
@@ -311,9 +318,9 @@ export function useReconciliationPage(active: Readonly<Ref<boolean>>) {
 
   return {
     t, loading, dimsLoading, exporting, errorText, metric, reasonFilter, daysOpen,
-    report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
+    report, dims, view, filters, showCost, hasData, kxRange, dailyDetailQuery, coverageText, legacyDays,
     reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
     personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-    applyRange, exportXlsx, reload, clearReason, setView, setMetric,
+    applyRange, exportXlsx, reload, clearReason, setView, setMetric, setPersonPage,
   }
 }

@@ -101,7 +101,7 @@
             <td>{{ fmt(a.task_count) }}</td>
             <td>{{ fmt(a.total_tokens) }}</td>
             <td>
-              <SaCostCell :internal-cost="a.internal_cost" :external-cost="a.external_cost" :terminal-cost="a.usd_unmeasured_requests === undefined ? undefined : a.total_cost" :usage-credits="a.credits_charged" />
+              <SaCostCell :internal-cost="a.total_cost" :external-cost="a.credits_charged" projected />
             </td>
             <td>{{ a.avg_duration_seconds == null ? '—' : t('sessionAnalytics.unit.seconds', { value: fmt(a.avg_duration_seconds) }) }}</td>
             <td>{{ formatTime(a.last_used_at) }}</td>

@@ -2,13 +2,14 @@
 // ReconciliationReport.vue — provider/internal reconciliation layout.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElAlert, ElButton, ElCollapse, ElCollapseItem } from 'element-plus'
+import { ElAlert, ElButton, ElCollapse, ElCollapseItem, ElPagination } from 'element-plus'
 import DistributionTable from '../../components/analytics/DistributionTable.vue'
 import FailureReasons from '../../components/reconciliation/FailureReasons.vue'
 import ReconciliationCharts from '../../components/reconciliation/ReconciliationCharts.vue'
 import ReconciliationKpiGrid from '../../components/reconciliation/ReconciliationKpiGrid.vue'
 import ReconciliationToolbar from '../../components/reconciliation/ReconciliationToolbar.vue'
 import DailyReconciliationPanel from '../../components/reconciliation/DailyReconciliationPanel.vue'
+import ReportDayDetails from '../../components/reconciliation/ReportDayDetails.vue'
 import { readDailyReconciliationDefault, type DailyReconciliationCalendar } from '../../api/requestReconciliation'
 import { isSuperAdmin } from '../../store'
 import { snapshotQueryKeys, useReconciliationPage } from './useReconciliationPage'
@@ -25,10 +26,10 @@ let disposed = false
 
 const {
   t, loading, dimsLoading, exporting, errorText, metric, reasonFilter, daysOpen,
-  report, dims, view, filters, showCost, hasData, kxRange, coverageText, legacyDays,
+  report, dims, view, filters, showCost, hasData, kxRange, dailyDetailQuery, coverageText, legacyDays,
   reasons, moneyMode, primaryRows, modelRows, personRows, dayRows, primaryHeaders, modelHeaders,
   personHeaders, dayHeaders, patchFilters, clearExtra, onPrimaryRow, onPersonRow, onReason,
-  applyRange, exportXlsx, reload, clearReason, setView, setMetric,
+  applyRange, exportXlsx, reload, clearReason, setView, setMetric, setPersonPage,
 } = useReconciliationPage(showSnapshots)
 
 watch(() => snapshotQueryKeys.map(key => route.query[key]), () => {
@@ -169,6 +170,18 @@ onBeforeUnmount(() => {
             :headers="personHeaders"
             @row="onPersonRow"
           />
+          <el-pagination
+            v-if="report.person_page && report.person_page.total > report.person_page.page_size"
+            class="person-pages"
+            :aria-label="t('reports.byPerson')"
+            :current-page="report.person_page.number"
+            :page-size="report.person_page.page_size"
+            :total="report.person_page.total"
+            :disabled="loading"
+            :pager-count="5"
+            layout="total, prev, pager, next"
+            @update:current-page="setPersonPage"
+          />
         </div>
       </div>
 
@@ -182,6 +195,14 @@ onBeforeUnmount(() => {
             :clickable="false"
             :name-header="t('reports.date')"
             :headers="dayHeaders"
+          />
+          <ReportDayDetails
+            v-if="daysOpen.includes('days') && report.projection"
+            :query="dailyDetailQuery"
+            :dates="report.days.map(row => row.date)"
+            :day-through="report.projection.through"
+            :show-cost="showCost"
+            :disabled="loading"
           />
         </el-collapse-item>
       </el-collapse>
@@ -198,6 +219,7 @@ onBeforeUnmount(() => {
 .section-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 8px 0; }
 .section-head h2, .panel h3 { margin: 0 0 8px; font-size: 16px; }
 .hint { color: var(--text-muted, var(--el-text-color-secondary)); font-size: 12px; }
+.person-pages { flex-wrap: wrap; margin-top: var(--space-2); }
 .spacer { flex: 1; }
 .chips { display: flex; gap: 4px; }
 .chip {

@@ -6,35 +6,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/metrics"
 )
 
 type projectionReadiness struct {
-	Source           string     `json:"source"`
-	BackfillComplete bool       `json:"backfill_complete"`
-	CheckedAt        *time.Time `json:"checked_at"`
-	UpdatedAt        *time.Time `json:"updated_at"`
-	PendingSince     *time.Time `json:"pending_since"`
-	Stale            bool       `json:"stale"`
-	Reason           string     `json:"reason,omitempty"`
-}
-
-// projectionStaleThreshold 是「投影器停摆」的判定阈值：水位 60 分钟没动过、
-// 或同一条 pending 积压超过 60 分钟没被消化 ⇒ 判 stale、降 503。
-// （★ 2026-11-26 12h 审计轮 P2-2：原先只看 backfill_complete && updated_at
-//   ⇒ 投影器停摆 / pending 无界积压时长期 200 假绿。）
-const projectionStaleThreshold = 60 * time.Minute
-
-// projectionIsStale 判「水位是否停滞」：
-//   - updated_at 距今超过阈值（投影器一轮都没跑成）；
-//   - 或 pending 积压头入队时间距今超过阈值（积压没人消化）。
-func projectionIsStale(now time.Time, updatedAt, pendingSince *time.Time) (bool, string) {
-	if updatedAt != nil && now.Sub(*updatedAt) > projectionStaleThreshold {
-		return true, "projection watermark not advanced for over 60m"
-	}
-	if pendingSince != nil && now.Sub(*pendingSince) > projectionStaleThreshold {
-		return true, "pending backlog older than 60m not consumed"
-	}
-	return false, ""
+	Source            string                      `json:"source"`
+	BackfillComplete  bool                        `json:"backfill_complete"`
+	CheckedAt         *time.Time                  `json:"checked_at"`
+	UpdatedAt         *time.Time                  `json:"updated_at"`
+	PendingSince      *time.Time                  `json:"pending_since"`
+	PendingCount      int64                       `json:"pending_count"`
+	OldestWaitSeconds float64                     `json:"oldest_wait_seconds"`
+	Ready             bool                        `json:"ready"`
+	Coverage          *metrics.ProjectionCoverage `json:"coverage,omitempty"`
 }
 
 // ProjectionReadinessHandler reports the shared projection watermark without
@@ -47,27 +32,53 @@ func ProjectionReadinessHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		var start, end time.Time
+		from, through := r.URL.Query().Get("from"), r.URL.Query().Get("through")
+		if from != "" || through != "" {
+			var startErr, endErr error
+			start, startErr = time.Parse(time.RFC3339, from)
+			end, endErr = time.Parse(time.RFC3339, through)
+			if startErr != nil || endErr != nil || !end.After(start) || end.Sub(start) > 93*24*time.Hour {
+				http.Error(w, "use a positive window of at most 93 days with RFC3339 from and through", http.StatusBadRequest)
+				return
+			}
+		}
 		state := projectionReadiness{Source: "request_metrics"}
 		status := http.StatusServiceUnavailable
 		if db != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
 			err := db.QueryRowContext(ctx, `SELECT backfill_complete, statement_timestamp(), updated_at,
-				(SELECT enqueued_at FROM public.request_metrics_pending ORDER BY enqueued_at LIMIT 1)
-				FROM public.request_metrics_projection_state WHERE singleton`).
-				Scan(&state.BackfillComplete, &state.CheckedAt, &state.UpdatedAt, &state.PendingSince)
-			switch {
-			case err != nil:
+				(SELECT enqueued_at FROM public.request_metrics_pending_events ORDER BY enqueued_at LIMIT 1),
+				(SELECT count(*) FROM public.request_metrics_pending_events)
+				FROM public.request_metrics_repair_state WHERE singleton`).
+				Scan(&state.BackfillComplete, &state.CheckedAt, &state.UpdatedAt, &state.PendingSince, &state.PendingCount)
+			if err != nil {
 				state = projectionReadiness{Source: state.Source}
-			case !state.BackfillComplete || state.UpdatedAt == nil:
-				// backfill 未完成 ⇒ 原口径 503（不变）。
-			default:
-				if stale, reason := projectionIsStale(derefTime(state.CheckedAt), state.UpdatedAt, state.PendingSince); stale {
-					// 水位停滞 ⇒ 投影器停摆 / 积压没人消化 ⇒ 503 + 原因（不再假绿）。
-					state.Stale = true
-					state.Reason = reason
-				} else {
+			} else {
+				if state.PendingSince != nil {
+					state.OldestWaitSeconds = max(0, state.CheckedAt.Sub(*state.PendingSince).Seconds())
+				}
+				state.Ready = state.BackfillComplete && state.UpdatedAt != nil &&
+					state.CheckedAt.Sub(*state.UpdatedAt) <= 5*time.Minute &&
+					state.OldestWaitSeconds <= (5*time.Minute).Seconds()
+				if state.Ready {
 					status = http.StatusOK
+				}
+			}
+		}
+		if db != nil && state.CheckedAt != nil && !start.IsZero() {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			coverage, err := readProjectionCoverage(ctx, db, start, end)
+			if err != nil {
+				state.Ready = false
+				status = http.StatusServiceUnavailable
+			} else {
+				state.Coverage = &coverage
+				if coverage.Current != coverage.Expected {
+					state.Ready = false
+					status = http.StatusServiceUnavailable
 				}
 			}
 		}
@@ -78,9 +89,6 @@ func ProjectionReadinessHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func derefTime(t *time.Time) time.Time {
-	if t != nil {
-		return *t
-	}
-	return time.Now()
+func readProjectionCoverage(ctx context.Context, db *sql.DB, start, end time.Time) (metrics.ProjectionCoverage, error) {
+	return metrics.ReadProjectionCoverage(ctx, db.QueryRowContext, start, end)
 }

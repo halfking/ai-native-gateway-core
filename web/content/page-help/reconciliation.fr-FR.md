@@ -2,6 +2,12 @@
 
 Cette page récapitule l’usage enregistré par la passerelle la veille, selon plusieurs vues : fournisseur, locataire, personne, modèle, etc. Elle sert à rapprocher les enregistrements de la passerelle ; ce n’est ni une facture fournisseur ni un montant dû confirmé.
 
+## Statistiques historiques des requêtes
+
+Les statistiques historiques utilisent la projection des requêtes mise à jour de façon asynchrone. Ouvrez le détail journalier et choisissez une date et une dimension. Les filtres de période s’appliquent à la vue et à l’export. L’export du détail de la période contient toutes les lignes de la période et de la dimension sélectionnées.
+
+La liste des téléchargements du navigateur indique la progression. Si les données dépassent la limite de lignes d’une feuille Excel, les lignes restantes figurent dans des feuilles numérotées.
+
 ## Comment sont générés les instantanés
 
 - La tâche d’agrégation quotidienne génère un instantané **du jour précédent** dans la nuit ; les données du jour ne sont disponibles dans un instantané qu’au petit matin du lendemain. La page affiche le message « L’instantané du jour sera généré au petit matin du lendemain ».

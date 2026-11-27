@@ -133,8 +133,7 @@ export default {
     usd: '${value}',
     credits: '{value} credits',
   },
-  costNote:
-    'The spend column is shown in two units: internal cost (USD) and external cost (credits). The two units differ, so the column is only useful for relative comparison, not as one monetary amount.',
+  costNote: 'USD costs and credits are shown separately. A dash indicates missing evidence.',
   // ★ N9：外部成本为 0 时渲染「—」的原因（不是「测得为 0」）。
   externalCostNotCarried:
     'This view does not carry external credits separately yet: the credit write side is not in place, so "—" means "not collected", not "measured as zero".',

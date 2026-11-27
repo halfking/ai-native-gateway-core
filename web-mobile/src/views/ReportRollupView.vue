@@ -46,6 +46,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useHyperPage } from '@/hyper'
 import { t } from '@/i18n'
 import DailyReconciliationEvidence from '@/components/common/DailyReconciliationEvidence.vue'
+import ReportRollupDayDetails from '@/components/common/ReportRollupDayDetails.vue'
 import { fetchCapabilities, type DailyReconciliationCalendar } from '@/api/featureCapabilities'
 import {
   fetchReportRollupSummary,
@@ -118,24 +119,28 @@ const windowDays = ref<number>(7)
 const summary = ref<ReportRollupSummaryBody | null>(null)
 const summaryError = ref<string | null>(null)
 const loadingSummary = ref(false)
+let summaryRequest: AbortController | undefined
 
 async function loadSummary(): Promise<void> {
+  summaryRequest?.abort()
+  const request = new AbortController()
+  summaryRequest = request
   loadingSummary.value = true
   summaryError.value = null
   try {
-    summary.value = await fetchReportRollupSummary({
+    const next = await fetchReportRollupSummary({
       days: windowDays.value,
       view: view.value,
       ...(trafficScope.value && { trafficScope: trafficScope.value }),
-      // ★ 真值集合是 `1`/`true`/`yes`/`daily`（`:194-200`）⇒ 恒发 `1` 或 `0`。
-      //   ⚠️ export 用的是**正好相反**的一组（`:207-213`），本页不碰 export。
-      detail: detailOn.value ? '1' : '0',
-    })
+      detail: '0', summaryScope: 'totals',
+    }, { signal: request.signal })
+    if (!request.signal.aborted) summary.value = next
   } catch (err) {
+    if (request.signal.aborted) return
     summary.value = null
     summaryError.value = (err as Error)?.message || String(err)
   } finally {
-    loadingSummary.value = false
+    if (!request.signal.aborted) loadingSummary.value = false
   }
 }
 
@@ -280,6 +285,7 @@ function dimName(group: string, o: ReportDimensionOption): string {
 }
 
 onBeforeUnmount(() => {
+  summaryRequest?.abort()
   disposed = true
   clearTimeout(policyTimer)
   policyRequest.abort()
@@ -349,7 +355,7 @@ onBeforeUnmount(() => {
           <span>{{ t('rr.query.businessOnly') }}</span>
         </label>
         <label class="rr__label rr__label--inline">
-          <input v-model="detailOn" type="checkbox" data-testid="rr-detail" @change="loadSummary()" />
+          <input v-model="detailOn" type="checkbox" data-testid="rr-detail" />
           <span>{{ t('rr.query.detail') }}</span>
         </label>
       </div>
@@ -359,6 +365,11 @@ onBeforeUnmount(() => {
       <p v-if="summaryError" class="rr__msg rr__msg--err" data-testid="rr-summary-error">{{ summaryError }}</p>
       <p v-if="loadingSummary" class="rr__msg">{{ t('common.loading') }}</p>
     </section>
+
+    <ReportRollupDayDetails
+      v-if="detailOn && report && !loadingSummary && !summaryError"
+      :report="report" :traffic-scope="trafficScope"
+    />
 
     <!-- ══ 汇总段 ══ -->
     <section class="rr__sec">

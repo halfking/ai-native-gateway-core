@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2192,6 +2193,22 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 492 自带事务包裹 ＋ 自登记 ⇒ 符合≥952双账本纪律。
 			//   ★ 从未应用过 ⇒ 零已应用字节变更。
 			"492_channels_customers.sql",
+			// ★ 983j-983r（V2 合并 2026-11-27，随 codex/request-metrics-v2 并入）：
+			//   request_metrics 973 projection 复用面 —— repair 视图（983j，
+			//   request_metrics_pending_events = pending ∪ refresh_pending）、
+			//   日汇总/日看板/日历史/租户历史/历史明细/看板小时/小时分布（983k-r）。
+			//   ★ 追加在清单末尾（tsv 只追加纪律，中间插行会整体 +1）；
+			//   ★ 983j 基于 211 现役表 request_metrics_pending 建 UNION 视图 ⇒
+			//     对已发版库零破坏、全新安装两表齐建后视图可用。
+			"983j_request_metrics_973_repair.sql",
+			"983k_request_metrics_daily_summary.sql",
+			"983l_request_metrics_daily_board.sql",
+			"983m_request_metrics_daily_history.sql",
+			"983n_request_metrics_daily_tenant_history.sql",
+			"983o_request_metrics_daily_history_details.sql",
+			"983p_request_metrics_history_pages.sql",
+			"983q_request_metrics_board_hours.sql",
+			"983r_request_metrics_board_hour_distributions.sql",
 		},
 	}
 }
@@ -2369,6 +2386,9 @@ func (r *Runner) initSchema(logger func(string), upgradeOnly bool) error {
 		}
 		if len(deployApplied) > 0 {
 			logger(fmt.Sprintf("  ▶ 部署通道权威台账 gateway_db_revision_sequences 命中 %d 条已应用文件（★ 只读咨询，★ 不写）", len(deployApplied)))
+		}
+		if err := r.verifyReleasedProjectionFingerprint(applied, deployApplied); err != nil {
+			return err
 		}
 	}
 
@@ -2670,6 +2690,43 @@ func (r *Runner) startupSkipReason(name string, applied map[int]bool, deployAppl
 		return "部署通道已按同一内容指纹应用", true
 	}
 	return "", false
+}
+
+// verifyReleasedProjectionFingerprint runs before applying the 973 repair.
+// The version row alone cannot distinguish the released 973 from other builds.
+func (r *Runner) verifyReleasedProjectionFingerprint(applied map[int]bool, deployApplied map[string]string) error {
+	const file = "973_request_metrics_projection.sql"
+	deployedSHA, deployed := deployApplied[file]
+	if !slices.Contains(r.StartupFiles, file) || (!applied[973] && !deployed) {
+		return nil
+	}
+	packagedSHA, err := r.fileSHA256(filepath.Join("startup", file))
+	if err != nil {
+		return fmt.Errorf("read released 973 fingerprint: %w", err)
+	}
+	if deployed && deployedSHA != packagedSHA {
+		return fmt.Errorf("released 973 deployment fingerprint differs from %s", file)
+	}
+	hasInstallerReceipts, err := r.psqlQuery(`SELECT to_regclass('public.gateway_db_installer_migration_receipts') IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("check installer receipts for 973: %w", err)
+	}
+	var installedSHA string
+	if strings.TrimSpace(hasInstallerReceipts) == "t" {
+		installedSHA, err = r.psqlQuery(`SELECT content_sha256 FROM public.gateway_db_installer_migration_receipts
+			WHERE file_name='973_request_metrics_projection.sql'`)
+		if err != nil {
+			return fmt.Errorf("read installer fingerprint for 973: %w", err)
+		}
+		installedSHA = strings.TrimSpace(installedSHA)
+	}
+	if installedSHA != "" && installedSHA != packagedSHA {
+		return fmt.Errorf("released 973 installer fingerprint differs from %s", file)
+	}
+	if !deployed && installedSHA == "" {
+		return fmt.Errorf("released 973 requires a deployment or installer fingerprint for %s", file)
+	}
+	return nil
 }
 
 // recordAppliedVersion 把「这条 startup 文件已被应用」补记进人读台账

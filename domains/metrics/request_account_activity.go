@@ -30,7 +30,7 @@ SELECT backfill_complete, updated_at, pending_since,
 			SELECT m.tenant_id, m.owner_user AS username, count(*) AS requests,
 				coalesce(sum(m.total_tokens),0) AS tokens, coalesce(sum(m.credits_charged),0) AS credits,
 				max(m.occurred_at) AS last_active_at
-			FROM public.request_metrics m
+			FROM public.request_metrics_projection m
 			WHERE m.source_fact_id IS NOT NULL AND m.occurred_at >= $1 AND m.occurred_at < $2
 			  AND ($3 = '' OR m.tenant_id=$3) AND ($4::boolean OR m.traffic_class='business')
 			  AND EXISTS (SELECT 1 FROM public.users u WHERE u.tenant_id=m.tenant_id AND u.username=m.owner_user)
@@ -50,10 +50,10 @@ func ReadProjectedAccounts(ctx context.Context, db requestStatsDB, filter Metric
 const accountActivityReadSQL = `
 WITH projection AS (` + boardProjectionState + `),
 bounded AS MATERIALIZED (
-	SELECT occurred_at, fact_request_id AS request_id, ` + requestModelKey + ` AS model, application_code, application_id,
+	SELECT occurred_at, request_id, ` + requestModelKey + ` AS model, application_code, application_id,
 		api_key_id, api_key_prefix, latency_ms, ttft_ms, total_tokens, credits_charged, status, cost_amount, cost_currency,
 		prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens
-	FROM public.request_metrics
+	FROM public.request_metrics_projection
 	WHERE source_fact_id IS NOT NULL AND tenant_id=$3 AND ($4='' OR owner_user=$4) AND occurred_at >= $1 AND occurred_at < $2
 	  AND ($6::boolean OR traffic_class='business') AND (SELECT backfill_complete FROM projection)
 ), kpi AS (

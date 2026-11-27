@@ -213,23 +213,8 @@ var addressFamilySiteAssessments = map[string]siteAssessment{
 		Why:   "内置 YAML 的地址族名字登记簿（地址族名字 + 必须落成的类型）。",
 	},
 
-	// ── 误报：同名不同义 ────────────────────────────────────────────────
-	"domains/promptinjection/pii_detector_p317.go|NewSSNValidator|type-list": {
-		Class: classNotADecision,
-		Why: "★ 这份字面量表（:38-44，字段 falsePositiveIndicators）不是「地址族判定面」：" +
-			"它是 SSN 假阳性判定的**英文上下文关键词表** —— \"port\" / \"address\" / \"ip\" " +
-			"出现在疑似 SSN 的数字附近时，用来判「这**不是** SSN」（如 \"address 123-45-6789\" " +
-			"是门牌号、\"ip 123-45-6789\" 是 IP 片段）。" +
-			"★ 同名不同义：SSOT 的 `address` / `ip` 是**规则类型名**（网络地址类型），" +
-			"而这里的 \"address\" / \"ip\" 是**自由文本里出现的英文字样**，两者判别对象不同。" +
-			"★ 补充事实（2026-11-18 登记时逐行核过）：该字段**至今没有任何读取方** —— " +
-			"IsLikelySSN 实际只用同文件里的局部表 falsePositiveClose（:78-81），" +
-			"falsePositiveIndicators 只在 NewSSNValidator 被写一次 ⇒ 它连「活的判定面」都不是。" +
-			"⇒ 由 domains/promptinjection/pii_detector_p317_test.go 把住" +
-			"（TestSSNValidator_ContextAwareness / TestSSNValidator_IsLikelySSN 钉住" +
-			"SSN 真/假阳性形态）；若将来有人真的开始读这个字段并用它判类型，" +
-			"本条登记必须重新审。",
-	},
+	// ★ pii_detector_p317.go|NewSSNValidator|type-list（同名不同义误报条目）已随
+	// V2 合并删除该文件（pii_detector_p317.go 于 request-metrics-v2 线移除）⇒ 登记过期随之移除（2026-11-27）。
 	"admin/ops_overview.go|queryOpsDeploymentNodes|type-list": {
 		Class: classNotADecision,
 		Why: "误报：这是运维面板响应的 **map 键**（hostname / ip_address 两个字段名），" +
