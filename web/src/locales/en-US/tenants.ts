@@ -223,6 +223,15 @@ export default {
   },
 
   usage: {
+    usageStatModels: 'Models',
+    usageStatRequests: 'Total Requests',
+    usageStatTokens: 'Total Tokens',
+    usageStatInput: 'Input Tokens',
+    usageStatOutput: 'Output Tokens',
+    usageStatCached: 'Cached Tokens',
+    usageStatCacheRate: 'Cache Rate',
+    usageStatSuccessRate: 'Success Rate',
+    usageStatCredits: 'Credits',
     title: 'My usage',
     adminTitle: 'Usage statistics',
     refresh: 'Refresh',

@@ -90,7 +90,7 @@ func statsTenantScope(r *http.Request) string {
 	if auth == nil {
 		return requested
 	}
-	if auth.Role != "super_admin" && auth.Role != "admin_key" {
+	if !auth.HasRole("super_admin") && !auth.HasRole("admin_key") {
 		return auth.TenantID
 	}
 	return requested
@@ -308,7 +308,7 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 	where := "1=1"
 	args := []any{}
 	auth := GetAuthContext(r)
-	if auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+	if auth != nil && !auth.HasRole("super_admin") && !auth.HasRole("admin_key") {
 		where += " AND EXISTS (SELECT 1 FROM stats_reconciliation_diffs d_scope WHERE d_scope.run_id = stats_reconciliation_runs.run_id AND d_scope.tenant_id = $" + strconv.Itoa(len(args)+1) + ")"
 		args = append(args, auth.TenantID)
 	}
@@ -342,7 +342,7 @@ func (h *Handler) handleStatsReconciliation(w http.ResponseWriter, r *http.Reque
 	}
 	diffWhere := "1=1"
 	diffArgs := []any{}
-	if auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+	if auth != nil && !auth.HasRole("super_admin") && !auth.HasRole("admin_key") {
 		diffWhere += " AND tenant_id = $" + strconv.Itoa(len(diffArgs)+1)
 		diffArgs = append(diffArgs, auth.TenantID)
 	}
@@ -382,7 +382,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 	}
 
 	auth := GetAuthContext(r)
-	if auth == nil || (auth.Role != "super_admin" && auth.Role != "admin_key") {
+	if auth == nil || (!auth.HasRole("super_admin") && !auth.HasRole("admin_key")) {
 		writeError(w, http.StatusForbidden, "only super_admin or admin_key can approve reconciliation diffs")
 		return
 	}
@@ -479,7 +479,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 		}
 
 		// Verify tenant access for non-super-admin
-		if auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+		if auth != nil && !auth.HasRole("super_admin") && !auth.HasRole("admin_key") {
 			if tenantID != auth.TenantID {
 				slog.Warn("tenant access violation in reconciliation approval",
 					"diff_id", diffID, "diff_tenant", tenantID, "user_tenant", auth.TenantID)

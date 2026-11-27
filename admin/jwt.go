@@ -22,8 +22,24 @@ type JWTClaims struct {
 	TenantID           string `json:"tenant_id"`
 	Username           string `json:"username"`
 	Role               string `json:"role"`
-	MustChangePassword bool   `json:"must_change_password,omitempty"`
+	// Roles 多角色数组（三级配额制 P1-b，2026-11-27）。可选 claim：
+	//   - 旧 token 无此字段 ⇒ 解析后为 nil ⇒ 中间件回落 [Role]（存量兼容）；
+	//   - 新 token 由 SignToken 写入（含主角色在内的有效角色集）。
+	Roles              []string `json:"roles,omitempty"`
+	MustChangePassword bool     `json:"must_change_password,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// EffectiveRoles 返回本 token 的有效角色集：Roles 非空用它；否则回落 [Role]
+//（旧 token / legacy 形态）。主角色恒为首元素（SignToken 侧维护）。
+func (c *JWTClaims) EffectiveRoles() []string {
+	if len(c.Roles) > 0 {
+		return c.Roles
+	}
+	if c.Role == "" {
+		return nil
+	}
+	return []string{c.Role}
 }
 
 // jwtSecret resolves the JWT signing key. Rule 20 §8.2: the hardcoded
@@ -70,10 +86,23 @@ func JWTExpiry() time.Duration {
 
 // SignToken creates a signed JWT string for the given user.
 // Returns an error if no JWT signing key is configured (rule 20 §8.2).
+//
+// roles（三级配额制 P1-b，2026-11-27）：有效角色集（可 nil）。nil/空 ⇒ 只写
+// 主角色 claim（与旧 token 逐字节同形）；非空 ⇒ Roles claim 带全量、Role 仍写
+// 主角色（roles[0]，存量读者/多 issuer 校验用）。
 func SignToken(userID int, tenantID, username, role, secretKey string, mustChangePassword bool) (string, time.Time, error) {
+	return SignTokenWithRoles(userID, tenantID, username, role, nil, secretKey, mustChangePassword)
+}
+
+// SignTokenWithRoles 是 SignToken 的多角色变体（P1-b）：roles[0] 视为主角色
+//（为空回落 role 参数）；claims 里 Role=主角色、Roles=全量有效集。
+func SignTokenWithRoles(userID int, tenantID, username, role string, roles []string, secretKey string, mustChangePassword bool) (string, time.Time, error) {
 	if !jwtSecretConfigured(secretKey) {
 		return "", time.Time{}, fmt.Errorf("jwt signing secret not configured (set LLM_GATEWAY_JWT_SECRET or LLM_GATEWAY_SECRET_KEY)")
 	}
+	// 主角色恒为 Roles 首元素（AuthContext.HasRole/存量 Role== 读者都依赖该
+	// 契约）：调用方传来的数组若缺主角色则前置，重复则去重保序。
+	roles = effectiveLoginRoles(role, roles)
 	expiry := jwtExpiry()
 	expiresAt := time.Now().Add(expiry)
 
@@ -82,6 +111,7 @@ func SignToken(userID int, tenantID, username, role, secretKey string, mustChang
 		TenantID:           tenantID,
 		Username:           username,
 		Role:               role,
+		Roles:              roles,
 		MustChangePassword: mustChangePassword,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
@@ -115,6 +145,10 @@ func VerifyToken(tokenStr, secretKey string) (*JWTClaims, error) {
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid jwt claims")
 	}
+	// 兼容旧 token（无 Roles claim）：Roles 为空 ⇒ 回落 [Role]（P1-b，2026-11-27）。
+	if len(parsedClaims.Roles) == 0 && parsedClaims.Role != "" {
+		parsedClaims.Roles = []string{parsedClaims.Role}
+	}
 	return parsedClaims, nil
 }
 
@@ -136,6 +170,7 @@ func VerifyLegacy(tokenStr, secretKey string) (*identity.LegacyClaims, error) {
 		TenantID:           c.TenantID,
 		Username:           c.Username,
 		Role:               c.Role,
+		Roles:              c.EffectiveRoles(), // P1-b：多角色有效集透传
 		MustChangePassword: c.MustChangePassword,
 		IssuedAt:           issuedAt,
 	}, nil

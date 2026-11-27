@@ -15,15 +15,20 @@ import {
   MAAS_LEDGER_TYPE_LABELS,
 } from '../../api'
 import type { MaasLedgerEntry, MaasUsageSummary } from '../../api'
+import type { UsageSummary, UsageTrendModelSeries, UsageTrendMetric, UsageTrendFilterQuery } from '../../api'
+import { getUsageTrendSeries, getUsageSummary } from '../../api'
+import { USAGE_TREND_METRICS, usageTrendMetricLabelKey } from '../../utils/usageTrend'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import { useSpanDaysRange } from '../../composables/useSpanDaysRange'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
 import { useWindowClass } from '../../composables/useWindowClass'
+import { ElRadioGroup, ElRadioButton } from 'element-plus'
 import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
 import FeeCostCell from '../../components/FeeCostCell.vue'
+import ModelTrendChart from '../../components/analytics/ModelTrendChart.vue'
 
 const { t } = useI18n()
 const { isCompact } = useWindowClass()
@@ -133,7 +138,74 @@ async function load() {
   }
 }
 
-onMounted(load)
+// ── 三级配额制 P1-a（2026-11-27）：usage-trends 同款折线图 ＋ 9 项统计卡 ──────
+// 数据源 = /api/usage/v2/summary（9 项聚合字段已全；普通用户经
+// requestStatsV2Scope 自动收窄到本租户）＋ /api/admin/usage/v2/trend-series。
+// 与 MaaS summary（积分流水口径）并存：上面是「用量」，下面是「钱」。
+const trendMetric = ref<UsageTrendMetric>('requests')
+const trendSeries = ref<UsageTrendModelSeries[]>([])
+const trendBucketMinutes = ref(60)
+const trendLoading = ref(false)
+const trendError = ref<string | null>(null)
+const usageStats = ref<UsageSummary | null>(null)
+
+function trendTimeQuery() {
+  return { start: rangeValue.value.start, end: rangeValue.value.end }
+}
+
+const summaryStatCards = computed(() => {
+  const s = usageStats.value
+  if (!s) return []
+  const cacheRate = s.total_prompt_tokens > 0
+    ? (s.total_cached_tokens ?? 0) / s.total_prompt_tokens
+    : null
+  return [
+    { key: 'models', label: t('tenants.usage.usageStatModels'), value: fmtUsageInt(s.unique_models) },
+    { key: 'requests', label: t('tenants.usage.usageStatRequests'), value: fmtUsageInt(s.total_requests) },
+    { key: 'tokens', label: t('tenants.usage.usageStatTokens'), value: fmtUsageInt(s.total_prompt_tokens + s.total_completion_tokens) },
+    { key: 'input', label: t('tenants.usage.usageStatInput'), value: fmtUsageInt(s.total_prompt_tokens) },
+    { key: 'output', label: t('tenants.usage.usageStatOutput'), value: fmtUsageInt(s.total_completion_tokens) },
+    { key: 'cached', label: t('tenants.usage.usageStatCached'), value: fmtUsageInt(s.total_cached_tokens) },
+    { key: 'cacheRate', label: t('tenants.usage.usageStatCacheRate'), value: cacheRate == null ? '—' : (cacheRate * 100).toFixed(1) + '%' },
+    { key: 'successRate', label: t('tenants.usage.usageStatSuccessRate'), value: s.success_rate == null ? '—' : (s.success_rate * 100).toFixed(1) + '%' },
+    { key: 'credits', label: t('tenants.usage.usageStatCredits'), value: fmtUsageInt(s.total_credits_charged) },
+  ]
+})
+
+function fmtUsageInt(n?: number | null) {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return Math.round(n).toLocaleString(localeRef.value)
+}
+
+async function loadTrend() {
+  trendLoading.value = true
+  trendError.value = null
+  try {
+    const q: UsageTrendFilterQuery = { time: trendTimeQuery(), top: 8 }
+    const resp = await getUsageTrendSeries(q)
+    trendSeries.value = resp.series ?? []
+    trendBucketMinutes.value = resp.bucket_minutes || 60
+  } catch (e: unknown) {
+    trendError.value = surfaceError(e)
+    trendSeries.value = []
+  } finally {
+    trendLoading.value = false
+  }
+}
+
+async function loadUsageStats() {
+  try {
+    usageStats.value = await getUsageSummary(trendTimeQuery())
+  } catch {
+    usageStats.value = null
+  }
+}
+
+onMounted(() => {
+  load()
+  void loadTrend()
+  void loadUsageStats()
+})
 
 /**
  * ── H6 第十四条切片（2026-10-06）：账本科表接 compact 卡片形态 ───────────────────
@@ -276,6 +348,33 @@ const ledgerCardFields = computed<CardField[]>(() => [
           {{ t('tenants.maasUsageView.ledgerTotalHint', { limit, count: recentConsumeCount }) }}
         </div>
       </div>
+    </div>
+
+    <!-- ── 三级配额制 P1-a：usage-trends 同款 9 项统计卡 ─────────────────── -->
+    <div v-if="summaryStatCards.length" class="usage-stat-grid" data-testid="tenant-usage-stat-cards">
+      <div v-for="c in summaryStatCards" :key="c.key" class="usage-stat-cell">
+        <div class="usage-stat-label">{{ c.label }}</div>
+        <div class="usage-stat-value">{{ c.value }}</div>
+      </div>
+    </div>
+
+    <!-- ── 三级配额制 P1-a：usage-trends 同款折线图（ModelTrendChart）────── -->
+    <div class="card chart-card">
+      <div class="card-title">
+        {{ t('tenants.usage.trendTitle') }}
+        <el-radio-group v-model="trendMetric" size="small">
+          <el-radio-button v-for="m in USAGE_TREND_METRICS" :key="m" :value="m">
+            {{ t(usageTrendMetricLabelKey(m)) }}
+          </el-radio-button>
+        </el-radio-group>
+      </div>
+      <ModelTrendChart
+        :series="trendSeries"
+        :metric="trendMetric"
+        :bucket-minutes="trendBucketMinutes"
+        :height="280"
+      />
+      <div v-if="trendError" class="empty">{{ t('tenants.usage.loadFailed') }}：{{ trendError }}</div>
     </div>
 
     <div v-if="summary" class="card chart-card">
@@ -432,6 +531,15 @@ const ledgerCardFields = computed<CardField[]>(() => [
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.usage-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.usage-stat-cell { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.usage-stat-label { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usage-stat-value { font-size: 18px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .stat-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -621,6 +729,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
   color: var(--accent);
 }
 @media (max-width: 768px) {
+  .usage-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .trend-grid {
     grid-template-columns: 1fr;
   }

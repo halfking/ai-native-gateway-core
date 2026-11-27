@@ -68,6 +68,9 @@ type Principal struct {
 	TenantID        string
 	Username        string
 	Role            string
+	// Roles 多角色有效集（三级配额制 P1-b，2026-11-27）：multi-issuer path
+	// 从 claims.Roles 取（含主角色）；legacy path 回落 [Role]。
+	Roles           []string
 	Issuer          string
 	Audience        string
 	ExpiresAt       time.Time
@@ -96,6 +99,9 @@ type LegacyClaims struct {
 	TenantID           string
 	Username           string
 	Role               string
+	// Roles 多角色有效集（三级配额制 P1-b，2026-11-27）：admin.VerifyLegacy
+	// 从 JWTClaims.EffectiveRoles 填充；nil = legacy 单值形态。
+	Roles              []string
 	MustChangePassword bool
 	// IssuedAt carries the token's iat so callers can implement
 	// post-password-change session revocation (Wave 3 B4). Zero for
@@ -128,6 +134,7 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 				ExternalUserID: c.UserID,
 				TenantID:       c.TenantID,
 				Role:           role,
+				Roles:          effectiveRoles(c.Roles, role),
 				Issuer:         c.Issuer,
 				Audience:       aud,
 				ExpiresAt:      time.Unix(c.ExpiresAt, 0),
@@ -146,6 +153,7 @@ func Verify(raw string, legacy LegacyVerifier) (*Principal, error) {
 				TenantID:           c.TenantID,
 				Username:           c.Username,
 				Role:               c.Role,
+				Roles:              effectiveRoles(c.Roles, c.Role),
 				Issuer:             "llm-gateway",
 				Audience:           DefaultAudience,
 				ExpiresAt:          time.Time{},
@@ -171,6 +179,18 @@ func firstRole(roles []string) string {
 		return roles[0]
 	}
 	return ""
+}
+
+// effectiveRoles（P1-b，2026-11-27）：claims.Roles 非空原样用（主角色已在
+// 首位——签发侧契约）；空回落 [primary]（legacy/共享 token 无 Roles claim）。
+func effectiveRoles(claims []string, primary string) []string {
+	if len(claims) > 0 {
+		return claims
+	}
+	if primary == "" {
+		return nil
+	}
+	return []string{primary}
 }
 
 // supportedRole uses exact Gateway roles. admin_key is a legacy context

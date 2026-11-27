@@ -144,7 +144,7 @@ const GROUP_CN = {
   'models-routing': '供应商与模型',
   'tenant-users': '密钥与用户',
   'requests-sessions': '请求与会话',
-  'data-ops': '数据运维',
+  'data-ops': '系统设置', // 2026-11-27 非管理员菜单重构轮：数据运维 → 系统设置（zh-CN 同轮改）
   opsplatform: '运维中心',
   guide: '接入指南',
   chat: '对话',

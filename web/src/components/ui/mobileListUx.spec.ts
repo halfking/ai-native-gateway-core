@@ -215,7 +215,11 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
   //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +1。
   //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
-  ['src/views/tenant/MaaSUsageView.vue', 359, '用量内嵌表，无用量详情页'],
+  // ⚠ 行号锚点：2026-11-27（三级配额制 P1-a 轮）由 359 改为 458（+99）。
+  //   原因：该轮在 stat-cards 与柱状趋势卡之间插入了 9 项统计卡栅格与
+  //   ModelTrendChart 折线图两个块（含 script 侧 state/loader）⇒ 其后行号整体 +99。
+  //   ★ 契约语义未变（账本内嵌表仍无 compact 入口、无二级目的地）⇒ 只重锁行号。
+  ['src/views/tenant/MaaSUsageView.vue', 458, '用量内嵌表，无用量详情页'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 207 改为 208。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。

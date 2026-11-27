@@ -528,11 +528,11 @@ func (h *ApprovalConfigHandler) canAccessTenant(r *http.Request, tenantID string
 		return false
 	}
 
-	if auth.Role == "super_admin" || auth.Role == "admin_key" {
+	if auth.HasRole("super_admin") || auth.HasRole("admin_key") {
 		return true
 	}
 
-	if auth.Role == "tenant_admin" {
+	if auth.HasRole("tenant_admin") {
 		return auth.TenantID == tenantID
 	}
 
@@ -545,11 +545,11 @@ func (h *ApprovalConfigHandler) canModifyTenant(r *http.Request, tenantID string
 		return false
 	}
 
-	if auth.Role == "super_admin" || auth.Role == "admin_key" {
+	if auth.HasRole("super_admin") || auth.HasRole("admin_key") {
 		return true
 	}
 
-	if auth.Role == "tenant_admin" {
+	if auth.HasRole("tenant_admin") {
 		return auth.TenantID == tenantID
 	}
 

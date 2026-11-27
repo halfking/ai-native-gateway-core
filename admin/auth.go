@@ -125,6 +125,7 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 					TenantID:           p.TenantID,
 					Username:           p.Username,
 					Role:               p.Role,
+					Roles:              p.Roles, // P1-b：多角色有效集透传（Principal）
 					IsJWT:              true,
 					MustChangePassword: p.MustChangePassword,
 					Issuer:             p.Issuer,
@@ -157,6 +158,35 @@ func isPasswordChangeAllowedPath(path string) bool {
 // secretKey），能过 AdminMiddleware → identity.Verify 的 legacy 路径。
 // casdoor（以及未来任何外部 IdP）返回的是外部签发 token，必须换发。
 // 新 provider 接入时默认按「外部签发」处理（白名单 = 本地签发者集合）。
+// effectiveLoginRoles 计算登录签发用有效角色集（P1-b，2026-11-27）。
+//
+// roles 列非空 ⇒ 主角色必须在内（不在则前置，保证 Roles[0]=主角色契约）；
+// 空/NULL ⇒ 回落 [role] 单值（存量用户逐字节同形）。
+func effectiveLoginRoles(primary string, roles []string) []string {
+	if len(roles) == 0 {
+		if primary == "" {
+			return nil
+		}
+		return []string{primary}
+	}
+	// 主角色前置 + 去重保序（normalizeUserRoles 同一语义，签发侧镜像实现——
+	// 两处必须同序，否则「库里存的顺序」与「token 里的顺序」漂移）。
+	seen := make(map[string]bool, len(roles)+1)
+	out := make([]string, 0, len(roles)+1)
+	if primary != "" {
+		out = append(out, primary)
+		seen[primary] = true
+	}
+	for _, r := range roles {
+		if r == "" || seen[r] {
+			continue
+		}
+		out = append(out, r)
+		seen[r] = true
+	}
+	return out
+}
+
 func isLocallyIssuedToken(providerName string) bool {
 	switch providerName {
 	case "native":
@@ -384,13 +414,17 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				DisplayName        string
 				Email              string
 				Role               string
+				Roles              []string
 				Enabled            bool
 				MustChangePassword bool
 			}
+			// roles（P1-b，2026-11-27）：多角色数组列；NULL → 空切片 ⇒
+			// 签发侧回落 [Role]（存量兼容）。
 			err := h.authDB().QueryRow(ctx, `
-				SELECT id, tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password
+				SELECT id, tenant_id, username, password_hash, display_name, email, role,
+				       COALESCE(roles, '{}'), enabled, must_change_password
 				FROM users WHERE username = $1
-			`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword)
+			`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Roles, &u.Enabled, &u.MustChangePassword)
 
 			// 2026-07-09: 如果在users表中找到用户，无论密码是否正确，都不再fallback到legacy admin
 			if err == nil {
@@ -424,7 +458,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				//nolint:errcheck // best-effort exec, non-critical
 				h.authDB().Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
-				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
+				token, expiresAt, signErr := SignTokenWithRoles(u.ID, u.TenantID, u.Username, u.Role, effectiveLoginRoles(u.Role, u.Roles), h.secret, u.MustChangePassword)
 				if signErr != nil {
 					slog.Error("handleLogin: sign jwt failed", "error", signErr)
 					writeError(w, http.StatusInternalServerError, "token generation failed")
@@ -456,6 +490,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 						"display_name":         u.DisplayName,
 						"email":                u.Email,
 						"role":                 u.Role,
+						"roles":                effectiveLoginRoles(u.Role, u.Roles),
 						"enabled":              u.Enabled,
 						"must_change_password": u.MustChangePassword,
 					},
@@ -608,6 +643,7 @@ func tenantAdminOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKey,
 				TenantID: claims.TenantID,
 				Username: claims.Username,
 				Role:     claims.Role,
+				Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 				IsJWT:    true,
 			})
 			next(w, authReq)
@@ -624,6 +660,7 @@ func tenantAdminOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKey,
 				TenantID: claims.TenantID,
 				Username: claims.Username,
 				Role:     claims.Role,
+				Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 				IsJWT:    true,
 			})
 			next(w, authReq)
@@ -678,6 +715,7 @@ func formatAnomalyOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKe
 				TenantID: claims.TenantID,
 				Username: claims.Username,
 				Role:     claims.Role,
+				Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 				IsJWT:    true,
 			})
 			next(w, authReq)
@@ -701,6 +739,7 @@ func formatAnomalyOrSuperAdmin(next http.HandlerFunc, db *pgxpool.Pool, secretKe
 				TenantID: claims.TenantID,
 				Username: claims.Username,
 				Role:     claims.Role,
+				Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 				IsJWT:    true,
 			})
 			next(w, authReq)
@@ -762,6 +801,7 @@ func modelCatalogReadGate(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 				TenantID: claims.TenantID,
 				Username: claims.Username,
 				Role:     claims.Role,
+				Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 				IsJWT:    true,
 			})
 			next(w, authReq)
@@ -782,6 +822,7 @@ func modelCatalogReadGate(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 				TenantID: claims.TenantID,
 				Username: claims.Username,
 				Role:     claims.Role,
+				Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 				IsJWT:    true,
 			})
 			next(w, authReq)
@@ -824,6 +865,7 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 					TenantID: claims.TenantID,
 					Username: claims.Username,
 					Role:     claims.Role,
+					Roles:    claims.EffectiveRoles(), // P1-b：多角色有效集透传
 					IsJWT:    true,
 				})
 				next(w, authReq)

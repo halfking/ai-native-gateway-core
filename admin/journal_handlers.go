@@ -56,7 +56,7 @@ func (api *JournalSnapshotAPI) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	callerTenant := strings.TrimSpace(auth.TenantID)
-	privileged := auth.Role == "super_admin" || auth.Role == "admin_key"
+	privileged := auth.HasRole("super_admin") || auth.HasRole("admin_key")
 	if !privileged && auth.Role != "tenant_admin" {
 		writeRequestJourneyError(w, http.StatusNotFound, "not found")
 		return

@@ -44,6 +44,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 12 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 778 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 790 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 792 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 794 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -774,6 +775,8 @@
 /mock/v1/chat/completions/slow	ANY	cmd/gateway/main.go:6652	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /mock/v1/messages/fast	ANY	cmd/gateway/main.go:6653	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /mock/v1/messages/slow	ANY	cmd/gateway/main.go:6654	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
+/plugin/handshake	ANY	cmd/canary-plugin/main.go:37	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/plugin/healthz	ANY	cmd/canary-plugin/main.go:43	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /plugins/{pluginId}/{rest...}	GET	cmd/gateway/plugin_proxy_init.go:12	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /readyz	ANY	cmd/gateway/main.go:6608	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /readyz/request-metrics	ANY	cmd/gateway/main.go:7123	unknown				not-probed-unresolved	★ 静态分级：解析不出

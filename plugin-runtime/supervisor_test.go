@@ -591,7 +591,11 @@ func TestSupervisor_RealExecWithLimits(t *testing.T) {
 	if err := os.WriteFile(src, []byte("package main\nimport (\n\t\"os\"\n)\nfunc main() {\n\tos.WriteFile(os.Args[1], []byte(\"ok\"), 0o644)\n\tselect {}\n}\n"), 0o644); err != nil {
 		t.Fatalf("write helper source: %v", err)
 	}
-	out, err := exec.Command("go", "build", "-o", helper, src).CombinedOutput()
+	buildCmd := exec.Command("go", "build", "-o", helper, src)
+	// 专用 GOCACHE（isolation 门判据）：随树变化的一次性产物不落用户全局缓存
+	//（实测全局缓存一度 72 GB ⇒ 磁盘占满 ⇒ 全量编译阶段红）。
+	buildCmd.Env = append(os.Environ(), gocache.Env(gocacheRoot(t), "plugin-runtime")...)
+	out, err := buildCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build helper: %v\n%s", err, out)
 	}

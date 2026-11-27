@@ -122,3 +122,4 @@ VAPEUR_API_KEY	component	外部服务 key（provider 线上探测）
 WA877_ALLOW_ANY_DSN	dangerous	允许任意 DSN（迁移 877 门）；打开即取消「只连门禁库」的约束
 XIAOMI_API_KEY	component	外部服务 API key（发现逻辑）
 XIAOMI_BASE_URL	component	外部服务 base URL（发现逻辑）
+OOM_HELPER	component	OOM helper 子测试进程哨兵（e2e_cgroup_linux_test.go）：父测试 exec 自身二进制并设 OOM_HELPER=1 拉起 helper；与 PG/DSN 无关，不涉真库腿

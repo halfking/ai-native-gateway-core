@@ -81,6 +81,10 @@ for branch in "${BRANCHES_TO_DELETE[@]}"; do
         patch_id=$(git show "$commit" | git patch-id --stable | cut -d' ' -f1)
         
         # 在main中查找相同patch-id
+        # SIGPIPE 判据（跨平台口径）：判据量 = **中间段的输出体量**（git log
+        # 全历史 diff 流 → git patch-id 中段；Linux PIPE_BUF 4,096 B 起 / macOS
+        # 16–32 KiB——大仓库可触及 64 KiB 管道容量，grep -q 提前退出有 SIGPIPE 面）。
+        # ⚠ 本脚本为运维便利脚本，误杀仅丢一行等价判定（fail-safe 侧 skip）。
         if git log origin/main --format=%H --patch-with-stat | git patch-id --stable | grep -q "^$patch_id"; then
           echo "  ✅ $commit 有等价patch在main"
         else

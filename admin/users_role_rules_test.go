@@ -138,11 +138,11 @@ func TestCreateUser_NonDefaultTenantAllowsRegularUser(t *testing.T) {
 		WithArgs("chenb").
 		WillReturnRows(mock.NewRows([]string{"status"}).AddRow("active"))
 	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO users`)).
-		WithArgs("chenb", "chenb2", pgxmock.AnyArg(), "", "", RoleUser).
+		WithArgs("chenb", "chenb2", pgxmock.AnyArg(), "", "", RoleUser, []string{RoleUser}).
 		WillReturnRows(mock.NewRows([]string{
-			"id", "tenant_id", "username", "display_name", "email", "role",
+			"id", "tenant_id", "username", "display_name", "email", "role", "roles",
 			"enabled", "must_change_password", "created_at",
-		}).AddRow(99, "chenb", "chenb2", "", "", RoleUser, true, true, time.Now()))
+		}).AddRow(99, "chenb", "chenb2", "", "", RoleUser, []string{RoleUser}, true, true, time.Now()))
 
 	req := superAdminRequest(http.MethodPost, "/api/users",
 		`{"username":"chenb2","password":"ValidPass123","tenant_id":"chenb","role":"user"}`)

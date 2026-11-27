@@ -144,7 +144,7 @@ func isValidTenantCode(code string) bool {
 // handleTenants dispatches /api/admin/tenants and /api/admin/tenants/{code}/*
 // All routes are super_admin only (enforced via h.superAdmin() wrapper).
 func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
-	if auth := GetAuthContext(r); auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+	if auth := GetAuthContext(r); auth != nil && !auth.HasRole("super_admin") && !auth.HasRole("admin_key") {
 		writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
 		return
 	}
@@ -639,7 +639,7 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT u.id, u.tenant_id, u.username, u.display_name, u.email, u.role, u.enabled, u.must_change_password, u.last_login_at, u.created_at,
+		SELECT u.id, u.tenant_id, u.username, u.display_name, u.email, u.role, COALESCE(u.roles, '{}'), u.enabled, u.must_change_password, u.last_login_at, u.created_at,
 		       u.org_id, o.code, o.name,
 		       COALESCE(uw.balance_credits, 0), uw.credit_limit_credits, COALESCE(uw.credit_policy, 'warn'),
 		       COALESCE(ow.balance_credits, 0), ow.credit_limit_credits, COALESCE(ow.credit_policy, 'warn')
@@ -664,7 +664,7 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 		var uLimit, oLimit *int64
 		var uPolicy, oPolicy string
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email,
-			&u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt,
+			&u.Role, &u.Roles, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt,
 			&orgID, &orgCode, &orgName,
 			&uBal, &uLimit, &uPolicy, &oBal, &oLimit, &oPolicy); err != nil {
 			warnRowSkip("tenants.listUsers", err)

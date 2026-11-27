@@ -53,7 +53,7 @@ func maasUsageScopeV2(r *http.Request, personal bool) (tenant, owner string, ok 
 		return "", "", false
 	}
 	if !personal && !IsRegularUser(r) {
-		return tenant, "", auth.Role == "tenant_admin" || auth.Role == "super_admin"
+		return tenant, "", auth.HasRole("tenant_admin") || auth.Role == "super_admin"
 	}
 	owner = strings.TrimSpace(auth.Username)
 	if personal && auth.Role == "super_admin" {

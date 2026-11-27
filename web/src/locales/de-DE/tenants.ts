@@ -222,6 +222,15 @@ export default {
     createOrderFailed: 'Bestellung konnte nicht erstellt werden. Bitte erneut versuchen.'
   },
   usage: {
+    usageStatModels: 'Modelle',
+    usageStatRequests: 'Anfragen ges.',
+    usageStatTokens: 'Tokens ges.',
+    usageStatInput: 'Eingabe-Tokens',
+    usageStatOutput: 'Ausgabe-Tokens',
+    usageStatCached: 'Cache-Tokens',
+    usageStatCacheRate: 'Cache-Quote',
+    usageStatSuccessRate: 'Erfolgsquote',
+    usageStatCredits: 'Credits',
     title: "Mein Verbrauch",
     adminTitle: "Verbrauchsstatistik",
     refresh: "Aktualisieren",

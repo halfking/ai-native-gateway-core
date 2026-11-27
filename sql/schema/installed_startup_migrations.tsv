@@ -433,3 +433,4 @@
 415	492_channels_customers.sql
 416	1003_org_hierarchy_and_wallets.sql
 417	1004_three_tier_model_policies.sql
+418	1005_user_roles_array.sql

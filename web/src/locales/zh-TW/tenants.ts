@@ -222,6 +222,15 @@ export default {
     createOrderFailed: '訂單沒能建立起來，請重試'
   },
   usage: {
+    usageStatModels: '模型數',
+    usageStatRequests: '總請求',
+    usageStatTokens: '總 Token',
+    usageStatInput: '輸入 Token',
+    usageStatOutput: '輸出 Token',
+    usageStatCached: '快取 Token',
+    usageStatCacheRate: '快取率',
+    usageStatSuccessRate: '成功率',
+    usageStatCredits: '點數消耗',
     title: "我的消耗",
     adminTitle: "消耗統計",
     refresh: "重新整理",

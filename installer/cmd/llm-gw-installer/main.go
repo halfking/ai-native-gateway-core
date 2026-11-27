@@ -2036,6 +2036,14 @@ var threeTierModelPolicies1004 []byte
 //go:embed embeddata/startup/1004_three_tier_model_policies.down.sql
 var threeTierModelPolicies1004Down []byte
 
+// 1005（2026-11-27 三级配额制 P1-b）：users.roles 多角色数组。
+//	role 保留为主角色（存量兼容）；roles 空 = 有效集回落 [role]。
+//go:embed embeddata/startup/1005_user_roles_array.sql
+var userRolesArray1005 []byte
+
+//go:embed embeddata/startup/1005_user_roles_array.down.sql
+var userRolesArray1005Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2861,6 +2869,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/1003_org_hierarchy_and_wallets.down.sql":       orgHierarchyWallets1003Down,
 	"startup/1004_three_tier_model_policies.sql":            threeTierModelPolicies1004,
 	"startup/1004_three_tier_model_policies.down.sql":       threeTierModelPolicies1004Down,
+	"startup/1005_user_roles_array.sql":                     userRolesArray1005,
+	"startup/1005_user_roles_array.down.sql":                userRolesArray1005Down,
 	"startup/983_request_metrics.sql":                 requestMetrics983,
 	"startup/983_request_metrics.down.sql":            requestMetrics983Down,
 	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。

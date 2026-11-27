@@ -222,6 +222,15 @@ export default {
     createOrderFailed: 'تعذّر إنشاء الطلب. أعد المحاولة.'
   },
   usage: {
+    usageStatModels: 'النماذج',
+    usageStatRequests: 'إجمالي الطلبات',
+    usageStatTokens: 'إجمالي الرموز',
+    usageStatInput: 'رموز الإدخال',
+    usageStatOutput: 'رموز الإخراج',
+    usageStatCached: 'رموز مخزنة',
+    usageStatCacheRate: 'نسبة التخزين',
+    usageStatSuccessRate: 'نسبة النجاح',
+    usageStatCredits: 'النقاط',
     title: "استهلاكتي",
     adminTitle: "إحصاءات الاستهلاك",
     refresh: "تحديث",
