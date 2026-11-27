@@ -165,6 +165,7 @@ export default {
     standardName: '標準名',
     email: '郵箱',
     role: '角色',
+    org: '組織',
     username: '使用者名',
     operator: '操作者',
     note: '說明',

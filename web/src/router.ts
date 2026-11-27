@@ -47,6 +47,9 @@ const FreePoolView = () => import('./views/FreePoolView.vue')
 const FreeDiscoveryView = () => import('./views/FreeDiscoveryView.vue')
 const TenantsView = () => import('./views/TenantsView.vue')
 const TenantDetailView = () => import('./views/TenantDetailView.vue')
+// 三级配额制（2026-11-27）：组织管理两页（列表 + 详情）。
+const OrgsView = () => import('./views/OrgsView.vue')
+const OrgDetailView = () => import('./views/OrgDetailView.vue')
 const RoutingDashboardView = () => import('./views/RoutingDashboardView.vue')
 const WorkTypesView = () => import('./views/WorkTypesView.vue')
 const UsersView = () => import('./views/UsersView.vue')
@@ -309,6 +312,8 @@ export const router = createRouter({
     { path: '/free-discovery',     component: FreeDiscoveryView,   meta: { requiresSuper: true } },
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
+    { path: '/orgs',               component: OrgsView,            meta: { requiresSuper: true } },
+    { path: '/orgs/:orgId',        component: OrgDetailView,       meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
     { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresAuth: true } }, // 2026-11-27 非管理员菜单轮：菜单放开；后端中间件四档化（user 只读本租户）
     { path: '/model-integrity',  component: ModelIntegrityView,   meta: { requiresSuper: true } },

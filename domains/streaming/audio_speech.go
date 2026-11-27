@@ -91,6 +91,10 @@ func (h *AudioSpeechHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Profile = *keyInfo.DefaultClientProfile
 		}
 	}
+	// ── 模型策略（2026-11-27 三级配额制轮）：同 transcriptions 面口径。
+	if h.svc.enforceAudioModelPolicy(r.Context(), w, requestID, keyInfo, req.Model, req.Profile) {
+		return
+	}
 	req.RequestID = requestID
 
 	res, serr := h.svc.Synthesize(r.Context(), req)

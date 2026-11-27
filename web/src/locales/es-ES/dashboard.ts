@@ -26,7 +26,7 @@ v2: {
     creditsSub: 'Pricing × tokens',
     creditsDegraded: 'La vista de créditos {view} no está inicializada: la cifra no es fiable',
     summaryDegraded: "La vista agregada {view} no está inicializada: las cifras de solicitudes/tokens/coste son «no disponibles», no cero. No las uses como conclusión.",
-    modelCount: 'Models',
+    modelCount: 'Modelos',
   },
   range: {
     today: "Hoy",
@@ -246,7 +246,7 @@ v2: {
     filterModel: 'Modelo',
     filterGroup: 'Filtrar',
     filterProvider: 'Proveedor',
-    filterVendor: 'Vendor',
+    filterVendor: 'Proveedor',
     filterAgent: 'Cliente',  // 2026-08-06 alineado con zh-CN
     clearFilters: 'Borrar filtros',
     status: {

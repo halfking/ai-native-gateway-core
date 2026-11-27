@@ -26,7 +26,7 @@ v2: {
     creditsSub: 'Pricing × tokens',
     creditsDegraded: 'Credit-Tabelle {view} ist nicht initialisiert. Dieser Wert ist nicht belastbar',
     summaryDegraded: "Aggregatansicht {view} ist nicht initialisiert. Die Zahlen zu Anfragen/Token/Kosten sind nicht verfügbar, nicht null. Bitte nicht als Ergebnis verwenden.",
-    modelCount: 'Models',
+    modelCount: 'Modelle',
   },
   range: {
     today: "Heute",

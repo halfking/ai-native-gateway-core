@@ -166,6 +166,7 @@ export default {
     standardName: 'Standard name',
     email: 'Email',
     role: 'Role',
+    org: 'Organization',
     username: 'Username',
     operator: 'Operator',
     note: 'Note',

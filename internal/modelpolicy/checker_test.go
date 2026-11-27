@@ -40,20 +40,20 @@ func TestChecker_EmptyTenantNormalized(t *testing.T) {
 func TestChecker_Invalidate_RemovesEntry(t *testing.T) {
 	c := New(nil)
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true}
-	c.expires["acme"] = time.Now().Add(time.Hour)
-	c.cache["other"] = map[string]bool{"glm-5.1": true}
-	c.expires["other"] = time.Now().Add(time.Hour)
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.expires["t:acme"] = time.Now().Add(time.Hour)
+	c.cache["t:other"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"glm-5.1": true}}
+	c.expires["t:other"] = time.Now().Add(time.Hour)
 	c.mu.Unlock()
 
 	c.Invalidate("acme")
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if _, ok := c.cache["acme"]; ok {
+	if _, ok := c.cache["t:acme"]; ok {
 		t.Error("acme should be evicted from cache")
 	}
-	if _, ok := c.cache["other"]; !ok {
+	if _, ok := c.cache["t:other"]; !ok {
 		t.Error("other should NOT be evicted")
 	}
 }
@@ -62,8 +62,8 @@ func TestChecker_Invalidate_RemovesEntry(t *testing.T) {
 func TestChecker_InvalidateAll(t *testing.T) {
 	c := New(nil)
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true}
-	c.cache["bravo"] = map[string]bool{"glm-5.1": true}
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.cache["t:bravo"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"glm-5.1": true}}
 	c.mu.Unlock()
 
 	c.InvalidateAll()
@@ -79,10 +79,10 @@ func TestChecker_InvalidateAll(t *testing.T) {
 func TestChecker_Stats(t *testing.T) {
 	c := New(nil)
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true, "glm-5.1": true}
-	c.cache["bravo"] = map[string]bool{"claude-opus-4-6": true}
-	c.expires["acme"] = time.Now().Add(time.Hour)
-	c.expires["bravo"] = time.Now().Add(2 * time.Hour)
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true, "glm-5.1": true}}
+	c.cache["t:bravo"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"claude-opus-4-6": true}}
+	c.expires["t:acme"] = time.Now().Add(time.Hour)
+	c.expires["t:bravo"] = time.Now().Add(2 * time.Hour)
 	c.mu.Unlock()
 
 	s := c.Stats()
@@ -106,8 +106,8 @@ func TestChecker_TTLExpiry_FailOpenOnDBError(t *testing.T) {
 	c.SetTTL(50 * time.Millisecond)
 	// Force "acme" into the cache with an already-expired entry.
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true}
-	c.expires["acme"] = time.Now().Add(-time.Second) // expired
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.expires["t:acme"] = time.Now().Add(-time.Second) // expired
 	c.mu.Unlock()
 
 	// IsForbidden must: (a) see expired, (b) attempt reload, (c)
@@ -140,8 +140,8 @@ func TestChecker_Singleflight_ReloadsOnce(t *testing.T) {
 
 	// Pre-populate with an expired entry.
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true}
-	c.expires["acme"] = time.Now().Add(-time.Second)
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.expires["t:acme"] = time.Now().Add(-time.Second)
 	c.mu.Unlock()
 
 	const N = 50
@@ -171,8 +171,11 @@ func TestChecker_Singleflight_ReloadsOnce(t *testing.T) {
 func TestChecker_CanonicalMatch_CaseInsensitive(t *testing.T) {
 	c := New(nil)
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true}
-	c.expires["acme"] = time.Now().Add(time.Hour)
+	// Direct-cache injection uses the scope-prefixed key the checker
+	// computes internally ("t:<tenant>"); expires must be set too or
+	// the entry is treated as stale (nil pool ⇒ fail-open).
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.expires["t:acme"] = time.Now().Add(time.Hour)
 	c.mu.Unlock()
 
 	if !c.IsForbidden(context.Background(), "acme", "MiniMax-M3") {
@@ -183,6 +186,78 @@ func TestChecker_CanonicalMatch_CaseInsensitive(t *testing.T) {
 	}
 	if c.IsForbidden(context.Background(), "acme", "glm-5.1") {
 		t.Error("glm-5.1 should NOT be forbidden (not in cache)")
+	}
+}
+
+// Test 8b: allow-mode whitelist semantics (2026-11-27 三级配额制轮).
+//   - Unlisted model ⇒ forbidden; listed model ⇒ allowed.
+//   - Empty whitelist ⇒ NOT engaged (fail-open) — an allow policy
+//     with zero rows must not lock the subject out of every model.
+func TestChecker_AllowMode_WhitelistSemantics(t *testing.T) {
+	c := New(nil)
+	c.mu.Lock()
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{"glm-5.1": true}}
+	c.expires["t:acme"] = time.Now().Add(time.Hour)
+	// bravo has an allow policy with an empty set (rows were soft-deleted).
+	c.cache["t:bravo"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{}}
+	c.expires["t:bravo"] = time.Now().Add(time.Hour)
+	c.mu.Unlock()
+
+	if c.IsForbidden(context.Background(), "acme", "glm-5.1") {
+		t.Error("whitelisted model must be allowed in allow mode")
+	}
+	if !c.IsForbidden(context.Background(), "acme", "minimax-m3") {
+		t.Error("non-whitelisted model must be forbidden in allow mode")
+	}
+	if c.IsForbidden(context.Background(), "bravo", "minimax-m3") {
+		t.Error("empty whitelist must NOT engage (fail-open)")
+	}
+}
+
+// Test 8c: org/user scope isolation — policies under "o:"/"u:"
+// prefixes must not leak into the tenant scope and vice versa,
+// and the scoped entry points (IsForbiddenForOrg/ForUser) read
+// their own namespace.
+func TestChecker_ScopeIsolation_OrgUser(t *testing.T) {
+	c := New(nil)
+	c.mu.Lock()
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"glm-5.1": true}}
+	c.cache["o:77"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.cache["u:42"] = &subjectPolicy{mode: ModeAllow, models: map[string]bool{"claude-opus-4-6": true}}
+	for _, k := range []string{"t:acme", "o:77", "u:42"} {
+		c.expires[k] = time.Now().Add(time.Hour)
+	}
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	// Tenant deny hits; org/user untouched.
+	if !c.IsForbidden(ctx, "acme", "glm-5.1") {
+		t.Error("tenant deny policy should forbid glm-5.1")
+	}
+	// Org deny hits for the right org only.
+	if !c.IsForbiddenForOrg(ctx, 77, "minimax-m3") {
+		t.Error("org 77 deny policy should forbid minimax-m3")
+	}
+	if c.IsForbiddenForOrg(ctx, 78, "minimax-m3") {
+		t.Error("org 78 has no policy — must allow")
+	}
+	// User allow hits for the right user only.
+	if !c.IsForbiddenForUser(ctx, 42, "minimax-m3") {
+		t.Error("user 42 allow policy should forbid non-whitelisted model")
+	}
+	if c.IsForbiddenForUser(ctx, 42, "claude-opus-4-6") {
+		t.Error("user 42 whitelisted model must be allowed")
+	}
+	if c.IsForbiddenForUser(ctx, 43, "minimax-m3") {
+		t.Error("user 43 has no policy — must allow")
+	}
+	// Tenant scope must not see org/user rows.
+	if c.IsForbidden(ctx, "acme", "minimax-m3") {
+		t.Error("org deny must not leak into tenant scope")
+	}
+	// Zero/negative subject IDs are always allowed.
+	if c.IsForbiddenForOrg(ctx, 0, "minimax-m3") || c.IsForbiddenForUser(ctx, -1, "minimax-m3") {
+		t.Error("unset subject id must fail-open")
 	}
 }
 
@@ -261,8 +336,8 @@ func TestChecker_SetTTL_NonPositiveIgnored(t *testing.T) {
 func TestChecker_EmptyCanonical_NotForbidden(t *testing.T) {
 	c := New(nil)
 	c.mu.Lock()
-	c.cache["acme"] = map[string]bool{"minimax-m3": true}
-	c.expires["acme"] = time.Now().Add(time.Hour)
+	c.cache["t:acme"] = &subjectPolicy{mode: ModeDeny, models: map[string]bool{"minimax-m3": true}}
+	c.expires["t:acme"] = time.Now().Add(time.Hour)
 	c.mu.Unlock()
 
 	if c.IsForbidden(context.Background(), "acme", "") {

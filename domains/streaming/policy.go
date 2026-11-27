@@ -46,6 +46,12 @@ import (
 // caller is the auto-route path, this is "auto" and we skip the
 // first check (the post-rewrite check is performed separately
 // after auto_route resolves the model).
+//
+// 2026-11-27 三级配额制轮：本函数同时执行组织/用户级检查（租户→组织→
+// 用户逐级 AND）。租户级先判（既有语义零变化），命中即返回；org/user
+// 级经 Checker.ResolveOwner 解析（ownerUser → users.id/org_id，带缓存、
+// fail-open），任一级禁用即 denied。层级写入 ctx 供日志（key:
+// modelPolicyDenyScope：tenant/org/user）。
 func enforceTenantModelPolicy(
 	ctx context.Context,
 	preAutoModel string,
@@ -74,10 +80,34 @@ func enforceTenantModelPolicy(
 		return false, "", tenantID
 	}
 
+	// Level 1: tenant policy (legacy semantics, byte-for-byte).
 	if mp.IsForbidden(ctx, tenantID, canonical) {
 		return true, canonical, tenantID
 	}
+
+	// Levels 2+3: org and user policies (2026-11-27).  Resolution is
+	// by OwnerUser; internal/loopback keys without an owner resolve to
+	// (0,0) and both checks skip.  Any level's deny ⇒ 403.
+	if owner := ownerUserOf(keyInfo); owner != "" {
+		userID, orgID, ok := mp.ResolveOwner(ctx, owner)
+		if ok {
+			if orgID > 0 && mp.IsForbiddenForOrg(ctx, orgID, canonical) {
+				return true, canonical, tenantID
+			}
+			if userID > 0 && mp.IsForbiddenForUser(ctx, userID, canonical) {
+				return true, canonical, tenantID
+			}
+		}
+	}
 	return false, canonical, tenantID
+}
+
+// ownerUserOf extracts the key's owner username (nil-safe).
+func ownerUserOf(keyInfo *authentication.KeyInfo) string {
+	if keyInfo == nil || keyInfo.OwnerUser == nil {
+		return ""
+	}
+	return *keyInfo.OwnerUser
 }
 
 // enforceTenantModelPolicyAfterAuto re-checks the policy after

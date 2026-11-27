@@ -26,7 +26,7 @@ v2: {
     creditsSub: 'Pricing × tokens',
     creditsDegraded: 'عرض نقاط الائتمان {view} غير مهيّأ: هذا الرقم غير موثوق',
     summaryDegraded: "عرض التجميع {view} غير مهيّأ: أرقام الطلبات/التوكنات/التكلفة أدناه غير متاحة وليست صفرًا. لا تستخدمها كاستنتاج.",
-    modelCount: 'Models',
+    modelCount: 'النماذج',
   },
   range: {
     today: "اليوم",

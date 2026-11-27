@@ -599,6 +599,14 @@ function fmtCost(n?: number | null) {
   return '$' + n.toFixed(2)
 }
 
+// 三级配额制（2026-11-27）：用户/组织钱包余额格（无钱包 = 未配置额度 = 不限）。
+function fmtWalletBalance(w?: { balance_credits: number | null; credit_limit_credits: number | null } | null) {
+  if (!w) return '∞'
+  const bal = w.balance_credits == null ? 0 : w.balance_credits
+  const limit = w.credit_limit_credits == null ? '∞' : w.credit_limit_credits.toLocaleString()
+  return `${bal.toLocaleString()} / ${limit}`
+}
+
 function fmtRate(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return '—'
   return `${(value * 100).toFixed(1)}%`
@@ -732,13 +740,16 @@ watch(() => route.params.tenantId, loadTenant)
         </div>
         <table class="table" style="width:100%">
           <thead>
-            <tr><th>ID</th><th>{{ $t('common.terms.username') }}</th><th>{{ $t('common.terms.displayName') }}</th><th>{{ $t('common.terms.email') }}</th><th>{{ $t('common.terms.role') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('tenants.detail.lastLoginCol') }}</th><th>{{ $t('common.actions') }}</th></tr>
+            <tr><th>ID</th><th>{{ $t('common.terms.username') }}</th><th>{{ $t('common.terms.displayName') }}</th><th>{{ $t('common.terms.org') }}</th><th>{{ $t('tenants.detail.userBalanceCol') }}</th><th>{{ $t('tenants.detail.orgBalanceCol') }}</th><th>{{ $t('common.terms.email') }}</th><th>{{ $t('common.terms.role') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('tenants.detail.lastLoginCol') }}</th><th>{{ $t('common.actions') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="u in sortedUsers" :key="u.id">
               <td>{{ u.id }}</td>
               <td><strong>{{ u.username }}</strong></td>
               <td>{{ u.display_name || '-' }}</td>
+              <td><span v-if="u.org" class="badge badge-blue">{{ u.org.name }}</span><span v-else>-</span></td>
+              <td><span class="mono" :class="{ 'wallet-negative': (u.wallet?.balance_credits ?? 0) < 0 }">{{ fmtWalletBalance(u.wallet) }}</span></td>
+              <td><span class="mono" :class="{ 'wallet-negative': (u.org_wallet?.balance_credits ?? 0) < 0 }">{{ fmtWalletBalance(u.org_wallet) }}</span></td>
               <td>{{ u.email || '-' }}</td>
               <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ roleLabel(u.role) }}</span></td>
               <td><span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">{{ u.enabled ? $t('common.status.enabled') : $t('common.status.disabled') }}</span></td>
@@ -753,7 +764,7 @@ watch(() => route.params.tenantId, loadTenant)
               </td>
             </tr>
             <tr v-if="users.length === 0">
-              <td colspan="8" style="text-align:center; padding:40px; color: var(--muted)">无用户</td>
+              <td colspan="11" style="text-align:center; padding:40px; color: var(--muted)">无用户</td>
             </tr>
           </tbody>
         </table>
@@ -1257,6 +1268,7 @@ watch(() => route.params.tenantId, loadTenant)
 .badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+.wallet-negative { color: var(--danger); font-weight: 600; }
 
 .stats-toolbar {
   display: flex;

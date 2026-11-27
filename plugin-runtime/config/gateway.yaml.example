@@ -19,6 +19,21 @@ plugins:
     - logging
     - metrics
 
+  # 插件进程资源限制总开关（紧急关闭通道；缺省 true）。
+  # false 时 default_resource_limits 与插件 manifest 中的 resource_limits
+  # 一并豁免（不创建 limiter）。
+  resource_limits_enabled: true
+
+  # 全局默认资源限制（插件 manifest 未声明 resource_limits 时生效；
+  # manifest 声明时以 manifest 为准）。格式见 plugin-runtime/limiter 包。
+  # default_resource_limits:
+  #   memory:
+  #     limit: "512M"      # 内存上限：100M / 1G / 512MB / 256Mi
+  #     swap: false        # Linux only：是否允许 swap（默认 false）
+  #   cpu:
+  #     limit: "50%"       # CPU 百分比：25% / 50% / 100%
+  #   max_processes: 10    # 最大进程/线程数（缺省 10）
+
 security:
   # Enable TLS/HTTPS
   tls_enabled: false

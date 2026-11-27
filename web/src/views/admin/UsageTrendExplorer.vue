@@ -29,6 +29,8 @@ import { makeDateRangePresets, systemTzDateStr, systemTzNoonMs } from '../../com
 import type { KxDateRange } from '../../components/ui/kx-date-types'
 import {
   getUsageTrendSeries,
+  getUsageSummary,
+  type UsageSummary,
   type UsageTrendMetric,
   type UsageTrendModelSeries,
   getTopRankings,
@@ -290,6 +292,47 @@ const rankings = ref<TopRankingsResponse | null>(null)
 const rankingsLoading = ref(false)
 const rankingsError = ref<string | null>(null)
 
+// ── 9 项统计卡（三级配额制轮 2026-11-27）────────────────────────────────
+// 与折线图同一时间窗（effectiveRange）；随 loadSeries 并行刷新；
+// summary 查询失败不阻塞主图（卡片留空 = 沿用「降级不炸页」纪律）。
+const summary = ref<UsageSummary | null>(null)
+const summaryLoading = ref(false)
+
+async function loadSummary() {
+  summaryLoading.value = true
+  try {
+    summary.value = await getUsageSummary(timeQuery.value)
+  } catch {
+    summary.value = null
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+function fmtInt(n?: number | null) {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return Math.round(n).toLocaleString()
+}
+
+const summaryCards = computed(() => {
+  const s = summary.value
+  if (!s) return []
+  const cacheRate = s.total_prompt_tokens > 0
+    ? (s.total_cached_tokens ?? 0) / s.total_prompt_tokens
+    : null
+  return [
+    { key: 'models', label: t('usageTrend.statModels'), value: fmtInt(s.unique_models) },
+    { key: 'requests', label: t('usageTrend.statRequests'), value: fmtInt(s.total_requests) },
+    { key: 'tokens', label: t('usageTrend.statTokens'), value: fmtInt(s.total_prompt_tokens + s.total_completion_tokens) },
+    { key: 'input', label: t('usageTrend.statInput'), value: fmtInt(s.total_prompt_tokens) },
+    { key: 'output', label: t('usageTrend.statOutput'), value: fmtInt(s.total_completion_tokens) },
+    { key: 'cached', label: t('usageTrend.statCached'), value: fmtInt(s.total_cached_tokens) },
+    { key: 'cacheRate', label: t('usageTrend.statCacheRate'), value: cacheRate == null ? '—' : (cacheRate * 100).toFixed(1) + '%' },
+    { key: 'successRate', label: t('usageTrend.statSuccessRate'), value: s.success_rate == null ? '—' : (s.success_rate * 100).toFixed(1) + '%' },
+    { key: 'credits', label: t('usageTrend.statCredits'), value: fmtInt(s.total_credits_charged) },
+  ]
+})
+
 const timeQuery = computed(() => ({ start: effectiveRange.value.start, end: effectiveRange.value.end }))
 
 let seriesToken = 0
@@ -382,6 +425,7 @@ watch(
   () => {
     void loadSeries()
     void loadRankings()
+    void loadSummary()
     syncQuery()
   },
 )
@@ -474,7 +518,7 @@ function applyRefreshTimer() {
   }
   if (autoRefreshSec.value > 0) {
     // 只重拉数据，不改时间范围（窗口固定，窗口内新桶自然出现）。
-    refreshTimer = setInterval(() => { void loadSeries() }, autoRefreshSec.value * 1000)
+    refreshTimer = setInterval(() => { void loadSeries(); void loadSummary() }, autoRefreshSec.value * 1000)
   }
 }
 
@@ -618,6 +662,7 @@ onMounted(() => {
   filterOptionsPromise = loadFilterOptions()
   void loadSeries()
   void loadRankings()
+  void loadSummary()
   applyRefreshTimer()
 })
 
@@ -775,6 +820,16 @@ onBeforeUnmount(() => {
         <el-button :disabled="!hasActiveFilters" @click="clearAllFilters">
           {{ t('usageTrend.clearAll') }}
         </el-button>
+      </div>
+    </div>
+
+    <!-- ★ 三级配额制轮（2026-11-27）：9 项统计卡（模型数/总请求/总token/输入/输出/
+         缓存/缓存率/成功率/积分）—— 数据源 = /api/usage/v2/summary（request_metrics
+         投影聚合，字段已在 aggregates 全量在位）；随 loadSeries 同一窗口刷新。 -->
+    <div v-if="summaryCards.length" class="ute__stat-cards" data-testid="ute-stat-cards">
+      <div v-for="c in summaryCards" :key="c.key" class="ute__stat-card">
+        <div class="ute__stat-card__label">{{ c.label }}</div>
+        <div class="ute__stat-card__value">{{ c.value }}</div>
       </div>
     </div>
 
@@ -1122,6 +1177,31 @@ export default { name: 'UsageTrendExplorer' }
 .ute__pin-clear:hover {
   color: var(--text-primary);
 }
+.ute__stat-cards {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.ute__stat-card {
+  border: 1px solid var(--border, #e4e7ed);
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.ute__stat-card__label {
+  font-size: 12px;
+  color: var(--muted, #909399);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ute__stat-card__value {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
 .ute__chart,
 .ute__table {
   background: var(--card);
@@ -1185,6 +1265,8 @@ export default { name: 'UsageTrendExplorer' }
   color: var(--text-muted);
 }
 @media (max-width: 768px) {
+  /* 三级配额制轮（2026-11-27）：9 项统计卡窄屏 3 列（并入本文件唯一断点，守门钉单断点） */
+  .ute__stat-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ute {
     padding: 12px;
   }

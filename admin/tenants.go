@@ -33,6 +33,16 @@ type tenantInfo struct {
 	Credits7d     int64   `json:"credits_7d,omitempty"`
 	Cost7d        float64 `json:"cost_7d_usd,omitempty"`
 	TotalRequests int64   `json:"total_requests,omitempty"`
+
+	// 三级配额制（2026-11-27）：租户钱包余额（/tenants 列表余额列的数据源）。
+	Wallet *orgWalletInfo `json:"wallet,omitempty"`
+}
+
+// orgWalletInfo 租户/组织钱包展示行（balance/limit NULL=不限制沿用 budget_usd 先例）。
+type orgWalletInfo struct {
+	BalanceCredits     *int64 `json:"balance_credits"`
+	CreditLimitCredits *int64 `json:"credit_limit_credits"`
+	CreditPolicy       string `json:"credit_policy"`
 }
 
 type createTenantRequest struct {
@@ -252,7 +262,10 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 		       t.created_at, t.updated_at,
 		       COALESCE(u.user_count, 0) AS user_count,
 		       COALESCE(k.key_count, 0) AS key_count,
-		       COALESCE(k.total_requests, 0) AS total_requests
+		       COALESCE(k.total_requests, 0) AS total_requests,
+		       COALESCE(w.balance_credits, 0),
+		       w.credit_limit_credits,
+		       COALESCE(w.credit_policy, 'warn')
 		FROM tenants t
 		LEFT JOIN (
 			SELECT tenant_id, COUNT(*) AS user_count
@@ -264,6 +277,7 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 			       SUM(COALESCE(total_requests, 0)) AS total_requests
 			FROM api_keys GROUP BY tenant_id
 		) k ON k.tenant_id = t.code
+		LEFT JOIN tenant_credit_wallets w ON w.tenant_id = t.code
 		WHERE `+where+`
 		ORDER BY t.code
 	`, args...)
@@ -276,11 +290,17 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 	tenants := make([]tenantInfo, 0)
 	for rows.Next() {
 		var t tenantInfo
+		var balance int64
+		var limit *int64
+		var policy string
 		if err := rows.Scan(&t.Code, &t.Name, &t.Status, &t.Description, &t.ContactEmail,
-			&t.CreatedAt, &t.UpdatedAt, &t.UserCount, &t.APIKeyCount, &t.TotalRequests); err != nil {
+			&t.CreatedAt, &t.UpdatedAt, &t.UserCount, &t.APIKeyCount, &t.TotalRequests,
+			&balance, &limit, &policy); err != nil {
 			warnRowSkip("tenants.list", err)
 			continue
 		}
+		b := balance
+		t.Wallet = &orgWalletInfo{BalanceCredits: &b, CreditLimitCredits: limit, CreditPolicy: policy}
 		tenants = append(tenants, t)
 	}
 	if writeAggRowsErr(w, "tenants.list", rows.Err()) {
@@ -619,8 +639,15 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at
-		FROM users WHERE tenant_id = $1 ORDER BY id
+		SELECT u.id, u.tenant_id, u.username, u.display_name, u.email, u.role, u.enabled, u.must_change_password, u.last_login_at, u.created_at,
+		       u.org_id, o.code, o.name,
+		       COALESCE(uw.balance_credits, 0), uw.credit_limit_credits, COALESCE(uw.credit_policy, 'warn'),
+		       COALESCE(ow.balance_credits, 0), ow.credit_limit_credits, COALESCE(ow.credit_policy, 'warn')
+		FROM users u
+		LEFT JOIN organizations o ON o.id = u.org_id
+		LEFT JOIN user_credit_wallets uw ON uw.user_id = u.id
+		LEFT JOIN org_credit_wallets ow ON ow.org_id = u.org_id
+		WHERE u.tenant_id = $1 ORDER BY u.id
 	`, code)
 	if err != nil {
 		writeInternalErr(w, "query failed", err)
@@ -631,10 +658,25 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 	users := make([]userInfo, 0)
 	for rows.Next() {
 		var u userInfo
+		var orgID *int
+		var orgCode, orgName *string
+		var uBal, oBal int64
+		var uLimit, oLimit *int64
+		var uPolicy, oPolicy string
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email,
-			&u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			&u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt,
+			&orgID, &orgCode, &orgName,
+			&uBal, &uLimit, &uPolicy, &oBal, &oLimit, &oPolicy); err != nil {
 			warnRowSkip("tenants.listUsers", err)
 			continue
+		}
+		if orgID != nil {
+			u.Org = &orgRef{ID: *orgID, Code: derefStr(orgCode), Name: derefStr(orgName)}
+		}
+		ub, ob := uBal, oBal
+		u.Wallet = &orgWalletInfo{BalanceCredits: &ub, CreditLimitCredits: uLimit, CreditPolicy: uPolicy}
+		if orgID != nil {
+			u.OrgWallet = &orgWalletInfo{BalanceCredits: &ob, CreditLimitCredits: oLimit, CreditPolicy: oPolicy}
 		}
 		users = append(users, u)
 	}
