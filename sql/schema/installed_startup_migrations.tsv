@@ -431,9 +431,6 @@
 413	1001_bill_payment_tracking.sql
 414	1002_billing_retry_queue.sql
 415	492_channels_customers.sql
-416	1003_org_hierarchy_and_wallets.sql
-417	1004_three_tier_model_policies.sql
-418	1005_user_roles_array.sql
 416	983j_request_metrics_973_repair.sql
 417	983k_request_metrics_daily_summary.sql
 418	983l_request_metrics_daily_board.sql
@@ -445,3 +442,4 @@
 424	983r_request_metrics_board_hour_distributions.sql
 425	1003_org_hierarchy_and_wallets.sql
 426	1004_three_tier_model_policies.sql
+427	1005_user_roles_array.sql

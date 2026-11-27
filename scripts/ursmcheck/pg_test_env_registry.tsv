@@ -85,7 +85,6 @@ REQUEST_METRICS_LOAD_DSN	dsn_exclusive	已迁移的回环恢复库。负载夹�
 REQUEST_METRICS_LOAD_END	component	RFC3339 格式的负载采样窗口终点。
 REQUEST_METRICS_LOAD_SAMPLES	component	每个历史窗口的负载样本数。
 REQUEST_METRICS_POLL_TEST_DSN	dsn_exclusive	已迁移的回环库。轮询夹具写入事实并启动投影及日重算。
-REQUEST_METRICS_TEST_DSN	dsn_exclusive	专用空库。投影集成夹具写入测试数据并执行升级和回退。
 ROUTEINCIDENT_IT_DSN	dsn_exclusive	routeincident 集成腿的专用 DSN：会在目标库 CREATE TABLE route_incidents（715 表形）⇒ 文件头写明 Cleanup: DROP DATABASE llm_routeincident_it ⇒ 必须指向一次性库 ⇒ 不能与通用 DSN 同值（R86 轮移出事实源 + 给该腿补库名守卫）
 SANITIZE_FP_AUDIT_CORPUS	component	审计语料文件路径
 SANITIZE_RULES_BROWSER_ADDR	component	浏览器实例地址（host:port），与 PG 无关
@@ -128,3 +127,4 @@ WA877_ALLOW_ANY_DSN	dangerous	允许任意 DSN（迁移 877 门）；打开即�
 XIAOMI_API_KEY	component	外部服务 API key（发现逻辑）
 XIAOMI_BASE_URL	component	外部服务 base URL（发现逻辑）
 OOM_HELPER	component	OOM helper 子测试进程哨兵（e2e_cgroup_linux_test.go）：父测试 exec 自身二进制并设 OOM_HELPER=1 拉起 helper；与 PG/DSN 无关，不涉真库腿
+MY_ENDPOINTS_TEST_DSN	dsn_exclusive	我的端点真库腿测试的专用 DSN（admin/my_endpoints_realdb_test.go）：测试自建 fixture 并清理，只连自有库
