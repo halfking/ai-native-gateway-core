@@ -464,7 +464,27 @@ Linux 环境（Docker Desktop VM 内 linux/arm64 + cgroup v2 容器，`--cgroupn
 
 **测试增量**：e2e 两项（Linux only）；`scripts/test-resource-limits.sh` 在容器内实跑通过（单元/集成 + 硬限制 e2e + 指标冒烟全绿）。
 
+### 3.9 性能基线采集（2026-11-27，§8.2）
+
+基准测试落盘：`plugin-runtime/limiter/bench_resource_limiter_test.go` + `plugin-runtime/bench_supervisor_limits_test.go`。跑法 `go test <pkg> -bench . -benchmem -run '^$'`。**基线数据**（2026-11-27，M4 Pro macOS + Docker Desktop VM linux/arm64 容器真机 cgroup I/O）：
+
+| 基准 | Linux 容器 | macOS（monitor 路径） | §8.2 验收线 | 结论 |
+|------|-----------|---------------------|------------|------|
+| `NewResourceLimiter`（含 cgroup 目录 + subtree_control 写入） | **67µs** | 14µs | —（随插件启动，非网关启动阻塞） | ✅ |
+| `Apply`（memory.max/memory.high/swap.max/cpu.max/pids.max 五文件写） | **25µs** | 0.6µs（no-op） | 插件启动增加 <50ms | ✅ 3 个数量级余量 |
+| limiter 常驻内存（struct + 通道 + lastStats） | **3.3KB** | 3.1KB | <10MB per plugin | ✅ 3 个数量级余量 |
+| `readCgroupUint` 单文件读回（§5.3 采样，5s/次×每插件） | **7µs** | —（macOS 无 cgroup） | 监控 CPU <1% | ✅ 占空比 0.14%，可忽略 |
+| `Supervisor.Start` 带 limits 净开销（对照不带） | — | **+1.8µs**（3.6µs vs 1.8µs，fake 进程） | 插件启动增加 <50ms | ✅ |
+| 网关启动影响 | — | 零——limiter 按插件懒创建，无启动期集中成本 | Gateway 启动增加 <100ms | ✅ |
+
+**采集过程中发现并修复 1 个缺陷**：`applyCgroupLimits(nil)` 在 cgroup 模式写 `cmd.SysProcAttr` 时 nil 解引用 panic（benchmark 传入 nil 暴露；生产路径 Supervisor 始终传非 nil，但 Apply 作为公开 API 需 nil 安全）——nil 时以空 `exec.Cmd` 注入，限制文件写入照常执行。
+
+**§8.2 性能验收结论**：四项验收线全部满足（最大余量 3 个数量级）。基线数据作为后续回归对照，任何触碰 limiter/collector 的变更应回跑基准。
+
+**剩余开放项**：§8.3 稳定性验收（灰度期 OOM 率 <1% 起始等）依赖 §5.1 灰度推进；裸金属 Linux OOM-kill 断言补验（§3.8）。
+
 ---
+
 
 ## 4. 测试方案
 

@@ -145,6 +145,11 @@ func (r *ResourceLimiter) Apply(cmd *exec.Cmd) error {
 
 // applyCgroupLimits applies cgroupv2 resource limits (Linux only)
 func (r *ResourceLimiter) applyCgroupLimits(cmd *exec.Cmd) error {
+	if cmd == nil {
+		// 防御：限制写入本身不依赖 cmd（SysProcAttr 注入除外）。nil 时跳过
+		// 注入但照常写 cgroup——benchmark/未来调用方可能只想要文件写入面。
+		cmd = &exec.Cmd{}
+	}
 	if r.cgroupPath == "" {
 		return fmt.Errorf("cgroup path not initialized")
 	}
