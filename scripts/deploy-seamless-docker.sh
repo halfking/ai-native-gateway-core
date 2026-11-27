@@ -476,6 +476,11 @@ while [[ $# -gt 0 ]]; do
     --status)     MODE=status; DD_ARGS+=(--status); shift ;;
     --probe-only) MODE=probe-only; DD_ARGS+=(--probe-only); shift ;;
     --stop)       MODE=stop; DD_ARGS+=(--stop); shift ;;
+    # ★ 双活副节点生命周期（2026-11-27 多节点轮）：起/停在役主槽之外的
+    #   第二个流量节点（traffic-only）。两个模式在远端引擎里独立分派，
+    #   与常规蓝绿部署互斥（见各自实现段的守卫）。
+    --start-secondary) MODE=start-secondary; shift ;;
+    --stop-secondary)  MODE=stop-secondary;  shift ;;
     --redis-db)   FORCE_REDIS_DB="${2:?--redis-db N}"; DD_ARGS+=(--redis-db "$FORCE_REDIS_DB"); shift 2 ;;
     --via)        VIA="${2:?--via HOST}"; shift 2 ;;
     # ★ --force **不转发**给远端（它是**部署机侧**的本地锁恢复，不是远端动作）。
@@ -602,8 +607,9 @@ if [[ -n "$VIA" ]]; then
   _dd_fwd+="$DD_STATS_REMOTE_ENV"
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
 
-  # ── 非 deploy 模式（--status / --probe-only / --stop）──────────────────
-  # 这三个模式只依赖 docker 与环境变量，**不需要仓库内容** ⇒ 不同步工作树
+  # ── 非 deploy 模式（--status / --probe-only / --stop / --start-secondary /
+  #    --stop-secondary）───────────────────────────────────────────────
+  # 这些模式只依赖 docker 与环境变量，**不需要仓库内容** ⇒ 不同步工作树
   # （同步会 rm -rf 目标树，对「只想看一眼状态」是过大的副作用）。
   # 做法：只把引擎单文件送到目标机临时路径跑，跑完即删。
   if [[ "$MODE" != "deploy" ]]; then
@@ -1562,6 +1568,17 @@ show_status() {
   if [[ "$_st_active" == "a" ]]; then _st_cand="b"; else _st_cand="a"; fi
   _st_up="$(dd_upstream_port || true)"
   echo "槽位 : 活跃=${_st_active}(端口 $(dd_slot_port "$_st_active"))  候选=${_st_cand}(端口 $(dd_slot_port "$_st_cand"))  upstream=${_st_up:-读不到}"
+  # 双活现状（2026-11-27 多节点轮）：全部主 server 行 + 副节点容器健康。
+  _st_all="$(dd_upstream_servers | tr '\n' ' ' | sed 's/ $//' || true)"
+  _st_extra="$(dd_dual_active_ports || true)"
+  if [[ -n "$_st_all" ]]; then
+    echo "多活跃端口 : ${_st_all// /, }$([[ -n "$_st_extra" ]] && echo "（双活形态，副节点端口 ${_st_extra}）")"
+  fi
+  if docker inspect --type container "$DD_SECONDARY_CONTAINER" >/dev/null 2>&1; then
+    echo "副节点     : $DD_SECONDARY_CONTAINER 存在（端口 ${DD_SECONDARY_PORT}，健康=$(docker inspect --type container -f '{{.State.Health.Status}}' "$DD_SECONDARY_CONTAINER" 2>/dev/null || echo '?')，角色=$(curl -fsS --max-time 2 "http://127.0.0.1:${DD_SECONDARY_PORT}/version" 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("runtime_role") or "?")
+except Exception: print("不可达")' 2>/dev/null || echo 不可达)）"
+  fi
   for _st in a b; do
     if docker inspect --type container "$(dd_container_name "$_st")" >/dev/null 2>&1; then
       echo "容器 : $(dd_container_name "$_st") 存在（端口 $(dd_slot_port "$_st")）"
@@ -1652,12 +1669,60 @@ dd_stop_container() {
   docker stop --time "$DD_STOP_TIMEOUT" "$_c"
 }
 
+# ── 双活感知（2026-11-27 多节点轮）─────────────────────────────────────
+# 背景：本引擎的蓝绿语义建立在「upstream 主 server 行唯一」之上。211 的
+# 多节点部署在该语义**之上**加了一层「双活」：upstream 块里同时挂两条
+# 主 server 行（每行一个活跃节点），nginx 默认轮询分发。
+#
+# ★ 与蓝绿的关系（先读这段再改代码）：
+#   · 双活是**部署窗口之外**的常态形态；蓝绿发布仍然是「双行暂时收敛成
+#     单行 → 候选槽验收 → 切流 → 再扩回双行」——发布的回退语义（abort
+#     切回旧槽）不变。
+#   · 引擎**不负责**维护双活常态（那是 --start-secondary / --stop-secondary
+#     的职责）；引擎只负责**不破坏**它：常规部署遇到双活 upstream 时拒绝
+#     部署并给出两条明确路径，而不是拿着「第一条主行」当活跃槽去切流、
+#     停掉一个正在接流的节点。
+#
+# 为什么判定以 nginx 为准、以「第二条主行」为双活证据：与单活形态同一
+# 纪律——upstream 是事实，状态文件是账本；双活态只存在于 nginx conf 里。
+dd_upstream_servers() {
+  local _conf="$DD_NGINX_CONF" _helper="$DD_UPSTREAM_PORT_HELPER"
+  [[ -f "$_conf" && -f "$_helper" ]] || return 1
+  python3 "$_helper" --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" --list-ports 2>/dev/null
+}
+
+dd_dual_active_ports() {
+  local _ports _a="${DD_SLOT_A_PORT:-}" _b="${DD_SLOT_B_PORT:-}" _extra=""
+  _ports="$(dd_upstream_servers || true)" || true
+  [[ -n "$_ports" ]] || { printf ''; return 0; }
+  local _p
+  while IFS= read -r _p; do
+    [[ -z "$_p" ]] && continue
+    case "$_p" in
+      "$_a"|"$_b") ;;                       # 已知的蓝绿两槽
+      *) _extra="${_extra:+$_extra }$_p" ;; # 双活副节点端口
+    esac
+  done <<<"$_ports"
+  printf '%s' "$_extra"
+}
+
+# ── 副节点常量与端口（--start-secondary 用）──────────────────────────
+# 端口必须静态：与槽位端口同一条纪律（引擎/门/运维文档都按字面量对拍，
+# 动态端口会让「谁是副节点」判定失效）。8782 被同机其它产品占用（2026-10-21
+# 实测）、8783 是蓝绿 b 槽 ⇒ 副节点取 8784。
+DD_SECONDARY_PORT="${DD_SECONDARY_PORT:-8784}"
+DD_SECONDARY_CONTAINER="${DD_CONTAINER_PREFIX}-s"
+
 # 活跃槽的判定：**以 nginx upstream 实际指向的端口为准**（流量在哪，活跃槽就在
 # 哪），upstream 读不到时才回落到状态文件 <data root>/run/active-slot，
 # 再兜底为 a（首次部署）。
 # ⚠ 为什么不以状态文件为准：状态文件是本脚本的账本，upstream 是**事实**。
 # 两者可能因手工改 nginx 而分叉；此时必须以事实为准，否则会把候选槽算成
 # 活跃槽 → 切流方向反了。
+# ⚠ 双活形态（块里有多条主 server 行）：本函数**只**回答「蓝绿引擎的主槽是
+# 谁」——主行仍是第一条；副节点端口不在 a/b 槽位映射里，对槽位判定不可见。
+# 双活常态下的部署动作由主入口的双活守卫拦下（见 MODE=deploy 段），
+# 不会拿着这个「主槽」去切流。
 dd_active_slot() {
   local _f="${DD_GW_DATA_ROOT}/run/active-slot" _s _port
   _port="$(dd_upstream_port || true)"
@@ -1718,6 +1783,17 @@ dd_check_slot_binding() {
   case "$_port" in
     "$_sa"|"$_sb") return 0 ;;
   esac
+  # ★ 双活形态（2026-11-27 多节点轮）：块里挂着副节点端口（不在 a/b 槽位表
+  #   里）⇒ 第一条主行若是它，属**已知的双活形态**而不是绑定脱节——副节点
+  #   是引擎自己（--start-secondary）挂上去的。此时只告警点明形态，不 die
+  #   （主入口的部署守卫随后会拦常规部署；这里若 die，--status 也会被杀）。
+  local _extra
+  _extra="$(dd_dual_active_ports || true)"
+  if [[ -n "$_extra" ]]; then
+    warn "nginx upstream ${DD_NGINX_UPSTREAM} 块内含副节点端口（${_extra}）——这是【双活形态】：upstream 主行（${_port}）不是 a/b 槽位端口属正常（主行=第一条，副节点行在后）。
+      常规蓝绿部署在双活常态下会被主入口守卫拦下（先 --stop-secondary 收缩回单活再部署）；--status / --probe-only / --start-secondary 不受影响。"
+    return 0
+  fi
   _sf="${DD_GW_DATA_ROOT}/run/active-slot"
   _claim="(无状态文件)"
   if [[ -f "$_sf" ]]; then
@@ -1763,7 +1839,7 @@ dd_upstream_port() {
 # ★ **地址取 DD_GOACOS_IP，缺省取 DD_HOST**（211 的消费方地址；容器发布口是
 #   0.0.0.0，不能直接当注册地址）。两者都空 ⇒ 跳过并 warn（消费方将读到旧端口）。
 dd_register_goacos() {
-  local _port="$1"
+  local _port="$1" _keep="${2:-0}"
   local _addr="${DD_GOACOS_ADDR:-http://127.0.0.1:8848}"
   local _ip="${DD_GOACOS_IP:-${DD_HOST:-}}"
   local _svc="${DD_GOACOS_SERVICE:-llm-gateway}"
@@ -1772,10 +1848,14 @@ dd_register_goacos() {
   local _env="${DD_GOACOS_ENV:-}"
   [[ -n "$_port" ]] || { warn "goacos 登记：端口为空，跳过"; return 0; }
   [[ -n "$_ip" ]] || { warn "goacos 登记：DD_GOACOS_IP / DD_HOST 皆空，跳过（消费方将读到旧端口）"; return 0; }
-  python3 - "$_addr" "$_ip" "$_port" "$_svc" "$_ns" "$_grp" "$_env" <<'PY'
+  # ★ _keep=1（双活轮）：**只注册、不注销**同 IP 的其它端口。双活常态下
+  #   主槽与副节点是**同时在役**的两个实例；蓝绿切流路径（_keep 缺省 0）
+  #   语义不变（注册新端口 + 注销旧端口）。
+  python3 - "$_addr" "$_ip" "$_port" "$_svc" "$_ns" "$_grp" "$_env" "$_keep" <<'PY'
 import json, sys, urllib.parse, urllib.request
 
-addr, ip, port, svc, ns, grp, env = sys.argv[1:8]
+addr, ip, port, svc, ns, grp, env, keep = sys.argv[1:9]
+keep = keep == "1"
 port = int(port)
 base = addr.rstrip("/")
 
@@ -1832,6 +1912,8 @@ for h in hosts:
     try:
         hip, hport = str(h.get("ip")), int(h.get("port") or 0)
     except Exception:  # noqa: BLE001
+        continue
+    if keep:
         continue
     if hip == ip and hport and hport != port:
         stale.append((hip, hport))
@@ -2069,6 +2151,313 @@ if [[ "$MODE" == "stop" ]]; then
   if docker inspect --type container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1; then
     dd_stop_container "$DD_CONTAINER_PREFIX" >/dev/null 2>&1 || warn "停止 ${DD_CONTAINER_PREFIX} 失败"
   fi
+  # ★ 双活副节点（--s）：MODE=stop 的口径是「整机网关停服」，副节点一并停
+  #   （它的 env 记录在 env/secondary.env，持久文件 ⇒ 下次 --start-secondary
+  #   照常重建，不需要在这里摘 nginx 行——端口释放后 nginx 轮询到死端口
+  #   会自动摘除，见 dd_start_secondary 的健康说明）。
+  if docker inspect --type container "$DD_SECONDARY_CONTAINER" >/dev/null 2>&1; then
+    dd_stop_container "$DD_SECONDARY_CONTAINER" >/dev/null 2>&1 || warn "停止 ${DD_SECONDARY_CONTAINER} 失败"
+  fi
+  exit 0
+fi
+
+# =============================================================================
+# ── 双活副节点生命周期（2026-11-27 多节点轮）────────────────────────────────
+# =============================================================================
+# 目标形态：主槽（蓝绿 a/b 之一，active 角色）照常承担蓝绿发布与全部后台
+# 循环；副节点（<prefix>-s，端口 DD_SECONDARY_PORT，traffic-only 角色）只接
+# 流量。两节点共用同一 PG 库与 Redis——会话/限流/任务队列本就是共享面；
+# 节点本地状态（Bleve 索引、session-archive、keystore 快照）落**独立**的
+# data-s/logs-s 卷 ⇒ 无共享写面。
+#
+# ★ 镜像与构建面（本轮的核心决策）：副节点**复用在役主槽的镜像**
+#   （<prefix>:latest，即当前接流的那个二进制）。理由：
+#   · 多节点改造是基础设施变更（nginx + 容器 + 角色变量），不需要新二进制；
+#   · 在役镜像已被生产流量验证——不用它才是引入漂移；
+#   · 常规部署受双活守卫拦下 ⇒ 想换镜像：--stop-secondary → 部署 →
+#     --start-secondary（文档见各模式段）。
+#
+# ★ 角色机制（config/runtime_role.go）：active / traffic-only 二值、未知值
+#   fail-closed；traffic-only 跳过全部「数据面专属」后台循环（物化视图刷新、
+#   亲和学习等），**保留**凭据恢复与配额探测（2026-09-09/10 P0 修复口径：
+#   集群主节点不在时凭据自愈仍然存活）。副节点显式注入
+#   LLM_GATEWAY_RUNTIME_ROLE=traffic-only ⇒ 无仲裁循环的双份写风险由角色
+#   机制兜底（残余风险见 P2 孤循环审计）。
+#
+# ★ env 来源：主槽的持久 env（$DD_STATE_DIR/env/gateway.env）是唯一事实源
+#   （引擎每次部署重写它）。副节点 env 在其上派生并**显式覆盖**身份/角色/
+#   连接池三项，落 $DD_STATE_DIR/env/secondary.env（600）供审计与重启复用。
+#   覆盖项：
+#     · LLM_GATEWAY_RUNTIME_ROLE=traffic-only      —— 角色隔离（本模式的立身之本）
+#     · LLM_GATEWAY_DB_MAX_CONNS（默认 10）        —— 双节点连接预算（见头注容量段）
+#     · LLM_GATEWAY_LOG_INDEX_DIR / SESSION_RAW_DIR —— 节点本地状态落独立卷
+#   其余键（DATABASE_URL/REDIS/SECRET_KEY/API keys/……）照抄主槽值 ⇒ 与在役
+#   节点同一身份面（JWT 同链、HMAC 同链、license 同开关）。
+dd_secondary_env_file() { printf '%s\n' "${DD_STATE_DIR:-/opt/llm-gateway-go-211}/env/secondary.env"; }
+
+dd_secondary_active() {
+  docker inspect --type container "$DD_SECONDARY_CONTAINER" >/dev/null 2>&1
+}
+
+# dd_read_env_file_value <file> <KEY> —— 读 env 文件里最后一处 KEY 的值（%q 解码）。
+# gateway.env 由引擎 printf '%q' 写出；值解码复用 _dd_unq（同引擎读点纪律）。
+dd_read_env_file_value() {
+  local _file="$1" _key="$2" _line _raw
+  [[ -f "$_file" ]] || return 1
+  _line="$(sed -nE "s/^(export )?${_key}=(.*)$/\2/p" "$_file" | tail -1)"
+  [[ -n "$_line" ]] || return 1
+  _raw="$(_dd_unq "$_line")"
+  printf '%s' "$_raw"
+}
+
+# dd_start_secondary —— 起副节点 + nginx 双活。
+# 幂等：容器已在跑且 healthy ⇒ 幂等返回（nginx 行由 --add-server 幂等保证）。
+# 前置：主槽必须有一个在跑（副节点是「第二个流量节点」，没有主槽就没有
+# 「主」可依附；镜像也无处可取）。
+dd_start_secondary() {
+  local _env_file _gw_env_file="$ENV_FILE" _mirror _c="$DD_SECONDARY_CONTAINER"
+  local _port="$DD_SECONDARY_PORT" _k _v _val
+  _env_file="$(dd_secondary_env_file)"
+
+  # ── 前置检查（任何一个不满足都拒绝起，不做半吊子形态）────────────────
+  if ! dd_secondary_active || [[ "$(docker inspect --type container -f '{{.State.Running}}' "$_c" 2>/dev/null)" != "true" ]]; then
+    :
+  else
+    # 容器已在跑：健康则幂等返回；不健康则重建（起副节点的人要的是可用）
+    local _h
+    _h="$(docker inspect --type container -f '{{.State.Health.Status}}' "$_c" 2>/dev/null || echo none)"
+    if [[ "$_h" == "healthy" ]]; then
+      log "副节点已在跑且 healthy（${_c} @ ${_port}）⇒ 幂等返回（nginx 行照常补挂）"
+    else
+      warn "副节点容器存在但状态=${_h} ⇒ 重建"
+      docker rm -f "$_c" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # 主槽在跑（镜像来源与「依附对象」的双重前置）
+  local _main_running=0 _main_c
+  for _main_c in "$(dd_container_name a)" "$(dd_container_name b)"; do
+    if [[ "$(docker inspect --type container -f '{{.State.Running}}' "$_main_c" 2>/dev/null)" == "true" ]]; then
+      _main_running=1; break
+    fi
+  done
+  if [[ "$_main_running" != "1" ]]; then
+    die "没有在跑的主槽（$(dd_container_name a) / $(dd_container_name b) 均未运行）—— 副节点依附于在役主槽（镜像与 env 都来自它）；先完成一次常规部署让主槽就位，再 --start-secondary"
+  fi
+  _mirror="$(docker inspect --type container -f '{{.Config.Image}}' "$_main_c" 2>/dev/null)"
+  [[ -n "$_mirror" ]] || die "读不到主槽镜像名（${_main_c}）—— 无法复用镜像"
+  log "副节点镜像：复用在役主槽镜像 ${_mirror}（不重新构建 ⇒ 与在役二进制零漂移）"
+
+  # env 事实源必须在场且能读出关键键（读不出 = gateway.env 形状变了/被删了
+  # ⇒ 副节点的身份面无法与主槽对齐 ⇒ 拒绝，宁可不起）
+  [[ -f "$_gw_env_file" ]] || die "主槽 env 事实源不在场（${_gw_env_file}）—— 副节点 env 从它派生；先跑一次常规部署生成它"
+  for _k in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_REDIS_ADDR LLM_GATEWAY_REDIS_DB LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_API_KEY LLM_GATEWAY_ADMIN_API_KEY LLM_GATEWAY_ENV; do
+    dd_read_env_file_value "$_gw_env_file" "$_k" >/dev/null 2>&1 \
+      || die "env 事实源里读不到 ${_k} —— 派生副节点 env 会造成身份面与主槽不一致 ⇒ 拒绝起副节点（检查 ${_gw_env_file} 形状）"
+  done
+
+  # ── 组装副节点 env（照抄主槽 + 显式覆盖身份键）──────────────────────
+  # 覆盖项在此处**显式列出**（不隐藏在循环里）；其余键一律照抄。
+  mkdir -p "$(dirname "$_env_file")"
+  {
+    printf '# llm-gateway-go 副节点 env @ %s（由 deploy-seamless-docker.sh --start-secondary 生成，勿提交）\n' "${DD_HOST:-目标机}"
+    printf '# 派生自 %s（主槽事实源）；身份面照抄，角色/连接池/本地状态三项显式覆盖\n' "$_gw_env_file"
+    printf 'export LLM_GATEWAY_RUNTIME_ROLE=traffic-only\n'
+    printf 'export LLM_GATEWAY_DB_MAX_CONNS=%q\n' "${DD_SECONDARY_DB_MAX_CONNS:-10}"
+    printf 'export LLM_GATEWAY_LOG_INDEX_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/bleve-index"
+    printf 'export LLM_GATEWAY_SESSION_RAW_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/session-archive"
+    # 全量照抄段：从 gateway.env 逐行搬运（跳过将被覆盖的四个键与注释/空行）。
+    # 值原样搬运（仍是 %q 形态）——docker 注入时逐键 _dd_unq 解码。
+    local _line _key
+    while IFS= read -r _line || [[ -n "$_line" ]]; do
+      case "$_line" in
+        ''|'#'*) continue ;;
+      esac
+      _key="${_line#export }"
+      _key="${_key%%=*}"
+      case "$_key" in
+        LLM_GATEWAY_RUNTIME_ROLE|LLM_GATEWAY_DB_MAX_CONNS|LLM_GATEWAY_LOG_INDEX_DIR|LLM_GATEWAY_SESSION_RAW_DIR) continue ;;
+      esac
+      printf 'export %s\n' "$_line"
+    done < "$_gw_env_file"
+  } > "$_env_file"
+  chmod 600 "$_env_file"
+
+  # ── 注入容器（-e 逐键解码；secret 不回显）────────────────────────────
+  local _env_args=()
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    case "$_line" in
+      ''|'#'*|'export '*) : ;;
+      *) continue ;;
+    esac
+    _line="${_line#export }"
+    _k="${_line%%=*}"
+    _v="${_line#*=}"
+    _val="$(_dd_unq "$_v")"
+    _env_args+=( -e "${_k}=${_val}" )
+  done < "$_env_file"
+  # 身份键再显式核对一次（-e 注入层面）：角色与连接池必须来自覆盖段
+  log "副节点 env：$(grep -c '^export' "$_env_file") 键（role=traffic-only, db_max_conns=${DD_SECONDARY_DB_MAX_CONNS:-10}, 本地状态=data-s/logs-s 独立卷）"
+
+  # ── 独立卷 + 起容器 ─────────────────────────────────────────────────
+  mkdir -p "${DD_GW_DATA_ROOT}/data-s" "${DD_GW_DATA_ROOT}/logs-s"
+  chown -R 65532:65532 "${DD_GW_DATA_ROOT}/data-s" "${DD_GW_DATA_ROOT}/logs-s" 2>/dev/null || true
+  # web 静态资源与 version.json：**复用主槽目录**（只读挂载 ⇒ 与主槽同一份
+  # SPA/版本戳；副节点无独立的版本生命周期——它的版本就是主槽的版本）。
+  local _main_slot_web=""
+  for _main_c in a b; do
+    if [[ -d "${DD_GW_DATA_ROOT}/web/${_main_c}/dist" ]]; then
+      _main_slot_web="$_main_c"; break
+    fi
+  done
+  local _web_mounts=()
+  if [[ -n "$_main_slot_web" ]]; then
+    _web_mounts+=(
+      -v "${DD_GW_DATA_ROOT}/web/${_main_slot_web}/dist:/app/web/dist:ro"
+      -v "${DD_GW_DATA_ROOT}/version/${_main_slot_web}.json:/app/version.json:ro"
+    )
+    [[ -d "${DD_GW_DATA_ROOT}/web-mobile/${_main_slot_web}/dist" ]] && \
+      _web_mounts+=( -v "${DD_GW_DATA_ROOT}/web-mobile/${_main_slot_web}/dist:/app/web-mobile/dist:ro" )
+  else
+    warn "读不到主槽 web 种子目录 ⇒ 副节点按纯 API 形态起（站点根路径将退化成版本 JSON）"
+  fi
+
+  docker rm -f "$_c" >/dev/null 2>&1 || true
+  docker run -d --name "$_c" --restart unless-stopped \
+    --network "$DD_NETWORK" \
+    -p "${_port}:8781" \
+    -v "${DD_GW_DATA_ROOT}/data-s:/app/data" \
+    -v "${DD_GW_DATA_ROOT}/logs-s:/app/logs" \
+    -v "${DD_GW_DATA_ROOT}/configs:/app/configs:ro" \
+    ${_web_mounts[@]+"${_web_mounts[@]}"} \
+    ${_env_args[@]+"${_env_args[@]}"} \
+    "$_mirror" >/dev/null \
+    || die "副节点容器启动失败（${_c} @ ${_port}）"
+  log "副节点容器已起：${_c} @ ${_port}（traffic-only；等待 readyz）"
+
+  # ── 就绪验证（与候选槽同一判据：readyz 必须 ok 且非 lite）────────────
+  local _i _ready_body="" _ok=0
+  for _i in $(seq 1 "$(( ${PROBE_TIMEOUT_SECS:-120} / 2 ))"); do
+    if _ready_body="$(curl -fsS "http://127.0.0.1:${_port}/readyz" 2>/dev/null)"; then
+      _ok=1; break
+    fi
+    sleep 2
+  done
+  if [[ "$_ok" != "1" ]]; then
+    warn "副节点未就绪，最近日志："
+    docker logs --tail 40 "$_c" >&2 || true
+    die "副节点就绪验证失败（readyz 不通）—— 未挂 nginx 行，主槽流量不受影响"
+  fi
+  case "$(dd_ready_state <<<"$_ready_body")" in
+    ok) log "副节点 readyz OK（database+redis connected）" ;;
+    *)
+      warn "副节点 readyz 正文: $_ready_body"
+      docker logs --tail 40 "$_c" >&2 || true
+      die "副节点就绪验证失败（check=$(dd_ready_state <<<"$_ready_body")）—— 未挂 nginx 行，主槽流量不受影响"
+      ;;
+  esac
+  # 角色自证：/version 的 runtime_role 必须是 traffic-only（判据钉在响应体，
+  # 不是钉在「我们注入了什么」）
+  local _vjson _role
+  _vjson="$(curl -fsS "http://127.0.0.1:${_port}/version" 2>/dev/null || true)"
+  _role="$(printf '%s' "$_vjson" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("runtime_role") or "")
+except Exception: print("")' 2>/dev/null || printf '')"
+  if [[ "$_role" != "traffic-only" ]]; then
+    warn "副节点 /version.runtime_role=${_role:-空}（期望 traffic-only）—— 角色注入未在响应体得到证实，继续但标红"
+  else
+    log "副节点角色自证 OK（/version.runtime_role=traffic-only）"
+  fi
+
+  # ── nginx 双活：追加副节点行 + reload ────────────────────────────────
+  local _conf="$DD_NGINX_CONF" _bak
+  [[ -f "$_conf" ]] || die "nginx conf 不在场（${_conf}），无法挂双活行"
+  _bak="${_conf}.bak-dd-secondary"
+  local _sw_out
+  if ! _sw_out="$(python3 "$DD_UPSTREAM_PORT_HELPER" \
+                  --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" \
+                  --add-server "$_port" --backup "$_bak" 2>&1)"; then
+    die "副节点 nginx 行追加失败（判定=${_sw_out}）—— 容器 ${_c} 已起但未接流；处置：人工核对 upstream 块后重跑 --start-secondary（幂等）"
+  fi
+  log "nginx upstream 追加副节点行（判定=${_sw_out}）"
+  if ! nginx -t >/dev/null 2>&1; then
+    cp -f "$_bak" "$_conf" 2>/dev/null || true
+    die "nginx -t 失败，已还原 ${_conf}（备份 ${_bak}）—— 副节点容器在跑但未接流"
+  fi
+  if ! nginx -s reload >/dev/null 2>&1; then
+    warn "nginx reload 失败（配置已写，需人工 reload）—— 副节点暂不接流"
+    return 1
+  fi
+  # goacos：双活注册（只注册、不注销主槽那条）
+  if dd_register_goacos "$_port" 1; then
+    log "goacos 注册表已追加 127.0.0.1:${_port}（保留主槽条目）"
+  else
+    warn "goacos 副节点登记失败（端口 ${_port}）—— 消费方暂看不到副节点，需手工补登记"
+  fi
+  log "=========================================================="
+  log "双活副节点已上线 @ ${DD_HOST:-本机}"
+  log "  副节点  : ${_c} @ 127.0.0.1:${_port}（traffic-only，镜像=${_mirror}）"
+  log "  主槽    : 继续蓝绿语义（全部后台循环归属主槽）"
+  log "  nginx   : ${DD_NGINX_UPSTREAM} 双行轮询（主行 + ${_port}）"
+  log "  本地卷  : ${DD_GW_DATA_ROOT}/data-s、logs-s（独立于主槽）"
+  log "  env     : ${_env_file}（身份面照抄主槽 + 覆盖 role/连接池/本地状态）"
+  log "  回退    : bash $0 --stop-secondary（摘 nginx 行 → 停容器，主槽不受影响）"
+  log "=========================================================="
+}
+
+# dd_stop_secondary —— 摘 nginx 行（先摘流）→ 停容器。主槽全程不受影响。
+dd_stop_secondary() {
+  local _conf="$DD_NGINX_CONF" _bak _c="$DD_SECONDARY_CONTAINER" _port="$DD_SECONDARY_PORT"
+  if [[ -f "$_conf" ]] && [[ -f "$DD_UPSTREAM_PORT_HELPER" ]]; then
+    _bak="${_conf}.bak-dd-secondary"
+    local _sw_out
+    if _sw_out="$(python3 "$DD_UPSTREAM_PORT_HELPER" \
+                    --conf "$_conf" --upstream "$DD_NGINX_UPSTREAM" \
+                    --remove-server "$_port" --backup "$_bak" 2>&1)"; then
+      log "nginx upstream 已摘副节点行（判定=${_sw_out}）"
+      if nginx -t >/dev/null 2>&1; then
+        nginx -s reload >/dev/null 2>&1 \
+          || warn "nginx reload 失败（配置已写，需人工 reload）—— 在途请求仍可能落到副节点"
+      else
+        cp -f "$_bak" "$_conf" 2>/dev/null || true
+        warn "nginx -t 失败，已还原 ${_conf}—— 继续停容器（在途请求由主槽承接，副节点排空后退出）"
+      fi
+    else
+      log "nginx 无副节点行可摘（判定=${_sw_out}）—— 继续停容器"
+    fi
+  else
+    warn "nginx conf / 判定脚本不在场 ⇒ 跳过摘行，直接停容器"
+  fi
+  # goacos：注销副节点条目（按同 IP+端口反注册；失败只 warn）
+  dd_deregister_goacos "$_port" || warn "goacos 副节点注销失败（端口 ${_port}）—— 消费方可能仍读到该端口"
+  if dd_secondary_active; then
+    if dd_stop_container "$_c" >/dev/null 2>&1; then
+      log "副节点已停：${_c}（容器保留，可 docker start 应急；常规重建走 --start-secondary）"
+    else
+      warn "副节点停止失败（${_c}）—— 仍占着 ${_port}，下次 --start-secondary 会先 rm -f"
+    fi
+  else
+    log "副节点容器本就不在（${_c}）—— 幂等返回"
+  fi
+  # 在途排空提示：容器是 --time 60s 优雅停机；确认一下确实退干净
+  sleep 1
+  if [[ "$(docker inspect --type container -f '{{.State.Running}}' "$_c" 2>/dev/null)" == "true" ]]; then
+    warn "副节点容器仍在运行（排空中）—— 60s 预算内会退出；确认：docker inspect ${_c}"
+  fi
+}
+
+if [[ "$MODE" == "start-secondary" ]]; then
+  # 完成标记守卫：与 deploy 模式同一 fail-closed 语义 —— dd_start_secondary
+  # 任何一步 die 都会以非 0 退出（不会把「副节点没起来」洗成成功）。
+  dd_install_exit_guard
+  dd_start_secondary
+  DD_DEPLOY_COMPLETED=1
+  exit 0
+fi
+
+if [[ "$MODE" == "stop-secondary" ]]; then
+  dd_stop_secondary
+  DD_DEPLOY_COMPLETED=1
   exit 0
 fi
 
@@ -3023,6 +3412,21 @@ DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
 # ★ 槽位↔端口绑定体检：**先于一切写动作**（mkdir/chown/迁移/起容器/切流都在它后面）
 #   ⇒ 绑定已脱节的机器上，本轮部署**一个字节都不写**，只报出处置方法。
 dd_check_slot_binding
+
+# ★ 双活常态守卫（2026-11-27 多节点轮）：常规蓝绿部署**不认识**双活 upstream。
+#   蓝绿切流=「改主 server 行端口」；双活常态下 upstream 有两条主行（主槽+
+#   副节点），切流会把副节点行**留在原地**（helper 只改第一条）⇒ 引擎随后
+#   停「旧槽」时，副节点仍在接流——路由/限流/归档口径与单活验收完全不同
+#   ⇒ 本次发布的验收结论不可信。⇒ 拦下，给出两条明确路径，一个字节不写。
+#   --start-secondary / --stop-secondary 不经过此段（它们在参数分派后、
+#   deploy 主流程前自行 exit）。
+DD_DUAL_ACTIVE_EXTRA="$(dd_dual_active_ports || true)"
+if [[ -n "$DD_DUAL_ACTIVE_EXTRA" ]]; then
+  die "nginx upstream ${DD_NGINX_UPSTREAM} 处于【双活形态】（主行之外还有副节点端口：${DD_DUAL_ACTIVE_EXTRA}）——常规蓝绿部署会破坏双活语义（切流只改第一条主行，随后停「旧槽」时副节点仍在接流，发布验收结论不可信）。
+      两条路径（按需选择）：
+        · 要更新在役节点并保持多节点：bash scripts/deploy-211.sh --stop-secondary → 常规部署（蓝绿单活完成）→ bash scripts/deploy-211.sh --start-secondary（用新镜像重建副节点）；
+        · 要回到单活常态：bash scripts/deploy-211.sh --stop-secondary（停副节点 + nginx 收缩回单行）再常规部署。"
+fi
 mkdir -p "$DD_GW_DATA_ROOT/data" "$DD_GW_DATA_ROOT/logs"
 chown -R 65532:65532 "$DD_GW_DATA_ROOT" 2>/dev/null || true
 
