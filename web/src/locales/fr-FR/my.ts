@@ -17,6 +17,7 @@ export default {
   colSessionKey: 'Clé de session',
   colTenant: 'Locataire',
   colRequests: 'Requêtes',
+  colTurns: 'Tours',
   colCost: 'Coût total',
   colUpdatedAt: 'Dernière mise à jour',
   untitled: '(Sans titre)',

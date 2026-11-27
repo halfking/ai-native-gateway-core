@@ -31,6 +31,14 @@ type BillingDecision struct {
 // - 如果查询余额失败，默认允许继续（记录警告）
 // - 避免计费系统故障导致服务完全不可用
 func (s *Service) PreCheckBalance(ctx context.Context, tenantID string, estimatedCostCredits int64) (*BillingDecision, error) {
+	return s.PreCheckBalanceWithRequestID(ctx, tenantID, "", estimatedCostCredits)
+}
+
+// PreCheckBalanceWithRequestID 同 PreCheckBalance，额外把 requestID 透传进
+// billing_precheck_log（★ 2026-11-27 12h 审计轮 W6：此前 request_id 恒空串，
+// 审计时无法把预检决策关联到具体请求——空串在 NOT NULL 列上可通过但丢失
+// 了关联能力）。
+func (s *Service) PreCheckBalanceWithRequestID(ctx context.Context, tenantID, requestID string, estimatedCostCredits int64) (*BillingDecision, error) {
 	// 0. MaaS未启用：跳过预检
 	if !s.Enabled() {
 		return &BillingDecision{
@@ -116,7 +124,7 @@ func (s *Service) PreCheckBalance(ctx context.Context, tenantID string, estimate
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.logBillingPrecheck(ctx, tenantID, "", decision)
+		s.logBillingPrecheck(ctx, tenantID, requestID, decision)
 	}()
 
 	return decision, nil

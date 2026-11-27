@@ -17,6 +17,7 @@ export default {
   colSessionKey: 'セッションキー',
   colTenant: 'テナント',
   colRequests: 'リクエスト数',
+  colTurns: 'ターン数',
   colCost: '合計費用',
   colUpdatedAt: '最終更新',
   untitled: '（タイトルなし）',

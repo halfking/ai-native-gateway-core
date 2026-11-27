@@ -17,6 +17,7 @@ export default {
   colSessionKey: 'مفتاح الجلسة',
   colTenant: 'المستأجر',
   colRequests: 'الطلبات',
+  colTurns: 'الأدوار',
   colCost: 'التكلفة الإجمالية',
   colUpdatedAt: 'آخر تحديث',
   untitled: '(بدون عنوان)',
