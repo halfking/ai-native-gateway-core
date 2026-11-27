@@ -308,7 +308,11 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-28 第三十次重钉（P1 轮全量门收口）：★ 上游 16 笔合并链前
 		// ★ 净增 ⇒ ★ 逐行实测 Recovery **:9288**、SecurityHeaders **:9307** ⇒
 		// ★ 窗口 **9288-9307**（★ 前值 9246-9266）★★。
-		file: "cmd/gateway/main.go", from: 9295, to: 9314,		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
+		// ★★ 2026-11-28 第三十二次重钉（L142 轮）：★ main.go:4514 投影器接线
+		// ★（NewProjectionProcessor）注释块链前净增 +8 ＋ 车道合并 +3（部分落在
+		// ★ 链体内）⇒ ★ 逐行实测 Recovery **:9306**、SecurityHeaders **:9325** ⇒
+		// ★ 窗口 **9306-9325**（★ 前值 9295-9314）★★。
+		file: "cmd/gateway/main.go", from: 9306, to: 9325,		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
 		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
 		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
 		// ★（★ 覆盖链体起点 `middleware.NewBuilder()` 到 SecurityHeaders 那一行）★。
