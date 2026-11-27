@@ -58,6 +58,12 @@ func main() {
 	}
 	defer func() { _ = gateway.Audit().Close() }()
 
+	// registry 联邦同步器驱动（ADR 2026-11-27 §3）：与主网关装配同款；
+	// enabled 时后台轮询，同步失败只退避重试，绝不影响数据面。
+	if syncer := gateway.RegistrySyncer(); syncer != nil {
+		go syncer.Run(context.Background())
+	}
+
 	if *demo {
 		if err := seedDemo(gateway, *demoAddr, logger); err != nil {
 			logger.Error("demo seed failed", "error", err)

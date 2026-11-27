@@ -639,6 +639,7 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 		WriteGranted:    g.writeGranted(id, tool, adapter),
 		KeyID:           id.KeyID,
 		CallID:          callID,
+		RequestID:       id2Raw(reqID()),
 	})
 	if err != nil {
 		g.breaker.Failure(adapter.Name)
@@ -758,6 +759,7 @@ func (g *Gateway) adapterTools(ctx context.Context, a Adapter) []ToolView {
 		Capability:      effectiveCapability(ctx, a.Capability),
 		ProtocolVersion: ProtocolVersion,
 		Timeout:         g.cfg.ToolTimeout,
+		RequestID:       id2Raw(reqID()),
 	})
 	if err != nil {
 		healthCheckFailuresTotal.Inc()
@@ -862,6 +864,7 @@ func (g *Gateway) handleForward(ctx context.Context, id *Identity, req jsonrpcRe
 			Capability:      effectiveCapability(ctx, a.Capability),
 			ProtocolVersion: ProtocolVersion,
 			Timeout:         g.cfg.ToolTimeout,
+			RequestID:       id2Raw(reqID()),
 		})
 		if err != nil {
 			continue
