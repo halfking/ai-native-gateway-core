@@ -76,9 +76,9 @@ func TestAuthProvider_Authenticate_PasswordMismatch(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(correctPass), bcrypt.DefaultCost)
 	
 	rows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "enabled", "must_change_password",
+		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "roles", "enabled", "must_change_password",
 	}).AddRow(
-		1, "tenant1", "testuser", string(hash), "Test User", "test@example.com", "user", true, false,
+		1, "tenant1", "testuser", string(hash), "Test User", "test@example.com", "user", []string{"user"}, true, false,
 	)
 	
 	mock.ExpectQuery(`SELECT id, tenant_id, username, password_hash`).
@@ -106,9 +106,9 @@ func TestAuthProvider_Authenticate_DisabledUser(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	
 	rows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "enabled", "must_change_password",
+		"id", "tenant_id", "username", "password_hash", "display_name", "email", "role", "roles", "enabled", "must_change_password",
 	}).AddRow(
-		1, "tenant1", "testuser", string(hash), "Test User", "test@example.com", "user", false, false, // disabled=false
+		1, "tenant1", "testuser", string(hash), "Test User", "test@example.com", "user", []string{"user"}, false, false, // disabled=false
 	)
 	
 	mock.ExpectQuery(`SELECT id, tenant_id, username, password_hash`).

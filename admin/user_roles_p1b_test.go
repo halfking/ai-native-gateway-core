@@ -3,14 +3,17 @@ package admin
 // users.role 多角色化判据（三级配额制 P1-b，2026-11-27）。
 //
 // 契约四条：
-//   ① SignTokenWithRoles：Roles[0]=主角色前置写入 claim；nil roles ⇒ token
-//      与旧形态逐字节同形（只写 Role）；
+//   ① SignTokenWithRoles：Roles[0]=主角色前置写入 claim；nil roles ⇒ 归一后
+//      roles claim 恒写 [主角色]（旧 token 的**超集语义**——旧读者忽略未知
+//      claim；2026-11-28 审计轮订正，非逐字节同形）；
 //   ② VerifyToken：旧 token（无 Roles claim）解析后 EffectiveRoles 回落 [Role]；
 //   ③ JWTClaims → AuthContext 透传后 HasRole 按集合判；legacy（Roles 空）回落
 //      Role 单值；
 //   ④ effectiveLoginRoles / normalizeUserRoles：主角色前置 + 去重保序。
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +45,9 @@ func TestSignTokenLegacyShapeWithoutRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
+	// ★ 2026-11-28 审计轮订正：旧断言走 VerifyToken 回落，掩蔽了「nil ⇒ roles
+	//   claim 实际写入 [主角色]」与注释「逐字节同形」的矛盾。改为直接断言
+	//   payload：roles claim 恒写（超集语义，旧读者忽略未知 claim）。
 	claims, err := VerifyToken(token, testJWTSecretP1b())
 	if err != nil {
 		t.Fatalf("VerifyToken: %v", err)
@@ -51,6 +57,17 @@ func TestSignTokenLegacyShapeWithoutRoles(t *testing.T) {
 	}
 	if len(claims.Roles) != 1 || claims.Roles[0] != "tenant_admin" {
 		t.Fatalf("EffectiveRoles = %v, want [tenant_admin] 回落", claims.Roles)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token 形态不对：%d 段", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if !strings.Contains(string(payload), `"roles":["tenant_admin"]`) {
+		t.Fatalf("nil roles 的 payload 必须显式带 roles:[主角色]（超集语义）：%s", payload)
 	}
 }
 

@@ -1451,8 +1451,14 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 	}
 	// ── 组织/用户级余额预检（三级配额制，2026-11-27）──────────────────
 	//	租户级闸放行后逐级检查组织/用户钱包；任一级 block ⇒ 402。
-	//	豁免口径与租户级同源（default 租户 + 内部 key 在 gate 内自判）。
-	if s.tieredBalanceGate != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+	//	豁免口径与租户级同源（default 租户 + 内部 key + platform billing 豁免——
+	//	2026-11-28 审计轮补 tenantBillingExempt：platform billing 来源请求在
+	//	chat/messages/responses 三面跳过 tiered 闸，音频面此前会被 402，口径不同源）。
+	//	estimatedCostCredits=0 的边界：音频请求体是 multipart 音频流，provider
+	//	解析前无法廉价估算成本（其余三面走 FromBody）⇒ 本面只做「已超限硬停」，
+	//	成本计入依赖请求后计费（chargeTranscription 链），如需预检成本须先做
+	//	音频时长探测，属增量功能。
+	if s.tieredBalanceGate != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal && !tenantBillingExempt(r.Context(), keyInfo) {
 		owner := ""
 		if keyInfo.OwnerUser != nil {
 			owner = *keyInfo.OwnerUser

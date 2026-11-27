@@ -685,8 +685,11 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 	}
 	// 目标用户的租户与当前角色：租户边界判定、角色不变量、审计「旧角色→新角色」
 	// 三处都要用 ⇒ 只查一次（变更角色时必查；tenant_admin 操作时必查）。
+	// ★ 2026-11-28 审计轮补 `req.Roles != nil`：只改 roles 数组、不改 role 的请求
+	//   也需要 targetRole/targetTenant（Roles 归一化主角色前置 + 成员租户闭集校验
+	//   都依赖它们）——此前 super_admin 只改 roles 时 targetRole 恒空串。
 	var targetTenant, targetRole string
-	if req.Role != nil || IsTenantAdmin(r) {
+	if req.Role != nil || req.Roles != nil || IsTenantAdmin(r) {
 		ctxLookup, cancelLookup := context.WithTimeout(r.Context(), 3*time.Second)
 		err := h.userDB().QueryRow(ctxLookup, `SELECT tenant_id, role FROM users WHERE id = $1`, id).Scan(&targetTenant, &targetRole)
 		cancelLookup()
@@ -727,7 +730,14 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 	// 强制 ⇒ 这里同样前置主角色保证首元素即主角色）；每个成员走同一份闭集 +
 	// 租户不变量（roleAllowedInTenant）。
 	if req.Roles != nil {
-		normalized := normalizeUserRoles(targetRole, *req.Roles)
+		// ★ 2026-11-28 审计轮：同请求改 role + roles 时必须用**新**主角色归一化——
+		//   targetRole 是库里的旧主角色，用它会把旧主角色前置进 roles[0]、且保留
+		//   调用方未提交的旧角色（违反 Roles[0]=主角色 契约）。
+		primaryForRoles := targetRole
+		if req.Role != nil {
+			primaryForRoles = *req.Role
+		}
+		normalized := normalizeUserRoles(primaryForRoles, *req.Roles)
 		for _, r := range normalized {
 			if err := ValidateAssignableRole(r, targetTenant); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())

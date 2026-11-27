@@ -5,7 +5,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/kaixuan/llm-gateway-go/admin"
 )
+
+// signToken 测试薄委托（2026-11-28 审计轮）：签发口径已统一到
+// admin.SignTokenWithRoles（主角色前置 + roles claim），本地签名实现已删除；
+// 本 helper 让既有 TTL/claims 语义测试继续走同一把密钥链与同一 SSOT。
+func signToken(userID int, tenantID, username, role, secretKey string, mustChange bool) (string, time.Time, error) {
+	return admin.SignTokenWithRoles(userID, tenantID, username, role, nil, secretKey, mustChange)
+}
 
 // Additional tests to boost JWT coverage to help reach >90% total
 // These test the simpler helper functions that don't require complex mocking
@@ -58,7 +67,7 @@ func TestSignToken_NoSecret(t *testing.T) {
 	_, _, err := signToken(1, "tenant1", "testuser", "user", "", false)
 	
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "JWT secret not configured")
+	assert.Contains(t, err.Error(), "secret not configured")
 }
 
 func TestVerifyToken_ValidToken(t *testing.T) {
@@ -102,7 +111,7 @@ func TestVerifyToken_NoSecret(t *testing.T) {
 	
 	_, err := verifyToken("some.token.here", "")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "JWT secret not configured")
+	assert.Contains(t, err.Error(), "secret not configured")
 }
 
 // F-A2 (2026-11-14 audit relay): signToken must honour the admin JWT TTL

@@ -171,4 +171,11 @@ COMMENT ON COLUMN public.tool_usage_stats.tool_name IS
 COMMENT ON COLUMN public.tool_usage_stats.date IS
     '工具统计口径 B（134 形状）：统计日；与 usage_date 口径并存';
 
+
+-- ★ 运行时台账自登记（双账本纪律：≥952 起迁移文件必须自带INSERT INTO public.schema_migrations；999b/c/d 同型补登记 2026-11-28）。
+--   否则运行时台账无行（runner 的 recordAppliedVersion 只认数字前缀，字母后缀件解析不出版本）⇒ 台账断代；down 件的 DELETE 已在库、up 侧此前缺失。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('999c', 'tool usage stats columns (stats shape B)')
+ON CONFLICT (version) DO NOTHING;
+
 COMMIT;

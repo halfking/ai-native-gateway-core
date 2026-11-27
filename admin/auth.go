@@ -369,7 +369,10 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				sessionToken, expiresAt := result.Token, result.ExpiresAt
 				tokenSource := "provider"
 				if !isLocallyIssuedToken(authProvider.Name()) {
-					local, exp, signErr := SignToken(result.UserID, result.TenantID, result.Username, result.Role, h.secret, result.MustChangePassword)
+					// ★ 2026-11-28 审计轮：换发改 SignTokenWithRoles——外部 IdP /
+					//   plugin 结果若带 Roles（native 现在带；其它 provider nil 回落
+					//   [Role]），换发不得把多角色降级成单角色 token。
+					local, exp, signErr := SignTokenWithRoles(result.UserID, result.TenantID, result.Username, result.Role, result.Roles, h.secret, result.MustChangePassword)
 					if signErr != nil {
 						slog.Error("handleLogin: re-sign plugin token failed", "provider", authProvider.Name(), "error", signErr)
 						writeError(w, http.StatusInternalServerError, "token generation failed")
@@ -395,6 +398,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 						"display_name":         result.DisplayName,
 						"email":                result.Email,
 						"role":                 result.Role,
+						"roles":                effectiveLoginRoles(result.Role, result.Roles),
 						"enabled":              result.Enabled,
 						"must_change_password": result.MustChangePassword,
 					},

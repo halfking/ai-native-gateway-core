@@ -305,3 +305,64 @@ func TestUpdateUser_TenantAdminCannotGrantSuperAdmin(t *testing.T) {
 		t.Fatalf("pgxmock 期望未满足：%v", err)
 	}
 }
+
+// ★ 2026-11-28 审计轮回归：只改 roles 数组（不改 role）也必须先查目标用户的
+//   租户与当前主角色（修复前 super_admin 只改 roles 时 targetRole 恒空 ⇒
+//   归一化没有主角色可前置、成员校验没有租户可判）。
+func TestUpdateUser_RolesOnlyPerformsTargetLookup(t *testing.T) {
+	h, mock := newUsersHandler(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT tenant_id, role FROM users WHERE id = $1`)).
+		WithArgs(77).
+		WillReturnRows(mock.NewRows([]string{"tenant_id", "role"}).AddRow("default", RoleUser))
+	mock.ExpectQuery(regexp.QuoteMeta(`UPDATE users SET roles = $1, updated_at = now() WHERE id = $2 RETURNING`)).
+		WithArgs([]string{RoleUser, RoleTenantAdmin}, 77).
+		WillReturnRows(mock.NewRows([]string{
+			"id", "tenant_id", "username", "display_name", "email", "role",
+			"enabled", "must_change_password", "last_login_at", "created_at",
+		}).AddRow(77, "default", "u77", "", "", RoleUser, true, false, nil, time.Now()))
+
+	req := superAdminRequest(http.MethodPut, "/api/users/77", `{"roles":["tenant_admin"]}`)
+	rec := httptest.NewRecorder()
+
+	h.updateUser(rec, req, 77)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pgxmock 期望未满足：%v", err)
+	}
+}
+
+// ★ 2026-11-28 审计轮回归：同请求改 role + roles 时归一化必须用**新**主角色
+//   前置（修复前用旧主角色 ⇒ roles[0]=旧主角色、旧角色残留数组，违反
+//   Roles[0]=主角色 契约）。当前主角色 user，请求 role=tenant_admin +
+//   roles=["user","tenant_admin"] ⇒ 期望库中 roles=["tenant_admin","user"]。
+func TestUpdateUser_RoleAndRolesUsesNewPrimaryFirst(t *testing.T) {
+	h, mock := newUsersHandler(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT tenant_id, role FROM users WHERE id = $1`)).
+		WithArgs(88).
+		WillReturnRows(mock.NewRows([]string{"tenant_id", "role"}).AddRow("default", RoleUser))
+	mock.ExpectQuery(regexp.QuoteMeta(`UPDATE users SET role = $1, roles = $2, updated_at = now() WHERE id = $3 RETURNING`)).
+		WithArgs(RoleTenantAdmin, []string{RoleTenantAdmin, RoleUser}, 88).
+		WillReturnRows(mock.NewRows([]string{
+			"id", "tenant_id", "username", "display_name", "email", "role",
+			"enabled", "must_change_password", "last_login_at", "created_at",
+		}).AddRow(88, "default", "u88", "", "", RoleTenantAdmin, true, false, nil, time.Now()))
+
+	req := superAdminRequest(http.MethodPut, "/api/users/88", `{"role":"tenant_admin","roles":["user","tenant_admin"]}`)
+	rec := httptest.NewRecorder()
+
+	h.updateUser(rec, req, 88)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pgxmock 期望未满足：%v", err)
+	}
+}
