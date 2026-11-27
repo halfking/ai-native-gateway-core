@@ -42,6 +42,8 @@
 #gen_append	2026-10-29 审计轮 —— 补 4 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 773 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 777 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 12 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 778 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 790 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 792 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -285,6 +287,8 @@
 /api/admin/modules/	ANY	admin/modules.go:1134	external				not-probed-external	★ 静态分级：出网调用
 /api/admin/node-health/{credential_id}/timeline	ANY	admin/handler.go:1131	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/ops/overview	ANY	admin/handler.go:1200	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/orgs	ANY	admin/handler.go:1179	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/orgs/	ANY	admin/handler.go:1180	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/output-compliance/feedback	ANY	admin/output_compliance_handler.go:52	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/keywords	ANY	admin/output_compliance_handler.go:46	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/output-compliance/keywords/	ANY	admin/output_compliance_handler.go:47	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -775,6 +779,8 @@
 /readyz/request-metrics	ANY	cmd/gateway/main.go:7123	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /recommend	GET	mcp/control.go:114	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /record/	ANY	domains/contextagent/http.go:24	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/registry/servers	GET	mcp/control.go:129	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/registry/status	GET	mcp/control.go:128	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /resolve	ANY	domains/contextagent/http.go:22	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /routes	GET	mcp/control.go:112	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

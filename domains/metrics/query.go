@@ -26,6 +26,12 @@ type MetricsFilter struct {
 	Status        *string
 	TrafficClass  *string
 
+	// 三级配额制维度过滤（2026-11-27）：组织/使用者。
+	// OrgID 对 request_metrics.org_id（owner→users→org 投影归因）；
+	// UserID 对 user_id（end_user_id 派生）。
+	OrgID  *string
+	UserID *string
+
 	// 日期过滤（用于账单查询）
 	UseBillingDate bool      // 是否使用记账日期而非发生日期
 	StartDate      time.Time // 开始日期（仅当 UseBillingDate=true 时使用）
@@ -158,6 +164,18 @@ func buildFilterClauses(filter MetricsFilter, prefix string, column string, kind
 	if filter.TrafficClass != nil {
 		clauses = append(clauses, fmt.Sprintf("%s = $%d", col("traffic_class"), argIdx))
 		args = append(args, *filter.TrafficClass)
+		argIdx++
+	}
+
+	// 三级配额制维度过滤（2026-11-27）
+	if filter.OrgID != nil {
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", col("org_id"), argIdx))
+		args = append(args, *filter.OrgID)
+		argIdx++
+	}
+	if filter.UserID != nil {
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", col("user_id"), argIdx))
+		args = append(args, *filter.UserID)
 		argIdx++
 	}
 

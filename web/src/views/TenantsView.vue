@@ -7,7 +7,7 @@ import { localeRef } from '../i18n'
 import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_COLORS } from '../api'
-import type { Tenant } from '../api'
+import type { Tenant, WalletInfo } from '../api'
 import TenantCreateDialog from './TenantCreateDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
 import { isPlatformOpsView } from '../store'
@@ -63,6 +63,21 @@ function fmtNum(n?: number) {
   return n.toLocaleString()
 }
 
+// ── 三级配额制（2026-11-27）：租户钱包余额列 ─────────────────────────────
+// 语义沿用后端：balance null → 展示 0；credit_limit null = 不限制（∞）。
+function fmtWallet(w?: WalletInfo) {
+  if (!w) return '-'
+  const bal = w.balance_credits == null ? 0 : w.balance_credits
+  const limit = w.credit_limit_credits == null ? '∞' : w.credit_limit_credits.toLocaleString()
+  return `${bal.toLocaleString()} / ${limit}`
+}
+
+function walletCellClass(w?: WalletInfo) {
+  if (!w || w.balance_credits == null) return ''
+  if (w.balance_credits < 0) return 'wallet-negative'
+  return ''
+}
+
 const showCost = isPlatformOpsView()
 
 /**
@@ -86,6 +101,13 @@ const cardFields = computed<CardField[]>(() => [
     label: t('tenants.list.colStatus'),
     type: 'badge',
     format: (v) => (v == null ? null : statusLabel(String(v))),
+  },
+  {
+    key: 'wallet',
+    label: t('tenants.list.colBalance'),
+    type: 'metric',
+    align: 'end',
+    format: (v) => fmtWallet(v as WalletInfo | undefined),
   },
   {
     key: 'user_count',
@@ -182,6 +204,7 @@ onMounted(load)
           <th>{{ t('tenants.list.colName') }}</th>
           <th>{{ t('tenants.list.colCode') }}</th>
           <th>{{ t('tenants.list.colStatus') }}</th>
+          <th>{{ t('tenants.list.colBalance') }}</th>
           <th>{{ t('tenants.list.colUsers') }}</th>
           <th>{{ t('tenants.list.colKeys') }}</th>
           <th>{{ t('tenants.list.colCost7d') }}</th>
@@ -202,6 +225,9 @@ onMounted(load)
           <td><strong>{{ tenant.name }}</strong></td>
           <td><code>{{ tenant.code }}</code></td>
           <td><span class="badge" :class="statusColor(tenant.status)">{{ statusLabel(tenant.status) }}</span></td>
+          <td>
+            <span :class="walletCellClass(tenant.wallet)" class="mono">{{ fmtWallet(tenant.wallet) }}</span>
+          </td>
           <td>{{ fmtNum(tenant.user_count) }}</td>
           <td>{{ fmtNum(tenant.api_key_count) }}</td>
           <td>
@@ -259,6 +285,7 @@ onMounted(load)
 .badge-yellow { background: var(--warning-bg); color: var(--warning); }
 .badge-gray { background: var(--neutral-bg); color: var(--muted); }
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+.wallet-negative { color: var(--danger); font-weight: 600; }
 .loading {
   text-align: center;
   padding: 40px;

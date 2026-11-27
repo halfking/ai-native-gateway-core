@@ -74,6 +74,11 @@ func (h *AudioTranscriptionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 			req.Profile = *keyInfo.DefaultClientProfile
 		}
 	}
+	// ── 模型策略（2026-11-27 三级配额制轮）：音频面此前不检查模型策略，
+	//    现与 chat 面共用同一判定体（租户→组织→用户）；403 model_forbidden。
+	if h.svc.enforceAudioModelPolicy(r.Context(), w, requestID, keyInfo, req.Model, req.Profile) {
+		return
+	}
 	req.RequestID = requestID
 
 	if req.Stream {

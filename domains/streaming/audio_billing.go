@@ -36,6 +36,15 @@ type audioTenantBudgetGate interface {
 	CheckMonthlyBudget(ctx context.Context, tenantID string) (*maas.MonthlyBudgetVerdict, error)
 }
 
+// audioTieredBalanceGate 是 AudioService 可选接入的组织/用户级余额预检
+// （三级配额制：租户→组织→用户，2026-11-27）。
+//
+//	*maas.Service 同时满足本接口 ⇒ 既有 SetMaas 接线**自动**生效；
+//	测试桩不实现本接口 ⇒ nil-safe 跳过（不改变既有测试语义）。
+type audioTieredBalanceGate interface {
+	PreCheckOrgAndUserForOwner(ctx context.Context, ownerUser string, estimatedCostCredits int64) (*maas.BillingDecision, error)
+}
+
 // SetMaas wires optional tenant-credit charging for audio endpoints.
 func (s *AudioService) SetMaas(svc audioMaasCharger) {
 	if s == nil {
@@ -46,6 +55,11 @@ func (s *AudioService) SetMaas(svc audioMaasCharger) {
 	// audioTenantBudgetGate 时一并接入（审计轮 2026-11-22 P0 修正）。
 	if g, ok := svc.(audioTenantBudgetGate); ok {
 		s.tenantBudgetGate = g
+	}
+	// 组织/用户级余额预检（三级配额制）：同一 concrete Service 同时满足
+	// audioTieredBalanceGate 时一并接入。
+	if g, ok := svc.(audioTieredBalanceGate); ok {
+		s.tieredBalanceGate = g
 	}
 }
 

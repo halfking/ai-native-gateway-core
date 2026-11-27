@@ -47,6 +47,7 @@ export default {
     freePool: "Kostenloser Pool",
     freeDiscovery: "Free-Discovery",
     tenants: "Mandanten",
+    orgs: "Organisationen",
     users: "Benutzer",
     keys: "API-Schlüssel",
     keyApplications: "Schlüssel-Anträge",

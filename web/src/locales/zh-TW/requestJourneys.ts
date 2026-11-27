@@ -28,7 +28,7 @@ export default {
   modelScopeLoading: '正在載入近 3 天的特色與熱門模型…',
   queueAwaitingStream: '正在連線即時串流，連線後本區資料自動載入…',
   refreshScope: 'Refresh scope',
-  modelGroupLayerTitle: 'Available nodes grouped by model',
+  modelGroupLayerTitle: '可用的供應商節點（按模型分組）',
   modelGroupCount: '{count} models',
   modelScopeSaving: 'Saving…',
   outOfScopeModels: '{models} 有節點，但不在特色／近 3 天熱門範圍內（此面板只列出範圍內的模型），因此不顯示群組。',

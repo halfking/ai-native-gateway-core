@@ -20,11 +20,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
+	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -50,6 +52,16 @@ type EmbeddingsHandler struct {
 	keyVerifier embeddingKeyVerifier
 	rateLimiter ratelimit.RPMLimiter
 	telemetry   *telemetry.Client
+	// modelPolicy (2026-11-27 三级配额制轮): tenant/org/user model
+	// policy enforcement for the embeddings surface — previously this
+	// surface never checked policies (audit finding).  Shares the same
+	// Checker singleton as the chat path.  nil disables enforcement
+	// (fail-open, pre-2026-11-27 behaviour).
+	modelPolicy *modelpolicy.Checker
+	// policyResolver maps client model names to canonical form for the
+	// model-policy check (same resolver instance the chat path uses).
+	// nil ⇒ canonical resolves to "" ⇒ policy check skips (fail-open).
+	policyResolver *resolve.Resolver
 	// autoIndex enables model="auto" for embeddings (22 章 §22.2).
 	// When nil, model="auto" is passed through unchanged.
 	autoIndex *autoroute.Index
@@ -80,6 +92,16 @@ func (h *EmbeddingsHandler) SetAuth(keyVerifier *authentication.KeyVerifier, rat
 
 func (h *EmbeddingsHandler) SetTelemetry(tc *telemetry.Client) {
 	h.telemetry = tc
+}
+
+// SetModelPolicy wires the shared tenant/org/user model policy Checker
+// (2026-11-27 三级配额制轮).  nil disables enforcement.
+func (h *EmbeddingsHandler) SetModelPolicy(mp *modelpolicy.Checker, resolver *resolve.Resolver) {
+	if h == nil {
+		return
+	}
+	h.modelPolicy = mp
+	h.policyResolver = resolver
 }
 
 // SetAutoIndex wires the autoroute index for model="auto" resolution.
@@ -173,6 +195,28 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				model = scored[0].Candidate.CanonicalName
 				payload["model"], _ = json.Marshal(model)
 			}
+		}
+	}
+
+	// ── Model policy (2026-11-27 三级配额制轮) ──────────────────────────
+	// This surface previously never checked tenant/org/user model
+	// policies (audit finding: gemini reached the chat path indirectly,
+	// the direct embeddings path bypassed them).  The shared judgement
+	// body enforces all three scopes; fail-open on governance DB
+	// issues (same as chat).  Runs BEFORE provider resolution so a
+	// denied request never reaches an upstream provider.
+	if keyInfo != nil {
+		profile := ""
+		if keyInfo.DefaultClientProfile != nil {
+			profile = *keyInfo.DefaultClientProfile
+		}
+		if denied, canonical, _ := enforceTenantModelPolicy(
+			r.Context(), clientModel, keyInfo, h.modelPolicy, h.policyResolver, profile,
+		); denied {
+			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			writeErrorJSON(w, http.StatusForbidden, requestID, msg,
+				"permission_error", "model_forbidden")
+			return
 		}
 	}
 

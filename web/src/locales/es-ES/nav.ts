@@ -46,6 +46,7 @@ export default {
     freePool: "Pool gratuito",
     freeDiscovery: "Descubrimiento gratuito",
     tenants: "Inquilinos",
+    orgs: "Organizaciones",
     users: "Usuarios",
     keys: "Claves API",
     keyApplications: "Solicitudes de claves",

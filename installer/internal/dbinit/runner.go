@@ -2192,6 +2192,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 492 自带事务包裹 ＋ 自登记 ⇒ 符合≥952双账本纪律。
 			//   ★ 从未应用过 ⇒ 零已应用字节变更。
 			"492_channels_customers.sql",
+			// ★ 1003（2026-11-27 三级配额制轮）：组织层级 + 组织/用户积分钱包。
+			//   organizations ＋ users.org_id ＋ org_credit_wallets ＋
+			//   user_credit_wallets（租户→组织→用户三级额度链数据面）。
+			//   自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫（1000 同款）。
+			//   ★ 排在 1000 之后（同族四位数排序惯例，无硬依赖）。
+			"1003_org_hierarchy_and_wallets.sql",
+			// ★ 1004（2026-11-27 三级配额制轮）：三级模型过滤。
+			//   tenant_model_policies.mode（allow/deny 双模，缺省 deny=既有
+			//   黑名单语义）＋ org_model_policies / user_model_policies
+			//   （024 范式：软删 + active 视图 + 审计触发器）。
+			//   自带 BEGIN/COMMIT ＋ 5s lock_timeout 守卫；依赖 1003。
+			"1004_three_tier_model_policies.sql",
 		},
 	}
 }

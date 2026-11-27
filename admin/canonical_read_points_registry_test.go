@@ -816,6 +816,10 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；本读点读 request_logs_with_current_month ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；本读点读 request_logs_with_current_month ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；本读点读 request_logs_with_current_month ⇒ 源由切换层决定 ⇒ 调用点改不动"},
+			// ★ 2026-11-27 三级配额制轮：usageTrendSource 新增第四臂（org_id/user_id
+			//   过滤强制走明细档）⇒ request_logs_with_current_month 字面量 3→4 条
+			//   ⇒ 补登记一条（同 holder 同豁免同理由）。
+			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "usageTrendSource() 新增第四臂（org_id/user_id 过滤 ⇒ canonical 视图明细面；2026-11-27 三级配额制轮）；本读点读 request_logs_with_current_month ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 		},
 	},
 	"domains/taskaggregator/task_aggregator.go": {

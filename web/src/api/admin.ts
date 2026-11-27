@@ -532,6 +532,13 @@ export function getAuditLogs(params: {
 
 // ── Tenant Management (super_admin only) ─────────────────────────────────
 
+// 三级配额制（2026-11-27）：钱包展示行（balance/limit null = 不限制）。
+export interface WalletInfo {
+  balance_credits: number | null
+  credit_limit_credits: number | null
+  credit_policy: string // warn | block
+}
+
 export interface Tenant {
   code: string
   name: string
@@ -547,6 +554,7 @@ export interface Tenant {
   credits_7d?: number
   cost_7d_usd?: number
   total_requests?: number
+  wallet?: WalletInfo
 }
 
 export interface CreateTenantResponse extends Tenant {
@@ -592,6 +600,69 @@ export interface TenantUser {
   enabled: boolean
   last_login_at: string | null
   created_at: string
+  org?: { id: number; code: string; name: string }
+  wallet?: WalletInfo
+  org_wallet?: WalletInfo
+}
+
+// ── Organizations（三级配额制：租户→组织→用户，2026-11-27）──────────────
+
+export interface Org {
+  id: number
+  tenant_id: string
+  code: string
+  name: string
+  description: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+  member_count?: number
+  wallet?: WalletInfo
+}
+
+export interface OrgMember {
+  id: number
+  tenant_id: string
+  username: string
+  display_name: string
+  email: string
+  role: string
+  enabled: boolean
+  user_wallet: WalletInfo
+  org_wallet: WalletInfo
+}
+
+export function getOrgs(tenantId?: string) {
+  const qs = tenantId ? '?tenant_id=' + encodeURIComponent(tenantId) : ''
+  return req<Org[]>('GET', '/api/admin/orgs' + qs)
+}
+
+export function getOrg(id: number) {
+  return req<{ org: Org; members: OrgMember[] }>('GET', `/api/admin/orgs/${id}`)
+}
+
+export function createOrg(data: { tenant_id: string; code: string; name: string; description?: string }) {
+  return req<Org>('POST', '/api/admin/orgs', data)
+}
+
+export function updateOrg(id: number, data: { name?: string; description?: string; enabled?: boolean }) {
+  return req<{ org: Org; members: OrgMember[] }>('PATCH', `/api/admin/orgs/${id}`, data)
+}
+
+export function deleteOrg(id: number) {
+  return req<{ deleted: number }>('DELETE', `/api/admin/orgs/${id}`)
+}
+
+export function updateOrgWallet(id: number, data: {
+  balance_credits?: number
+  credit_limit_credits?: number | null
+  credit_policy?: 'warn' | 'block'
+}) {
+  return req<{ wallet: WalletInfo }>('PATCH', `/api/admin/orgs/${id}/wallet`, data)
+}
+
+export function getOrgMembers(id: number) {
+  return req<OrgMember[]>('GET', `/api/admin/orgs/${id}/members`)
 }
 
 export function getTenantUsers(code: string) {

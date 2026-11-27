@@ -259,6 +259,8 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.tenantUsers',
     items: [
       { path: '/tenants', labelKey: 'nav.item.tenants', icon: '🏢', super: true, hideForTenant: true },
+      // 三级配额制（2026-11-27）：组织管理入口（列表 /orgs；详情 /orgs/:id 不挂菜单）。
+      { path: '/orgs', labelKey: 'nav.item.orgs', icon: '🏛️', super: true, hideForTenant: true },
       { path: '/users', labelKey: 'nav.item.users', icon: '👤' },
       { path: '/keys', labelKey: 'nav.item.keys', icon: '🔑' },
       { path: '/key-applications', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },

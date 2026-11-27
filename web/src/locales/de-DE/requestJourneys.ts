@@ -28,7 +28,7 @@ export default {
   modelScopeLoading: 'Ausgezeichnete und heiße Modelle der letzten 3 Tage werden geladen…',
   queueAwaitingStream: 'Verbindung zum Live-Stream wird aufgebaut, nach dem Verbinden werden die Daten dieses Bereichs automatisch geladen…',
   refreshScope: 'Refresh scope',
-  modelGroupLayerTitle: 'Available nodes grouped by model',
+  modelGroupLayerTitle: 'Verfügbare Nodes nach Modell gruppiert',
   modelGroupCount: '{count} models',
   modelScopeSaving: 'Saving…',
   outOfScopeModels: '{models} hat Knoten, liegt aber außerhalb der Auswahl (hervorgehoben / 3 Tage heiß). Dieses Panel zeigt nur Modelle im Gültigkeitsbereich, daher erscheint keine Gruppe.',

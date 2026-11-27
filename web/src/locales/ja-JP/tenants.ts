@@ -12,6 +12,7 @@ export default {
     colKeys: "キー数",
     colCost7d: "7日間の費用",
     colRequests: "総リクエスト",
+    colBalance: '残高 / 与信限度',
     colContact: "連絡先メール",
     colCreated: "作成日時",
     empty: 'テナントはまだありません。',
@@ -84,6 +85,8 @@ export default {
     cancel: 'キャンセル',
     create: '作成',
     lastLoginCol: '最終ログイン',
+    userBalanceCol: 'ユーザー残高',
+    orgBalanceCol: '組織残高',
   },
   dashboard: {
     title: "ダッシュボード",

@@ -45,6 +45,7 @@ export default {
     freePool: "無料リソース",
     freeDiscovery: "無料リソース発見",
     tenants: "テナント管理",
+    orgs: "組織管理",
     users: "ユーザー管理",
     keys: "API キー",
     keyApplications: "キー申請",

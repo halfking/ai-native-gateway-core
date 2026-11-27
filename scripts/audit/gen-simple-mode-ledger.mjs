@@ -25,6 +25,7 @@ const ROOT = resolve(HERE, '..', '..');
 const NAV_TS = resolve(ROOT, 'web/src/config/appNav.ts');
 const LOCALE_TS = resolve(ROOT, 'web/src/locales/zh-CN/nav.ts');
 const SANITIZE_LOCALE_TS = resolve(ROOT, 'web/src/locales/zh-CN/sanitizeRules.ts');
+const SESSION_ANALYTICS_LOCALE_TS = resolve(ROOT, 'web/src/locales/zh-CN/sessionAnalytics.ts');
 
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes('--' + k);
@@ -162,6 +163,11 @@ function v2Position(path) {
 
 const locale = parseLocale(readFileSync(LOCALE_TS, 'utf8'));
 const sanitizeLocale = parseDefaultExport(readFileSync(SANITIZE_LOCALE_TS, 'utf8'));
+// ★ sessionAnalytics 命名空间（2026-11-27）：/admin/session-analytics/* 三条目的
+//   labelKey 落在 sessionAnalytics.nav.* ⇒ 用 parseDefaultExport 抓到嵌套 nav 块
+//   后按点路径解析（parseDefaultExport 是平面的，嵌套 key 会覆盖成内层值；
+//   sessionAnalytics.ts 里 nav 块在顶部且无同名冲突 ⇒ 平面值即 nav 值）。
+const sessionAnalyticsLocale = parseDefaultExport(readFileSync(SESSION_ANALYTICS_LOCALE_TS, 'utf8'));
 const items = parseNav(readFileSync(NAV_TS, 'utf8'));
 
 // ★ 2026-11-17 新增硬门：分组清单里的每条 path 都必须在专家面导航真源里存在。
@@ -190,6 +196,8 @@ function labelOf(it) {
   if (k.startsWith('nav.group.')) return locale.group[k.slice('nav.group.'.length)] || k;
   // 少数条目用别处的 key（如 sanitizeRules.title）
   if (k.startsWith('sanitizeRules.')) return sanitizeLocale[k.slice('sanitizeRules.'.length)] || k;
+  // sessionAnalytics.nav.*（人员/智能体/模型排行三条）
+  if (k.startsWith('sessionAnalytics.nav.')) return sessionAnalyticsLocale[k.slice('sessionAnalytics.nav.'.length)] || k;
   // 其他未知 key 回落到 key 本身
   return k || it.path;
 }
