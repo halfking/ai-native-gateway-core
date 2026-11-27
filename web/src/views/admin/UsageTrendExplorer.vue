@@ -86,6 +86,8 @@ const endUserId = ref(readDeepLinkValue(route.query, 'user'))
 const applicationCode = ref(readDeepLinkValue(route.query, 'project'))
 const taskType = ref(readDeepLinkValue(route.query, 'task'))
 const apiKeyPrefix = ref(readDeepLinkValue(route.query, 'apikeyPrefix'))
+// ★ org 深链（三级配额制轮 2026-11-28）：request_metrics.org_id（owner→users→org 归因）。
+const orgId = ref(readDeepLinkValue(route.query, 'org'))
 
 /** ★ 五维过滤值（发给后端；★ 参数名与请求日志页逐字相同）。 */
 const rankingDims = computed(() => ({
@@ -94,6 +96,8 @@ const rankingDims = computed(() => ({
   api_key_prefix: apiKeyPrefix.value || undefined,
   application_code: applicationCode.value || undefined,
   task_type: taskType.value || undefined,
+  // ★ org（三级配额制轮）：trend-series 的 org_id 直推投影列。
+  org_id: orgId.value || undefined,
 }))
 
 /** ★ 当前有值的 chip 维度（条件区据此渲染只读徽标）。 */
@@ -104,6 +108,7 @@ const chipValues = computed<Partial<Record<PinnedDimension, string>>>(() => {
   if (applicationCode.value) out.project = applicationCode.value
   if (taskType.value) out.task = taskType.value
   if (apiKeyPrefix.value) out.apikeyPrefix = apiKeyPrefix.value
+  if (orgId.value) out.org = orgId.value
   return out
 })
 
@@ -117,6 +122,7 @@ function releaseDimension(dim: PinnedDimension) {
     case 'project': applicationCode.value = ''; break
     case 'task': taskType.value = ''; break
     case 'apikeyPrefix': apiKeyPrefix.value = ''; break
+    case 'org': orgId.value = ''; break
   }
 }
 
@@ -421,7 +427,7 @@ async function loadRankings() {
 }
 
 watch(
-  [effectiveRange, providerId, tenantId, apiKeyId, models, clientModel, endUserId, applicationCode, taskType, apiKeyPrefix],
+  [effectiveRange, providerId, tenantId, apiKeyId, models, clientModel, endUserId, applicationCode, taskType, apiKeyPrefix, orgId],
   () => {
     void loadSeries()
     void loadRankings()
@@ -452,6 +458,7 @@ function syncQuery() {
   if (clientModel.value) next.client_model = clientModel.value
   if (endUserId.value) next.end_user_id = endUserId.value
   if (apiKeyPrefix.value) next.api_key_prefix = apiKeyPrefix.value
+  if (orgId.value) next.org_id = orgId.value
   if (applicationCode.value) next.application_code = applicationCode.value
   if (taskType.value) next.task_type = taskType.value
   if (autoRefreshSec.value > 0) next.auto = String(autoRefreshSec.value)
@@ -477,6 +484,7 @@ const hasActiveFilters = computed(() =>
   || models.value.length > 0
   || !!clientModel.value
   || !!endUserId.value
+  || !!orgId.value
   || !!applicationCode.value
   || !!taskType.value
   || !!apiKeyPrefix.value
@@ -493,6 +501,7 @@ function clearAllFilters() {
   // ★ 五维排行条件也要一起清（否则「清除全部」之后条件还在，URL 里也还在）。
   clientModel.value = ''
   endUserId.value = ''
+  orgId.value = ''
   applicationCode.value = ''
   taskType.value = ''
   apiKeyPrefix.value = ''
