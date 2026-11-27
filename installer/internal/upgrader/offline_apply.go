@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,11 +31,27 @@ type OfflineApplier struct {
 }
 
 // NewOfflineApplier 创建离线升级应用器
+//
+// ★ 2026-11-27 12h 审计轮（W20 根修）：项目名解析优先级改为
+//   [compose 同目录 .env 的 COMPOSE_PROJECT_NAME] > [shell env] > [默认值]。
+//   此前只读 shell env——多实例主机（launcher 按 kxgw-<port> 推导项目名）
+//   若执行 shell 残留别的 COMPOSE_PROJECT_NAME，up -d --force-recreate 会以
+//   该名作用在本 compose 文件上与同名项目冲突（DB 操作有 exactly-one ps
+//   检查兜底，recreate 无）。安装时的 .env 是该安装点项目名的固化事实源，
+//   env 仅作显式覆盖且生效值打印到日志（误定向可现场发现）。
 func NewOfflineApplier(dataDir, backupDir, composeFile, containerName string) *OfflineApplier {
-	project := os.Getenv("COMPOSE_PROJECT_NAME")
+	project := composeProjectFromEnvFile(composeFile)
+	source := "env-file"
+	if project == "" {
+		project = os.Getenv("COMPOSE_PROJECT_NAME")
+		source = "shell-env"
+	}
 	if project == "" {
 		project = "llm-gateway-go"
+		source = "default"
 	}
+	slog.Info("offline upgrade: compose project resolved",
+		"project", project, "source", source)
 	return &OfflineApplier{
 		dataDir:        dataDir,
 		backupDir:      backupDir,
@@ -42,6 +59,30 @@ func NewOfflineApplier(dataDir, backupDir, composeFile, containerName string) *O
 		containerName:  containerName,
 		composeProject: project,
 	}
+}
+
+// composeProjectFromEnvFile 读 compose 同目录 .env 的 COMPOSE_PROJECT_NAME
+// （KEY=VALUE 逐行解析，忽略注释/空行；无该键或文件缺失返回空串）。
+func composeProjectFromEnvFile(composeFile string) string {
+	envPath := filepath.Join(filepath.Dir(composeFile), ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != "COMPOSE_PROJECT_NAME" {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		v = strings.Trim(v, `"'`)
+		return v
+	}
+	return ""
 }
 
 // ApplyOfflinePackage 应用离线升级包

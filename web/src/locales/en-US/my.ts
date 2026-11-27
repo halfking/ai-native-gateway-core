@@ -18,6 +18,7 @@ export default {
   colSessionKey: 'Session Key',
   colTenant: 'Tenant',
   colRequests: 'Requests',
+  colTurns: 'Turns',
   colCost: 'Total Cost',
   colUpdatedAt: 'Last Updated',
   untitled: '(Untitled)',

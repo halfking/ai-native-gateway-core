@@ -691,39 +691,12 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	planOrder, planSource := h.livePlanOrder(ctx, normalizedModel, EffectiveTenantIDAll(r))
 	
 	// 2026-11-26: 根据用户角色脱敏凭据信息
-	// - user: Sees
-	// - tenant_admin: 只保留配额状态和健康分数
-	// - super_admin: 看全部（不修改）
+	// ★ 2026-11-27 12h 审计轮（W2 收敛）：逐字段剥取收敛为 desensitizeCandidates
+	//   单一函数（与 handleRoutingOverview 共用）——两处复制粘贴正是 balance_usd
+	//   漏网的温床。W14/W15/W16 一并收口：未列名角色（channel 等）默认拒绝、
+	//   auth 缺失按最严口径、user 额外剥上游端点/单价面。
 	auth := GetAuthContext(r)
-	if auth != nil {
-		for i := range candidates {
-			if auth.Role == RoleUser {
-				// 普通用户：完全隐藏凭据详情
-				candidates[i].CredentialID = 0
-				candidates[i].CredentialLabel = ""
-				candidates[i].QuotaState = ""
-				candidates[i].QuotaRecoverAt = nil
-				candidates[i].AvailabilityState = ""
-				candidates[i].AvailabilityRecoverAt = nil
-				candidates[i].BalanceUSD = nil
-				candidates[i].CircuitState = ""
-				candidates[i].CoolingUntil = nil
-				candidates[i].EffectiveAt = nil
-				candidates[i].ExpiresAt = nil
-				candidates[i].ConcurrencyLimit = nil
-				candidates[i].EffectiveConcurrency = nil
-			} else if auth.Role == RoleTenantAdmin {
-				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID/标签/余额
-				// 2026-11-26 E2E 轮修正：balance_usd 此前漏脱敏（实测泄露 1000），
-				// 权限模型钉的是「配额状态 + 可用性 + 健康分」三样，余额属凭据财务面。
-				candidates[i].CredentialID = 0
-				candidates[i].CredentialLabel = ""
-				candidates[i].BalanceUSD = nil
-				// 保留：QuotaState, SuccessRate, P95LatencyMs, Available, RuntimeRoutable
-			}
-			// super_admin 和 admin_key：看全部（不修改）
-		}
-	}
+	desensitizeCandidates(auth, candidates)
 
 	// ★ 2026-11-27 12h 审计轮（P1-H 根修）：plan_order / order_debug 此前绕过
 	//   上面的候选脱敏——candidates 里的 CredentialID 被清零了，但 plan_order
@@ -766,6 +739,146 @@ func rawModelNames(candidates []resolveCandidate) []string {
 		}
 	}
 	return out
+}
+
+// desensitizeCandidates 按角色脱敏候选列表（2026-11-27 12h 审计轮 W2 收敛）。
+//
+// 此前同一套逐字段剥取在 handleRoutingResolve / handleRoutingOverview 各复制
+// 一份（且 balance_usd 漏网正是这种复制粘贴的产物）——第 41 个出口再漏一处的
+// 概率只增不减。收敛为单一函数，两处出口共用。
+//
+// 口径（与 f43735eea 自钉策略一致）：
+//   - user：完全隐藏凭据身份/财务/生命周期面，保留可用性摘要
+//   - tenant_admin：隐藏凭据 ID/标签/余额，保留配额状态与健康分
+//   - super_admin / admin_key：看全部
+//   - ★ W15：其余角色（含 W4.3 `channel`）按默认拒绝处理（同 tenant_admin
+//     口径再剥 base_url/provider_name/catalog_code/unit_price_*——W14：上游
+//     供应商端点与单价不属任何非特权角色的可见面）
+func desensitizeCandidates(auth *AuthContext, candidates []resolveCandidate) {
+	if auth == nil {
+		// ★ W16 默认拒绝形：auth 缺失时按最严口径脱敏（旧写法 fail-open：
+		//   `if auth != nil` 使脱敏整段跳过；AdminMiddleware 虽保证在场，
+		//   写法上不应依赖它）。
+		for i := range candidates {
+			candidates[i] = desensitizeCandidateStrict(candidates[i])
+		}
+		return
+	}
+	switch {
+	case auth.Role == RoleUser:
+		for i := range candidates {
+			c := &candidates[i]
+			c.CredentialID = 0
+			c.CredentialLabel = ""
+			c.QuotaState = ""
+			c.QuotaRecoverAt = nil
+			c.AvailabilityState = ""
+			c.AvailabilityRecoverAt = nil
+			c.BalanceUSD = nil
+			c.CircuitState = ""
+			c.CoolingUntil = nil
+			c.EffectiveAt = nil
+			c.ExpiresAt = nil
+			c.ConcurrencyLimit = nil
+			c.EffectiveConcurrency = nil
+			// W14：上游端点与单价对 user 同样不可见
+			c.BaseURL = ""
+			c.ProviderName = ""
+			c.CatalogCode = ""
+			c.UnitPriceInPer1M = nil
+			c.UnitPriceOutPer1M = nil
+			c.Currency = ""
+		}
+	case auth.Role == RoleTenantAdmin:
+		for i := range candidates {
+			c := &candidates[i]
+			c.CredentialID = 0
+			c.CredentialLabel = ""
+			c.BalanceUSD = nil
+			// 保留：QuotaState, SuccessRate, P95LatencyMs, Available, RuntimeRoutable
+		}
+	case auth.Role == "super_admin" || auth.Role == "admin_key":
+		// 看全部（不修改）
+	default:
+		// ★ W15：channel 等未列名角色默认拒绝——按 tenant_admin 口径再剥
+		//   上游端点/单价面（fail-closed）。
+		for i := range candidates {
+			candidates[i] = desensitizeCandidateStrict(candidates[i])
+		}
+	}
+}
+
+// desensitizeCandidateStrict 最严口径脱敏（auth 缺失 / 未列名角色的默认拒绝形）。
+func desensitizeCandidateStrict(c resolveCandidate) resolveCandidate {
+	c.CredentialID = 0
+	c.CredentialLabel = ""
+	c.QuotaState = ""
+	c.QuotaRecoverAt = nil
+	c.AvailabilityState = ""
+	c.AvailabilityRecoverAt = nil
+	c.BalanceUSD = nil
+	c.CircuitState = ""
+	c.CoolingUntil = nil
+	c.EffectiveAt = nil
+	c.ExpiresAt = nil
+	c.ConcurrencyLimit = nil
+	c.EffectiveConcurrency = nil
+	c.BaseURL = ""
+	c.ProviderName = ""
+	c.CatalogCode = ""
+	c.UnitPriceInPer1M = nil
+	c.UnitPriceOutPer1M = nil
+	c.Currency = ""
+	return c
+}
+
+// desensitizeOverviewRows 是 desensitizeCandidates 的 map 形态变体
+// （handleRoutingOverview 的 outRows）——策略同源：同一角色口径、同一默认
+// 拒绝语义（W15/W16），只差载体（map[string]any vs struct）。
+func desensitizeOverviewRows(auth *AuthContext, rows []map[string]any) {
+	strict := func(row map[string]any) {
+		row["credential_id"] = 0
+		row["credential_label"] = ""
+		row["quota_state"] = ""
+		row["quota_recover_at"] = nil
+		row["availability_state"] = ""
+		row["availability_recover_at"] = nil
+		row["balance_usd"] = nil
+		row["circuit_state"] = ""
+		row["cooling_until"] = nil
+		row["effective_at"] = nil
+		row["expires_at"] = nil
+		row["base_url"] = ""
+		row["provider_name"] = ""
+		row["catalog_code"] = ""
+		row["unit_price_in_per_1m"] = nil
+		row["unit_price_out_per_1m"] = nil
+		row["currency"] = ""
+	}
+	if auth == nil {
+		for i := range rows {
+			strict(rows[i])
+		}
+		return
+	}
+	switch {
+	case auth.Role == RoleUser:
+		for i := range rows {
+			strict(rows[i])
+		}
+	case auth.Role == RoleTenantAdmin:
+		for i := range rows {
+			rows[i]["credential_id"] = 0
+			rows[i]["credential_label"] = ""
+			rows[i]["balance_usd"] = nil
+		}
+	case auth.Role == "super_admin" || auth.Role == "admin_key":
+		// 看全部
+	default:
+		for i := range rows {
+			strict(rows[i])
+		}
+	}
 }
 
 // (applyURSMv2Overrides inlined below — see handler body; it must be a
@@ -2340,33 +2453,10 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 2026-11-26: 根据用户角色脱敏凭据信息
-	auth := GetAuthContext(r)
-	if auth != nil {
-		for i := range outRows {
-			if auth.Role == RoleUser {
-				// 普通用户：完全隐藏凭据详情
-				outRows[i]["credential_id"] = 0
-				outRows[i]["credential_label"] = ""
-				outRows[i]["quota_state"] = ""
-				outRows[i]["quota_recover_at"] = nil
-				outRows[i]["availability_state"] = ""
-				outRows[i]["availability_recover_at"] = nil
-				outRows[i]["balance_usd"] = nil
-				outRows[i]["circuit_state"] = ""
-				outRows[i]["cooling_until"] = nil
-				outRows[i]["effective_at"] = nil
-				outRows[i]["expires_at"] = nil
-			} else if auth.Role == RoleTenantAdmin {
-				// Tenant Admin：只保留配额状态和健康分数，隐藏凭据ID/标签/余额
-				// 2026-11-26 E2E 轮修正：balance_usd 此前漏脱敏（实测泄露 1000）。
-				outRows[i]["credential_id"] = 0
-				outRows[i]["credential_label"] = ""
-				outRows[i]["balance_usd"] = nil
-				// 保留：quota_state, availability_state, success_rate, p95_latency_ms, available, runtime_routable
-			}
-			// super_admin 和 admin_key：看全部（不修改）
-		}
-	}
+	// ★ 2026-11-27 12h 审计轮（W2 收敛）：outRows 与 candidates 的逐字段剥取
+	//   是同一口径的两份拷贝——overview 侧按 map 形态走专用的
+	//   desensitizeOverviewRows（同一策略源，见函数注释）。
+	desensitizeOverviewRows(GetAuthContext(r), outRows)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"featured": featured,
@@ -3567,6 +3657,22 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	}
 	if decisions == nil {
 		decisions = []map[string]any{}
+	}
+
+	// ★ 2026-11-27 12h 审计轮（W13 根修）：decisions 行体此前无任何脱敏——
+	//   tenant_admin 过滤了 tenant 但行内仍吐 chosen_credential_id /
+	//   chosen_provider_id / cost_usd / identity_hash，与「tenant_admin 只看
+	//   配额+健康分」的候选脱敏口径不一致（凭据→label 可在别处反查）。
+	//   非特权角色：凭据身份面（chosen_*_id/identity_hash）与财务面（cost_usd）
+	//   置 nil；user 角色的行集已被上方 owner 过滤限定为自己的决策，身份面
+	//   同样置 nil（自己的 api_key_id 保留，chosen_* 对其无意义）。
+	if auth != nil && !IsSuperAdminOrLegacy(r) {
+		for i := range decisions {
+			decisions[i]["chosen_credential_id"] = nil
+			decisions[i]["chosen_provider_id"] = nil
+			decisions[i]["identity_hash"] = nil
+			decisions[i]["cost_usd"] = 0.0
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total":     total,

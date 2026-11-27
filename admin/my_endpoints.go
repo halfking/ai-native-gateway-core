@@ -77,7 +77,11 @@ func (h *Handler) handleMySessions(w http.ResponseWriter, r *http.Request) {
 		Title        string    `json:"title"`
 		CreatedAt    time.Time `json:"created_at"`
 		UpdatedAt    time.Time `json:"updated_at"`
-		RequestCount int       `json:"request_count"`
+		// ★ W21 订正（2026-11-27 12h 审计轮）：SELECT 的 s.total_turns 此前扫进
+		//   RequestCount / json:"request_count"——名义是请求数、承载的是轮次数，
+		//   前端直显语义漂移。改回真实名义 TotalTurns / json:"total_turns"
+		//   （前端 MySessionsView prop 同步改）。
+		TotalTurns   int       `json:"total_turns"`
 		TotalCostUSD float64   `json:"total_cost_usd"`
 	}
 
@@ -90,7 +94,7 @@ func (h *Handler) handleMySessions(w http.ResponseWriter, r *http.Request) {
 			&s.Title,
 			&s.CreatedAt,
 			&s.UpdatedAt,
-			&s.RequestCount,
+			&s.TotalTurns,
 			&s.TotalCostUSD,
 		); err != nil {
 			writeInternalTextErr(w, "failed to scan session", err)
@@ -182,11 +186,15 @@ func (h *Handler) handleMyUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. 返回结果
+	// ★ W21 订正：cost_currency='USD' 谓词下 total_cost_usd 静默排除非美元行
+	//   （欠计非泄露）——响应带 currency_scope 显式标注口径，防"总额=全币种"
+	//   误读。
 	response := map[string]interface{}{
-		"usage":   usage,
-		"period":  "last_30_days",
-		"user_id": GetAuthUserID(r),
-		"role":    auth.Role,
+		"usage":          usage,
+		"period":         "last_30_days",
+		"user_id":        GetAuthUserID(r),
+		"role":           auth.Role,
+		"currency_scope": "USD",
 	}
 
 	w.Header().Set("Content-Type", "application/json")

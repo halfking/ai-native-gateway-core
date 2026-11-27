@@ -117,6 +117,16 @@ func loadPluginConfig(ctx context.Context, db *pgxpool.Pool, jwtSecretFallback s
 	}
 
 	// Override from environment variables if set
+	// ★ 2026-11-27 12h 审计轮（W11 口径明示）：启动通道的优先级是
+	//   **env > plugin_config 表 > 内置默认**——env 有值时表被压过，与 PUT
+	//   面注释「表是唯一事实源」（plugin_config_handler.go:144，那说的是
+	//   **运行时热切换通道**）分属两条通道：
+	//   · 启动装配（本函数）：env 显式声明部署意图，压表是**有意行为**——
+	//     env 未设时表才是事实源（多数部署形态）。
+	//   · 运行时热切换（PUT → SwitchConfig）：只写表，登录/审批面即时生效；
+	//     但**重启后** env 若仍在，会再次压过表（回到 env 值）。
+	//   ⇒ 部署须知：设了 AUTH_PROVIDER 等 env 的环境，热切换在重启后失效；
+	//     要以表为事实源请清掉对应 env。
 	if envAuth := os.Getenv("AUTH_PROVIDER"); envAuth != "" {
 		config.AuthProvider = envAuth
 	}

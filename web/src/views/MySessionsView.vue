@@ -92,7 +92,7 @@ onMounted(() => {
         </el-table-column>
         <el-table-column prop="session_key" :label="t('my.colSessionKey')" min-width="180" show-overflow-tooltip />
         <el-table-column v-if="role === 'super_admin' || role === 'tenant_admin'" prop="tenant_id" :label="t('my.colTenant')" width="140" />
-        <el-table-column prop="request_count" :label="t('my.colRequests')" width="110" align="right" />
+        <el-table-column prop="total_turns" :label="t('my.colTurns')" width="110" align="right" />
         <el-table-column prop="total_cost_usd" :label="t('my.colCost')" width="120" align="right">
           <template #default="{ row }">
             {{ fmtCost(row.total_cost_usd) }}

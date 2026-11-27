@@ -27,7 +27,19 @@ import (
 // 返回：
 //   - 实际扣除的积分（如果已扣过，返回之前扣除的数量）
 //   - error: 扣减失败时的错误
+//
+// ★ 2026-11-27 12h 审计轮（W12）：新增 DeductCreditsWithDetail——detail 是
+//   可解释账单五因子 JSON（{rate_in,rate_out,tokens,discount,rate_multiplier}，
+//   与旧路径 ledgerDetailJSON 同形，service.go:777），随 consume 流水落
+//   credit_ledger.detail，让「我为什么被扣这些积分」能对到行。本签名保留为
+//   薄委托（detail=nil，重试队列通道无用量上下文），调用方尽量用 WithDetail。
 func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, requestID string, credits int64) (int64, error) {
+	return s.DeductCreditsWithDetail(ctx, tenantID, ownerUser, requestID, credits, nil)
+}
+
+// DeductCreditsWithDetail 同 DeductCredits，额外把五因子 detail 写进每条
+// credit_ledger 流水（★ W12：审计「为什么扣这些积分」信息不再丢失）。
+func (s *Service) DeductCreditsWithDetail(ctx context.Context, tenantID, ownerUser, requestID string, credits int64, detail []byte) (int64, error) {
 	if !s.Enabled() {
 		return 0, nil
 	}
@@ -141,9 +153,9 @@ func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, reques
 			// 写入订阅消费记录
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO credit_ledger
-				(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, subscription_id, created_at)
-				VALUES ($1, $2, 'consume', $3, 'request', $4, $5, NOW())
-			`, tenantID, ownerUser, -subConsumed, requestID, subID); err != nil {
+				(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, subscription_id, detail, created_at)
+				VALUES ($1, $2, 'consume', $3, 'request', $4, $5, $6, NOW())
+			`, tenantID, ownerUser, -subConsumed, requestID, subID, detail); err != nil {
 				return 0, err
 			}
 		}
@@ -161,9 +173,9 @@ func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, reques
 		// 写入赠送消费记录
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO credit_ledger 
-			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, created_at)
-			VALUES ($1, $2, 'consume', $3, 'request', $4, NOW())
-		`, tenantID, ownerUser, -grantedConsumed, requestID); err != nil {
+			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, detail, created_at)
+			VALUES ($1, $2, 'consume', $3, 'request', $4, $5, NOW())
+		`, tenantID, ownerUser, -grantedConsumed, requestID, detail); err != nil {
 			return 0, err
 		}
 
@@ -189,9 +201,9 @@ func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, reques
 		// 写入购买消费记录
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO credit_ledger 
-			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, created_at)
-			VALUES ($1, $2, 'consume', $3, 'request', $4, NOW())
-		`, tenantID, ownerUser, -purchasedConsumed, requestID); err != nil {
+			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, detail, created_at)
+			VALUES ($1, $2, 'consume', $3, 'request', $4, $5, NOW())
+		`, tenantID, ownerUser, -purchasedConsumed, requestID, detail); err != nil {
 			return 0, err
 		}
 
@@ -212,9 +224,9 @@ func (s *Service) DeductCredits(ctx context.Context, tenantID, ownerUser, reques
 		// 写入消费记录（进入负债）
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO credit_ledger 
-			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, created_at)
-			VALUES ($1, $2, 'consume', $3, 'request', $4, NOW())
-		`, tenantID, ownerUser, -remaining, requestID); err != nil {
+			(tenant_id, owner_user, entry_type, amount, ref_type, ref_id, detail, created_at)
+			VALUES ($1, $2, 'consume', $3, 'request', $4, $5, NOW())
+		`, tenantID, ownerUser, -remaining, requestID, detail); err != nil {
 			return 0, err
 		}
 

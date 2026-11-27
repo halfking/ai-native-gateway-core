@@ -3487,7 +3487,7 @@ func (h *ChatHandler) serveWithExecutor(
 		estimatedCost := h.EstimateRequestCostCreditsFromBody(bodyBytes, clientModel)
 
 		// 2. Pre-check balance
-		decision, err := h.maasSvc.PreCheckBalance(r.Context(), keyInfo.TenantID, estimatedCost)
+		decision, err := h.maasSvc.PreCheckBalanceWithRequestID(r.Context(), keyInfo.TenantID, requestID, estimatedCost)
 
 		if err != nil {
 			// fail-open: query failed, allow request to continue (log warning)
@@ -8265,8 +8265,27 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.CreditsCharged = &result.Credits
 				reqLog.RateMultiplier = &result.RateMultiplier
 
+				// ★ W12（2026-11-27 12h 审计轮）：组装可解释账单五因子 detail
+				//   （与旧路径 ledgerDetailJSON 同形）随扣减流水落
+				//   credit_ledger.detail——「我为什么被扣这些积分」可对到行。
+				detail, derr := json.Marshal(map[string]any{
+					"rate_in":         result.RateIn,
+					"rate_out":        result.RateOut,
+					"tokens": map[string]int{
+						"prompt":      pt,
+						"completion":  ct,
+						"cache_read":  crt,
+						"cache_write": cwt,
+					},
+					"discount":        result.GlobalDiscount,
+					"rate_multiplier": result.RateMultiplier,
+				})
+				if derr != nil {
+					detail = nil // detail 是 best-effort 旁路，组不出来不影响扣费
+				}
+
 				// 步骤3：异步扣减钱包（不阻塞主流程）
-				go h.deductCreditsAsync(context.Background(), keyInfo.TenantID, keyOwner, evt.RequestID, result.Credits)
+				go h.deductCreditsAsync(context.Background(), keyInfo.TenantID, keyOwner, evt.RequestID, result.Credits, detail)
 			}
 		}
 	}
@@ -11914,7 +11933,7 @@ func isClientInterruptError(err error) bool {
 //   - ownerUser: 请求归属用户
 //   - requestID: 请求ID（用于幂等性）
 //   - credits: 要扣减的积分数
-func (h *ChatHandler) deductCreditsAsync(ctx context.Context, tenantID, ownerUser, requestID string, credits int64) {
+func (h *ChatHandler) deductCreditsAsync(ctx context.Context, tenantID, ownerUser, requestID string, credits int64, detail []byte) {
 	// ★ 2026-11-27 12h 审计轮（P2-G）：裸 goroutine 加 panic 防护——扣减路径
 	//   一旦 panic（DB 驱动/上游 nil 解引用）会崩掉整个网关进程。失败已由
 	//   调用方入 billing_retry_queue，这里 recover 只是把 panic 降级为日志。
@@ -11936,12 +11955,13 @@ func (h *ChatHandler) deductCreditsAsync(ctx context.Context, tenantID, ownerUse
 	defer cancel()
 
 	// 调用专用的扣减方法（只扣减钱包，不重新计算积分）
-	deducted, err := h.maasSvc.DeductCredits(
+	deducted, err := h.maasSvc.DeductCreditsWithDetail(
 		deductCtx,
 		tenantID,
 		ownerUser,
 		requestID,
 		credits,
+		detail,
 	)
 
 	if err != nil {

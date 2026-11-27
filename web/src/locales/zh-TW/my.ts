@@ -17,6 +17,7 @@ export default {
   colSessionKey: '會話標識',
   colTenant: '租戶',
   colRequests: '請求數',
+  colTurns: '輪次',
   colCost: '總費用',
   colUpdatedAt: '最近更新時間',
   untitled: '（無標題）',
