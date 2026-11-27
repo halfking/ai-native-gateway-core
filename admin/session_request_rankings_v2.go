@@ -15,6 +15,12 @@ import (
 type sessionRankingScope struct {
 	tenant, role, bypass string
 	start, end           time.Time
+	// owner/ownerIsUser 仅 user 档非零（2026-11-27 非管理员菜单重构轮）：
+	// 「我的会话」整合页五个面板端点旧 default 分支 403 ⇒ 放 user 档；
+	// owner 恒注入本人 username（与 dashboardapi/session_projected.go 的
+	// JWT owner 分支同语义），ownerIsUser 供 rankings 维聚合按 owner 收窄。
+	owner       string
+	ownerIsUser bool
 }
 
 func prepareSessionRankingScope(w http.ResponseWriter, r *http.Request) (sessionRankingScope, bool) {
@@ -32,6 +38,8 @@ func prepareSessionRankingScope(w http.ResponseWriter, r *http.Request) (session
 	q := r.URL.Query()
 	tenant := strings.TrimSpace(q.Get("tenant_id"))
 	role, bypass := "tenant_admin", "false"
+	var owner string
+	ownerIsUser := false
 	switch auth.Role {
 	case "admin_key", "super_admin":
 		role, bypass = "super_admin", "true"
@@ -41,6 +49,25 @@ func prepareSessionRankingScope(w http.ResponseWriter, r *http.Request) (session
 			return scope, false
 		}
 		tenant = auth.TenantID
+	case "user":
+		// ★ 2026-11-27 非管理员菜单重构轮：放 user 档，三重收窄
+		//   （与 dashboard session-overview 的 user 语义对齐）：
+		//   ① 必须有租户绑定（无租户 ⇒ 无法收窄 ⇒ fail-closed 拒绝）；
+		//   ② tenant 恒取 auth.TenantID，URL ?tenant_id 只许同值；
+		//   ③ RLS 不 bypass（role=tenant_admin、bypass=false），
+		//      owner 恒注入本人 username ⇒ people 排行只看自己
+		//      （rank_peers=false），rankings 维聚合 handler 侧按 owner 过滤。
+		if auth.TenantID == "" {
+			writeError(w, http.StatusForbidden, "user must have a tenant binding to access session analytics")
+			return scope, false
+		}
+		if tenant != "" && tenant != auth.TenantID {
+			writeError(w, http.StatusForbidden, "tenant scope required")
+			return scope, false
+		}
+		tenant = auth.TenantID
+		owner = auth.Username
+		ownerIsUser = true
 	default:
 		writeError(w, http.StatusForbidden, "admin role required")
 		return scope, false
@@ -54,7 +81,7 @@ func prepareSessionRankingScope(w http.ResponseWriter, r *http.Request) (session
 		writeError(w, http.StatusBadRequest, "date range cannot exceed 366 days")
 		return scope, false
 	}
-	return sessionRankingScope{tenant: tenant, role: role, bypass: bypass, start: start, end: end}, true
+	return sessionRankingScope{tenant: tenant, role: role, bypass: bypass, start: start, end: end, owner: owner, ownerIsUser: ownerIsUser}, true
 }
 
 func beginSessionRankingRead(ctx context.Context, db *pgxpool.Pool, scope sessionRankingScope) (pgx.Tx, error) {

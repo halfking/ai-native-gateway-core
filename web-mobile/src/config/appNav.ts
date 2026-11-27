@@ -631,7 +631,7 @@ export const DRAWER_GROUPS: readonly NavGroup[] = [
       { key: 'data-horizon', to: '/data-horizon', icon: 'clock', titleKey: 'nav.dataHorizon' },
     ],
   },
-  // ── 数据运维（PC data-ops）─────────────────────────────────────────────
+  // ── 系统设置（PC data-ops；2026-11-27 非管理员菜单重构轮组名数据运维→系统设置）─────
   // 安全治理（脱敏/注入/合规）+ 数据生命周期与存储 + 日志运维 + 平台设置/
   // 模块/自检。PC 该组另有 settings/self-update/proxy 等平台工具页（移动端
   // 无对应席）与 maintain 外链（归运维平台组，移动端无）。
@@ -651,7 +651,7 @@ export const DRAWER_GROUPS: readonly NavGroup[] = [
       //   只是租户键可能返空串；本族是**一个租户键都没有**。
       // ⚠️ 前端严于后端是兜底不是修复：后端这一族**没有门**。
       // ★ PC 端「运维总览」在运维平台组（/maintain/ops/overview，maintain 外链族）；
-      //   移动端没有 maintain 面 ⇒ 本席归数据运维组（部署机队/离线请求是运维事实）。
+      //   移动端没有 maintain 面 ⇒ 本席归系统设置组（部署机队/离线请求是运维事实）。
       {
         key: 'ops-overview',
         to: '/ops-overview',

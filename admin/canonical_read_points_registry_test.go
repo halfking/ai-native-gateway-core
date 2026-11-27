@@ -1148,11 +1148,22 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_usd:base", "error_kind:base", "latency_ms:base", "outbound_model:base", "prompt_tokens:base", "provider_id:detail", "stream_first_chunk_ms:base", "success:base", "ts:base", "upstream_status_code:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: true, ExemptReason: exemptAuditOrToolingFace, Note: "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；本读点读 client_model:detail,completion_tokens:base,cost_usd:base,error_kind:base,latency_ms:base,outbound_model:base,prompt_tokens:base,provider_id:detail,stream_first_chunk_ms:base,success:base,ts:base,upstream_status_code:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 		},
 	},
-	// ★ internal/schemadelivery/known_undelivered.go 条目已删（2026-11-27 三级
-	//   配额制轮）：492 两条登记随上游 1357e62917 投递闭合而按「防免死金牌」
-	//   纪律删除 ⇒ 该文件不再提及 canonical 视图（历史注释一并清除）⇒
-	//   ⇒ 登记簿里这条变成「登记了却不再命中」⇒ 按门规则删条目（原条目：
-	//   formCommentOrStringOnly / classNoRead / 豁免=说明表）。
+	// ★ internal/schemadelivery/known_undelivered.go 条目【删后恢复】（★ 两段历史
+	//   完整留痕，防止下一轮再误判）：
+	//   ① 删（d1dec3e14，三级配额制轮）：492 两条登记随上游投递闭合而按「防免死金牌」
+	//     纪律删除，当时该文件的历史注释一并清除 ⇒ 零提及 ⇒ 「登记了却不再命中」
+	//     ⇒ 按门规则删条目（当时动作正确）。
+	//   ② 恢复（be954b318 触发门红后）：投递收口轮（1076e93dc）重写该文件历史注释时
+	//     把 canonical 视图名重新写回注释散文 ⇒ 扫描重新命中 ⇒ 「扫描到但不在簿」红。
+	//     注释提及是真实历史叙述（890 删 v1 族 + 读点改指视图的删除记录），不规避
+	//     ⇒ 恢复登记（形态与原条目一致）。
+	"internal/schemadelivery/known_undelivered.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "投递面欠账登记台账（★ 它登记【哪些对象没被投递、谁在引用它们】⇒ ★ 是一张说明表、★ 不是读面 ★）：本文件只在【历史注释散文】里提及 canonical 视图（★ 890 删 v1 族那条 ＋ 2026-11-26 审计轮 request_logs 三处读点改指视图的删除记录）⇒ 无 FROM 子句、无 SQL 字面量 ⇒ 没有 canonical 读点；★ 真正的读点登记在 admin/channels.go 一条",
+	},
 	"internal/sessionv2mirror/synthetic_session.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,
