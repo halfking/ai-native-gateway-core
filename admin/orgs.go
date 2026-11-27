@@ -484,8 +484,11 @@ func (h *Handler) updateOrgWallet(w http.ResponseWriter, r *http.Request, id int
 	var balance int64
 	var limit *int64
 	var policy string
-	if err := h.policyDB().QueryRow(ctx, `SELECT `+orgWalletSelect+` FROM org_credit_wallets WHERE org_id = $1`, id).Scan(&balance, &limit, &policy); err != nil {
-		writeError(w, http.StatusNotFound, "org not found")
+	// ★ orgWalletSelect 引用了别名 w（供 JOIN 形态复用），裸查这里必须带
+	//   同名别名，否则「missing FROM-clause entry for table w」（42P01）会被
+	//   下面的 err 分支误报成「org not found」（2026-11-27 211 实测）。
+	if err := h.policyDB().QueryRow(ctx, `SELECT `+orgWalletSelect+` FROM org_credit_wallets w WHERE w.org_id = $1`, id).Scan(&balance, &limit, &policy); err != nil {
+		writeInternalErr(w, "read org wallet failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"wallet": scanOrgWallet(id, balance, limit, policy)})
