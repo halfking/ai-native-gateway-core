@@ -1208,6 +1208,7 @@ func main() {
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
 			// P1-15 fix (2026-08-28): Configure connection pool for fpSlotRedis
+			// 2026-11-28: Increased timeouts for production stability
 			fpSlotRedis = redis.NewClient(&redis.Options{
 				Addr:            cfg.RedisAddr,
 				Password:        cfg.RedisPassword,
@@ -1215,7 +1216,11 @@ func main() {
 				PoolSize:        100,
 				MinIdleConns:    10,
 				ConnMaxIdleTime: 5 * time.Minute,
-				PoolTimeout:     2 * time.Second,
+				PoolTimeout:     10 * time.Second, // Increased from 2s to 10s
+				DialTimeout:     5 * time.Second,  // Connection establishment timeout
+				ReadTimeout:     3 * time.Second,  // Per-command read timeout
+				WriteTimeout:    3 * time.Second,  // Per-command write timeout
+			})
 			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
