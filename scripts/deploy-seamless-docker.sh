@@ -2271,8 +2271,34 @@ dd_start_secondary() {
     printf '# 派生自 %s（主槽事实源）；身份面照抄，角色/连接池/本地状态三项显式覆盖\n' "$_gw_env_file"
     printf 'export LLM_GATEWAY_RUNTIME_ROLE=traffic-only\n'
     printf 'export LLM_GATEWAY_DB_MAX_CONNS=%q\n' "${DD_SECONDARY_DB_MAX_CONNS:-10}"
-    printf 'export LLM_GATEWAY_LOG_INDEX_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/bleve-index"
-    printf 'export LLM_GATEWAY_SESSION_RAW_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/session-archive"
+    # ★ 路径必须是**容器内路径**（网关进程在容器里 mkdir）：data-s 挂载点 =
+    #   /app/data ⇒ 归档/索引落 /app/data 下。首版写了宿主绝对路径
+    #   /opt/kaixuan/... ⇒ 容器内 mkdir /opt/kaixuan 权限拒绝 ⇒ os.Exit(1)
+    #   crash loop（211 实测 Restart 27 次）。主槽两键走默认相对路径（落
+    #   WORKDIR/data ⇒ 挂载卷内）——副节点显式钉进独立卷 data-s。
+    printf 'export LLM_GATEWAY_LOG_INDEX_DIR=%q\n' "/app/data/bleve-index"
+    printf 'export LLM_GATEWAY_SESSION_RAW_DIR=%q\n' "/app/data/session-archive"
+    # 部署期注入键补齐段（2026-11-27 真机补）：gateway.env 只存持久运维键，
+    # 部署机转发的一部分键（STATIC_DIR / POSTGRES_URL / RECONCILIATION_* 等）
+    # 只在容器创建时 -e 注入、从未落 gateway.env ⇒ 只照抄文件会缺键。
+    # 事实源=在役主槽容器的真实 env：取它有而 gateway.env 没有的
+    # LLM_GATEWAY_* 键补进来（逐行 %q 转义，与照抄段同构）。
+    local _main_keys_file _envfile_keys_file _extra_line _extra_k
+    _main_keys_file="$(mktemp)"; _envfile_keys_file="$(mktemp)"
+    docker inspect "$_main_c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+      | grep -E '^LLM_GATEWAY_[A-Za-z0-9_]+=' | cut -d= -f1 | sort -u > "$_main_keys_file" \
+      || true
+    grep -oE '^(export )?LLM_GATEWAY_[A-Za-z0-9_]+=' "$_gw_env_file" 2>/dev/null \
+      | sed 's/^export //' | tr -d '=' | sort -u > "$_envfile_keys_file" || true
+    while IFS= read -r _extra_k; do
+      [[ -n "$_extra_k" ]] || continue
+      grep -qxF "$_extra_k" "$_envfile_keys_file" && continue
+      _extra_line="$(docker inspect "$_main_c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | grep -E "^${_extra_k}=" | head -1)"
+      [[ -n "$_extra_line" ]] || continue
+      printf 'export %s\n' "$(printf '%q' "$_extra_line")"
+    done < "$_main_keys_file"
+    rm -f "$_main_keys_file" "$_envfile_keys_file"
     # 全量照抄段：从 gateway.env 逐行搬运（跳过将被覆盖的四个键与注释/空行）。
     # 值原样搬运（仍是 %q 形态）——docker 注入时逐键 _dd_unq 解码。
     # ★ 2026-11-27 真机修正：gateway.env 的行**本身带 `export ` 前缀** ⇒ 先剥
