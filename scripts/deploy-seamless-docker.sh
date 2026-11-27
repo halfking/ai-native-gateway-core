@@ -1947,6 +1947,46 @@ PY
 }
 # GOACOS-REGISTER:END
 
+# dd_deregister_goacos <端口> —— 按同 IP+端口反注册副节点条目（--stop-secondary 用）。
+# 幂等：条目不存在时 DELETE 返回 404 也算成功（要的是「注销后不在」这个终态）。
+dd_deregister_goacos() {
+  local _port="$1"
+  local _addr="${DD_GOACOS_ADDR:-http://127.0.0.1:8848}"
+  local _ip="${DD_GOACOS_IP:-${DD_HOST:-}}"
+  local _svc="${DD_GOACOS_SERVICE:-llm-gateway}"
+  local _ns="${DD_GOACOS_NAMESPACE:-wm-deploy}"
+  local _grp="${DD_GOACOS_GROUP:-DEFAULT_GROUP}"
+  [[ -n "$_port" ]] || { warn "goacos 注销：端口为空，跳过"; return 0; }
+  [[ -n "$_ip" ]] || { warn "goacos 注销：DD_GOACOS_IP / DD_HOST 皆空，跳过"; return 0; }
+  python3 - "$_addr" "$_ip" "$_port" "$_svc" "$_ns" "$_grp" <<'PY'
+import json, sys, urllib.parse, urllib.request
+
+addr, ip, port, svc, ns, grp = sys.argv[1:7]
+port = int(port)
+base = addr.rstrip("/")
+
+
+def delete(path, params):
+    url = base + path + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=8) as r:
+            return r.status, r.read().decode(errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "code", 0)
+        return code, str(exc)
+
+
+st, body = delete("/nacos/v1/ns/instance",
+                  {"ip": ip, "port": port, "serviceName": svc, "namespaceId": ns,
+                   "groupName": grp, "ephemeral": "false"})
+if st in (200, 204, 404):
+    print(f"OK deregistered {ip}:{port} (status={st})")
+    sys.exit(0)
+print(f"DEREGISTER-FAIL {st} {body[:160]}", file=sys.stderr)
+sys.exit(2)
+PY
+}
+
 # dd_switch_upstream <端口> —— 把 upstream 主 server 行改到 <端口> 并 reload。
 # 幂等：已经是该端口时不动文件（仍会 reload，nginx 平滑重载不中断连接）。
 #
