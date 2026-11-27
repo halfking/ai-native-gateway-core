@@ -1335,7 +1335,15 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		seen[key] = struct{}{}
 		candidates = append(candidates, candidate)
 	}
-	return candidates, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 2026-11-28 协议自适应：整批扫描完之后再消解——消解需要「该 provider 声明了
+	// 哪些协议可用」，那是一行 provider_settings，按 provider 批量取一次，不按
+	// 候选行取。NormalizeProviderProtocol 对 'adaptive' 返回 error（它不在
+	// canonical 枚举里），所以选择器会原样活到这一步。
+	c.resolveAdaptiveCandidates(ctx, candidates)
+	return candidates, nil
 }
 
 // ModelKnown reports whether the model name has any explicitly-registered
@@ -2371,6 +2379,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// 2026-11-28 协议自适应：候选加载是出站分发的唯一入口，在这里把 'adaptive'
+	// 选择器消解成具体协议（见 provider/adaptive_protocol.go）。必须在归一之后：
+	// NormalizeProviderProtocol 不认 'adaptive'（它不进 canonical 枚举，否则会
+	// 污染 provider_catalog.protocol 的 CHECK 语义），选择器正是靠这一点活到
+	// 这里被消解。
+	c.resolveAdaptiveCandidates(ctx, out)
 	return out, nil
 }
 
