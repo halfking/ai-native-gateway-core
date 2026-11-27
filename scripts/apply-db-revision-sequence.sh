@@ -3017,6 +3017,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/1000_billing_status_and_credit_limit.sql"
   "$ROOT_DIR/sql/migrations/startup/1001_bill_payment_tracking.sql"
   "$ROOT_DIR/sql/migrations/startup/1002_billing_retry_queue.sql"
+  # ── 492（2026-11-27 W4.3 渠道商车道轮）────────────────────────────────
+  #   channels / customers / channel_users / channels_customers 四张表。
+  #   ★ 本轮投递收口：492 源文件存在但【从未在任何通道】⇒ 生产库无表
+  #   ⇒ admin/channels.go 四处引用 42P01 ⇒ W4.3 上线受阻。
+  #   ★ 五点同步补全（embeddata/go:embed/StartupFiles/apply脚本/TSV manifest）。
+  #   ★ 492 自带事务包裹 ＋ 自登记 ⇒ 符合≥952双账本纪律。
+  #   ★ 从未应用过 ⇒ 零已应用字节变更。
+  "$ROOT_DIR/sql/migrations/startup/492_channels_customers.sql"
 )
 
 

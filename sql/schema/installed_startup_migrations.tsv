@@ -430,3 +430,4 @@
 412	1000_billing_status_and_credit_limit.sql
 413	1001_bill_payment_tracking.sql
 414	1002_billing_retry_queue.sql
+415	492_channels_customers.sql

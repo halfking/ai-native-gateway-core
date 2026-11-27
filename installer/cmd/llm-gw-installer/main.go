@@ -2011,6 +2011,12 @@ var billingRetryQueue1002 []byte
 //go:embed embeddata/startup/1002_billing_retry_queue.down.sql
 var billingRetryQueue1002Down []byte
 
+//go:embed embeddata/startup/492_channels_customers.sql
+var channelsCustomers492 []byte
+
+//go:embed embeddata/startup/492_channels_customers.down.sql
+var channelsCustomers492Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
