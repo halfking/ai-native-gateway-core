@@ -87,12 +87,20 @@
       "path": "/api/memory/search"
     },
     {
+      "method": "POST",
+      "path": "/api/memory/search/compare"
+    },
+    {
       "method": "GET",
       "path": "/api/memory/stats"
     },
     {
       "method": "POST",
       "path": "/api/search"
+    },
+    {
+      "method": "POST",
+      "path": "/api/search/compare"
     },
     {
       "method": "POST",
