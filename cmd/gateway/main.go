@@ -1221,7 +1221,6 @@ func main() {
 				ReadTimeout:     3 * time.Second,  // Per-command read timeout
 				WriteTimeout:    3 * time.Second,  // Per-command write timeout
 			})
-			})
 			pendingStore = pending.NewStore(fpSlotRedis, pendingTTL)
 			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
 			sessionPref = session.NewSessionPreference(redisClient)
