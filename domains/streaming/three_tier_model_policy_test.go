@@ -42,6 +42,9 @@ func TestThreeTierModelPolicy_JudgementBodyHasOrgUserChecks(t *testing.T) {
 		"mp.IsForbiddenForOrg(ctx, orgID, canonical)",   // 组织级
 		"mp.IsForbiddenForUser(ctx, userID, canonical)", // 用户级
 		"mp.ResolveOwner(ctx, owner)",                   // owner 解析
+		// 第四级（2026-11-28 L144 轮死列激活）：application（Key）allowlist
+		// —— KeyInfo.ApplicationID 直达，无 owner 解析。
+		"mp.IsForbiddenForApplication(ctx, int64(keyInfo.ApplicationID), canonical)",
 	} {
 		if !strings.Contains(src, anchor) {
 			t.Errorf("three-tier judgement body missing anchor %q — org/user checks were removed from the shared enforcement body (team_budget_gate regression shape)", anchor)
@@ -50,6 +53,10 @@ func TestThreeTierModelPolicy_JudgementBodyHasOrgUserChecks(t *testing.T) {
 	// 顺序契约：租户级先于 org/user 级（先判既有语义，再判新层级）。
 	if strings.Index(src, "mp.IsForbidden(ctx, tenantID, canonical)") > strings.Index(src, "mp.IsForbiddenForOrg(ctx, orgID, canonical)") {
 		t.Error("tenant check must run before org/user checks in the shared enforcement body")
+	}
+	// 顺序契约：application 级在 org/user 级之后（第四级兜底）。
+	if strings.Index(src, "mp.IsForbiddenForUser(ctx, userID, canonical)") > strings.Index(src, "mp.IsForbiddenForApplication(ctx, int64(keyInfo.ApplicationID), canonical)") {
+		t.Error("application (Key) check must run after org/user checks in the shared enforcement body")
 	}
 }
 
