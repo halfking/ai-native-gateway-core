@@ -64,10 +64,9 @@ These are research and exploration areas. No timeline or commitment to delivery.
 - Structured agent collaboration protocol
 - Identity and capability negotiation
 
-### Model Context Protocol (MCP) Gateway 🔬
-- MCP server/client integration
-- Tool discovery and invocation routing
-- Context fusion across multiple tools
+### Model Context Protocol (MCP) Gateway ✅ Shipped (2026-11)
+- Built-in MCP service gateway: data plane + control plane + governance (see docs/mcp-gateway/)
+- Registry federation with memora (pull-sync, llm_gateway outbound credential injection) — ADR 2026-11-27-mcp-gateway-memora-federation.md
 
 ### Advanced Features Under Research 🔬
 - Operator pattern for Kubernetes (CRD-based deployment)

@@ -655,6 +655,177 @@ if [ -n "${TENANT_KEY}" ]; then
   fi
 fi
 
+
+# ── 4b. S32~S35：registry 联邦（ADR 2026-11-27；W4 脚本化验收）───────────────
+#
+# ★ 用一个**本地假 memora**（Python：registry API + MCP go-sdk 形状一体）
+#   验证联邦全链路，不需要真实 memora 部署：
+#     - registry 面返回 3 条（http-ok / stdio / api_key_ref），覆盖三类处置；
+#     - MCP 面按 go-sdk 语义校验出站请求（要求 id + _meta protocolVersion/
+#       clientCapabilities + iss=memora 的 JWT）——任何一件缺失即拒绝。
+#
+# ★ 场景：
+#   S32 registry 同步：3 条 → ok/disabled/skip_stdio/skip_auth_ref 处置正确
+#   S33 控制面两端点：/registry/status 与 /registry/servers 快照可见
+#   S34 llm_gateway 出站凭据：tools/list 经假 memora（iss/aud 校验）→ 工具聚合
+#   S35 指标族：mcp_gateway_registry_sync_total{outcome} 三类计数可见
+log "== S32~S35 registry 联邦"
+
+FED_PORT="${MCP_TEST_FED_PORT:-$(pick_port)}"
+REG_PORT="${MCP_TEST_REG_PORT:-$(pick_port)}"
+MCPFAKE_PORT="${MCP_TEST_MCPFAKE_PORT:-$(pick_port)}"
+FED_URL="http://127.0.0.1:${FED_PORT}"
+
+# 假 memora：registry + MCP 一体（同一进程两个端口）。JWT 用固定测试密钥。
+FED_JWT_SECRET='maestro-federation-test-secret'
+FED_TOKEN="$(python3 - "$FED_JWT_SECRET" <<'PYJWT'
+import hmac, hashlib, base64, json, time, sys
+def b64(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+secret = sys.argv[1].encode()
+hdr = b64(json.dumps({"alg":"HS256","typ":"JWT"}).encode())
+now = int(time.time())
+pl = b64(json.dumps({"iss":"memora","aud":"memora-api","sub":"maestro-fed","tenant_id":"default","actor_id":"maestro-fed","scope":"project.read","iat":now,"nbf":now,"exp":now+1800}).encode())
+print(hdr + "." + pl + "." + b64(hmac.new(secret, f"{hdr}.{pl}".encode(), hashlib.sha256).digest()))
+PYJWT
+)"
+
+cat > "${OUT}/fake-memora.py" <<PYFAKE
+import base64, hashlib, hmac, json, sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+REG_PORT, MCP_PORT, SECRET = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+
+def b64(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+SERVERS = [
+  {"id":"mcp-fed-ok","name":"fed-ok","transport":"http","endpoint":"http://127.0.0.1:${MCPFAKE_PORT}","auth_mode":"llm_gateway","enabled":True},
+  {"id":"mcp-fed-stdio","name":"fed-stdio","transport":"stdio","endpoint":"/bin/x","auth_mode":"none","enabled":True},
+  {"id":"mcp-fed-ref","name":"fed-ref","transport":"http","endpoint":"http://127.0.0.1:1","auth_mode":"api_key_ref","auth_ref":"K","enabled":True},
+]
+
+def verify(tok):
+  try:
+    h,p,s = tok.split(".")
+    raw = (h+"."+p).encode()
+    if b64(hmac.new(SECRET.encode(), raw, hashlib.sha256).digest()) != s: return None
+    d = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+    if d.get("iss") != "memora" or d.get("aud") != "memora-api": return None
+    if d.get("exp",0) < time.time(): return None
+    return d
+  except Exception:
+    return None
+
+class Reg(BaseHTTPRequestHandler):
+  def log_message(self, *a): pass
+  def do_GET(self):
+    if not self.path.startswith("/api/v2/mcp/servers"): self.send_error(404); return
+    auth = self.headers.get("Authorization","")
+    if not auth.startswith("Bearer ") or not verify(auth[7:]): self.send_error(401); return
+    body = json.dumps({"servers":SERVERS,"count":len(SERVERS),"scope":"tenant"}).encode()
+    self.send_response(200); self.send_header("Content-Type","application/json")
+    self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+
+class Mcp(BaseHTTPRequestHandler):
+  def log_message(self, *a): pass
+  def do_POST(self):
+    auth = self.headers.get("Authorization","")
+    c = verify(auth[7:]) if auth.startswith("Bearer ") else None
+    if c is None:
+      body = json.dumps({"jsonrpc":"2.0","id":None,"error":{"code":-32001,"message":"unauthorized: bearer token rejected"}}).encode()
+      self.send_response(401); self.send_header("Content-Type","application/json")
+      self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
+    req = json.loads(self.rfile.read(int(self.headers.get("Content-Length","0"))))
+    meta = (req.get("params") or {}).get("_meta") or {}
+    if "io.modelcontextprotocol/protocolVersion" not in meta:
+      body = json.dumps({"jsonrpc":"2.0","id":req.get("id"),"error":{"code":-32602,"message":"missing _meta protocolVersion"}}).encode()
+      self.send_response(400); self.send_header("Content-Type","application/json")
+      self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
+    if "io.modelcontextprotocol/clientCapabilities" not in meta:
+      body = json.dumps({"jsonrpc":"2.0","id":req.get("id"),"error":{"code":-32602,"message":"missing _meta clientCapabilities"}}).encode()
+      self.send_response(400); self.send_header("Content-Type","application/json")
+      self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
+    if req.get("id") is None:
+      body = json.dumps({"jsonrpc":"2.0","id":None,"error":{"code":-32602,"message":"missing id"}}).encode()
+      self.send_response(400); self.send_header("Content-Type","application/json")
+      self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
+    result = {"tools":[{"name":"fed_probe","description":"probe","inputSchema":{"type":"object"}}]} if req.get("method")=="tools/list" else {"ok":True}
+    body = json.dumps({"jsonrpc":"2.0","id":req.get("id"),"result":result}).encode()
+    self.send_response(200); self.send_header("Content-Type","application/json")
+    self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+
+HTTPServer(("127.0.0.1",REG_PORT), Reg).serve_forever() if "--reg" in sys.argv else HTTPServer(("127.0.0.1",MCP_PORT), Mcp).serve_forever()
+PYFAKE
+python3 "${OUT}/fake-memora.py" "${REG_PORT}" "${MCPFAKE_PORT}" "${FED_JWT_SECRET}" --reg >"${OUT}/fake-reg.log" 2>&1 &
+FAKE_REG_PID=$!
+python3 "${OUT}/fake-memora.py" "${REG_PORT}" "${MCPFAKE_PORT}" "${FED_JWT_SECRET}" --mcp >"${OUT}/fake-mcp.log" 2>&1 &
+FAKE_MCP_PID=$!
+sleep 1
+
+# 联邦网关实例（独立 Store ⇒ 用内存即可；出站 JWT 密钥与假 memora 同源）
+MCP_GATEWAY_ADMIN_TOKEN="${ADMIN_TOKEN}" \
+MCP_GATEWAY_REGISTRY_SYNC_ENABLED=true \
+MCP_GATEWAY_REGISTRY_URL="http://127.0.0.1:${REG_PORT}" \
+MCP_GATEWAY_REGISTRY_TOKEN="${FED_TOKEN}" \
+MCP_GATEWAY_REGISTRY_INTERVAL_SECONDS=2 \
+MCP_GATEWAY_REGISTRY_JWT_SECRET="${FED_JWT_SECRET}" \
+MCP_GATEWAY_REGISTRY_JWT_AUDIENCE=memora-api \
+  "${BIN}" --listen "127.0.0.1:${FED_PORT}" --admin-token "${ADMIN_TOKEN}" \
+  >"${OUT}/gateway-fed-${FED_PORT}.log" 2>&1 &
+FED_PID=$!
+LIMIT_PID="${LIMIT_PID}"  # noop，保持 cleanup 变量形态
+cleanup_fed() { [ -n "${FED_PID}" ] && kill "${FED_PID}" 2>/dev/null; [ -n "${FAKE_REG_PID}" ] && kill "${FAKE_REG_PID}" 2>/dev/null; [ -n "${FAKE_MCP_PID}" ] && kill "${FAKE_MCP_PID}" 2>/dev/null; return 0; }
+trap cleanup_fed EXIT
+
+for _ in $(seq 1 20); do curl -s --max-time 2 "${FED_URL}/mcp/control/healthz" >/dev/null 2>&1 && break; sleep 1; done
+sleep 3   # 等首轮同步（间隔 2s）
+
+
+# S32 同步处置：ok / skip_stdio / skip_auth_ref 三类 + disabled 未出现（fixture 无 disabled 条目）
+# ★ 同步是后台轮询（首拉+间隔 2s），查询需等快照就位——重试 10 次×1s。
+entries=""; err="unknown"
+for _ in $(seq 1 10); do
+  code="$(ctl "${FED_URL}" GET /mcp/control/registry/status "${ADMIN_TOKEN}")"
+  entries="$(body_get | jq_get '",".join(sorted(e["outcome"] for e in d.get("entries",[])))' )"
+  err="$(body_get | jq_get 'd.get("last_error","")')"
+  [ "${entries}" = "ok,skip_auth_ref,skip_stdio" ] && [ -z "${err}" ] && break
+  sleep 1
+done
+if [ "${code}" = "200" ] && [ "${entries}" = "ok,skip_auth_ref,skip_stdio" ] && [ -z "${err}" ]; then
+  ok "S32 registry 同步 3 条处置正确（${entries}，无错误）"
+else
+  bad "S32 同步处置 → ${code} entries='${entries}' err='${err}'"
+fi
+
+# S33 控制面两端点：servers 快照 + 未启用网关的 enabled=false 形态（主实例已验 401/匿名由既有场景覆盖）
+code="$(ctl "${FED_URL}" GET /mcp/control/registry/servers "${ADMIN_TOKEN}")"
+n="$(body_get | jq_get 'd.get("count",0)')"
+if [ "${code}" = "200" ] && [ "${n}" = "3" ]; then
+  ok "S33 registry/servers 快照 → 200（${n} 条）"
+else
+  bad "S33 registry/servers → ${code} count='${n}'（期望 200/3）"
+fi
+
+# S34 出站凭据与协议形状：联邦适配器 tools/list（假 memora 会校验 iss/aud/_meta/id）
+FED_KEY="$(issue_key "${FED_URL}" "maestro-fed" '["mcp.read","mcp.execute"]')"
+code="$(rpc "${FED_URL}" /mcp "${FED_KEY}" '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
+tools="$(body_get | jq_get 'len((d.get("result") or {}).get("tools",[]))')"
+if [ "${code}" = "200" ] && [ "${tools}" -ge 1 ] 2>/dev/null; then
+  ok "S34 llm_gateway 出站凭据 → tools/list 聚合 ${tools} 个联邦工具（假 memora 校验全过）"
+else
+  bad "S34 tools/list → ${code} tools='${tools}'（期望 200 且 ≥1；出站签发/协议形状有缺口）"
+fi
+
+# S35 指标族可见
+code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' "${FED_URL}/metrics")"
+sync_ok="$(body_get | grep -c 'mcp_gateway_registry_sync_total{outcome="ok"}')"
+if [ "${code}" = "200" ] && [ "${sync_ok}" -ge 1 ]; then
+  ok "S35 mcp_gateway_registry_sync_total{outcome=ok} 指标可见"
+else
+  bad "S35 指标 → ${code} sync_ok='${sync_ok}'（期望 200 且 ≥1）"
+fi
+cleanup_fed
+trap cleanup EXIT
+
 # ── 5. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
 if [ "${SKIP_MAESTRO:-0}" != "1" ]; then
   log "== L3: Maestro 浏览器 flow（运营看板）"
