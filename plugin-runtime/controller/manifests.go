@@ -35,6 +35,9 @@ func scan(cfg *config.Config) (map[string]*root.Manifest, error) {
 	if err := validateEnabledPluginIDs(cfg.Plugins.Enabled); err != nil {
 		return nil, err
 	}
+	// §6.3 总开关：false 时强制视为「无默认限制」，Manifest 限制一并豁免
+	// （紧急关闭通道——scan 是所有启动路径的必经点）。
+	defaults := defaultLimitsOf(cfg)
 	result := make(map[string]*root.Manifest, len(cfg.Plugins.Enabled))
 	for _, id := range cfg.Plugins.Enabled {
 		dir := filepath.Join(cfg.Plugins.Directory, id)
@@ -63,9 +66,34 @@ func scan(cfg *config.Config) (map[string]*root.Manifest, error) {
 		if blocked := root.RejectUnimplementedCapabilities(m.Capabilities); len(blocked) > 0 {
 			return nil, fmt.Errorf("plugin %s unimplemented capabilities %v", id, blocked)
 		}
+		// §3.4：Manifest 未声明 resource_limits 时补上全局默认（scan 后的
+		// manifest 即携带生效限制，Supervisor 不再需要单独的 DefaultLimits 通道）。
+		if defaults != nil && m.ResourceLimits == nil {
+			m.ResourceLimits = defaults
+		}
 		result[id] = m
 	}
 	return result, nil
+}
+
+// defaultLimitsOf 把 gateway.yaml 的 default_resource_limits 块转换为
+// pluginruntime.ResourceLimits；总开关关闭或未配置时返回 nil。
+func defaultLimitsOf(cfg *config.Config) *root.ResourceLimits {
+	if cfg.Plugins.ResourceLimitsEnabled != nil && !*cfg.Plugins.ResourceLimitsEnabled {
+		return nil
+	}
+	d := cfg.Plugins.DefaultResourceLimits
+	if d == nil {
+		return nil
+	}
+	out := &root.ResourceLimits{MaxProcesses: d.MaxProcesses}
+	if d.Memory != nil {
+		out.Memory = &root.MemoryLimit{Limit: d.Memory.Limit, Swap: d.Memory.Swap}
+	}
+	if d.CPU != nil {
+		out.CPU = &root.CPULimit{Limit: d.CPU.Limit}
+	}
+	return out
 }
 
 // snapshot pins a whole bundle, including its signed manifest. This makes
