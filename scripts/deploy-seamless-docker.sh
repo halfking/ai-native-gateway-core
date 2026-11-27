@@ -2520,6 +2520,9 @@ dd_asm_event_env() {
   # 取值优先级与全文件同款：部署机环境变量 > env 文件里上次落下的值 > 不设。
   LLM_GATEWAY_ASM_BASE_URL="${LLM_GATEWAY_ASM_BASE_URL:-}"
   LLM_GATEWAY_ASM_PLUGIN_ID="${LLM_GATEWAY_ASM_PLUGIN_ID:-}"
+  # memora prewarm 灰度（P1-2③，2026-11-27）。
+  AI_SESSION_MANAGER_URL="${AI_SESSION_MANAGER_URL:-}"
+  ASM_PLUGIN_CONTEXT_TOKEN="${ASM_PLUGIN_CONTEXT_TOKEN:-}"
   if [[ -f "$env_file" ]]; then
     if [[ -z "$ASM_INTERNAL_ENDPOINT" ]]; then
       ASM_INTERNAL_ENDPOINT="$(sed -nE 's/^(export )?ASM_INTERNAL_ENDPOINT=(.*)$/\2/p' "$env_file" | tail -1)"
@@ -2532,6 +2535,17 @@ dd_asm_event_env() {
     fi
     if [[ -z "$LLM_GATEWAY_ASM_PLUGIN_ID" ]]; then
       LLM_GATEWAY_ASM_PLUGIN_ID="$(sed -nE 's/^(export )?LLM_GATEWAY_ASM_PLUGIN_ID=(.*)$/\2/p' "$env_file" | tail -1)"
+    fi
+    # memora prewarm 灰度（P1-2③，2026-11-27）：跨部署保留两键。
+    #   AI_SESSION_MANAGER_URL = prewarm 客户端的 ASM 根地址（缺省回落
+    #   LLM_GATEWAY_ASM_BASE_URL —— 同一个 ASM，两个消费面共享一个配置）。
+    #   ASM_PLUGIN_CONTEXT_TOKEN = Bearer 兜底（真认证走 X-Gateway-Context-*）。
+    if [[ -z "$AI_SESSION_MANAGER_URL" ]]; then
+      AI_SESSION_MANAGER_URL="$(sed -nE 's/^(export )?AI_SESSION_MANAGER_URL=(.*)$/\2/p' "$env_file" | tail -1)"
+      [[ -z "$AI_SESSION_MANAGER_URL" ]] && AI_SESSION_MANAGER_URL="$LLM_GATEWAY_ASM_BASE_URL"
+    fi
+    if [[ -z "$ASM_PLUGIN_CONTEXT_TOKEN" ]]; then
+      ASM_PLUGIN_CONTEXT_TOKEN="$(sed -nE 's/^(export )?ASM_PLUGIN_CONTEXT_TOKEN=(.*)$/\2/p' "$env_file" | tail -1)"
     fi
     # ★ 第 50 增量 F-10：写侧 %q ⇒ 读侧统一定点解码（HMAC 密钥含 $/空格时
     #   不解码会「首轮即坏值 + 逐层累积」，最终被 100KB 守卫 fail-fast）。
@@ -2798,6 +2812,13 @@ dd_maintain_env "$ENV_FILE"
   if [[ -n "$LLM_GATEWAY_ASM_PLUGIN_ID" ]]; then
     printf 'export LLM_GATEWAY_ASM_PLUGIN_ID=%q\n' "$LLM_GATEWAY_ASM_PLUGIN_ID"
   fi
+  # memora prewarm 灰度（P1-2③）：跨部署保留（同 ASM 键口径）。
+  if [[ -n "${AI_SESSION_MANAGER_URL:-}" ]]; then
+    printf 'export AI_SESSION_MANAGER_URL=%q\n' "$AI_SESSION_MANAGER_URL"
+  fi
+  if [[ -n "${ASM_PLUGIN_CONTEXT_TOKEN:-}" ]]; then
+    printf 'export ASM_PLUGIN_CONTEXT_TOKEN=%q\n' "$ASM_PLUGIN_CONTEXT_TOKEN"
+  fi
   # 2026-10-29：auto 低置信度分类 → 局域网 Ollama（跨部署保留）
   if [[ -n "${LLMGatewayAutoLLMEndpoint:-}" ]]; then
     printf 'export LLMGatewayAutoLLMEndpoint=%q\n' "$LLMGatewayAutoLLMEndpoint"
@@ -2931,6 +2952,21 @@ else
   log "ASM 总结委托未配置（LLM_GATEWAY_ASM_BASE_URL 为空）—— 长文本总结恒走网关管线"
 fi
 # ── ASM-ENV-INJECT:END ──
+
+# ── PREWARM-ENV-INJECT:BEGIN ──
+# memora 上下文预热（P1-2③，ADR memory-prewarm-injection，2026-11-27）：
+# 双键齐备才 armed（prewarm.go NewPrewarmHTTPClientFromEnv 语义）。
+# 认证实际走 X-Gateway-Context-* 五头 HMAC（secret=LLM_GATEWAY_SECRET_KEY，
+# 已与 ASM AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET 配对核验）；
+# TOKEN 仅作 Bearer 兜底占位。灰度开关本身走 settings 热更（不在 env 层）。
+if [[ -n "${AI_SESSION_MANAGER_URL:-}" && -n "${ASM_PLUGIN_CONTEXT_TOKEN:-}" ]]; then
+  GW_ENV+=( -e "AI_SESSION_MANAGER_URL=${AI_SESSION_MANAGER_URL}" )
+  GW_ENV+=( -e "ASM_PLUGIN_CONTEXT_TOKEN=${ASM_PLUGIN_CONTEXT_TOKEN}" )
+  log "memora prewarm 已装配：${AI_SESSION_MANAGER_URL}（灰度开关走 settings 两键）"
+else
+  log "memora prewarm 未装配（AI_SESSION_MANAGER_URL/ASM_PLUGIN_CONTEXT_TOKEN 缺一）—— 预热整体禁用"
+fi
+# ── PREWARM-ENV-INJECT:END ──
 
 # ── IDENTITY-ENV-INJECT:BEGIN ──
 # 身份网共享密钥：注入后网关才能为兄弟服务签发单点登录票据。
