@@ -589,13 +589,6 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "read", Columns: []string{"attachment_count:base", "client_protocol:base", "egress_protocol:base", "gw_session_id:expr", "gw_task_id:detail", "request_id:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "enrichDimensionsSQL：按 request_id 数组点查双腿视图取 7 列维度（DISTINCT ON + ts DESC 取最新行）"},
 		},
 	},
-	"internal/schemadelivery/known_undelivered.go": {
-		Form:         formCommentOrStringOnly,
-		Class:        classNoRead,
-		Exempt:       true,
-		ExemptReason: exemptNoReadPoint,
-		Note:         "已知欠账台账（schema 投递门）：仅注释里提及 canonical 视图名（L68 描述 admin/channels.go 读点迁移史）⇒ 非读点",
-	},
 	"admin/providers.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,
