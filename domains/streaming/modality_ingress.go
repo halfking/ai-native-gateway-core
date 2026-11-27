@@ -24,13 +24,14 @@ type modalityWAL interface {
 type modalityIngressKey struct{}
 
 type modalityIngress struct {
-	wal       modalityWAL
-	attrs     func(*telemetry.ContextAttrsEntry)
-	requestID string
-	received  time.Time
-	status    string
-	reason    string
-	verified  *authentication.KeyInfo
+	wal             modalityWAL
+	attrs           func(*telemetry.ContextAttrsEntry)
+	requestID       string
+	clientRequestID string
+	received        time.Time
+	status          string
+	reason          string
+	verified        *authentication.KeyInfo
 }
 
 // ObserveModalityIngress wraps the routed request outside its concurrency gate.
@@ -43,7 +44,11 @@ func ObserveModalityIngress(next http.Handler, wal modalityWAL, attrs func(*tele
 		}
 		r.Header.Set("X-Request-Id", requestID)
 		w.Header().Set("X-Request-Id", requestID)
-		entry := &modalityIngress{wal: wal, attrs: attrs, requestID: requestID, received: middleware.ServerRequestReceivedAt(r.Context())}
+		entry := &modalityIngress{
+			wal: wal, attrs: attrs, requestID: requestID,
+			clientRequestID: sanitizeRequestCorrelationID(w.Header().Get("X-Client-Request-Id")),
+			received:        middleware.ServerRequestReceivedAt(r.Context()),
+		}
 		r = r.WithContext(context.WithValue(r.Context(), modalityIngressKey{}, entry))
 		entry.createInitial(r.Context(), "default")
 
@@ -81,6 +86,9 @@ func observeModalityIdentity(r *http.Request, key *authentication.KeyInfo) {
 		attrs := &telemetry.ContextAttrsEntry{
 			RequestID: entry.requestID, TenantID: key.TenantID,
 			SourceChannel: &source,
+		}
+		if entry.clientRequestID != "" {
+			attrs.ClientRequestID = &entry.clientRequestID
 		}
 		if stage, _, ok := trustedPlatformOrigin(r.Context(), key); ok && reconciliationPlatformClass(stage) != "" {
 			attrs.OriginStage = &stage

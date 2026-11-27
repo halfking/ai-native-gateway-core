@@ -281,6 +281,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if correlationID != "" {
 			slog.InfoContext(r.Context(), "embedding provider response", "request_id", requestID, "correlation_id", correlationID,
+				"client_request_id", sanitizeRequestCorrelationID(w.Header().Get("X-Client-Request-Id")),
 				"tenant_id", tenantID, "api_key_id", keyID, "route_model", model, "upstream_model", candidate.RawModel,
 				"provider_id", candidate.ProviderID, "credential_id", candidate.CredentialID, "status_code", resp.StatusCode)
 		}

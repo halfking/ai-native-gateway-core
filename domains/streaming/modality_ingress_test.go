@@ -84,6 +84,9 @@ func TestModalityIngressRecordsRejectionsAndProtocolFailure(t *testing.T) {
 				if attrs == nil || attrs.APIKeyID == nil || *attrs.APIKeyID != tc.keyID {
 					t.Fatalf("verified identity attrs %+v", attrs)
 				}
+				if attrs.ClientRequestID == nil || *attrs.ClientRequestID != "client-chosen-id" || attrs.RequestID != id {
+					t.Fatalf("client ID missing or replaced the server ID: %+v", attrs)
+				}
 				if tc.origin == "" && attrs.OriginStage != nil || tc.origin != "" && (attrs.OriginStage == nil || *attrs.OriginStage != tc.origin) {
 					t.Fatalf("trusted origin attrs %+v", attrs)
 				}
