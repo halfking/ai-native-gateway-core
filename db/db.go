@@ -6594,7 +6594,7 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 	sql += `
 		CREATE OR REPLACE VIEW tenant_model_policies_active AS
 		    SELECT id, tenant_id, canonical_name, reason, created_by,
-		           created_at, updated_at
+		           created_at, updated_at, mode
 		    FROM tenant_model_policies
 		    WHERE deleted_at IS NULL;
 

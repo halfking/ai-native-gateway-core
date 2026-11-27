@@ -12,6 +12,11 @@
 -- 锁守卫（installer 门 startup_ddl_lock_guard_gate_test.go：版本 > 870 且含强锁 DDL
 --   ⇒ 必须自带 lock_timeout）：本件含 CREATE TABLE ＋ ALTER TABLE ＋ CREATE INDEX
 --   ⇒ 声明 5s lock_timeout / 10min statement_timeout（同 999a/999d/1000 口径）。
+-- ★ 实测（2026-11-27 三级配额制轮，PG17 本机一次性容器 casdoor-e2e-pg:13.3.0）：
+--   全新基线（00/01/02 三件后）单件首跑墙钟 <0.1s（CREATE TABLE×3 + ALTER ADD
+--   COLUMN＋索引全为元数据级/空表操作）、幂等重放 0.05s、down 0.04s；
+--   fresh 建造器链 416/417 实证通过（唯一失败件为并行车道 1004 的自身问题）
+--   ⇒ 与 10min 预算差五个数量级，无 914 型「拍小了中止部署」风险。
 SET lock_timeout = '5s';
 SET statement_timeout = '10min';
 
