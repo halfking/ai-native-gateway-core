@@ -188,7 +188,7 @@ func TestUpdateRequestLog_TerminalSuccessMarksFinalSuccessClaimed(t *testing.T) 
 	mock.ExpectBegin()
 	// usage_ledger_hot（无 token 字段的分支：5 个绑定参数）
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-054-3", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-054-3", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
@@ -231,7 +231,7 @@ func TestUpdateRequestLog_FailurePathSkipsFinalSuccessClaim(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-fail-1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-fail-1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
@@ -294,7 +294,7 @@ func TestUpdateRequestLog_ClaimFlagAgreesWithEligibilityPredicate(t *testing.T) 
 
 			mock.ExpectBegin()
 			mock.ExpectExec(`UPDATE usage_ledger_hot`).
-				WithArgs(anyArgs(5)...).
+				WithArgs(anyArgs(9)...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			mock.ExpectCommit()
 

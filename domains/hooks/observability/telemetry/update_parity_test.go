@@ -20,12 +20,12 @@ import (
 //
 // 改指后守的是**同一件事在新写入路径上的形态**（usage_ledger_hot）：
 //
-//	① INSERT 写过的**每一个可变列**，10 参（带真实 token）的 UPDATE 变体
+//	① INSERT 写过的**每一个可变列**，14 参（带真实 token）的 UPDATE 变体
 //	   都必须能刷新——终态回填是「把 provisional 行补成终态行」，漏一列就
 //	   留下一列 provisional 的值。
 //	② UPDATE 的 SET 列**不得**超出 INSERT 的列清单——超出的列在运行期是
 //	   42703（列不存在），而这条门能在 CI 里抓住它。
-//	③ 5 参（无 token）变体只刷新它能知道的子集，且必须是 10 参变体的子集。
+//	③ 9 参（无 token）变体只刷新它能知道的子集，且必须是 14 参变体的子集。
 //
 // 这三条同时把旧门想守的「routing_attempts 之类不得被悄悄漏掉」继承了下来：
 // 任何 v1-only 列（routing_attempts / attachments / canonical_model /
@@ -41,10 +41,10 @@ func TestUpdateRequestLogSQL_CoversEveryMutableLedgerColumn(t *testing.T) {
 	fn := extractFunc(text, "func (c *Client) updateRequestLog")
 	require.NotEmpty(t, fn, "updateRequestLog not found")
 	variants := extractUpdateVariants(fn, "UPDATE usage_ledger_hot")
-	require.Len(t, variants, 2, "新写入路径应当有两个 UPDATE 变体（10 参 / 5 参）")
+	require.Len(t, variants, 2, "新写入路径应当有两个 UPDATE 变体（14 参 / 9 参）")
 
 	// ① ③：逐个变体核对 SET 列。
-	var tenArgCols, slimArgCols []string
+	var enrichedCols, slimArgCols []string
 	for _, variant := range variants {
 		cols := variantSetColumns(t, variant)
 		require.NotEmpty(t, cols, "正向对照：变体里必须解析出 SET 列")
@@ -52,26 +52,25 @@ func TestUpdateRequestLogSQL_CoversEveryMutableLedgerColumn(t *testing.T) {
 			require.Contains(t, insertCols, col,
 				"UPDATE 设置了 INSERT 不写的列 %q —— 运行期必然 42703（列不存在）", col)
 		}
-		if len(cols) >= len(tenArgCols) {
-			tenArgCols = cols
+		if len(cols) >= len(enrichedCols) {
+			enrichedCols = cols
 		} else {
 			slimArgCols = cols
 		}
 	}
-	require.NotEmpty(t, tenArgCols)
-	require.NotEmpty(t, slimArgCols, "正向对照：必须解析出 5 参（无 token）变体")
+	require.NotEmpty(t, enrichedCols)
+	require.NotEmpty(t, slimArgCols, "正向对照：必须解析出 9 参（无 token）变体")
 	for _, col := range slimArgCols {
-		require.Contains(t, tenArgCols, col,
-			"5 参变体的列 %q 必须也在 10 参变体里（两个变体刷新的是同一批列）", col)
+		require.Contains(t, enrichedCols, col,
+			"9 参变体的列 %q 必须也在 14 参变体里（两个变体刷新的是同一批列）", col)
 	}
 
-	// ①：INSERT 写过的每一个可变列，10 参变体都必须能刷新。
+	// ①：INSERT 写过的每一个可变列，14 参变体都必须能刷新。
 	// 不可变列 = 行的身份/维度列 + 时间戳 + 倍率（它们在 INSERT 时定下，
 	// 终态回填不重写）。
 	immutable := map[string]bool{
 		"request_id": true, "ts": true, "tenant_id": true, "application_id": true,
-		"api_key_id": true, "end_user_id": true, "credential_id": true,
-		"provider_id": true, "canonical_id": true, "raw_model_name": true,
+		"api_key_id": true, "end_user_id": true,
 		"rate_multiplier": true,
 	}
 	missing := []string{}
@@ -79,7 +78,7 @@ func TestUpdateRequestLogSQL_CoversEveryMutableLedgerColumn(t *testing.T) {
 		if immutable[col] {
 			continue
 		}
-		if !contains(tenArgCols, col) {
+		if !contains(enrichedCols, col) {
 			missing = append(missing, col)
 		}
 	}

@@ -151,7 +151,7 @@ func TestUpdateRequestLogPlaceholderAlignment(t *testing.T) {
 	}
 
 	variants := extractUpdateVariants(fn, "UPDATE usage_ledger_hot")
-	// 新写入路径只有两个变体：10 参（含真实 token）与 5 参（无 token）。
+	// 新写入路径只有两个变体：14 参（含真实 token）与 9 参（无 token）。
 	// 多出第三条 = 有人加了新变体而没让本门看 ⇒ 直接判红。
 	if len(variants) != 2 {
 		t.Fatalf("expected exactly 2 UPDATE usage_ledger_hot variants in updateRequestLog, got %d", len(variants))
@@ -229,7 +229,7 @@ type updateVariant struct {
 // extractUpdateVariants 从函数体里抽出所有包含 anchor 的 UPDATE 语句字面量，
 // 各自配上**紧随其后**那次 tx.Exec 的绑定参数。
 //
-// ⚠ 不能只取第一条：新写入路径有两条变体（10 参 / 5 参），只查第一条会让
+// ⚠ 不能只取第一条：新写入路径有两条变体（14 参 / 9 参），只查第一条会让
 // 第二条无人看管——而「变体选错」正是本门要抓的漂移。
 func extractUpdateVariants(fn, anchor string) []updateVariant {
 	var out []updateVariant

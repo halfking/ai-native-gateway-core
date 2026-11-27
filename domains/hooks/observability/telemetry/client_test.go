@@ -61,14 +61,14 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 // 需随迁移 890 一并改造——它们不在本轮范围内，此处只保证编译面不破。
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
-		// 10 参变体：$1 request_id … $9 success, $10 error_kind。
-		args := anyArgs(10)
+		// 14 参变体：$1 request_id … $9 success, $10 error_kind。
+		args := anyArgs(14)
 		args[8] = boolPointerMatcher{want: entry.Success}
 		args[9] = stringPointerMatcher{want: entry.ErrorKind}
 		return args
 	}
-	// 5 参变体：$1 request_id, $2 latency, $3 success, $4 error_kind, $5 cost。
-	args := anyArgs(5)
+	// 9 参变体：$1 request_id, $2 latency, $3 success, $4 error_kind, $5 cost。
+	args := anyArgs(9)
 	args[2] = boolPointerMatcher{want: entry.Success}
 	args[3] = stringPointerMatcher{want: entry.ErrorKind}
 	return args
@@ -226,7 +226,7 @@ func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *t
 
 	mockDB.ExpectBegin()
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-update", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-update", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectCommit()
 
@@ -300,11 +300,11 @@ func TestUpdateRequestLog_TerminalGuardRetiredWithV1InsertFallback(t *testing.T)
 }
 
 // ★ 2026-10-20（迁移 890，v1 族退役）：新写入路径有**两个** UPDATE 变体——
-// 带真实 token 时走 10 参（含 token / 缓存 token / cost / latency / success /
-// error_kind），不带 token 时走 5 参（latency / success / error_kind / cost）。
+// 带真实 token 时走 14 参（含 token / 缓存 token / cost / latency / success /
+// error_kind），不带 token 时走 9 参（latency / success / error_kind / cost）。
 // 变体选择只看「entry 是否带真实 token」，与是否终态无关。
 //
-// 判据强度：pgxmock 的参数个数是**严格**的——期望 5 参而生产发 10 参（或反过来）
+// 判据强度：pgxmock 的参数个数是**严格**的——期望 9 参而生产发 14 参（或反过来）
 // 会让本用例变红 ⇒ 变体选错不会被放过。
 func TestUpdateRequestLog_UsesTokenEnrichmentVariantOnlyWhenTokensPresent(t *testing.T) {
 	promptTokens, completionTokens := 11, 22
@@ -314,19 +314,19 @@ func TestUpdateRequestLog_UsesTokenEnrichmentVariantOnlyWhenTokensPresent(t *tes
 		wantArgs int
 	}{
 		{
-			name:     "no token fields => slim 5-arg variant",
+			name:     "no token fields => slim 9-arg variant",
 			entry:    RequestLogEntry{RequestID: "req-slim", Success: true},
-			wantArgs: 5,
+			wantArgs: 9,
 		},
 		{
-			name:     "prompt tokens present => 10-arg enrichment variant",
+			name:     "prompt tokens present => 14-arg enrichment variant",
 			entry:    RequestLogEntry{RequestID: "req-fat-p", Success: true, PromptTokens: &promptTokens},
-			wantArgs: 10,
+			wantArgs: 14,
 		},
 		{
-			name:     "completion tokens present => 10-arg enrichment variant",
+			name:     "completion tokens present => 14-arg enrichment variant",
 			entry:    RequestLogEntry{RequestID: "req-fat-c", Success: true, CompletionTokens: &completionTokens},
-			wantArgs: 10,
+			wantArgs: 14,
 		},
 	}
 
@@ -372,7 +372,7 @@ func TestUpdateRequestLog_MissingRowDoesNotFallBackToInsert(t *testing.T) {
 
 	mockDB.ExpectBegin()
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-missing", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-missing", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mockDB.ExpectCommit()
 
@@ -554,7 +554,7 @@ func TestUpdateRequestLog_ProductionSQLTargetsUsageLedgerHotWithoutAlias(t *test
 
 	mockDB.ExpectBegin()
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-alias", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-alias", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectCommit()
 
@@ -625,7 +625,7 @@ func TestTelemetryWritePath_IssuesNoV1FamilySQL(t *testing.T) {
 
 		mockDB.ExpectBegin()
 		mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-			WithArgs("req-no-v1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WithArgs("req-no-v1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 		mockDB.ExpectCommit()
 
@@ -734,7 +734,7 @@ func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
 
 	mockDB.ExpectBegin()
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
-		WithArgs("req-release", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("req-release", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectCommit()
 
@@ -1389,5 +1389,51 @@ func TestRequestLogEmittedGatedOnDisabledAndStopped(t *testing.T) {
 	// Sanity: the gate fires before queueing, so nothing was enqueued either.
 	if got := len(stopped.queue); got != 0 {
 		t.Fatalf("stopped client queued %d entries, want 0", got)
+	}
+}
+
+func TestUpdateRequestLogWritesTerminalServingRoute(t *testing.T) {
+	providerID, credentialID, canonicalID := 95003, 97003, 23
+	model := "mock-model-fast"
+	promptTokens := 11
+	for _, tc := range []struct {
+		name       string
+		status     string
+		success    bool
+		withTokens bool
+	}{
+		{name: "terminal success with tokens", status: RequestStatusSuccess, success: true, withTokens: true},
+		{name: "terminal success without tokens", status: RequestStatusSuccess, success: true},
+		{name: "terminal failure leaves provisional route intact", status: RequestStatusFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer db.Close()
+			entry := RequestLogEntry{
+				RequestID: "rerouted-request", RequestStatus: &tc.status, Success: tc.success,
+				ProviderID: &providerID, CredentialID: &credentialID, CanonicalID: &canonicalID,
+				OutboundModel: &model,
+			}
+			args := []any{entry.RequestID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()}
+			if tc.withTokens {
+				entry.PromptTokens = &promptTokens
+				for i := 0; i < 5; i++ {
+					args = append(args, pgxmock.AnyArg())
+				}
+			}
+			if tc.success {
+				args = append(args, &providerID, &credentialID, &canonicalID, &model)
+			} else {
+				args = append(args, (*int)(nil), (*int)(nil), (*int)(nil), (*string)(nil))
+			}
+			db.ExpectBegin()
+			db.ExpectExec(`UPDATE usage_ledger_hot .*provider_id = COALESCE.*credential_id = COALESCE.*canonical_id = COALESCE.*raw_model_name = COALESCE`).
+				WithArgs(args...).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			db.ExpectCommit()
+			require.NoError(t, (&Client{requestLogDB: db}).updateRequestLog(&entry))
+			require.NoError(t, db.ExpectationsWereMet())
+		})
 	}
 }
