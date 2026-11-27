@@ -63,3 +63,10 @@ casdoor-e2e/
 | password grant 401 | `SELECT enable_password, grant_types FROM application WHERE name='llm-gateway-e2e'`（casdoor-db 容器内） | application 的 grantTypes 必须含 "password"；enablePassword=true |
 | 登录换发后 401 | 网关日志里 casdoor provider 注册行 | CASDOOR_CERTIFICATE 必须是 PEM（与 init_data 里证书块的 publicKey 同钥） |
 | 网关起不来 | runtime/gateway.log | DATABASE_URL 端口 15433；迁移是否跑过 |
+
+## 已知窗口与已接受风险（owner 裁决留痕，2026-11-28）
+
+> 以下两条由自动超时选定的保守答案登记，owner 随时可改。
+
+1. **iat 误杀窗口（不修）**：JWT `iat` 按秒截断，改密撤销纪元（`admin/auth_revocation.go` 的 `settings_kv` 时间戳）是毫秒精度；改密后**同一秒内**重新签发的新 token 会被判为已撤销（偏保守，宁可误杀不漏杀）。若要修：比较时把纪元截断到秒（代价：改密同秒内签发的旧 token 多存活 <1s），并在 `run-e2e-tests.sh` 增判据。
+2. **历史口令留痕（不轮换）**：提交 `af75f107d` 含 base64 编码的一次性本地 e2e 口令，仅本机栈使用、不触生产；现行脚本已改读 `runtime/admin_password`。未重写 git 历史。若要轮换：重跑 `start-e2e.sh` 重新生成 `runtime/` 并回归 `bash ./run-e2e-tests.sh`（期望 PASS=21 FAIL=0）。
