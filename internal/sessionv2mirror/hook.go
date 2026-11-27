@@ -71,7 +71,7 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 	}
 
 	return func(entry *telemetry.RequestLogEntry) {
-		if entry == nil {
+		if entry == nil || entry.Op == telemetry.RequestLogStandaloneUsage {
 			return
 		}
 

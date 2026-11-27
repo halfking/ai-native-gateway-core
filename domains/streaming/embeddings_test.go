@@ -11,9 +11,12 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/upstream"
+	"github.com/stretchr/testify/require"
 )
 
 type embeddingResolverStub struct {
@@ -94,6 +97,104 @@ func TestEmbeddingsHandlerProxiesBatchRequest(t *testing.T) {
 	assertRawNumber(t, received["dimensions"], 1024)
 	assertRawString(t, received["encoding_format"], "float")
 	assertRawString(t, received["user"], "tenant-user")
+}
+
+type embeddingUsageSink struct {
+	entries []telemetry.RequestLogEntry
+}
+
+func (s *embeddingUsageSink) PersistRequestLog(_ context.Context, entry *telemetry.RequestLogEntry) error {
+	s.entries = append(s.entries, *entry)
+	return nil
+}
+
+func TestEmbeddingsHandlerProjectsOnlyMeasuredServingUsage(t *testing.T) {
+	supplier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model string `json:"model"`
+			Input string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid fixture request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Model == "primary" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"unavailable"},"usage":{"prompt_tokens":19}}`))
+			return
+		}
+		usage, data := `{"prompt_tokens":3,"total_tokens":3}`, `[{"embedding":[0.1]}]`
+		switch request.Input {
+		case "zero":
+			usage = `{"input_tokens":0}`
+		case "unknown":
+			usage = `{"prompt_tokens":null,"total_tokens":3}`
+		case "invalid":
+			usage = `{"prompt_tokens":2147483648}`
+		case "empty":
+			data = `[]`
+		case "error envelope":
+			_, _ = w.Write([]byte(`{"data":[{}],"usage":{"prompt_tokens":3},"error":{"message":"failure"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":` + data + `,"usage":` + usage + `}`))
+	}))
+	defer supplier.Close()
+
+	primary := embeddingCandidate(supplier.URL, "primary")
+	primary.ProviderID, primary.CredentialID = 10, 11
+	backup := embeddingCandidate(supplier.URL, "backup")
+	backup.ProviderID, backup.CredentialID, backup.CanonicalID = 20, 21, intPtr(22)
+	handler := NewEmbeddingsHandler(&embeddingResolverStub{candidates: []provider.Candidate{primary, backup}}, upstream.NewWithRetries(0))
+	handler.setKeyVerifierForTest(&stubKeyVerifier{info: &authentication.KeyInfo{ID: 7, TenantID: "tenant-a", ApplicationID: 8}})
+	client := telemetry.NewClient()
+	t.Cleanup(client.Stop)
+	sink := &embeddingUsageSink{}
+	client.SetRequestLogSink(sink)
+	handler.SetTelemetry(client)
+	route := middleware.NewRequestIDMiddleware().Wrap(handler)
+
+	var ids []string
+	for _, input := range []string{"known", "zero", "unknown", "invalid", "empty", "error envelope"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"embed","input":"`+input+`"}`))
+		req.Header.Set("Authorization", "Bearer user-key")
+		req.Header.Set("X-Request-Id", "reused-client-id")
+		rec := httptest.NewRecorder()
+		route.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, input)
+		ids = append(ids, rec.Header().Get("X-Request-Id"))
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"embed","input":"known"}`))
+	rec := httptest.NewRecorder()
+	route.ServeHTTP(rec, request)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	client.Stop()
+
+	require.Len(t, sink.entries, 2)
+	require.NotEqual(t, ids[0], ids[1])
+	wantTokens := []int{3, 0}
+	for i, entry := range sink.entries {
+		require.Equal(t, telemetry.RequestLogStandaloneUsage, entry.Op)
+		require.Equal(t, ids[i], entry.RequestID)
+		require.NotEqual(t, "reused-client-id", entry.RequestID)
+		require.Equal(t, "tenant-a", entry.TenantID)
+		require.Equal(t, intPtr(7), entry.APIKeyID)
+		require.Equal(t, intPtr(8), entry.ApplicationID)
+		require.Equal(t, intPtr(20), entry.ProviderID)
+		require.Equal(t, intPtr(21), entry.CredentialID)
+		require.Equal(t, intPtr(22), entry.CanonicalID)
+		require.Equal(t, strPtr("embed"), entry.ClientModel)
+		require.Equal(t, strPtr("backup"), entry.OutboundModel)
+		require.Equal(t, intPtr(wantTokens[i]), entry.PromptTokens)
+		require.Equal(t, intPtr(0), entry.CompletionTokens)
+		require.Equal(t, strPtr("llm"), entry.UsageSource)
+		require.True(t, entry.Success)
+		require.Nil(t, entry.CostUSD)
+		require.Nil(t, entry.CreditsCharged)
+		require.Nil(t, entry.ResponseBody)
+		require.Nil(t, entry.GwSessionID)
+	}
 }
 
 func TestEmbeddingsHandlerFailsOverOnServerError(t *testing.T) {

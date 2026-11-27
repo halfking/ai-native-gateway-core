@@ -228,12 +228,13 @@ type DecisionLogEntry struct {
 	DecisionTrace       json.RawMessage `json:"decision_trace,omitempty"`
 }
 
-// RequestLogOp distinguishes insert-at-start from update-on-complete.
+// RequestLogOp describes how the request enters the telemetry pipeline.
 type RequestLogOp string
 
 const (
-	RequestLogInsert RequestLogOp = "insert"
-	RequestLogUpdate RequestLogOp = "update"
+	RequestLogInsert          RequestLogOp = "insert"
+	RequestLogUpdate          RequestLogOp = "update"
+	RequestLogStandaloneUsage RequestLogOp = "standalone_usage"
 )
 
 // Request log lifecycle status stored in the request-log row's request_status.
@@ -1268,7 +1269,7 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	}
 	if err == nil {
 		c.firePersistedHooks(entry)
-		if entry.Success && len(strings.TrimSpace(stringValue(entry.ResponseBody))) == 0 {
+		if entry.Success && entry.Op != RequestLogStandaloneUsage && len(strings.TrimSpace(stringValue(entry.ResponseBody))) == 0 {
 			metrics.RecordSuccessfulResponseBodyMissing()
 			slog.Warn("successful request log missing response body",
 				"request_id", entry.RequestID,
@@ -1404,8 +1405,27 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 
 	// ★ 2026-10-20（迁移 890，v1 族退役）：v1 宽表写入分支整段删除 ⇒ 停写键
 	// （storage.request_logs_write_enabled）在本函数**不再门控任何 PG 写入**；
-	// 会话族（sessionv2mirror）成为唯一 SSOT ⇒ 会话写入**恒为必需**。
-	entry.SessionV2WriteRequired = true
+	// 会话族（sessionv2mirror）承接普通请求，独立用量只写账本和统计。
+	entry.SessionV2WriteRequired = entry.Op != RequestLogStandaloneUsage
+	if entry.Op == RequestLogStandaloneUsage {
+		// A replay may arrive after the ledger transaction committed, or
+		// after partition maintenance moved the row out of the hot table.
+		// Serialize writers before checking so key counters advance once.
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", entry.RequestID); err != nil {
+			return err
+		}
+		var recorded bool
+		err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM usage_ledger_hot WHERE request_id = $1)
+			    OR EXISTS (SELECT 1 FROM usage_ledger WHERE request_id = $1)
+		`, entry.RequestID).Scan(&recorded)
+		if err != nil {
+			return err
+		}
+		if recorded {
+			return tx.Commit(ctx)
+		}
+	}
 
 	// INSERT directly targets usage_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy

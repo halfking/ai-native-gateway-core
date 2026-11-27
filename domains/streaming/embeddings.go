@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -113,6 +114,7 @@ func (h *EmbeddingsHandler) recordRateLimited(requestID string, keyInfo *authent
 }
 
 func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	requestID := sanitizeRequestCorrelationID(r.Header.Get("X-Request-Id"))
 	if requestID == "" {
 		requestID = generateRequestID()
@@ -159,6 +161,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, requestID, "input must be a non-empty string or array", "invalid_request_error", "invalid_input")
 		return
 	}
+	clientModel := model
 
 	// model="auto": resolve to the best embedding candidate (22 章 §22.2).
 	// Bypasses task classification — embeddings have no chat taxonomy.
@@ -291,7 +294,9 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		copyEmbeddingResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(responseBody)
+		if n, err := w.Write(responseBody); err == nil && n == len(responseBody) {
+			h.recordUsage(r, keyInfo, candidate, clientModel, resp.StatusCode, start, responseBody)
+		}
 		return
 	}
 
@@ -317,6 +322,56 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeErrorJSON(w, status, requestID, "All embedding providers failed", errType, code)
+}
+
+// recordUsage projects the final embedding result. The supplier attempt has
+// its own evidence and pricing. This event carries only measured input usage.
+func (h *EmbeddingsHandler) recordUsage(r *http.Request, key *authentication.KeyInfo, candidate provider.Candidate, model string, status int, start time.Time, body []byte) {
+	requestID := middleware.ServerRequestID(r.Context())
+	if !h.telemetry.Enabled() || requestID == "" || key == nil || key.ID <= 0 || key.TenantID == "" ||
+		candidate.ProviderID <= 0 || candidate.CredentialID <= 0 {
+		return
+	}
+	if _, _, platform := trustedPlatformOrigin(r.Context(), key); platform {
+		return
+	}
+	var response struct {
+		Data  []struct{}      `json:"data"`
+		Error json.RawMessage `json:"error"`
+		Usage struct {
+			Prompt *int32 `json:"prompt_tokens"`
+			Input  *int32 `json:"input_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(body, &response) != nil || len(response.Data) == 0 ||
+		(len(response.Error) != 0 && string(response.Error) != "null") {
+		return
+	}
+	tokens := response.Usage.Prompt
+	if tokens == nil {
+		tokens = response.Usage.Input
+	}
+	if tokens == nil || *tokens < 0 {
+		return
+	}
+
+	now := time.Now().UTC()
+	entry := &telemetry.RequestLogEntry{
+		Op: telemetry.RequestLogStandaloneUsage, RequestID: requestID, EventAt: &now,
+		TenantID: key.TenantID, APIKeyID: intPtr(key.ID), APIKeyOwnerUser: key.OwnerUser,
+		ApplicationCode: strPtr(key.ApplicationCode), CustomerID: key.CustomerID,
+		ClientModel: strPtr(model), OutboundModel: strPtr(candidate.RawModel), CanonicalID: candidate.CanonicalID,
+		CredentialID: intPtr(candidate.CredentialID), ProviderID: intPtr(candidate.ProviderID),
+		ClientProfile: key.DefaultClientProfile, RequestMode: strPtr("embeddings"), ClientEndpoint: strPtr(r.URL.Path),
+		UpstreamStatusCode: intPtr(status), ClientStatusCode: intPtr(status),
+		LatencyMs: intPtr(int(now.Sub(start).Milliseconds())), Success: true,
+		RequestStatus: strPtr(telemetry.RequestStatusSuccess), UsageSource: strPtr("llm"),
+		PromptTokens: intPtr(int(*tokens)), CompletionTokens: intPtr(0),
+	}
+	if key.ApplicationID > 0 {
+		entry.ApplicationID = intPtr(key.ApplicationID)
+	}
+	h.telemetry.EmitRequestLog(entry)
 }
 
 // isEmbeddingPassthroughStatus reports whether an upstream embedding response
