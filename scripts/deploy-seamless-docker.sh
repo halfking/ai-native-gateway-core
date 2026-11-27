@@ -3588,19 +3588,39 @@ DD_GW_DATA_ROOT="${DD_GW_DATA_ROOT:-/opt/kaixuan/data/llm-gateway}"
 #   ⇒ 绑定已脱节的机器上，本轮部署**一个字节都不写**，只报出处置方法。
 dd_check_slot_binding
 
-# ★ 双活常态守卫（2026-11-27 多节点轮）：常规蓝绿部署**不认识**双活 upstream。
-#   蓝绿切流=「改主 server 行端口」；双活常态下 upstream 有两条主行（主槽+
-#   副节点），切流会把副节点行**留在原地**（helper 只改第一条）⇒ 引擎随后
-#   停「旧槽」时，副节点仍在接流——路由/限流/归档口径与单活验收完全不同
-#   ⇒ 本次发布的验收结论不可信。⇒ 拦下，给出两条明确路径，一个字节不写。
-#   --start-secondary / --stop-secondary 不经过此段（它们在参数分派后、
-#   deploy 主流程前自行 exit）。
+# ★ 双活自动收挂（2026-11-28 轮，取代 2026-11-27 的 die 拦截形态）：
+#   常规蓝绿部署**不认识**双活 upstream——切流=改第一条主行端口，随后停「旧槽」
+#   时副节点仍在接流 ⇒ 验收结论不可信。原修法是拦下 die（要求人工三步：
+#   --stop-secondary → 部署 → --start-secondary）；实际使用中每轮部署都要人工
+#   三步 ⇒ 用户指令改为**自动管理**：
+#     ① 检测到双活态 ⇒ 先自动收副节点（dd_stop_secondary：先摘 nginx 行再停
+#        容器，主槽不受影响）⇒ 引擎拿到的就是熟悉的单活 upstream；
+#     ② 蓝绿部署主流程照常走；
+#     ③ 完成标记（DD_DEPLOY_COMPLETED=1）**之前**自动重挂副节点
+#        （dd_start_secondary：复用在役主槽镜像 + env 派生 + readyz 通过才挂
+#        nginx 行）。放在完成标记之前 ⇒ 重挂失败 = 部署失败（exit guard 判
+#        非 0），不会把「副节点没了」洗成成功；主槽已切流不受影响。
+#   ⚠ 显式禁用形态保留：DD_AUTO_MANAGE_SECONDARY=0 ⇒ 回到 die 拦截形态
+#     （给需要人工掌控时序的场合，如更换副节点配置时）。
+#   --start-secondary / --stop-secondary 分派不经过此段（它们在参数分派后
+#   自行 exit）。dd_dual_active_states 在此置位后，完成段读取它决定重挂。
+DD_AUTO_MANAGE_SECONDARY="${DD_AUTO_MANAGE_SECONDARY:-1}"
 DD_DUAL_ACTIVE_EXTRA="$(dd_dual_active_ports || true)"
 if [[ -n "$DD_DUAL_ACTIVE_EXTRA" ]]; then
-  die "nginx upstream ${DD_NGINX_UPSTREAM} 处于【双活形态】（主行之外还有副节点端口：${DD_DUAL_ACTIVE_EXTRA}）——常规蓝绿部署会破坏双活语义（切流只改第一条主行，随后停「旧槽」时副节点仍在接流，发布验收结论不可信）。
+  if [[ "$DD_AUTO_MANAGE_SECONDARY" == "1" ]]; then
+    log "检测到双活形态（副节点端口：${DD_DUAL_ACTIVE_EXTRA}）⇒ 自动收副节点后部署，成功后自动重挂"
+    dd_stop_secondary
+    DD_DUAL_ACTIVE_WAS_ACTIVE=1
+    # 收副节点后 upstream 必须回到单活（只有 a/b 槽端口）；若仍有残留行，
+    # 引擎的槽位判定照旧按第一条主行走，但这里如实提示。
+    _dd_resid="$(dd_dual_active_ports || true)"
+    [[ -n "$_dd_resid" ]] && warn "收副节点后 upstream 仍有非槽位端口行（${_dd_resid}）—— 蓝绿引擎按第一条主行切流"
+  else
+    die "nginx upstream ${DD_NGINX_UPSTREAM} 处于【双活形态】（主行之外还有副节点端口：${DD_DUAL_ACTIVE_EXTRA}）——DD_AUTO_MANAGE_SECONDARY=0 时常规部署会破坏双活语义（切流只改第一条主行，随后停「旧槽」时副节点仍在接流，发布验收结论不可信）。
       两条路径（按需选择）：
-        · 要更新在役节点并保持多节点：bash scripts/deploy-211.sh --stop-secondary → 常规部署（蓝绿单活完成）→ bash scripts/deploy-211.sh --start-secondary（用新镜像重建副节点）；
-        · 要回到单活常态：bash scripts/deploy-211.sh --stop-secondary（停副节点 + nginx 收缩回单行）再常规部署。"
+        · 默认（自动）：去掉本覆盖，脚本自动「收副节点 → 部署 → 重挂副节点」；
+        · 人工：bash scripts/deploy-211.sh --stop-secondary → 常规部署 → bash scripts/deploy-211.sh --start-secondary。"
+  fi
 fi
 mkdir -p "$DD_GW_DATA_ROOT/data" "$DD_GW_DATA_ROOT/logs"
 chown -R 65532:65532 "$DD_GW_DATA_ROOT" 2>/dev/null || true
@@ -4395,6 +4415,16 @@ log "  PG      : $PG_CONTAINER  ($( ((PG_REUSED)) && echo 复用 || echo 新建 
 log "  Redis   : $REDIS_CONTAINER ($( ((REDIS_REUSED)) && echo 复用 || echo 新建 ))  库号=db${REDIS_DB} (从 ${DD_REDIS_DB_START} 倒排)"
 log "  密钥    : $ENV_FILE (chmod 600，勿提交)"
 log "=========================================================="
+# ★ 双活自动重挂（2026-11-28 轮）：主入口收了副节点（DD_DUAL_ACTIVE_WAS_ACTIVE=1）
+#   ⇒ 这里在完成标记**之前**重挂——dd_start_secondary 复用在役主槽镜像 +
+#   readyz 通过才挂 nginx 行，任何一步 die ⇒ exit guard 判本次部署失败
+#   （主槽已切流不受影响，副节点可 --start-secondary 手工补）。
+#   放在 DD_DEPLOY_COMPLETED=1 之前是 fail-closed 的另一半：不会把
+#   「副节点没起来」洗成「部署成功」。
+if [[ "${DD_DUAL_ACTIVE_WAS_ACTIVE:-0}" == "1" ]]; then
+  log "双活重挂：按部署前形态重建副节点（traffic-only @ ${DD_SECONDARY_PORT}）"
+  dd_start_secondary
+fi
 # ★ 完成标记（fail-closed 守卫的另一半）：只有真正走到这里，退出码 0 才代表
 #   「这次部署成功了」。任何提前退出的路径（die / abort / 隐式失败）都会被
 #   dd_exit_guard_finalize 判成失败。

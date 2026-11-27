@@ -37,14 +37,16 @@ q() { psql -h 127.0.0.1 -p 15433 -U gateway_e2e -d gateway_e2e -tAc "$1"; }
 captcha_login() { # $1=user $2=password_file → token 写 stdout
   python3 - "$1" "$2" <<'PYC'
 import json, base64, sys, urllib.request, urllib.error
-sys.path.insert(0, '/tmp')
+import os
+HERE = os.getcwd()  # 脚本顶部已 cd 到本目录
+sys.path.insert(0, HERE)
 from captcha_solver import solve_png
 user = sys.argv[1]
 secret_value = open(sys.argv[2]).read().strip()
 for _ in range(4):
     d = json.load(urllib.request.urlopen('http://127.0.0.1:18781/api/auth/captcha'))
     png = base64.b64decode(d['image'].split(',',1)[-1])
-    res = solve_png(png, '/Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/admin/auth_captcha.go')
+    res = solve_png(png, os.path.join(HERE, '..', '..', 'admin', 'auth_captcha.go'))
     if not res:
         continue
     payload = {"user": user, "pw": secret_value, "cid": d['captcha_id'], "cc": res[0]}
@@ -60,7 +62,7 @@ sys.exit(1)
 PYC
 }
 
-ADMIN_PW="$(echo YjlmZGZkZmI1YTQyZGVmNjc1MTQ0Mzg0 | base64 -d)"
+ADMIN_PW="$(cat runtime/admin_password)"  # start-e2e.sh 生成的 seed 口令（runtime/ 已 gitignore）
 USER_PW="$(cat runtime/casdoor_user_password)"
 
 say "C0 前置健康"

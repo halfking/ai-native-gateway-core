@@ -30,6 +30,16 @@ type ResourceLimiter struct {
 	mu            sync.RWMutex
 	lastStats     *ProcessStats
 
+	// ★ 2026-11-28（12h 审计轮 P1 修复）：
+	//   stopOnce —— monitorCancel 的唯一关闭点。原先 close 写在
+	//     `select { case <-monitorCancel: default: close(...) }` 里，
+	//     那个判据**不是并发安全**的（两个 Stop 同时落在 default 分支 ⇒
+	//     双重 close ⇒ panic）。走 sync.Once ⇒ 结构上不可能再发生。
+	//   doneOnce —— monitorDone 的唯一关闭点：monitorProcess 与
+	//     monitorCgroup 两处都要关（见两函数的 defer），用 Once 收口。
+	stopOnce sync.Once
+	doneOnce sync.Once
+
 	// onViolation / onOOMKill 是可选观测回调（集成方案 §5.3 Prometheus 埋点），
 	// 由 pluginruntime.NewSupervisor 注入 metrics.RecordPluginLimitViolation /
 	// RecordPluginOOMKill。本包不直接依赖 metrics——limiter 保持可独立测试，
@@ -60,6 +70,13 @@ const (
 	ModeMonitor  LimiterMode = "monitor"  // macOS process monitoring + warnings
 	ModeDisabled LimiterMode = "disabled" // No resource limits
 )
+
+// monitorStopGrace 是 Stop() 等待采样 goroutine 退出的上限。
+//
+// ★ 2026-11-28（12h 审计轮 P1 修复）：原先 monitor 模式下的等待是**无上限**
+// 的 `<-r.monitorDone`——采样循环一旦卡住，插件停止就被无限期挂住。
+// 给一个上限，采样循环异常时降级为 WARN 继续（清理 cgroup 仍要跑）。
+const monitorStopGrace = 2 * time.Second
 
 // ProcessStats tracks resource usage for monitoring
 type ProcessStats struct {
@@ -150,7 +167,7 @@ func (r *ResourceLimiter) applyCgroupLimits(cmd *exec.Cmd) error {
 		// 注入但照常写 cgroup——benchmark/未来调用方可能只想要文件写入面。
 		cmd = &exec.Cmd{}
 	}
-	if r.cgroupPath == "" {
+	if r.cgroupDir() == "" {
 		return fmt.Errorf("cgroup path not initialized")
 	}
 
@@ -222,8 +239,32 @@ func (r *ResourceLimiter) applyCgroupLimits(cmd *exec.Cmd) error {
 
 // writeCgroup writes a value to a cgroup file.
 func (r *ResourceLimiter) writeCgroup(file, value string) error {
-	path := filepath.Join(r.cgroupPath, file)
+	path := filepath.Join(r.cgroupDir(), file)
 	return os.WriteFile(path, []byte(value), 0o644)
+}
+
+// cgroupDir 返回当前 cgroup 目录（持读锁）。
+//
+// ★ 2026-11-28（12h 审计轮 P1 修复）：cgroupPath 此前被 Stop() **写**、
+// 被采样 goroutine（monitorCgroup）与 applyCgroupLimits/AssignProcess **读**，
+// 且两侧都不持锁 ⇒ 真实数据竞争（go test -race 可复现：Stop 与采样拍
+// 同时读写同一个 string 头指针）。统一走访问器收口。
+func (r *ResourceLimiter) cgroupDir() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cgroupPath
+}
+
+// setCgroupDir 写 cgroup 目录（持写锁）。
+func (r *ResourceLimiter) setCgroupDir(p string) {
+	r.mu.Lock()
+	r.cgroupPath = p
+	r.mu.Unlock()
+}
+
+// closeMonitorDone 关闭 monitorDone（唯一关闭点）。
+func (r *ResourceLimiter) closeMonitorDone() {
+	r.doneOnce.Do(func() { close(r.monitorDone) })
 }
 
 // AssignProcess assigns a running process to the cgroup (Linux) or starts monitoring (macOS).
@@ -235,17 +276,18 @@ func (r *ResourceLimiter) AssignProcess(pid int) error {
 	}
 	switch r.mode {
 	case ModeCgroup:
-		if r.cgroupPath == "" {
+		cgroupDir := r.cgroupDir()
+		if cgroupDir == "" {
 			return fmt.Errorf("cgroup path not initialized")
 		}
 
 		// Assign process to cgroup
-		procsPath := filepath.Join(r.cgroupPath, "cgroup.procs")
+		procsPath := filepath.Join(cgroupDir, "cgroup.procs")
 		if err := os.WriteFile(procsPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
 			return fmt.Errorf("failed to assign process to cgroup: %w", err)
 		}
 
-		fmt.Printf("INFO: assigned process %d to cgroup %s\n", pid, r.cgroupPath)
+		fmt.Printf("INFO: assigned process %d to cgroup %s\n", pid, cgroupDir)
 		// §5.3：cgroup 模式同样启动采样读回（memory.current / pids.current /
 		// memory.events oom_kill），与 monitor 模式共享 lastStats + 埋点回调。
 		r.mu.Lock()
@@ -272,7 +314,7 @@ func (r *ResourceLimiter) AssignProcess(pid int) error {
 
 // monitorProcess monitors process resource usage (macOS fallback)
 func (r *ResourceLimiter) monitorProcess(pid int) {
-	defer close(r.monitorDone)
+	defer r.closeMonitorDone()
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -346,6 +388,11 @@ func (r *ResourceLimiter) monitorCgroup() {
 		r.monitorActive = false
 		r.mu.Unlock()
 	}()
+	// ★ 2026-11-28（12h 审计轮 P1 修复）：本循环原先**从不**关闭 monitorDone
+	//   （只有 monitorProcess 会关）⇒ Stop() 一旦改为在 cgroup 模式下等
+	//   monitorDone，就会永久挂住 ⇒ 插件停止卡死。采样循环退出时必须
+	//   关闭它，两处统一走 doneOnce。
+	defer r.closeMonitorDone()
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -353,17 +400,18 @@ func (r *ResourceLimiter) monitorCgroup() {
 	for {
 		select {
 		case <-ticker.C:
-			if r.cgroupPath == "" {
+			cgroupDir := r.cgroupDir()
+			if cgroupDir == "" {
 				return
 			}
 			stats := &ProcessStats{Timestamp: time.Now()}
-			if v, err := readCgroupUint(r.cgroupPath, "memory.current"); err == nil {
+			if v, err := readCgroupUint(cgroupDir, "memory.current"); err == nil {
 				stats.MemoryBytes = v
 			}
-			if v, err := readCgroupUint(r.cgroupPath, "pids.current"); err == nil {
+			if v, err := readCgroupUint(cgroupDir, "pids.current"); err == nil {
 				stats.NumThreads = int(v)
 			}
-			if v, err := readCgroupUint(r.cgroupPath, "cpu.stat", "usage_usec"); err == nil && r.lastStats != nil && r.lastStats.Timestamp.Unix() > 0 {
+			if v, err := readCgroupUint(cgroupDir, "cpu.stat", "usage_usec"); err == nil && r.lastStats != nil && r.lastStats.Timestamp.Unix() > 0 {
 				// CPU 百分比 = 窗口内 usage 差分 / 窗口时长（单核口径 ×100）。
 				elapsed := stats.Timestamp.Sub(r.lastStats.Timestamp).Seconds()
 				if elapsed > 0 {
@@ -384,7 +432,7 @@ func (r *ResourceLimiter) monitorCgroup() {
 			// memory.events oom_kill 差分上报（首次读回仅记基线）。基线字段
 			// 一并持锁——测试与未来导出面都会跨 goroutine 读它们。回调在锁外
 			// 调用（metrics 打点不持 limiter 锁，避免锁序耦合）。
-			if kills, err := readCgroupUint(r.cgroupPath, "memory.events", "oom_kill"); err == nil {
+			if kills, err := readCgroupUint(cgroupDir, "memory.events", "oom_kill"); err == nil {
 				var oomDelta uint64
 				r.mu.Lock()
 				if !r.oomSeen {
@@ -525,25 +573,33 @@ func (r *ResourceLimiter) Stop() error {
 	// ★ stopguard 守卫（2026-11-28 代上游收口）：构造后从未 Start（active=false）
 	//   的件不进等待分支——monitorDone 只在 Start 的 goroutine 里 close。
 	if !active {
-		return r.removeCgroup()
+		return r.removeCgroup(r.cgroupDir())
 	}
 
-	if r.mode == ModeMonitor {
-		select {
-		case <-r.monitorCancel:
-			// already closed
-		default:
-			close(r.monitorCancel)
-		}
-		<-r.monitorDone
+	// ★ 2026-11-28（12h 审计轮 P1 修复）：采样 goroutine 的取消与等待必须
+	//   在**两种模式**下都做。原实现把 close(monitorCancel) 放在
+	//   `if r.mode == ModeMonitor` 分支里 ⇒ **cgroup 模式（生产平台 Linux）
+	//   的 monitorCgroup 永不退出** ⇒ 每停一个插件就泄漏一个 goroutine +
+	//   一个 5s ticker（goroutine 数随插件重启/升级单调增长，且泄漏的
+	//   goroutine 还在每 5s 读已被 rmdir 的 cgroup 文件）。
+	//   close 走 sync.Once ⇒ 结构上排除双重 close panic（原 select/default
+	//   判据在并发 Stop 下不成立）。等待带上限 ⇒ 采样循环卡死时不无限期
+	//   阻塞插件停止。
+	r.stopOnce.Do(func() { close(r.monitorCancel) })
+	select {
+	case <-r.monitorDone:
+	case <-time.After(monitorStopGrace):
+		fmt.Printf("WARN: plugin %s resource sampling did not stop within %s\n",
+			r.pluginName, monitorStopGrace)
 	}
 
 	// Remove cgroup directory
-	if r.cgroupPath != "" {
-		if err := r.removeCgroup(); err != nil {
+	cgroupDir := r.cgroupDir()
+	if cgroupDir != "" {
+		if err := r.removeCgroup(cgroupDir); err != nil {
 			return err
 		}
-		r.cgroupPath = ""
+		r.setCgroupDir("")
 	}
 
 	return nil
@@ -560,14 +616,17 @@ func (r *ResourceLimiter) Stop() error {
 // 虚拟化环境（如 Docker Desktop 的 cgroup v2 虚拟化层）可能对已空目录也拒绝
 // unlinkat（EPERM）——这类环境性拒绝同样经重试后仍失败时如实返回错误，
 // 由调用方（Supervisor.Stop）WARN 降级，不影响插件服务。
-func (r *ResourceLimiter) removeCgroup() error {
-	// monitor 模式（cgroup 不可用）下 cgroupPath="" → 无目录需清理
-	if r.cgroupPath == "" {
+//
+// ★ 2026-11-28（12h 审计轮 P1 修复）：入参改为目录快照（cgroupDir()），
+// 避免与采样 goroutine 争用 r.cgroupPath（原先两处都不持锁 ⇒ 数据竞争）。
+func (r *ResourceLimiter) removeCgroup(cgroupDir string) error {
+	// monitor 模式（cgroup 不可用）下目录为空 → 无目录需清理
+	if cgroupDir == "" {
 		return nil
 	}
 	var err error
 	for i := 0; i < 15; i++ { // ~3s：等进程组内线程退出（SIGTERM 优雅窗口内）
-		err = syscall.Rmdir(r.cgroupPath)
+		err = syscall.Rmdir(cgroupDir)
 		if err == nil {
 			return nil
 		}

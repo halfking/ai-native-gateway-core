@@ -52,16 +52,20 @@ type destructiveFixture struct {
 }
 
 var destructiveGuardedDB = map[string]destructiveFixture{
-	"REQUEST_METRICS_TEST_DSN": {
-		path: "internal/metricsstore/projection_integration_test.go",
-		guard: func(body string) []string {
-			if !strings.Contains(body, `!strings.HasPrefix(database, "request_metrics_fixture_") || tables != 0`) ||
-				!strings.Contains(body, `t.Fatalf("expected an empty owned fixture`) {
-				return []string{"request metrics fixture must reject nonempty or differently named databases"}
-			}
-			return nil
-		},
-	},
+	// ★ 2026-11-28（12h 审计轮 P0 修复）：「REQUEST_METRICS_TEST_DSN」曾在本表里
+	//   **登记两次**——一份是 1655ad7ce9c（11-25 22:07）登记的具名守卫
+	//   （requestMetricsFixtureGuardProblems，见本表下方），一份是 b7874fce72
+	//   （11-25 23:51）后补的内联守卫。Go 的 map 字面量**重复键是编译错误**
+	//   ⇒ sql/schema 整个测试包自 11-25 起就编译不过 ⇒ 本表承载的
+	//   「破坏型夹具自守卫」门与「台账 ⊇ 本表」对账门**双双处于静默失效态**
+	//   （门本身跑不起来 ⇒ 恒绿假象）。
+	//   修法＝删掉后补的内联重复项，保留**具名守卫**那份：
+	//     · 具名守卫是本表的既有范式（每条腿一把尺，勿共用）；
+	//     · 它断言的属性是内联版的两条的超集（库名前缀守卫 + 空库守卫 +
+	//       「大声失败而非跳过」守卫，三条都钉）；
+	//     · 它对目标件的断言形态更稳健（分别要求三处 token，不锁死
+	//       「|| 合并条件」这一写法 ⇒ 目标件日后改成两段独立 if 不会假红）。
+	//   目标件当前内容已逐 token 核对，三条全部在位。
 	"REQUEST_METRICS_POLL_TEST_DSN": {
 		path:  "internal/metricsstore/projection_load_test.go",
 		guard: requestMetricsLoadFixtureGuardProblems,
