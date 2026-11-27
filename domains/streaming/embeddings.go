@@ -113,11 +113,15 @@ func (h *EmbeddingsHandler) recordRateLimited(requestID string, keyInfo *authent
 }
 
 func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestID := r.Header.Get("X-Request-Id")
+	requestID := sanitizeRequestCorrelationID(r.Header.Get("X-Request-Id"))
 	if requestID == "" {
 		requestID = generateRequestID()
 	}
 	w.Header().Set("X-Request-Id", requestID)
+	correlationID := sanitizeRequestCorrelationID(r.Header.Get("X-Correlation-Id"))
+	if correlationID != "" {
+		w.Header().Set("X-Correlation-Id", correlationID)
+	}
 
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -170,8 +174,9 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tenantID, profile := "", ""
+	keyID := 0
 	if keyInfo != nil {
-		tenantID = keyInfo.TenantID
+		tenantID, keyID = keyInfo.TenantID, keyInfo.ID
 		if keyInfo.DefaultClientProfile != nil {
 			profile = *keyInfo.DefaultClientProfile
 		}
@@ -210,6 +215,9 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("Accept", "application/json")
 		upstreamReq.Header.Set("X-Gateway-Internal-Purpose", "embedding")
+		if correlationID != "" {
+			upstreamReq.Header.Set("X-Request-Id", requestID)
+		}
 
 		upstreamReq, attemptObserver := observeModalityRequest(upstreamReq, h.attemptRecorder, candidate, tenantID, requestID, "embeddings")
 		resp, upstreamErr := h.upstream.Do(upstreamReq)
@@ -271,6 +279,11 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attemptObserver.Finish("success")
 			}
 		}
+		if correlationID != "" {
+			slog.InfoContext(r.Context(), "embedding provider response", "request_id", requestID, "correlation_id", correlationID,
+				"tenant_id", tenantID, "api_key_id", keyID, "route_model", model, "upstream_model", candidate.RawModel,
+				"provider_id", candidate.ProviderID, "credential_id", candidate.CredentialID, "status_code", resp.StatusCode)
+		}
 		if autoDecision != "" {
 			// Minimal X-Gw-Auto-Decision for embeddings (no task taxonomy).
 			w.Header().Set("X-Gw-Auto-Decision", `{"task_type":"embedding","chosen_model":"`+autoDecision+`"}`)
@@ -281,7 +294,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Warn("embedding candidates exhausted", "request_id", requestID, "model", model, "error", lastErr)
+	slog.Warn("embedding candidates exhausted", "request_id", requestID, "correlation_id", correlationID, "model", model, "error", lastErr)
 	// Contract: exhaustion status follows the semantic family of the last
 	// error Kind (429 throttled / 503 overloaded / 504 timeout / 502 dead).
 	// Retry-After is read from the terminating family's own bucket only

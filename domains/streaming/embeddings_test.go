@@ -562,3 +562,42 @@ func TestEmbeddingsHandlerRetryAfterStaysWithinFamily(t *testing.T) {
 		t.Fatalf("error type = %q, want overloaded_error", payload.Error.Type)
 	}
 }
+
+func TestEmbeddingsHandlerCorrelatesRequestsWithoutChangingModelBinding(t *testing.T) {
+	const correlation = "memora-vector-operation"
+	const rawModel = "qwen3-embedding:0.6b"
+	requestIDs := make(chan string, 2)
+	supplier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestIDs <- r.Header.Get("X-Request-ID")
+		if r.Header.Get("X-Correlation-ID") != "" || r.Header.Get("Authorization") != "Bearer supplier-fixture" {
+			t.Error("unexpected supplier trace or credential")
+		}
+		var body struct{ Model string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Model != rawModel {
+			t.Errorf("wrong model binding: %q %v", body.Model, err)
+		}
+		w.Write([]byte(`{"model":"qwen3-embedding:0.6b","data":[{"index":0,"embedding":[1]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer supplier.Close()
+	resolver := &embeddingResolverStub{candidates: []provider.Candidate{{
+		BaseURL: supplier.URL, Protocol: "openai-completions", RawModel: rawModel, APIKey: "supplier-fixture",
+		Routable: true, LifecycleStatus: "active", AvailabilityState: "ready", QuotaState: "ok",
+	}}}
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
+	for _, id := range []string{"memora-inference-1", "memora-inference-2"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"qwen3-embedding:0.6b","input":"memory"}`))
+		req.Header.Set("X-Request-ID", id)
+		req.Header.Set("X-Correlation-ID", correlation)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || w.Header().Get("X-Request-ID") != id || w.Header().Get("X-Correlation-ID") != correlation {
+			t.Fatalf("Gateway response lost trace: status=%d headers=%v", w.Code, w.Header())
+		}
+		if forwarded := <-requestIDs; forwarded != id {
+			t.Fatalf("supplier received request ID %q, want %q", forwarded, id)
+		}
+	}
+	if resolver.model != rawModel || resolver.modality != "embedding" {
+		t.Fatalf("resolver model=%q modality=%q", resolver.model, resolver.modality)
+	}
+}
