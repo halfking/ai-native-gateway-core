@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/limiter"
 )
@@ -114,6 +115,12 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 		if err != nil {
 			return nil, fmt.Errorf("create resource limiter for %s: %w", m.PluginID, err)
 		}
+		// §5.3 埋点：超限/OOM 计数接入 metrics（回调内部 nil 安全；测试手工
+		// 构造的 Supervisor 同样受益——hooks 挂在 limiter 上而非构造函数）。
+		rl.SetObservabilityHooks(
+			func(kind string) { metrics.RecordPluginLimitViolation(m.PluginID, kind) },
+			func(delta uint64) { metrics.RecordPluginOOMKill(m.PluginID, delta) },
+		)
 	}
 
 	cmd := s.commandFactory(socketPath, m.Runtime.Entrypoint, env)
@@ -328,6 +335,20 @@ func (s *Supervisor) ManifestOf(pluginID string) *Manifest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.manifests[pluginID]
+}
+
+// States 返回全部已启动插件状态快照（§5.3 指标导出器的枚举面；含 starting
+// 等中间态）。返回拷贝，调用方可安全读字段。未启动任何插件时返回空切片。
+func (s *Supervisor) States() []PluginState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]PluginState, 0, len(s.states))
+	for _, st := range s.states {
+		if st != nil {
+			out = append(out, *st)
+		}
+	}
+	return out
 }
 
 // execCommand 用 os/exec 启动插件 entrypoint。

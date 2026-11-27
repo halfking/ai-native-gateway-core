@@ -28,6 +28,27 @@ type ResourceLimiter struct {
 	monitorActive bool // Track if monitoring goroutine is running
 	mu            sync.RWMutex
 	lastStats     *ProcessStats
+
+	// onViolation / onOOMKill 是可选观测回调（集成方案 §5.3 Prometheus 埋点），
+	// 由 pluginruntime.NewSupervisor 注入 metrics.RecordPluginLimitViolation /
+	// RecordPluginOOMKill。本包不直接依赖 metrics——limiter 保持可独立测试，
+	// 回调为 nil 时行为与历史版本完全一致（仅 fmt WARN）。
+	onViolation func(kind string)
+	onOOMKill   func(delta uint64)
+	// lastOOMKills 记录上次读到的 memory.events oom_kill 累计值（cgroup 模式
+	// 采样读回），差分上报增量；oomSeen 防首次读回把历史 OOM 计为本进程增量。
+	lastOOMKills uint64
+	oomSeen      bool
+	// lastCPUMicros 记录上次 cpu.stat usage_usec 读数（cgroup CPU 差分用）。
+	// 仅 monitorCgroup goroutine 读写。
+	lastCPUMicros uint64
+}
+
+// SetObservabilityHooks 注入 §5.3 埋点回调（须在 Start/AssignProcess 之前调用）。
+// nil 回调等价于不埋点。
+func (r *ResourceLimiter) SetObservabilityHooks(onViolation func(kind string), onOOMKill func(delta uint64)) {
+	r.onViolation = onViolation
+	r.onOOMKill = onOOMKill
 }
 
 // LimiterMode indicates the enforcement mode
@@ -86,6 +107,11 @@ func NewResourceLimiter(pluginName string, limits ResourceLimits) (*ResourceLimi
 
 // Mode returns the limiter's enforcement mode.
 func (r *ResourceLimiter) Mode() LimiterMode { return r.mode }
+
+// Limits 返回本 limiter 生效的限制声明（§5.3 导出面用；只读视图）。
+func (r *ResourceLimiter) Limits() *ResourceLimits {
+	return &r.limits
+}
 
 // Apply applies resource limits to a command (before process start).
 func (r *ResourceLimiter) Apply(cmd *exec.Cmd) error {
@@ -200,6 +226,12 @@ func (r *ResourceLimiter) AssignProcess(pid int) error {
 		}
 
 		fmt.Printf("INFO: assigned process %d to cgroup %s\n", pid, r.cgroupPath)
+		// §5.3：cgroup 模式同样启动采样读回（memory.current / pids.current /
+		// memory.events oom_kill），与 monitor 模式共享 lastStats + 埋点回调。
+		r.mu.Lock()
+		r.monitorActive = true
+		r.mu.Unlock()
+		go r.monitorCgroup()
 		return nil
 
 	case ModeMonitor:
@@ -244,6 +276,9 @@ func (r *ResourceLimiter) monitorProcess(pid int) {
 				if err == nil && stats.MemoryBytes > uint64(memLimit) {
 					fmt.Printf("WARN: plugin %s exceeded memory limit: %d bytes (limit: %d bytes)\n",
 						r.pluginName, stats.MemoryBytes, memLimit)
+					if r.onViolation != nil {
+						r.onViolation("memory")
+					}
 				}
 			}
 
@@ -253,6 +288,9 @@ func (r *ResourceLimiter) monitorProcess(pid int) {
 				if err == nil && stats.CPUPercent > float64(cpuLimit) {
 					fmt.Printf("WARN: plugin %s exceeded CPU limit: %.1f%% (limit: %d%%)\n",
 						r.pluginName, stats.CPUPercent, cpuLimit)
+					if r.onViolation != nil {
+						r.onViolation("cpu")
+					}
 				}
 			}
 
@@ -261,6 +299,9 @@ func (r *ResourceLimiter) monitorProcess(pid int) {
 			if maxProcs > 0 && stats.NumThreads > maxProcs {
 				fmt.Printf("WARN: plugin %s exceeded thread limit: %d threads (limit: %d)\n",
 					r.pluginName, stats.NumThreads, maxProcs)
+				if r.onViolation != nil {
+					r.onViolation("threads")
+				}
 			}
 
 		case <-r.monitorCancel:
@@ -269,7 +310,121 @@ func (r *ResourceLimiter) monitorProcess(pid int) {
 	}
 }
 
-// getProcessStats retrieves current process resource usage
+// monitorCgroup 采样读回 cgroup 状态（§5.3，Linux cgroup 模式）。阶段 1 交付
+// 后 cgroup 模式「写完限制就不读」——限制是否生效、内存是否逼近上限、是否
+// 发生过 OOM 全部无观察面，灰度期无法判断默认限制是否够用。本循环与
+// monitorProcess 同周期（5s）读回：
+//   - memory.current → lastStats.MemoryBytes（含 page cache，比 RSS 偏大，
+//     判断水位时注意口径；对「逼近 memory.max」的告警目的这是更准确的口径）
+//   - pids.current   → lastStats.NumThreads（cgroup 内全部任务数）
+//   - memory.events  → oom_kill 计数差分 → onOOMKill 增量回调
+//
+// 读失败不终止循环：cgroup 文件在进程退出/Stop 清理后消失，属预期路径。
+func (r *ResourceLimiter) monitorCgroup() {
+	defer func() {
+		r.mu.Lock()
+		r.monitorActive = false
+		r.mu.Unlock()
+	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if r.cgroupPath == "" {
+				return
+			}
+			stats := &ProcessStats{Timestamp: time.Now()}
+			if v, err := readCgroupUint(r.cgroupPath, "memory.current"); err == nil {
+				stats.MemoryBytes = v
+			}
+			if v, err := readCgroupUint(r.cgroupPath, "pids.current"); err == nil {
+				stats.NumThreads = int(v)
+			}
+			if v, err := readCgroupUint(r.cgroupPath, "cpu.stat", "usage_usec"); err == nil && r.lastStats != nil && r.lastStats.Timestamp.Unix() > 0 {
+				// CPU 百分比 = 窗口内 usage 差分 / 窗口时长（单核口径 ×100）。
+				elapsed := stats.Timestamp.Sub(r.lastStats.Timestamp).Seconds()
+				if elapsed > 0 {
+					delta := v - r.lastCPUMicros
+					if delta > 0 {
+						stats.CPUPercent = float64(delta) / elapsed / 10000 // usec→percent
+					}
+				}
+				r.lastCPUMicros = v
+			} else if err == nil {
+				r.lastCPUMicros = v
+			}
+
+			r.mu.Lock()
+			r.lastStats = stats
+			r.mu.Unlock()
+
+			// memory.events oom_kill 差分上报（首次读回仅记基线）。基线字段
+			// 一并持锁——测试与未来导出面都会跨 goroutine 读它们。回调在锁外
+			// 调用（metrics 打点不持 limiter 锁，避免锁序耦合）。
+			if kills, err := readCgroupUint(r.cgroupPath, "memory.events", "oom_kill"); err == nil {
+				var oomDelta uint64
+				r.mu.Lock()
+				if !r.oomSeen {
+					r.oomSeen = true
+					r.lastOOMKills = kills
+				} else if kills > r.lastOOMKills {
+					oomDelta = kills - r.lastOOMKills
+					r.lastOOMKills = kills
+				} else if kills < r.lastOOMKills {
+					// cgroup 被重建（计数器归零）：重置基线，不报负增量。
+					r.lastOOMKills = kills
+				}
+				r.mu.Unlock()
+				if oomDelta > 0 && r.onOOMKill != nil {
+					r.onOOMKill(oomDelta)
+				}
+			}
+
+			// 软限检测：memory.current 超过硬限 90%（与 Apply 写入 memory.high
+			// 的软限线一致）→ violation 计数。cgroup 硬限下超线先触发回收
+			// （memory.high 节流），持续逼近说明限制偏小，正是灰度要看的信号。
+			if r.limits.Memory != nil && r.limits.Memory.Limit != "" && stats.MemoryBytes > 0 {
+				if memLimit, err := parseMemory(r.limits.Memory.Limit); err == nil {
+					if softLimit := uint64(memLimit) * 90 / 100; stats.MemoryBytes > softLimit {
+						fmt.Printf("WARN: plugin %s memory usage above soft limit: %d bytes (soft: %d, hard: %d)\n",
+							r.pluginName, stats.MemoryBytes, softLimit, memLimit)
+						if r.onViolation != nil {
+							r.onViolation("memory")
+						}
+					}
+				}
+			}
+
+		case <-r.monitorCancel:
+			return
+		}
+	}
+}
+
+// readCgroupUint 从 cgroup 目录读一个键值。支持两种文件形态：
+//   - 单值文件（memory.current / pids.current）：file 即文件名
+//   - 多行键值文件（cpu.stat / memory.events）：key 指定行键
+//
+// 读失败（文件不存在 / cgroup 已清理）返回错误，调用方按预期路径忽略。
+func readCgroupUint(dir, file string, key ...string) (uint64, error) {
+	data, err := os.ReadFile(filepath.Join(dir, file))
+	if err != nil {
+		return 0, err
+	}
+	s := strings.TrimSpace(string(data))
+	if len(key) > 0 && key[0] != "" {
+		for _, line := range strings.Split(s, "\n") {
+			if strings.HasPrefix(line, key[0]+" ") {
+				return strconv.ParseUint(strings.TrimSpace(line[len(key[0])+1:]), 10, 64)
+			}
+		}
+		return 0, fmt.Errorf("key %s not found in %s/%s", key[0], dir, file)
+	}
+	return strconv.ParseUint(s, 10, 64)
+}
 func (r *ResourceLimiter) getProcessStats(pid int) (*ProcessStats, error) {
 	// Check if process exists
 	process, err := os.FindProcess(pid)
@@ -371,6 +526,10 @@ func (r *ResourceLimiter) Stop() error {
 // parseMemory parses memory formats like "256Mi", "512MB", "1Gi", "1GB",
 // "128M", "2G" (decimal suffix as used in manifest resource_limits) or a
 // plain byte count.
+// ParseMemoryLimit 是 parseMemory 的导出包装（§5.3 导出面把声明限制换算成
+// bytes 写 gauge 用）。
+func ParseMemoryLimit(mem string) (int64, error) { return parseMemory(mem) }
+
 func parseMemory(mem string) (int64, error) {
 	if len(mem) < 2 {
 		return 0, fmt.Errorf("invalid memory format: %s", mem)

@@ -1947,6 +1947,46 @@ PY
 }
 # GOACOS-REGISTER:END
 
+# dd_deregister_goacos <端口> —— 按同 IP+端口反注册副节点条目（--stop-secondary 用）。
+# 幂等：条目不存在时 DELETE 返回 404 也算成功（要的是「注销后不在」这个终态）。
+dd_deregister_goacos() {
+  local _port="$1"
+  local _addr="${DD_GOACOS_ADDR:-http://127.0.0.1:8848}"
+  local _ip="${DD_GOACOS_IP:-${DD_HOST:-}}"
+  local _svc="${DD_GOACOS_SERVICE:-llm-gateway}"
+  local _ns="${DD_GOACOS_NAMESPACE:-wm-deploy}"
+  local _grp="${DD_GOACOS_GROUP:-DEFAULT_GROUP}"
+  [[ -n "$_port" ]] || { warn "goacos 注销：端口为空，跳过"; return 0; }
+  [[ -n "$_ip" ]] || { warn "goacos 注销：DD_GOACOS_IP / DD_HOST 皆空，跳过"; return 0; }
+  python3 - "$_addr" "$_ip" "$_port" "$_svc" "$_ns" "$_grp" <<'PY'
+import json, sys, urllib.parse, urllib.request
+
+addr, ip, port, svc, ns, grp = sys.argv[1:7]
+port = int(port)
+base = addr.rstrip("/")
+
+
+def delete(path, params):
+    url = base + path + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=8) as r:
+            return r.status, r.read().decode(errors="replace")
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "code", 0)
+        return code, str(exc)
+
+
+st, body = delete("/nacos/v1/ns/instance",
+                  {"ip": ip, "port": port, "serviceName": svc, "namespaceId": ns,
+                   "groupName": grp, "ephemeral": "false"})
+if st in (200, 204, 404):
+    print(f"OK deregistered {ip}:{port} (status={st})")
+    sys.exit(0)
+print(f"DEREGISTER-FAIL {st} {body[:160]}", file=sys.stderr)
+sys.exit(2)
+PY
+}
+
 # dd_switch_upstream <端口> —— 把 upstream 主 server 行改到 <端口> 并 reload。
 # 幂等：已经是该端口时不动文件（仍会 reload，nginx 平滑重载不中断连接）。
 #
@@ -2271,8 +2311,34 @@ dd_start_secondary() {
     printf '# 派生自 %s（主槽事实源）；身份面照抄，角色/连接池/本地状态三项显式覆盖\n' "$_gw_env_file"
     printf 'export LLM_GATEWAY_RUNTIME_ROLE=traffic-only\n'
     printf 'export LLM_GATEWAY_DB_MAX_CONNS=%q\n' "${DD_SECONDARY_DB_MAX_CONNS:-10}"
-    printf 'export LLM_GATEWAY_LOG_INDEX_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/bleve-index"
-    printf 'export LLM_GATEWAY_SESSION_RAW_DIR=%q\n' "${DD_GW_DATA_ROOT}/data-s/session-archive"
+    # ★ 路径必须是**容器内路径**（网关进程在容器里 mkdir）：data-s 挂载点 =
+    #   /app/data ⇒ 归档/索引落 /app/data 下。首版写了宿主绝对路径
+    #   /opt/kaixuan/... ⇒ 容器内 mkdir /opt/kaixuan 权限拒绝 ⇒ os.Exit(1)
+    #   crash loop（211 实测 Restart 27 次）。主槽两键走默认相对路径（落
+    #   WORKDIR/data ⇒ 挂载卷内）——副节点显式钉进独立卷 data-s。
+    printf 'export LLM_GATEWAY_LOG_INDEX_DIR=%q\n' "/app/data/bleve-index"
+    printf 'export LLM_GATEWAY_SESSION_RAW_DIR=%q\n' "/app/data/session-archive"
+    # 部署期注入键补齐段（2026-11-27 真机补）：gateway.env 只存持久运维键，
+    # 部署机转发的一部分键（STATIC_DIR / POSTGRES_URL / RECONCILIATION_* 等）
+    # 只在容器创建时 -e 注入、从未落 gateway.env ⇒ 只照抄文件会缺键。
+    # 事实源=在役主槽容器的真实 env：取它有而 gateway.env 没有的
+    # LLM_GATEWAY_* 键补进来（逐行 %q 转义，与照抄段同构）。
+    local _main_keys_file _envfile_keys_file _extra_line _extra_k
+    _main_keys_file="$(mktemp)"; _envfile_keys_file="$(mktemp)"
+    docker inspect "$_main_c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+      | grep -E '^LLM_GATEWAY_[A-Za-z0-9_]+=' | cut -d= -f1 | sort -u > "$_main_keys_file" \
+      || true
+    grep -oE '^(export )?LLM_GATEWAY_[A-Za-z0-9_]+=' "$_gw_env_file" 2>/dev/null \
+      | sed 's/^export //' | tr -d '=' | sort -u > "$_envfile_keys_file" || true
+    while IFS= read -r _extra_k; do
+      [[ -n "$_extra_k" ]] || continue
+      grep -qxF "$_extra_k" "$_envfile_keys_file" && continue
+      _extra_line="$(docker inspect "$_main_c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | grep -E "^${_extra_k}=" | head -1)"
+      [[ -n "$_extra_line" ]] || continue
+      printf 'export %s\n' "$(printf '%q' "$_extra_line")"
+    done < "$_main_keys_file"
+    rm -f "$_main_keys_file" "$_envfile_keys_file"
     # 全量照抄段：从 gateway.env 逐行搬运（跳过将被覆盖的四个键与注释/空行）。
     # 值原样搬运（仍是 %q 形态）——docker 注入时逐键 _dd_unq 解码。
     # ★ 2026-11-27 真机修正：gateway.env 的行**本身带 `export ` 前缀** ⇒ 先剥
