@@ -86,7 +86,7 @@ RUN chown -R llmgw:llmgw /app
 EXPOSE 8781
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8781/healthz || exit 1
 
 # Drop root privileges before exec.
