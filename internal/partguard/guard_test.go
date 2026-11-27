@@ -231,6 +231,13 @@ var allowedDynamicDML = []struct {
 		"小时分布刷新：DELETE FROM prefix+pies/providers/keys（prefix=public.request_metrics_board_ 前缀，983q/r 投影小时表）—— 按日重建看板小时分布的先删后插，纯投影表自维护。"},
 	{"domains/reportrollup/daily_history.go", "DELETE", 1,
 		"日历史重算：DELETE FROM cells（historyTables(kind) 返回的 983o 投影日历表）—— 按日重算报表行的先删后插，纯投影表自维护。"},
+	// ★ 2026-11-28（配额 L139 车道随 origin/main 并入补登）：模型策略审辩
+	//   UPDATE 走 fmt.Sprintf("UPDATE %s ...")，表名来自 policyTableFor()
+	//   静态映射（org_model_policies / user_model_policies / tenant_model_policies）
+	//   —— 三张都是 1003/1004 新建的独立普通表（024 范式：软删 + active 视图），
+	//   非分区父表 ⇒ 红线无关，登记备案。
+	{"admin/org_model_policies.go", "UPDATE", 3,
+		"模型策略审辩（approve/revoke 链）：UPDATE 目标为 policyTableFor() 静态映射的三张 1003/1004 策略表（org/user/tenant_model_policies），均为普通表非分区父表。"},
 	// ★ 2026-11-18 登记：数据初始化面板（admin 手工触发的一次性重置）的两处 DELETE。
 	// ① 机制：:463 `fmt.Sprintf("DELETE FROM public.%s WHERE NOT (%s)", t.Name, spec.Where)`
 	//    与 :468 `fmt.Sprintf("DELETE FROM public.%s", t.Name)` —— 表名来自**同文件的
