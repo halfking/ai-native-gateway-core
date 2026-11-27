@@ -3,8 +3,8 @@
 ## 文档信息
 
 - **创建日期**: 2026-11-27
-- **版本**: v1.2
-- **状态**: 阶段 1 已实施并通过审计（2026-11-27，见 §3.5/§3.6）
+- **版本**: v1.3
+- **状态**: 阶段 1 已实施并通过审计（2026-11-27，见 §3.5/§3.6）；§5.3 监控埋点已落地（v1.3，见 §3.7）；Linux cgroup e2e 就绪待真机执行（§4.2/§8.1）
 - **优先级**: P0
 - **相关审计**: [插件化框架审计报告 2026-11-26](../../audit/llm-gateway-plugin-framework-audit-2026-11-26.html)
 
@@ -432,6 +432,20 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 
 审计确认无问题的点：`Manifest.ResourceLimits` 在严格 schema（v3 DisallowUnknownFields）下合法解析；`cloneManifestMap` 浅拷贝 + scan 每轮新建 ResourceLimits 使指针共享无变异风险；Upgrade/Restart 回滚路径的 limiter 清理时序正确。
 
+### 3.7 监控指标埋点落地（2026-11-27，§5.3）
+
+阶段 1 交付后限制「是否生效、是否够用」无观察面（monitor 超限只有 fmt WARN 进日志流；cgroup 模式写完 memory.max 就不读回）。本轮补上：
+
+| 层 | 落地 |
+|----|------|
+| 指标定义（`metrics/plugin_resource_metrics.go`） | 7 个指标：`llmgw_plugin_memory_usage_bytes` / `llmgw_plugin_memory_limit_bytes` / `llmgw_plugin_cpu_usage_percent` / `llmgw_plugin_threads` / `llmgw_plugin_limiter_mode_info{mode}` / `llmgw_plugin_limit_violations_total{kind}` / `llmgw_plugin_oom_killed_total`。label 仅 `plugin_id`（部署期枚举，有界）+ `mode`/`kind` 闭集；经 GW-00 门禁（`TestNoHighCardinalityLabels` 自动覆盖） |
+| limiter 采样读回（`resource_limiter.go`） | ① cgroup 模式新增 `monitorCgroup` 采样循环（5s，与 monitor 同周期）：`memory.current`/`pids.current`/`cpu.stat usage_usec` 差分 → `lastStats`；`memory.events oom_kill` 差分 → OOM 回调（首次读回记基线防历史 OOM 误计；计数器归零重置基线）；软限检测（usage > 90% memory.max，与 `memory.high` 一致）→ violation 回调。② monitor 模式既有超限 WARN 点同步触发 violation 回调。③ `SetObservabilityHooks(onViolation, onOOMKill)` 回调注入——limiter 不直接依赖 metrics 包，保持可独立测试；nil 回调行为与历史版本一致 |
+| Supervisor 接线（`supervisor.go`） | `Start` 创建 limiter 后注入 `metrics.RecordPluginLimitViolation` / `RecordPluginOOMKill` 回调；新增 `States()` 枚举面（collector 遍历用）与 limiter `Limits()`/`ParseMemoryLimit()` 导出面 |
+| 导出器（`cmd/gateway/plugin_metrics_collector.go`） | `pluginMetricsCollector` 周期（15s）遍历 `Supervisor.States()` × `LimiterOf()`，把 mode/usage/limit 快照写进 gauge；接入点与 healthLoop 并列（`main.go`，插件启用时启动、退出时停止）；usage gauge 无 stats 时不写（absent 语义，不造假 0）；坏 limit 配置不砸抓取（fail-fast 属 `Apply` 职责） |
+| 测试 | metrics 3 项（注册形状/归一化/OOM 增量）；limiter 3 项（cgroup 文件解析两种形态/OOM 基线语义/软限触发，-race 通过）；supervisor 3 项（观测面/States 生命周期/回调注入）；collector 3 项（真实 limiter 导出/坏 limit 宽容/Stop 幂等） |
+
+Linux cgroup 端到端验收测试（§4.2/§8.1）同轮落地：`plugin-runtime/controller/e2e_cgroup_linux_test.go`（Linux only，macOS/无 cgroup 写权限自动 Skip）——`TestE2ECgroupHardLimits` 全链路（controller 扫描→真实进程→memory.max/memory.high/swap.max/cpu.max/pids.max 四文件值核对→cgroup.procs 归组→memory.events 可读→停止清理）+ `TestE2ECgroupOOMKill`（8MB 硬限吃 64MB → 内核 oom_kill ≥ 1）。Shell 包装 `scripts/test-resource-limits.sh`（§4.3 规划形态，非 Linux 主机降级为单元/集成测试 + 提示）。
+
 ---
 
 ## 4. 测试方案
@@ -705,15 +719,17 @@ plugins:
 
 ### 5.3 监控指标
 
-需要监控的关键指标：
+需要监控的关键指标（✅ = v1.3 已埋点，见 §3.7；命名按仓库 GW-00 规范带 `llmgw_` 前缀）：
 
-| 指标 | 说明 | 告警阈值 |
-|------|------|---------|
-| `plugin_memory_usage_bytes` | 插件内存使用 | > 90% limit |
-| `plugin_cpu_usage_percent` | 插件 CPU 使用 | > 90% limit |
-| `plugin_process_count` | 插件进程数 | > 90% limit |
-| `plugin_oom_killed_total` | OOM 终止次数 | > 0 |
-| `plugin_resource_limit_violations_total` | 资源限制违规次数（macOS） | > 10/hour |
+| 指标 | 说明 | 告警阈值 | 状态 |
+|------|------|---------|------|
+| `llmgw_plugin_memory_usage_bytes` | 插件内存使用（cgroup memory.current / monitor RSS） | > 90% limit | ✅ |
+| `llmgw_plugin_memory_limit_bytes` | 声明的内存硬限制（memory.max 写入值） | —（对照用） | ✅ |
+| `llmgw_plugin_cpu_usage_percent` | 插件 CPU 使用（cgroup usage_usec 差分） | > 90% limit | ✅ |
+| `llmgw_plugin_threads` | 插件线程/任务数（pids.current） | > 90% limit | ✅ |
+| `llmgw_plugin_oom_killed_total` | OOM 终止次数（memory.events oom_kill 差分） | > 0 | ✅ |
+| `llmgw_plugin_limit_violations_total{kind}` | 资源限制违规次数（monitor/cgroup 软限检测） | > 10/hour | ✅ |
+| `llmgw_plugin_limiter_mode_info{mode}` | 生效限制模式（cgroup/monitor/disabled） | monitor 占比升高 = cgroup 降级信号 | ✅（超规划） |
 
 ---
 
@@ -853,3 +869,4 @@ plugins:
 | v1.0 | 2026-11-27 | 插件化框架审计工作组 | 初始版本 |
 | v1.1 | 2026-11-27 | 插件化框架审计工作组 | 阶段 1 实施完成（main: 3b7f6be54 + 6a0a434e7）：limiter 包/Manifest 扩展/Supervisor 四路径接线/config 默认限制 + 总开关/controller 装配；新增测试 21 项全绿；§3.5 落地记录 |
 | v1.2 | 2026-11-27 | 插件化框架审计工作组 | 交付后审计：修复 P0（snapshot 丢默认限制致插件拒启）与 P1（AssignProcess pid≤0 空转）；新增 3 项回归测试；§3.6 审计记录 |
+| v1.3 | 2026-11-27 | 插件化框架审计工作组 | §5.3 监控埋点落地：7 个 `llmgw_plugin_*` 指标（metrics/plugin_resource_metrics.go）、limiter cgroup 采样读回 + OOM/violation 回调、cmd/gateway 导出器（15s）、12 项新测试全绿（含 -race）；§4.2/§4.3 Linux e2e（TestE2ECgroupHardLimits/OOMKill + scripts/test-resource-limits.sh）；§3.7 落地记录 |

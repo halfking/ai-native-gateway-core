@@ -7417,6 +7417,11 @@ func main() {
 			})
 			healthLoop.Start()
 			defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
+			// §5.3：插件资源限制指标导出（llmgw_plugin_*，/metrics 已有 admin 鉴权）。
+			// 零插件配限制时 collector 空转零开销。
+			pluginMetrics := newPluginMetricsCollector(sup, 15*time.Second)
+			pluginMetrics.Start()
+			defer pluginMetrics.Stop()
 			// graceful shutdown: SIGTERM each plugin process (health loop already stopped above)
 			defer func() {
 				for pluginID := range pluginBases {
