@@ -144,12 +144,17 @@ func parseMemoryQuantity(mem string) (int64, error) {
 	}
 }
 
-// validateCPUPercent checks CPU formats like "25" or "25%" within 0-100.
+// validateCPUPercent checks CPU formats like "25" or "25%" within 1-100.
 func validateCPUPercent(cpu string) error {
 	s := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(cpu), "%"))
 	var percent int
 	if _, err := fmt.Sscanf(s, "%d", &percent); err != nil {
 		return fmt.Errorf("invalid CPU format: %q", cpu)
+	}
+	// 0% 会在 cgroup v2 写出 cpu.max="0 100000"，内核语义 quota=0=unlimited
+	// （2026-11-28 审计 F5）——配置面与 limiter 解析面同语义拒绝。
+	if percent == 0 {
+		return fmt.Errorf("CPU percent must be >= 1 (0%% maps to unlimited in cgroup v2): %q", cpu)
 	}
 	if percent < 0 || percent > 100 {
 		return fmt.Errorf("CPU percent must be 0-100, got %d", percent)

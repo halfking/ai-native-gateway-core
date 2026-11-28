@@ -98,11 +98,14 @@ func TestParseCPU(t *testing.T) {
 		{"50%", 50, false},
 		{"100", 100, false},
 		{"100%", 100, false},
-		{"0", 0, false},
 		{"101", 0, true},  // out of range
 		{"-5", 0, true},   // negative
 		{"abc", 0, true},  // not a number
 		{"%50", 0, true},  // malformed
+		// F5（2026-11-28 审计）：0% 曾返回 0 → cpu.max="0 100000"，
+		// 内核 quota=0 语义是 unlimited，与配置意图相反。解析面必须拒绝。
+		{"0", 0, true},
+		{"0%", 0, true},
 	}
 
 	for _, tt := range tests {
