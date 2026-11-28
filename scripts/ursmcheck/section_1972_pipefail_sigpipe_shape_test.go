@@ -66,7 +66,12 @@ const (
 	//     带来 **1 处新候选站点**；同批的 `deploy-local-lib.sh` / `deploy-seamless-docker.sh`
 	//     只是**纯行号位移**（不改变行数）⇒ ⇒ 行数差只来自新增站点这 1 处。
 	//     ★ 本轮同时把清单重跑了 ⇒ 判据⑤由红转绿（此前 origin/main 上清单已过期）。
-	sc1972ListRowsBaseline = 111
+	//   ★★ **订正（2026-11-29 A6/L153 部署追平轮全量门收口）**：111 → **107**。
+	//     成因＝**上游 `1e131db6e3`**（maestro 简易/专家脚本 head -n -1 在 macOS 不可用
+	//     修复）：`maestro-simple-expert-mode-test.sh` 的 4 处 `head -n -1` 管道站点
+	//     改成 `sed '$d'` ⇒ **彻底移出 pipefail 危险面** ⇒ 候选清单 −4 行（111→107）。
+	//     与 §19.7.5 的同源基线（sc1975ListRowsBaseline）同批同步。
+	sc1972ListRowsBaseline = 107
 	// ★ 2026-11-18 12h 审计轮：106 → 110（并行提交新增 4 处 shell 站点 ⇒
 	//   生成器重跑；口径不变、绝对值随树变 ⇒ 按**实测**重钉绝对值，
 	//   ★ 不得从清单抄（那等于自证）⇒ 真正的牙仍是判据⑤（清单 ↔ 生成器逐字一致）。

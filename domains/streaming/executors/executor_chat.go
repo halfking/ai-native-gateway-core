@@ -2295,7 +2295,7 @@ func (e *Executor) executeOpenAI(
 							StatusCode: resp.StatusCode,
 							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 						})
-					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
+					e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",
 						"request_id", params.RequestID,
 						"credential_id", cand.CredentialID,
@@ -2743,16 +2743,16 @@ func (e *Executor) executeOpenAI(
 						if streamKind == errorsx.KindConcurrent {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
-							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+							e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind) {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
-							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+							e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
 						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
 						e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
-						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+						e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
 							"credential_id", cand.CredentialID,
 							"provider_id", cand.ProviderID,
@@ -2764,7 +2764,7 @@ func (e *Executor) executeOpenAI(
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind) {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
-							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+							e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						}
 						slog.Warn("non-resumable stream interrupted",
 							"credential_id", cand.CredentialID,
