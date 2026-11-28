@@ -3081,6 +3081,12 @@ dd_asm_event_env() {
     ASM_EVENT_SECRET="$(_dd_unq "$ASM_EVENT_SECRET")"
     LLM_GATEWAY_ASM_BASE_URL="$(_dd_unq "$LLM_GATEWAY_ASM_BASE_URL")"
     LLM_GATEWAY_ASM_PLUGIN_ID="$(_dd_unq "$LLM_GATEWAY_ASM_PLUGIN_ID")"
+    # ★ 2026-11-28（fc66158fc0 部署失败收口）：token 与同块四键对称补解码。
+    #   此前唯独 token 读侧不 _dd_unq ⇒ 写侧 %q 形态（backslash 密集值膨胀
+    #   ~2x，65KB→131KB）原样进 GW_ENV，叠加部署机 shell env 里的同名变量
+    #   （并行车会话 262KB 形态）触发 100KB 守卫 fail-fast（候选槽未起、
+    #   主槽未切流）。定点解码后读-写往返恒等，值稳定在原始大小。
+    ASM_PLUGIN_CONTEXT_TOKEN="$(_dd_unq "$ASM_PLUGIN_CONTEXT_TOKEN")"
     # 去掉 shell 引号形态（bash %q 对空串会写成 ''，对含空格的值会加反斜杠）。
     ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\'}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\'}"
     ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT%\"}"; ASM_INTERNAL_ENDPOINT="${ASM_INTERNAL_ENDPOINT#\"}"
