@@ -26,6 +26,14 @@
 
 import { req, ApiError } from './_core'
 
+/** 一条主机配置变更指令（升级配置合同：新增/强制更新，原值保值）。 */
+export type EnvConfigUpdate = {
+  key: string
+  value: string
+  forced: boolean
+  note?: string
+}
+
 /** 远端发布版本（检索结论里的最新版本）。 */
 export type RemoteRelease = {
   version: string
@@ -38,6 +46,8 @@ export type RemoteRelease = {
   release_notes?: string
   binary_url?: string
   binary_sha256?: string
+  /** 该版本要求应用的主机配置变更（maintain manifest 下发；旧源无此字段）。 */
+  config_updates?: EnvConfigUpdate[]
 }
 
 /** 一次版本检索的结论。 */

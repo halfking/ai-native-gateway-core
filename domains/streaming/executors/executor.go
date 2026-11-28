@@ -3415,6 +3415,25 @@ func (e *Executor) forceUnpinOnFatalKind(ctx context.Context, holder string, cre
 	e.forceUnpinOnFatalKindForTenant(ctx, holder, credentialID, kind, session.GetTenantIDFromContext(ctx))
 }
 
+// forceUnpinFpLeaseOnFatalKind is forceUnpinOnFatalKind for a dispatch forward's
+// fingerprint lease. A nil lease means the request holds no slot — internal
+// traffic never takes one (ExecParams.InternalRequest), and a slotless run kept
+// none after the pool saturated — so there is no pin to drop.
+//
+// ★ 2026-11-29（上线后真机验证抓到的回归）：内部流量不占槽之后 fpLease 恒为
+// nil，而 chat / anthropic 执行器的并发过载与流中断分支无判空解引用
+// fpLease.Holder ⇒ 211 副节点 16:48Z 连续 3 次
+// `dispatch forward panic recovered: nil pointer dereference`（内部
+// deepseek-flash 请求，上游 429）。无槽降级运行此前就走得通这条路径，只是
+// 少得多——潜伏缺陷被新行为放大。本包内对 fpLease.Holder 的读取必须只在这里
+// 出现（钉测：TestNoUnguardedFpLeaseHolderDeref）。
+func (e *Executor) forceUnpinFpLeaseOnFatalKind(ctx context.Context, lease *credentialfpslot.Lease, credentialID int, kind errorsx.ErrorKind) {
+	if lease == nil {
+		return
+	}
+	e.forceUnpinOnFatalKind(ctx, lease.Holder, credentialID, kind)
+}
+
 func (e *Executor) forceUnpinOnFatalKindForTenant(ctx context.Context, holder string, credentialID int, kind errorsx.ErrorKind, tenantID string) {
 	if e.FpSlots == nil || !e.FpSlots.Enabled() {
 		return

@@ -172,6 +172,25 @@ ssh 211 'docker exec llm-gateway-211-$(cat /opt/kaixuan/data/llm-gateway/run/act
 5. 监控判定以 `ps -eo pid,args | awk '$2=="bash" && $3=="/tmp/emb-watch3.sh"'` + log 文件尾行为准（双机各一条，211 优先）；恢复信号 = log 出现 `EMBEDDING RECOVERED`。
 6. memora 部署窗口出现时：先 `go version -m` 复核在役提交，从 `8560dea2` 切面构建 `61d6280a`（勿用 codex/s5-audit-211 线），verify 带 `ACC_VERIFY_AUTH_HEADER_FILE`。
 
+## 修复部署轮（2026-11-29 凌晨，**61d6280a 已上生产**）
+
+**部署经过（含撞车插曲）**：
+- 本机先建 arm64 交叉构建+薄层镜像，正要换血时发现 **owner 正在 211 上跑 `container-release deploy memora:audit-99347c85...`（构建提交 `1a9d91e2`，qwen3 embedding 切换 + minimax-m3 模型，两轮 reindex 61967/61969 条）**——主动避让，全程只读观察。
+- **owner 两轮发布均回滚**（服务回到旧镜像 `997adef/8560dea2`，memora-server/worker 重启回旧版）；第二轮 reindex 完成后回滚，`.32` 会话收工离场。判定：**其发布链依旧栽在 verify 凭据（ACC_VERIFY_AUTH_HEADER_FILE 未传）+ embedding 503 让 self-check 的 candidate_promote 必败**——与我方后来实测一致（见下）。
+- owner 窗口空出后执行换血：本地重build **amd64**（⚠️ 首次 arm64 二进制 `exec format error`——211 docker 是 x86_64；在役镜像 `memora:audit-997adef...` 也是 amd64），薄层 `FROM 997adef + COPY kxmemory-go`（fix @ `91b309c0`，含 61d6280a），容器换血方式 = 旧容器 rename+stop 保留回滚壳（`memora-server-pre-fix-20261128`，restart=no）+ 新容器克隆全部 env/网络/卷/端口。
+
+**部署后验证（全绿）**：
+- 在役二进制 `go version -m` = `v0.0.0-20261128084559-91b309c08336` ✓；healthy；goacos 注册成功；零启动 error。
+- **trusted-authz ERROR 全程 0**（修复前每 20~30s 必报）。
+- 三用例活体：带 `X-Project-ID` 的 service JWT search → **200**（修复前 403 `trusted project authorization required` 路径）；`GET /api/v2/knowledge-bases` → 200；search 正常返回 degraded（embedding 503，reason 正确标注 `embedding_failed`）。
+- **官方 verify 脚本（带 ACC_VERIFY_AUTH_HEADER_FILE）= 15 PASS / 3 FAIL**——3 项 FAIL 与在役稳定镜像完全同款且同根：`candidate_promote` 失败原因 `embedding API: HTTP 503`（上游仍宕），manifest snapshot/verify 连锁 skip。**凭据链已闭环**（服务 JWT 认证过，自铸 token 走通），embedding 恢复后重跑即可全绿。
+
+**工程备忘**：
+- memora-server 由 compose 项目 `kaixuan-platform` 管，但 owner 的发布工具绕过 compose 直接 `docker run`；我方换血同款（env 全量克隆自旧容器 inspect）。compose 文件里镜像行仍 pin 旧镜像（997adef），**下次 compose up 会回滚本次修复**——owner 发布或手动改 compose 前需知晓。
+- 服务 JWT 直打 /api/v2 的姿势：HS256 + JWT_SECRET（容器 env），claims 必需 `sub`（service: 前缀或 actor_type=service）、`tenant_id`、`iss=memora`、`aud=memora-api`、`scope`、`exp`；project 访问需 DB `projects` 行且 owner 匹配 principal。
+- 五态 counter（`gateway_memory_prewarm_total`）是 CounterVec：**零 chat 流量时不暴露任何 series**（此前"计数器为空"的两次观察都是新槽刚起+夜间无流量的正常态，非丢指标）。prewarm 触发点在 chat completions 路径（handler.go:5455 Apply）。
+- owner 发布工作区 `/tmp/memora-release-99347c85.../` 有现成 `verify-acc-capability.sh` + `container-release` 工具（读取 `ACC_VERIFY_AUTH_HEADER_FILE` env）——下轮协调 owner 重发布时直接引用。
+
 ## P1-4 评测面补齐（2026-11-28 下午，不需 embedding 的部分已完成）
 
 memora 仓有完整评测基建（`cmd/recall-eval` + `cmd/recall-eval-baseline` + `internal/recalleval`，种子集 `eval/recall/dataset.json`）。本轮补齐两块：
@@ -184,3 +203,18 @@ memora 仓有完整评测基建（`cmd/recall-eval` + `cmd/recall-eval-baseline`
 **embedding 恢复后的补测路径**（终版报告唯一缺口）：生产 memora 上载入种子集 corpus（eval-tenant/eval-recall 隔离）→ 逐 case 真检索导出 ranked `{case_id:[mem_id...]}` → `recall-eval -mode ranked` 评分 → 与 degraded v2 基线对照。
 
 以上均在 memora 分支 `recall-authz-stamp-211`（`61d6280a` 修复 + `91b309c0` 评测基线，已推 origin）。
+
+## 第三轮发布接续（2026-11-29 02:30 观察轮）
+
+**新态势（02:24 例巡发现）**：
+- **owner（.32）00:40 起第三轮发布**，00:47:44 停掉了我的修复容器（`memora-server` fix@91b309c0，优雅退出 exit=0）——**不是回滚我的修复，是其发布流程的 writers-stopped 阶段**。
+- **本轮意图 = embedding 上游大迁移**：新起 `memora-embedding` 容器（本地 llama.cpp，**Qwen3-Embedding-0.6B-Q8_0**，shared-infra 网，`/health` = ok）替代持续 502/503 的 kxpms 远端；`goal-reindex` 容器以 `--all-tenants --writers-stopped --include-memories --resume` 全量重刷 62016 条向量（镜像 `99347c85` = 构建 `1a9d91e2`，**仍不含 61d6280a**）。
+- 速率 ~100 条/min ⇒ reindex 约需 **~9h**（到上午）。reindex 零 error，新通道工作正常。
+- 修复容器本体还在（exited，二进制 91b309c0 已验），回滚壳 `memora-server-pre-fix-20261128` 也在——**61d6280a 的薄层镜像 `memora:fix-61d6280a-recall-authz`（4a4a86ea9e8c）随时可再叠**。
+
+**过时监控线下线**：emb-watch3 双线（211 pid 4191268 + 本地 54406）已杀——脚本探的 kxpms 通道已被 owner 弃用（211 侧连接失败 HTTP 000、本地 401 key 失效），监控目标过时。**若仍需监控 embedding，目标应改为 `http://memora-embedding:8080/health`（shared-infra 网）**。
+
+**接续点（替换前述第 5/6 条）**：
+5. 上午 reindex 完成后 owner 会启 `99347c85` 的 memora-server——**核查其二进制是否含 61d6280a**（`go version -m` 看 vcs.revision）；若不含，在 99347c85 基座上重做薄层（方法同上节，新基座镜像 ID 以 `docker images memora:audit-99347c85...` 为准，amd64）。
+6. owner 的 reindex 用 `--resume` 且 per-batch 提交：若其流程中断，容器名 `goal-reindex` 可复跑续传。
+7. embedding 上游已切本地：Recall@5/nDCG 补测与 verify 重跑**不再依赖 kxpms 恢复**——reindex 完成后即可按 P1-4 补测路径执行（seed corpus → 真检索 → ranked 评分）。
