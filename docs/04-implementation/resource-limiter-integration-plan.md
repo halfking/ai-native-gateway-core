@@ -3,8 +3,8 @@
 ## 文档信息
 
 - **创建日期**: 2026-11-27
-- **版本**: v1.4
-- **状态**: 阶段 1 已实施并通过审计（§3.5/§3.6）；§5.3 监控埋点已落地（§3.7）；**§8.1 功能验收完整闭环**——Linux 容器 + 裸金属（211 PVE 宿主）双环境 e2e 全 PASS 含 oom_kill≥1（§3.8）；§8.2 性能基线全达标（§3.9，容器+裸金属双基线）；§5.1 灰度链路实机闭环（v1.6，清单步 1-3 全通 + collector 接线缺陷修复），24h 水位观察待长驻环境（§5.1）
+- **版本**: v1.7.2
+- **状态**: 阶段 1 已实施并通过审计（§3.5/§3.6）；§5.3 监控埋点已落地（§3.7）；**§8.1 功能验收完整闭环**——Linux 容器 + 裸金属（211 PVE 宿主）双环境 e2e 全 PASS 含 oom_kill≥1（§3.8）；§8.2 性能基线全达标（§3.9，容器+裸金属双基线）；§5.1 灰度链路实机闭环（v1.6，清单步 1-3 全通 + collector 接线缺陷修复）；**清单步 4 进行中（v1.7.2）**——245 rlcanary 旁路实例已上线并复验步 1-3，24h 水位采集运行中（watermark.log，15min 粒度），完成后回填水位摘要
 - **优先级**: P0
 - **相关审计**: [插件化框架审计报告 2026-11-26](../../audit/llm-gateway-plugin-framework-audit-2026-11-26.html)
 
@@ -728,6 +728,8 @@ kill $GATEWAY_PID
 
 **灰度链路已实机闭环（2026-11-28，v1.6）**：真实 gateway 二进制（CGO/lite 存储模式）+ canary 插件（`cmd/canary-plugin`）+ 本模板灰度块，在 Linux 容器（cgroup v2）实跑 `scripts/canary-run.sh`，清单步 1-3 全部通过——① 日志 `cgroup resource limits enabled for plugin canary`；② cgroup 四文件 memory.max=512M/memory.high=90%/swap=0/cpu.max=50%/pids.max=10、进程归组；③ /metrics 出现完整 7 序列（`llmgw_plugin_memory_usage_bytes{plugin_id="canary"}`、`_memory_limit_bytes`、`_cpu_usage_percent`、`_threads`、`_limiter_mode_info{mode="cgroup"}=1`、violations/oom 计数器）。期间发现并修复 v1.3 接线缺陷：**metrics collector 只挂在 legacy supervisor 分支，生产主路径（LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG / controller 管理）从未挂载 ⇒ plugin 序列恒缺**——collector 已提升为两路径共用。清单步 4（24h 真实负载水位观察）仍需长驻网关环境由环境负责人执行；plugin-nav API 就绪面验证在 lite 无 DB 模式不可达（JWT 会话依赖 DB），以 cgroup 状态 + 日志替代确认。
 
+**清单步 4 已启动：245 rlcanary 旁路实例（2026-11-28，v1.7.2 观察轮）**：勘察发现两台长驻网关（211 prod 容器 / 245 蓝绿 candidate）均未启用插件运行时（无 `LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG`、无 plugins 目录），且 245 现网二进制（6bbc51f5）不含 rl 代码——"合入灰度块"实为一次小部署；而 6bbc51f5→b5f55c8b3 相差 417 提交（配额/request-metrics/菜单等其他车道工作，与 154 共享 PG 的迁移链），不宜借灰度名义上线。故改为 245 **独立旁路实例**：`/opt/llm-gateway-go/rlcanary/`（v1.7.1 b5f55c8b3 CGO=1 容器构建，lite 存储，端口 18781，独立 unit `llmgo-245-rlcanary.service`）+ canary 插件 + 模板灰度块；零 nginx 切流、零共享 DB 依赖、零迁移，回滚 = `systemctl stop && disable llmgo-245-rlcanary`。清单步 1-3 复验通过（cgroup v1 主机预期降级：`WARN: cgroupv2 not available (falling back to monitor mode)`，7 序列上线 `mode_info{monitor}=1`、`memory_limit=536870912`、usage≈5.6MB 读回非零、violations=0；plugin-nav 以进程存活 + socket 在位替代——JWT 鉴权依赖 DB，同 v1.6 结论）。24h 水位采集已就位：systemd timer `rlcanary-watermark.timer` 每 15min 追加快照至 `/opt/llm-gateway-go/rlcanary/watermark.log`（服务/插件活性 + 7 序列值）。**工程事实登记**：① lite 存储必须 CGO 构建（CGO=0 启动即败，mattn/go-sqlite3 驱动缺失）；② runtime config 的 `server.host` 归一化后必须与网关 listen host 一致（`:18781` 空主机 ⇒ 写 `0.0.0.0`，写 `127.0.0.1` 启动即败）；③ OOM 序列实名 `llmgw_plugin_oom_killed_total`（killed；交接文档曾误写 oom_kills_total），monitor 模式不读 memory.events 故无样本，cgroup 模式才有值；④ 观察对象是 canary 合成负载（稳态 8MB），验证 limiter 长跑稳定性/指标连续性/泄漏，真实插件水位待真实插件上线后另测。24h 后回填 `watermark.log` 摘要（violations 增速、usage/limit 水位、进程存活率）。
+
 #### Phase 2: 灰度发布（1-2 周）
 
 1. 在 1-2 个测试环境启用 ResourceLimiter
@@ -928,3 +930,5 @@ plugins:
 | v1.5 | 2026-11-27 | 插件化框架审计工作组 | §8.2 性能基线采集全达标（构造 67µs/Apply 25µs/足迹 3.3KB/读回 7µs，余量 3 个数量级）；顺手修 Apply(nil) panic；§5.1 灰度物料模板入库；§3.9 基线表 |
 | v1.6 | 2026-11-28 | 插件化框架审计工作组 | §5.1 灰度链路实机闭环：真实 gateway + canary 插件 + 灰度块在 Linux 容器全通（清单步 1-3，7 序列上线）；发现并修复 v1.3 collector 只挂 legacy 分支、生产 controller 路径恒缺序列的接线缺陷；scripts/canary-run.sh + cmd/canary-plugin 入库 |
 | v1.7 | 2026-11-28 | 插件化框架审计工作组 | **§8.1 验收完整闭环（裸金属）**：211 PVE 宿主（32 核 64GB cgroup v2）实跑全套验收 6/6 绿——`TestE2ECgroupOOMKill` `oom_kill count = 1`（内核 OOM killer 确认），HardLimits PASS，-race 全绿；发现并修复 e2e fixture 缺陷：pids.max=3 在多核裸金属上让 CGO Go helper pthread_create SIGABRT（裸金属 GOMAXPROCS=核数），改 64；§3.9 补裸金属基线 |
+| v1.7.1 | 2026-11-28 | 插件化框架审计工作组 | 审计修复：removeCgroup 空路径早返回（monitor 模式 Stop 在 macOS 失败）；三远端同步 b5f55c8b3 |
+| v1.7.2 | 2026-11-28 | 插件化框架审计工作组 | §5.1 清单步 4 启动：245 rlcanary 旁路实例上线（v1.7.1 二进制 + canary 插件 + 灰度块，lite 存储/18781 端口/独立 unit，零现网影响），清单步 1-3 复验通过（cgroup v1 monitor 降级 7 序列），24h watermark 采集就位（15min systemd timer）；工程事实 4 条登记（CGO 必需/host 归一化匹配/oom_killed 实名/合成负载口径） |
