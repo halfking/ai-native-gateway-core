@@ -98,6 +98,16 @@ func beginSessionRankingRead(ctx context.Context, db *pgxpool.Pool, scope sessio
 	return tx, nil
 }
 
+// buildSessionRankingQuery 把 scope 全部收窄字段落进查询。
+// ★ Owner 必须随 scope.owner 传入：user 档靠它把四个聚合面板收窄到本人，
+// 漏传 ⇒ SQL 的 owner 条件恒真 ⇒ 租户内全员聚合数据泄露。
+func buildSessionRankingQuery(scope sessionRankingScope, dimension, sortBy, order string) metrics.SessionRequestRankingQuery {
+	return metrics.SessionRequestRankingQuery{
+		Start: scope.start, End: scope.end, Tenant: scope.tenant, Owner: scope.owner,
+		SortBy: sortBy, Order: order, Dimension: dimension,
+	}
+}
+
 func (h *Handler) handleSessionRequestRankingV2(w http.ResponseWriter, r *http.Request) {
 	scope, ok := prepareSessionRankingScope(w, r)
 	if !ok {
@@ -124,9 +134,7 @@ func (h *Handler) handleSessionRequestRankingV2(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer tx.Rollback(ctx)
-	result, err := metrics.ReadSessionRequestRanking(ctx, tx, metrics.SessionRequestRankingQuery{
-		Start: scope.start, End: scope.end, Tenant: scope.tenant, SortBy: sortBy, Order: order, Dimension: dimension,
-	})
+	result, err := metrics.ReadSessionRequestRanking(ctx, tx, buildSessionRankingQuery(scope, dimension, sortBy, order))
 	if err != nil {
 		if IsMissingRelationError(err) {
 			writeError(w, http.StatusServiceUnavailable, "request metrics are not initialized")
