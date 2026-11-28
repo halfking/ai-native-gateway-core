@@ -86,7 +86,7 @@ login() {
         -w "\n%{http_code}")
     
     local http_code=$(echo "$response" | tail -1)
-    local body=$(echo "$response" | head -n -1)
+    local body=$(echo "$response" | sed '$d')
     
     if [ "$http_code" = "200" ]; then
         TOKEN=$(echo "$body" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('access_token') or d.get('token') or (d.get('data') or {}).get('token') or '')")
@@ -122,7 +122,7 @@ test_mode_switch() {
     fi
     
     # 测试1.2：验证设置项存在
-    local body=$(echo "$response" | head -n -1)
+    local body=$(echo "$response" | sed '$d')
     local value=$(echo "$body" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('value') if d.get('value') is not None else (d.get('data') or {}).get('value') or '')")
     
     if [ -n "$value" ]; then
@@ -154,7 +154,7 @@ test_access_list() {
     fi
     
     # 测试2.2：验证数据结构
-    local body=$(echo "$response" | head -n -1)
+    local body=$(echo "$response" | sed '$d')
     local count=$(echo "$body" | json_len)
     
     test_passed "密钥列表数量: $count"
@@ -189,7 +189,7 @@ test_providers() {
     http_code=$(echo "$response" | tail -1)
     
     if [ "$http_code" = "200" ]; then
-        local body=$(echo "$response" | head -n -1)
+        local body=$(echo "$response" | sed '$d')
         local count=$(echo "$body" | json_len)
         test_passed "获取供应商目录: $count 个"
     else
