@@ -97,15 +97,33 @@ remote_exec() {
 # Build version -> candidate filenames. A candidate is active unless it is a
 # down/skip file or its header explicitly says it supersedes/deprecates it.
 declare -A CANDIDATES=()
+# ★ 2026-11-29（preflight 实测轮）：★ 退役标记判定必须与部署侧**单点真源**
+#   _deploy_migration_has_retired_marker（deploy-lib/db-changelog.sh）同判据：
+#   **注释行锚定**（行首可选空白 + `--`）＋ 严格枚举（SUPERSEDED/SUPERCEDED/
+#   DEPRECATED）。旧写法 `grep -qiE 'SUPERSEDED|deprecated'` 扫的是**全行**：
+#   944/945 头部注释里的**业务枚举值** `superseded`（报价单状态）直接命中 ⇒
+#   文件被误判退役 ⇒ 候选为空 ⇒ preflight 报「无法解析为唯一 canonical 文件」
+#   ⇒ repair 通道对这两版**永远 fail-fast**（245/252 真机 2026-11-29 实测）。
+#   三词枚举里故意保留 superceded 拼写变体：仓内历史文件确实用过它。
+_has_retired_marker() {
+  local f="$1"
+  head -15 "$f" | grep -qiE '^[[:space:]]*--[[:space:]]*[-*>[:space:]]*\**(SUPERSEDED|SUPERCEDED|DEPRECATED)([^[:alnum:]_]|$)'
+}
 load_candidates() {
   local f base ver
   shopt -s nullglob
   for f in "$REPO_ROOT"/sql/migrations/startup/[0-9]*.sql; do
     [[ -f "$f" ]] || continue
     base=${f##*/}
-    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
+    # ★ 2026-11-29：★ `^[0-9]{3}_` 只匹配**三位**版本号 ⇒ 1000 及以后的
+    #   **四位**迁移文件全部被这条过滤器静默排除 ⇒ repair 通道对 ≥1000
+    #   任何已应用迁移 fail-fast（2026-11-29 preflight 实测：1000–1006 七行
+    #   全报「无法解析」，其中 1000–1005 账本值齐好、纯脚本盲区）。放宽为
+    #   `^[0-9]+_`，与部署侧投递面的 `grep -oE '^[0-9]+'` 提取口径一致；
+    #   `.down.sql`/`.skip` 过滤在下一条不受影响。
+    [[ "$base" =~ ^[0-9]+_ ]] || continue
     [[ "$base" != *.down.sql && "$base" != *.skip && "$base" != *.bak.skip ]] || continue
-    head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED|deprecated' && continue
+    _has_retired_marker "$f" && continue
     ver=${base%%_*}
     if [[ -n "${CANDIDATES[$ver]+x}" ]]; then
       CANDIDATES[$ver]+=$'\n'"$base"
