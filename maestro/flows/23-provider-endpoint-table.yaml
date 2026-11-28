@@ -1,0 +1,84 @@
+# 供应商设置页端点表真机判据（方案 A4 前端，2026-11-28 L153）
+#
+# 判据层级与「源码锚点型单测」互补：SettingsTab.endpoints.test.ts 只能钉住源码
+# 锚点，钉不住「浏览器里到底渲染成什么样、点下去后端回什么」⇒ 本 flow 在真机
+# （211 生产站）上跑渲染态与写路径。
+#
+# 前提（由调用方预置，flow 自己不建数据）：
+#   一个临时供应商（-e PROVIDER_ID 注入），其 provider_endpoint_protocols 预置两行
+#     A = openai-completions（is_primary=true，后端 ORDER BY is_primary DESC 排首行）
+#     B = openai-responses （is_primary=false）
+#   ⇒ 断言用**协议 canonical 字面量**（源里存在，不是猜的），不用临时 URL：URL 是
+#     每次运行才造出来的值，锚在 flow 里等于把一次性的数据写死成判据。
+#
+# 变量：BASE_URL / ADMIN_USER / ADMIN_PASSWORD / ADMIN_DISPLAY_NAME / PROVIDER_ID
+#
+# 本 flow 覆盖的四段（每段都是「驱动原生」断言，不依赖页面内 JS —— web 驱动
+# 没有 evaluateScript，见 _shared/login.yaml 头注）：
+#   ① 设置页签直落（?tab=settings）+ 端点卡片渲染
+#   ② 列表渲染：两条协议都在，主端点在首行（编辑 index 0 落在主端点行上）
+#   ③ 编辑 → 立即保存（不改字段）⇒ PUT 往返成功 + 「端点已保存」
+#   ④ 删除非主端点 ⇒ 成功；删除主端点 ⇒ 后端 409 ⇒ 「删除失败」
+#      ★ 这一段是**真机负控**：源码判据只能证明 handler 里有 409 分支，
+#        证明不了「读-判-写」竞态守卫在真库真行上确实返回冲突。
+url: ${BASE_URL}
+---
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── ① 设置页签直落 + 端点卡片 ────────────────────────────────────────────
+- openLink: ${BASE_URL}/providers/${PROVIDER_ID}?tab=settings
+- extendedWaitUntil:
+    visible: "端点配置"
+    timeout: 20000
+# 卡片说明句（powershell 无关，纯静态文案 ⇒ 适合当「卡片真的在」的判据）
+- assertVisible: "针对该供应商配置具体协议端点（base_url / 权重 / 主端点标记）。主端点不可直接降级或删除，需先提升另一条。"
+
+# ── ② 列表渲染（两条协议都在）────────────────────────────────────────────
+- assertVisible: "openai-completions"
+- assertVisible: "openai-responses"
+
+# ── ③ 编辑 → 立即保存（PUT 往返；不改字段 ⇒ 不依赖任何键入）──────────────
+# 首行是主端点（后端 ORDER BY is_primary DESC, weight DESC, id ASC）
+- tapOn:
+    text: "编辑"
+    index: 0
+- extendedWaitUntil:
+    visible: "保存"
+    timeout: 10000
+- tapOn: "保存"
+- extendedWaitUntil:
+    visible: "端点已保存"
+    timeout: 20000
+
+# ── ④a 删除非主端点（第 2 行 = openai-responses）⇒ 成功 ──────────────────
+- tapOn:
+    text: "删除"
+    index: 1
+- extendedWaitUntil:
+    visible: ".*确定删除此端点.*"
+    timeout: 10000
+- tapOn: "确认"
+- extendedWaitUntil:
+    visible: "端点已删除"
+    timeout: 20000
+- extendedWaitUntil:
+    notVisible: "openai-responses"
+    timeout: 20000
+
+# ── ④b 删除主端点（此时仅剩一行）⇒ 后端 409 ⇒ 删除失败且行仍在 ───────────
+- tapOn:
+    text: "删除"
+    index: 0
+- extendedWaitUntil:
+    visible: ".*确定删除此端点.*"
+    timeout: 10000
+- tapOn: "确认"
+- extendedWaitUntil:
+    visible: "删除失败：.*"
+    timeout: 20000
+- assertVisible: "openai-completions"
