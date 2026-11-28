@@ -342,28 +342,90 @@ func pinRedisKey(holder string, credentialID int) string {
 	return tenantPinRedisKey("default", holder, credentialID)
 }
 
-// RoutingEligible reports whether holder can acquire a slot (prefilter).
-func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *int, holder string) bool {
-	return m.RoutingEligibleForTenant(ctx, credentialID, limit, holder, "default")
-}
+// SlotAvailability classifies what an Acquire by a holder would be able to do
+// on a credential right now. The routing prefilter orders candidates by it;
+// nothing here rejects a request.
+type SlotAvailability int
 
-func (m *Manager) RoutingEligibleForTenant(ctx context.Context, credentialID int, limit *int, holder, tenantID string) bool {
-	if !ratelimit.IsRateLimitEnabled() {
-		return true
-	}
-	if !m.Enabled() {
-		return true
+const (
+	// SlotNoneAvailable: every slot exists and its holder refreshed it inside
+	// the active gate. acquireRedis answers saturated and the dispatch forward
+	// path runs the request without a slot.
+	SlotNoneAvailable SlotAvailability = iota
+	// SlotPreemptable: no free slot, but at least one holder has been idle for
+	// the active gate. acquireLRUScript preempts the longest-idle one.
+	SlotPreemptable
+	// SlotFree: a slot is free (or the pool is unlimited), so Acquire succeeds
+	// without preempting anyone.
+	SlotFree
+)
+
+// RoutingAvailabilityForTenant reports what an Acquire by holder would be able
+// to do on the credential right now.
+//
+// ★ 2026-11-28（glm-5.3-flash 单候选 429 事故）：修前的路由资格判定（已删除的
+// RoutingEligibleForTenant）只数槽键是否存在 ⇒ 持有者已静默超过 active gate
+// 的槽仍被读成「占用」。新持有者因此永远走不到 Acquire —— 而那里才是运营规程
+// 「5 分钟内的会话不允许抢，更久没交互的让出」唯一的实现处 —— 于是在整个
+// 30 分钟槽 TTL 内被锁在门外。本判定与 acquireLRUScript 用同一套 idle 算术，
+// 让路由看到的就是 Acquire 会做的。
+func (m *Manager) RoutingAvailabilityForTenant(ctx context.Context, credentialID int, limit *int, holder, tenantID string) SlotAvailability {
+	if m == nil || !ratelimit.IsRateLimitEnabled() || !m.Enabled() {
+		return SlotFree
 	}
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
-		return true
+		return SlotFree
+	}
+	if m.client == nil {
+		return SlotNoneAvailable
 	}
 	if m.hasPinForTenant(ctx, tenantID, holder, credentialID) {
-		return true
+		return SlotFree
 	}
-	free, _ := m.AvailableCountForTenant(ctx, credentialID, limit, tenantID)
-	return free > 0
+	res, err := routingAvailabilityScript.Run(ctx, m.client,
+		[]string{tenantSlotRedisPrefix(tenantID, credentialID)},
+		*eff, slotTTLSeconds(), m.cfg.resolveActiveGateSeconds(),
+	).Int()
+	if err != nil {
+		slog.Debug("cred_fp_slot routing availability script failed", "cred", credentialID, "error", err)
+		return SlotNoneAvailable
+	}
+	switch res {
+	case 2:
+		return SlotFree
+	case 1:
+		return SlotPreemptable
+	default:
+		return SlotNoneAvailable
+	}
 }
+
+// routingAvailabilityScript mirrors acquireLRUScript's per-slot verdicts.
+// KEYS[1] = slot key prefix
+// ARGV[1] = limit, ARGV[2] = slotTTL, ARGV[3] = activeGateSeconds
+// Returns 2 (free slot / no-TTL slot), 1 (only preemptable slots) or 0.
+var routingAvailabilityScript = redis.NewScript(`
+	local prefix  = KEYS[1]
+	local limit   = tonumber(ARGV[1])
+	local slotTTL = tonumber(ARGV[2])
+	local gate    = tonumber(ARGV[3])
+	local preemptable = 0
+	for slot = 0, limit - 1 do
+		local key = prefix .. ':' .. tostring(slot)
+		if redis.call('EXISTS', key) == 0 then
+			return 2
+		end
+		local remaining = redis.call('TTL', key)
+		if remaining == -1 or remaining == -2 then
+			return 2
+		end
+		if slotTTL - remaining >= gate then
+			preemptable = 1
+		end
+	end
+	return preemptable
+`)
 
 // Acquire tries to take one slot. ok=false means unavailable.
 //

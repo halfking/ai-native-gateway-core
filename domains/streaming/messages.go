@@ -1039,6 +1039,8 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
 			DispatchAllowModelChange:    dispatchAllowModelChange,
 			DispatchModelAlternatives:   dispatchModelAlternatives,
+			// 2026-11-28：三面同形——内部回环流量不占指纹槽（见 internalKeyRequest）。
+			InternalRequest: internalKeyRequest(keyInfo),
 		}
 	}
 
@@ -1238,6 +1240,11 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				// 模型真没节点」的意思，处置方向正好相反。
 				errCode = surf.Code
 				errMsg = surf.Message
+			} else if surf, rateLimited := rateLimitExhaustedRejection(ee, clientModel); rateLimited {
+				// ★ 2026-11-28：全部候选被上游限流 ⇒ 落库 rate_limit（不是误导性的
+				// model_not_found）。渲染分支在下方 Exhausted 块（429 + Retry-After）。
+				errCode = surf.Code
+				errMsg = surf.Message
 			} else {
 				errCode = "model_not_found"
 				errMsg = "all providers unavailable"
@@ -1292,6 +1299,21 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 					writeAnthropicStreamError(w, "invalid_request_error", errMsg)
 				} else {
 					writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", errMsg)
+				}
+				return
+			}
+			// ★ 2026-11-28：全部候选被上游限流 ⇒ 429 + Retry-After + retryable。
+			// 修前落 overloaded_error "All providers unavailable" ⇒ 客户端把限流读成
+			// 不可重试的「没有可用节点」（211 实测 ZCode retryable=false）。与 chat 面
+			// （handler.go）同款契约，判定见 rate_limit_exhausted.go。
+			if surf, rateLimited := rateLimitExhaustedRejection(execErr, clientModel); rateLimited {
+				setRateLimitHeaders(w, surf.RetryAfter)
+				if preStreamPrepared {
+					writeAnthropicStreamError(w, "rate_limit_error", surf.Message,
+						map[string]any{"code": surf.Code}, rateLimitExtras(surf))
+				} else {
+					writeAnthropicError(w, surf.Status, "rate_limit_error", surf.Message,
+						map[string]any{"code": surf.Code}, rateLimitExtras(surf))
 				}
 				return
 			}
@@ -2108,10 +2130,21 @@ func mapAnthropicStopReason(finishReason string) string {
 	}
 }
 
-func writeAnthropicStreamError(w http.ResponseWriter, errType, message string) {
+func writeAnthropicStreamError(w http.ResponseWriter, errType, message string, extras ...map[string]any) {
+	errObj := map[string]any{"type": errType, "message": message}
+	// 2026-11-28：与 writeAnthropicError 同款 extras——流已预热时响应头到不了
+	// 线上，retryable / retry_after 只能随流内错误帧带给客户端。不传 ⇒ 形状不变。
+	for _, extra := range extras {
+		for k, v := range extra {
+			if v == nil || v == "" {
+				continue
+			}
+			errObj[k] = v
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"type":  "error",
-		"error": map[string]any{"type": errType, "message": message},
+		"error": errObj,
 	})
 	_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
 	if flusher, ok := w.(http.Flusher); ok {

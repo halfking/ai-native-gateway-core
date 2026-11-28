@@ -5797,6 +5797,7 @@ func (h *ChatHandler) serveWithExecutor(
 			DispatchAutoWorkType:        autoWorkTypeFromLogContext(logCtx),
 			DispatchAutoSignals:         autoSignalsFromLogContext(logCtx),
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
+			InternalRequest:             internalKeyRequest(keyInfo),
 			PinCredentialID: func() *int {
 				if pinned := parsePinCredentialHeader(r); pinned != nil {
 					return pinned
@@ -6359,6 +6360,7 @@ goalRetryLoopDone:
 						// 面跨供应商候选一直都在）的同构形态。fallback 用的是本次
 						// resolveCandidatesForRequest 的 fbCandidates，许可判定同口径。
 						DispatchAllowProviderChange: hasMultipleProviders(fbCandidates),
+						InternalRequest:             internalKeyRequest(keyInfo),
 						IsStream:                    false,
 						ClientProtocol:              clientProtocol,
 						ClientModel:                 nextModel,
@@ -8700,6 +8702,15 @@ func propagateIsAutoRequestToEntry(entry *telemetry.RequestLogEntry, logCtx *Req
 // treated as a normal request (no skip).
 func shouldSkipAutoSummaryGeneration(logCtx *RequestLogContext) bool {
 	return logCtx != nil && logCtx.IsAutoRequest
+}
+
+// internalKeyRequest reports gateway-internal loopback traffic (system /
+// self-check / probe keys). The three protocol faces pass it to
+// executors.ExecParams.InternalRequest: identity slots are scarce and belong
+// to real client traffic, so internal requests neither hold one nor let slot
+// state order their candidates (2026-11-28).
+func internalKeyRequest(keyInfo *authentication.KeyInfo) bool {
+	return keyInfo != nil && (keyInfo.IsSystem || keyInfo.IsInternal)
 }
 
 func hasMultipleProviders(candidates []provider.Candidate) bool {

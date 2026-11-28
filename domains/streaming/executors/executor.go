@@ -1590,6 +1590,15 @@ type ExecParams struct {
 	// legacy synchronous loop.
 	PinCredentialID *int
 
+	// InternalRequest marks gateway-internal loopback traffic (system /
+	// self-check / probe keys). Identity slots are scarce and reserved for
+	// real client traffic: an internal request neither holds a fingerprint
+	// slot nor lets slot state order its candidates (2026-11-28 — the
+	// self-check key held one of only two slots on the stable glm-5.3-flash
+	// credential, locking real users out of it). Set by the protocol
+	// handlers from KeyInfo.IsSystem / IsInternal.
+	InternalRequest bool
+
 	// InFallback (Phase 2, 2026-07-19) prevents infinite recursion when
 	// the cross-provider model fallback chain triggers a recursive call
 	// to Execute(). Set true before the recursive call so the inner
@@ -2776,20 +2785,33 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 	}
 	clientType := extractClientType(params.R)
 	holder := clientTokenOf(userKey, clientType)
-	// fpSlotDegraded is set when the pre-filter found every candidate's slot
+	// fpSlotDegraded is set when the prefilter found every candidate's slot
 	// pool saturated. In that mode the Acquire loop below tolerates a failed
 	// Acquire and runs the request without a fingerprint slot rather than
 	// rejecting it. See the 2026-06-23 minimax-m3 outage post-mortem.
 	//
 	// KILL-SWITCH (2026-07-12 incident): when settings.IsEnabled("fp_slot")
 	// is false (env KILL_FP_SLOT=1), we skip the fingerprint prefilter
-	// entirely so the full candidate set is always tried. This isolates
-	// the 2026-07-12 minimax-m3 outage where every candidate got dropped
+	// entirely so the full candidate set is always tried. This isolates the
+	// 2026-07-12 minimax-m3 outage where every candidate got dropped
 	// for failing health-probe.
+	//
+	// ★ 2026-11-28（glm-5.3-flash 单候选 429 事故）：预过滤是**排序**，不再
+	// 丢弃候选。修前 fpPrefilterCandidates 把拿不到槽的候选直接删掉 ⇒
+	// dispatch 梯子从头到尾只看得见幸存者 ⇒ 211 实测：稳定供应商 33370/587
+	// 的凭据因指纹槽被他人占满被摘，请求只剩智谱一家，一次 429 就终态
+	// 「All providers unavailable」（4/4 硬失败同形）。现在：
+	//   primary = 拿得到槽的（有 pin 或有空槽）—— 与修前幸存集逐字相同；
+	//   fpTail  = 可抢占静默槽的，其后只能无槽降级运行的 —— dispatch 在
+	//             primary 全部失败后按序消费。下游 Acquire 对饱和本就有
+	//             degraded-continue 兜底，尾档候选因此只会「多一条路」。
 	fpSlotDegraded := false
+	var fpTail []provider.Candidate
+	fpTailPreemptable := 0
 	fpSlotKilled := !settings.IsEnabled("fp_slot")
 	if e.FpSlots != nil && e.FpSlots.Enabled() && !fpSlotKilled {
-		filtered := e.fpPrefilterCandidates(params, candidates, holder)
+		primary, preemptable, slotless := e.fpPartitionCandidates(params, candidates, holder)
+		demoted := append(preemptable, slotless...)
 		// Degradation (added 2026-06-23): if every candidate's fingerprint
 		// slot pool is saturated, fall back to the full pre-filter set
 		// rather than rejecting the request outright. The fp_slot layer is
@@ -2803,7 +2825,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		// standardized_name fix) this fallback is rarely hit, but it
 		// prevents a single saturated credential from taking down a whole
 		// model.
-		if len(filtered) == 0 && len(candidates) > 0 {
+		if len(primary) == 0 && len(candidates) > 0 {
 			slog.Warn("cred_fp_slot all saturated, degrading to full candidate set",
 				"candidate_count", len(candidates),
 				"client_model", params.ClientModel,
@@ -2825,18 +2847,17 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				}
 			}
 
-			// Keep the original candidates slice (do NOT replace with the
-			// empty filtered set).
+			// Keep every candidate (do NOT replace with the empty primary
+			// set); the partition already ordered them preemptable-first.
+			candidates = demoted
 		} else {
 			// Phase 1: 记录正常模式
 			if e.DegradationTracker != nil {
 				e.DegradationTracker.RecordRequest(params.ClientModel, false)
 			}
 
-			candidates = filtered
-			if len(candidates) == 0 {
-				return nil, &ExecuteError{LastErr: fmt.Errorf("cred_fp_slot: all saturated"), Tried: 0, Exhausted: true}
-			}
+			candidates = primary
+			fpTail, fpTailPreemptable = demoted, len(preemptable)
 		}
 	}
 
@@ -2851,36 +2872,66 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			LastKind:  errorsx.KindTransient,
 		}
 	}
-	return e.executeViaDispatch(params, candidates, holder, fpSlotDegraded, stickyCredID)
+	return e.executeViaDispatch(params, candidates, holder, fpSlotDegraded, stickyCredID, fpTail, fpTailPreemptable)
 
 }
 
-// fpPrefilterCandidates applies the fingerprint-slot prefilter: candidates
-// whose slot pool cannot serve this holder are dropped so routing spreads
-// distinct identities across slots. A pinned candidate is exempt — the
-// request's routing pin (probe X-LLM-Pin-Credential, admin
-// X-LLMGW-Preferred-Credential) demands attribution to that exact node, and
-// dispatchRoute hard-filters the planned set down to the pin afterwards.
-// Dropping the pinned cred here instead produced "all 0 candidates failed"
-// with zero upstream attempts the moment the pin's slot pool saturated
-// (2026-10-13 glm-5.3: cred 63 fp-skipped under batch pressure while every
-// single-candidate model degraded through fine). The dispatch Acquire loop is
-// the designed continuation for an ineligible pinned node: it logs
-// "dispatch fp slot saturated" and runs the request without a slot.
-func (e *Executor) fpPrefilterCandidates(params *ExecParams, candidates []provider.Candidate, holder string) []provider.Candidate {
-	filtered := make([]provider.Candidate, 0, len(candidates))
+// fpPartitionCandidates applies the fingerprint-slot prefilter as an ORDERING:
+// candidates the holder can get a slot on come first; the rest follow as
+// failover targets instead of being dropped.
+//
+// The two returned demoted slices are the failover tiers, each keeping the
+// router's relative order:
+//   - primary: the request's routing pin, a holder pin, or a free slot.
+//   - preemptable: every slot exists but one holder has been idle past the
+//     active gate, so Acquire's LRU pass takes it over.
+//   - slotless: every slot is held by an active holder. Acquire answers
+//     saturated and the dispatch forward path runs the request without a slot
+//     ("fingerprint isolation must not turn a healthy provider into a request
+//     failure") — degraded, but a reachable provider.
+//
+// A pinned candidate is exempt — the request's routing pin (probe
+// X-LLM-Pin-Credential, admin X-LLMGW-Preferred-Credential) demands
+// attribution to that exact node, and dispatchRoute hard-filters the planned
+// set down to the pin afterwards. Dropping the pinned cred here instead
+// produced "all 0 candidates failed" with zero upstream attempts the moment
+// the pin's slot pool saturated (2026-10-13 glm-5.3: cred 63 fp-skipped under
+// batch pressure while every single-candidate model degraded through fine).
+// The dispatch Acquire loop is the designed continuation for a saturated
+// pinned node: it logs "dispatch fp slot saturated" and runs the request
+// without a slot.
+func (e *Executor) fpPartitionCandidates(params *ExecParams, candidates []provider.Candidate, holder string) (primary, preemptable, slotless []provider.Candidate) {
+	primary = make([]provider.Candidate, 0, len(candidates))
+	if params.InternalRequest {
+		// Internal traffic takes no slot (forwardForDispatch skips Acquire),
+		// so slot state must not order its candidates either.
+		return candidates, nil, nil
+	}
 	for _, cand := range candidates {
-		if (params.PinCredentialID != nil && cand.CredentialID == *params.PinCredentialID) ||
-			e.FpSlots.RoutingEligibleForTenant(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, fpSlotTenantID(params)) {
-			filtered = append(filtered, cand)
-		} else {
-			slog.Info("cred_fp_slot prefilter skip",
-				"credential_id", cand.CredentialID,
-				"provider_id", cand.ProviderID,
-			)
+		if params.PinCredentialID != nil && cand.CredentialID == *params.PinCredentialID {
+			primary = append(primary, cand)
+			continue
+		}
+		switch e.FpSlots.RoutingAvailabilityForTenant(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, fpSlotTenantID(params)) {
+		case credentialfpslot.SlotFree:
+			primary = append(primary, cand)
+		case credentialfpslot.SlotPreemptable:
+			preemptable = append(preemptable, cand)
+			logFpSlotDemotion(cand, "preemptable")
+		default:
+			slotless = append(slotless, cand)
+			logFpSlotDemotion(cand, "slotless")
 		}
 	}
-	return filtered
+	return primary, preemptable, slotless
+}
+
+func logFpSlotDemotion(cand provider.Candidate, tier string) {
+	slog.Info("cred_fp_slot prefilter demote",
+		"credential_id", cand.CredentialID,
+		"provider_id", cand.ProviderID,
+		"fp_slot_tier", tier,
+	)
 }
 
 // recordModelNotFound logs a single upstream model_not_found (or

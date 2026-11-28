@@ -185,8 +185,13 @@ func TestForwardForDispatchDegradesWhenFpSlotSaturatesAfterPrefilter(t *testing.
 // X-LLM-Pin-Credential）凭据被 fp_slot 预过滤剔除后，dispatchRoute 的硬 pin
 // 过滤把候选集收窄成 0，请求未触上游即 "all 0 candidates failed"（本地
 // 15:34:39 / 15:41:46 两轮实测）。钉扎候选必须在预过滤中豁免——下游 Acquire
-// 对饱和本就有 degraded-continue 兜底。判据同层驱动 fpPrefilterCandidates。
-func TestFpPrefilterKeepsPinnedCandidateWhenSlotSaturated(t *testing.T) {
+// 对饱和本就有 degraded-continue 兜底。
+//
+// ★ 2026-11-28：预过滤不再丢弃任何候选（fpPartitionCandidates），所以本判据
+// 的后半段随之改写——未钉扎的饱和候选不再被「删除」，而是作为尾档故障转移
+// 目标保留。修前这里钉的是 "without a pin the saturated candidate must still
+// be dropped"，那条行为正是 glm-5.3-flash 单候选 429 事故的根因。
+func TestFpPartitionKeepsPinnedCandidateWhenSlotSaturated(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	fpMgr := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 1, Enabled: true}, client)
@@ -206,14 +211,20 @@ func TestFpPrefilterKeepsPinnedCandidateWhenSlotSaturated(t *testing.T) {
 	saturated := provider.Candidate{ProviderID: 36, CredentialID: 63, FpSlotLimit: &fpLimit}
 	healthy := provider.Candidate{ProviderID: 5917, CredentialID: 29, FpSlotLimit: &fpLimit}
 
-	got := exec.fpPrefilterCandidates(params, []provider.Candidate{saturated, healthy}, "pinned-holder")
-	if len(got) != 2 {
-		t.Fatalf("pinned saturated candidate must survive the prefilter, got %d candidates: %+v", len(got), got)
+	primary, preemptable, slotless := exec.fpPartitionCandidates(params, []provider.Candidate{saturated, healthy}, "pinned-holder")
+	if len(primary) != 2 || len(preemptable) != 0 || len(slotless) != 0 {
+		t.Fatalf("pinned saturated candidate must stay first-choice, got primary=%+v preemptable=%+v slotless=%+v", primary, preemptable, slotless)
 	}
 
 	params.PinCredentialID = nil
-	got = exec.fpPrefilterCandidates(params, []provider.Candidate{saturated, healthy}, "pinned-holder")
-	if len(got) != 1 || got[0].CredentialID != 29 {
-		t.Fatalf("without a pin the saturated candidate must still be dropped, got %+v", got)
+	primary, preemptable, slotless = exec.fpPartitionCandidates(params, []provider.Candidate{saturated, healthy}, "pinned-holder")
+	if len(primary) != 1 || primary[0].CredentialID != 29 {
+		t.Fatalf("without a pin the healthy candidate must be the first choice, got primary=%+v", primary)
+	}
+	if len(preemptable) != 0 {
+		t.Fatalf("a slot held by an ACTIVE holder is not preemptable, got preemptable=%+v", preemptable)
+	}
+	if len(slotless) != 1 || slotless[0].CredentialID != 63 {
+		t.Fatalf("the saturated candidate must be kept as a slotless failover target, got slotless=%+v", slotless)
 	}
 }
