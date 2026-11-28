@@ -9,9 +9,12 @@
 #   「账本无记录 ⇒ pending」判定，会把下面这些只引用 v1 族的迁移反复投喂给
 #   现役库 ⇒ PG 日志 42P01（relation does not exist）噪声 + 部署通道中断。
 #
-#   本清单由 2026-11-28 一次性 PG17 容器实测得出，两部分共 55 件：
-#   （2026-11-28 deploy-245 轮补 484：纯 v1 件 ALTER TABLE request_logs_hot，
-#    首轮实测漏枚举；211 acc-pg17 共享库账本漂移形态实投喂证实）
+#   本清单由 2026-11-28 一次性 PG17 容器实测得出，两部分共 61 件：
+#   （2026-11-28 deploy-245 轮补 484+485/487/488/601/603/604 六件：账本漂移库
+#    （211 acc-pg17）实投喂逐件炸出；首轮实测漏枚举该连续段。补录前逐件
+#    裁决过 718/719/807（IF EXISTS 幂等不炸）、511/653/823/835/886/889
+#    （仅注释/字符串引用）、716/727/729（request_logs_with_current_month
+#    是 890 重建后的会话族活视图）等近邻——只收裸 ALTER/DROP 纯 v1 件。）
 #   ① 41 个**纯 v1 件**（整条 SQL 只触碰 request_logs 族对象，空库即 42P01）；
 #   ② 13 个**混合件**（同时触碰 v1 与现役族）——逐件在「v1 族缺席+现役族
 #     在位」形态实测：v1 腿全部 42P01（无 DO 守卫），或 CREATE OR REPLACE
@@ -68,6 +71,9 @@
 473_partition_precreate_2026_09_10.sql
 481_request_logs_bodies_precreate_2026_07.sql
 484_request_logs_hot_add_status_code.sql
+485_request_logs_add_raw_model_name.sql
+487_request_logs_add_system_fingerprint.sql
+488_request_logs_hot_add_model.sql
 491_request_logs_queue_timestamps.sql
 510_request_type.sql
 532_request_logs_final_success.sql
@@ -80,7 +86,10 @@
 575_request_logs_view_customer_id.sql
 576_request_logs_customer_id_bigint.sql
 577_request_logs_view_customer_id.sql
+601_request_logs_bodies_drop_metadata.sql
 602_request_logs_promote_atomic.sql
+603_repair_request_logs_schema_consistency.sql
+604_repair_request_logs_bodies_tenant_id.sql
 605_fix_tool_calls_index_predicate.sql
 610_request_class_due_at.sql
 651_provider_quality_hot_rollup.sql
