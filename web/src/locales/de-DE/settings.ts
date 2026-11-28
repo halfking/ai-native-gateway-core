@@ -14,6 +14,7 @@ export default {
     security: 'Sicherheit',
     outputCompliance: 'Ausgabe-Compliance',
     circuitBreaker: 'Schutzschalter',
+    loopGuard: 'Loop-Schutz',
     general: 'Andere',
   },
  list: {

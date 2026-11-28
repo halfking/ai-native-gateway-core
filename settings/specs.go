@@ -105,6 +105,10 @@ func PlatformSpecs() []*Spec {
 	//（gateway.display_name / system.skin / storage.attachment_public_base_url），
 	// admin basic-config 聚合端点 + settingsPut 即时热应用（读方见 system_config.go）。
 	out = append(out, SystemConfigSpecs()...)
+	// 2026-11-28: 会话无进展循环守卫（loop_guard.*，domains/streaming/
+	// session_loop_guard.go 读方）——agent 宿主等待裁决期间整段上下文
+	// 固定节奏重发的空转循环：自动回退 + 超次数关闭。
+	out = append(out, LoopGuardSpecs()...)
 	return out
 }
 

@@ -14,6 +14,7 @@ export default {
     security: 'الأمان',
     outputCompliance: 'التوافق مع المخرجات',
     circuitBreaker: 'قاطع الدائرة',
+    loopGuard: 'حماية الحلقة',
     general: 'أخرى',
   },
  list: {
