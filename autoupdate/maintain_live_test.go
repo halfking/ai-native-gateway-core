@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,13 @@ func TestMaintainLiveSelfUpdate(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
+	}
+
+	// 升级配置合同基线：主机原配置必须升级后逐字保留（既有键保值）。
+	// LIVE_FORCED 预置旧值，供发布物 forced 指令覆盖；LIVE_NEW 由发布物新增。
+	originalEnv := "LIVE_KEEP=original-value\nLIVE_FORCED=before\n# host comment\n"
+	if err := os.WriteFile(filepath.Join(dataDir, ".env"), []byte(originalEnv), 0o640); err != nil {
+		t.Fatalf("write host .env: %v", err)
 	}
 
 	// 旧二进制：≥1MiB + Mach-O 魔数，过了 installer 的结构校验。
@@ -80,7 +88,26 @@ func TestMaintainLiveSelfUpdate(t *testing.T) {
 	if rel.ReleaseNotes == "" {
 		t.Fatalf("release_notes 为空——修订说明未贯通")
 	}
-	t.Logf("检索到新版: version=%s build_seq=%d sha256=%s notes=%.40q", rel.Version, rel.BuildSeq, rel.BinarySHA256, rel.ReleaseNotes)
+	// 升级配置合同：maintain 发版中心必须把结构化配置变更下发到 manifest。
+	// 期望 LIVE_NEW（新增）、LIVE_KEEP（保值）、LIVE_FORCED（强制覆盖）。
+	var wantNew, wantKeep, wantForced *EnvConfigUpdate
+	for i := range rel.ConfigUpdates {
+		switch rel.ConfigUpdates[i].Key {
+		case "LIVE_NEW":
+			wantNew = &rel.ConfigUpdates[i]
+		case "LIVE_KEEP":
+			wantKeep = &rel.ConfigUpdates[i]
+		case "LIVE_FORCED":
+			wantForced = &rel.ConfigUpdates[i]
+		}
+	}
+	if wantNew == nil || wantKeep == nil || wantForced == nil {
+		t.Fatalf("manifest config_updates 缺 LIVE_NEW/LIVE_KEEP/LIVE_FORCED: %+v", rel.ConfigUpdates)
+	}
+	if wantForced.Forced != true || wantKeep.Forced != false || wantNew.Forced != false {
+		t.Fatalf("forced 标记不符: %+v", rel.ConfigUpdates)
+	}
+	t.Logf("检索到新版: version=%s build_seq=%d sha256=%s notes=%.40q config_updates=%d条", rel.Version, rel.BuildSeq, rel.BinarySHA256, rel.ReleaseNotes, len(rel.ConfigUpdates))
 
 	// ── 2. 安装：Executor 走 artifact 模式下载 + sha256 校验 + 备份替换 ──
 	store := newFakeStore()
@@ -93,11 +120,12 @@ func TestMaintainLiveSelfUpdate(t *testing.T) {
 	)
 	noRestart := false
 	if _, err := executor.Start(context.Background(), InstallRequest{
-		Version:   rel.Version,
-		Mode:      InstallModeArtifact,
-		BinaryURL: rel.BinaryURL,
-		SHA256:    rel.BinarySHA256,
-		Restart:   &noRestart,
+		Version:       rel.Version,
+		Mode:          InstallModeArtifact,
+		BinaryURL:     rel.BinaryURL,
+		SHA256:        rel.BinarySHA256,
+		ConfigUpdates: rel.ConfigUpdates,
+		Restart:       &noRestart,
 	}); err != nil {
 		t.Fatalf("executor start: %v", err)
 	}
@@ -129,7 +157,31 @@ func TestMaintainLiveSelfUpdate(t *testing.T) {
 	if err != nil || len(backupFiles) == 0 {
 		t.Fatalf("no backup created: err=%v files=%d", err, len(backupFiles))
 	}
-	t.Logf("安装成功: version.json → %s, 备份 %s", rel.Version, backupFiles[0].Name())
+
+	// 升级配置合同：原配置保值 + 新增写入 + 强制覆盖，且备份落盘。
+	envAfter := string(mustReadFile(t, filepath.Join(dataDir, ".env")))
+	if !contains(envAfter, "LIVE_KEEP=original-value\n") {
+		t.Fatalf("既有键原值必须保留（未 forced），got:\n%s", envAfter)
+	}
+	if !contains(envAfter, "# host comment\n") {
+		t.Fatalf("注释行必须保留，got:\n%s", envAfter)
+	}
+	if !contains(envAfter, "LIVE_NEW="+wantNew.Value+"\n") {
+		t.Fatalf("新增键必须写入，got:\n%s", envAfter)
+	}
+	if !contains(envAfter, "LIVE_FORCED="+wantForced.Value+"\n") {
+		t.Fatalf("强制键必须覆盖，got:\n%s", envAfter)
+	}
+	envBackups := 0
+	for _, f := range backupFiles {
+		if strings.HasPrefix(f.Name(), ".env_") {
+			envBackups++
+		}
+	}
+	if envBackups == 0 {
+		t.Fatalf("配置改动必须先落备份（backupDir 缺 .env_*）: %v", backupFiles)
+	}
+	t.Logf("安装成功: version.json → %s, 二进制备份 %s, 配置备份 %d 份", rel.Version, backupFiles[0].Name(), envBackups)
 
 	// ── 3. 手动回滚：还原二进制 + version.json（修复前只还原 VERSION ⇒ 版本身份漂移）──
 	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -154,7 +206,12 @@ func TestMaintainLiveSelfUpdate(t *testing.T) {
 	if !contains(string(rolledVersionFile), oldVersion) {
 		t.Fatalf("VERSION not restored: %s", rolledVersionFile)
 	}
-	t.Logf("回滚成功: version.json/VERSION → %s，二进制已还原", oldVersion)
+	// 回滚侧配置合同：env 必须还原成升级前原样（强制键回旧值、新增键消失）。
+	rolledEnv := string(mustReadFile(t, filepath.Join(dataDir, ".env")))
+	if rolledEnv != originalEnv {
+		t.Fatalf("env 必须还原为升级前原样，got:\n%s", rolledEnv)
+	}
+	t.Logf("回滚成功: version.json/VERSION → %s，二进制与配置均已还原", oldVersion)
 }
 
 func mustReadFile(t *testing.T, path string) []byte {
