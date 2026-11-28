@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -353,7 +354,9 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		maasSvc := h.chatHandler.maasSvc
 		billingExempt := tenantBillingExempt(r.Context(), keyInfo)
 		if maasSvc != nil && maasSvc.Enabled() && !billingExempt &&
-			keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+			keyInfo != nil && keyInfo.TenantID != "" &&
+			!(keyInfo.TenantID == "default" && settings.TieredExemptDefaultTenant()) &&
+			!(keyInfo.IsInternal && settings.TieredExemptInternalKeys()) {
 			owner := ""
 			if keyInfo.OwnerUser != nil {
 				owner = *keyInfo.OwnerUser
@@ -370,6 +373,27 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				*attemptLogged = true
 				writeResponsesError(w, http.StatusPaymentRequired, blocked.Reason, "insufficient_quota", "billing_insufficient_balance")
 				return
+			}
+		}
+		// ── 团队月度预算闸（2026-11-28 owner 决策接线）────────────────────
+		if maasSvc != nil && keyInfo != nil && keyInfo.TeamID != nil && *keyInfo.TeamID > 0 {
+			verdict, err := maasSvc.CheckTeamMonthlyBudget(r.Context(), *keyInfo.TeamID)
+			if err != nil {
+				slog.Warn("team budget check failed, allowing (fail-open)",
+					"request_id", requestID, "team_id", *keyInfo.TeamID, "error", err)
+			} else if verdict != nil && verdict.Over {
+				if verdict.EnforcementMode == "hard" {
+					slog.Warn("team monthly budget exceeded, blocking responses",
+						"request_id", requestID, "team_id", verdict.TeamID)
+					logCtx.SetError("team_budget_exceeded", "team monthly budget exceeded")
+					logCtx.EmitFailure("team_budget_exceeded", "team monthly budget exceeded", nil, nil)
+					*attemptLogged = true
+					writeResponsesError(w, http.StatusTooManyRequests, "Team monthly budget exceeded", "rate_limit_exceeded", "team_budget_exceeded")
+					return
+				} else {
+					slog.Warn("team monthly budget exceeded (warn mode, allowing)",
+						"request_id", requestID, "team_id", verdict.TeamID)
+				}
 			}
 		}
 	}

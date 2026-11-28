@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"bytes"
 	"context"
 	"crypto/subtle"
@@ -3524,7 +3525,9 @@ func (h *ChatHandler) serveWithExecutor(
 	// 内部回环 key（IsInternal）+ platform billing 豁免。
 	// 钱包行不存在 = 该层不限额 ⇒ 跳过（fail-open，maas 包内已处理）。
 	if h.maasSvc != nil && h.maasSvc.Enabled() && !billingExempt &&
-		keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+		keyInfo != nil && keyInfo.TenantID != "" &&
+		!(keyInfo.TenantID == "default" && settings.TieredExemptDefaultTenant()) &&
+		!(keyInfo.IsInternal && settings.TieredExemptInternalKeys()) {
 		owner := ""
 		if keyInfo.OwnerUser != nil {
 			owner = *keyInfo.OwnerUser
@@ -3545,6 +3548,39 @@ func (h *ChatHandler) serveWithExecutor(
 			captureAndEmitFailure("billing_insufficient_balance", blocked.Reason, nil, nil, http.StatusPaymentRequired)
 			h.returnBillingError(w, r, blocked)
 			return // ⚠️ Block request
+		}
+	}
+
+	// ── 团队月度预算闸（2026-11-28 owner 决策接线）────────────────────
+	// KeyInfo.TeamID 非 nil 且 > 0 时检查该团队的月度预算（team_budgets 表，
+	// 迁移 058）。nil 或 0 = 个人 key 不属任何团队 ⇒ 跳过（owner 决策）。
+	// enforcement_mode: warn=告警放行 / hard=超限 429。
+	if h.maasSvc != nil && keyInfo != nil && keyInfo.TeamID != nil && *keyInfo.TeamID > 0 {
+		verdict, err := h.maasSvc.CheckTeamMonthlyBudget(r.Context(), *keyInfo.TeamID)
+		if err != nil {
+			slog.Warn("team budget check failed, allowing request (fail-open)",
+				"request_id", requestID, "team_id", *keyInfo.TeamID, "error", err)
+		} else if verdict != nil && verdict.Over {
+			if verdict.EnforcementMode == "hard" {
+				slog.Warn("team monthly budget exceeded, blocking request",
+					"request_id", requestID, "team_id", verdict.TeamID,
+					"limit_credits", verdict.MonthlyLimitCredits,
+					"spent_credits", verdict.SpentCredits)
+				captureAndEmitFailure("team_budget_exceeded", "team monthly budget exceeded", nil, nil, http.StatusTooManyRequests)
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"error": map[string]any{
+						"message": "Team monthly budget exceeded",
+						"type":    "team_budget_exceeded",
+					},
+				})
+				return
+			} else {
+				// mode=warn: 告警但放行
+				slog.Warn("team monthly budget exceeded (warn mode, allowing)",
+					"request_id", requestID, "team_id", verdict.TeamID,
+					"limit_credits", verdict.MonthlyLimitCredits,
+					"spent_credits", verdict.SpentCredits)
+			}
 		}
 	}
 

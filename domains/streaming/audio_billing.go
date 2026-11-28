@@ -43,6 +43,7 @@ type audioTenantBudgetGate interface {
 //	测试桩不实现本接口 ⇒ nil-safe 跳过（不改变既有测试语义）。
 type audioTieredBalanceGate interface {
 	PreCheckOrgAndUserForOwner(ctx context.Context, ownerUser string, estimatedCostCredits int64) (*maas.BillingDecision, error)
+	CheckTeamMonthlyBudget(ctx context.Context, teamID int64) (*maas.TeamBudgetVerdict, error)
 }
 
 // SetMaas wires optional tenant-credit charging for audio endpoints.

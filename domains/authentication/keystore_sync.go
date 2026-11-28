@@ -293,6 +293,7 @@ const keyStoreSelectSQL = `
 		COALESCE(ak.status, 'active') AS status,
 		ak.key_alias,
 		app.customer_id,
+		COALESCE(ak.team_id, 0),
 		ak.expires_at,
 		COALESCE(ak.is_system, FALSE),
 		COALESCE(ak.capabilities, '[]'::jsonb)::text
@@ -315,6 +316,7 @@ func isHexHash(value string) bool {
 
 func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, error) {
 	var appID int64
+	var teamID int64
 	var hash string
 	var info KeyInfo
 	var rawCapabilities []byte
@@ -335,6 +337,7 @@ func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, er
 		&info.Status,
 		&info.KeyAlias,
 		&info.CustomerID,
+		&teamID,
 		&info.ExpiresAt,
 		&info.IsSystem,
 		&rawCapabilities,
@@ -349,6 +352,10 @@ func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, er
 	}
 	info.Capabilities = caps
 	info.ApplicationID = int(appID)
+	if teamID > 0 {
+		t := teamID
+		info.TeamID = &t
+	}
 	return keyStoreRow{keyHash: hash, info: &info}, nil
 }
 

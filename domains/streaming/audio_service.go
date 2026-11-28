@@ -20,6 +20,7 @@
 package streaming
 
 import (
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"bufio"
 	"bytes"
 	"context"
@@ -1458,7 +1459,9 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 	//	解析前无法廉价估算成本（其余三面走 FromBody）⇒ 本面只做「已超限硬停」，
 	//	成本计入依赖请求后计费（chargeTranscription 链），如需预检成本须先做
 	//	音频时长探测，属增量功能。
-	if s.tieredBalanceGate != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal && !tenantBillingExempt(r.Context(), keyInfo) {
+	if s.tieredBalanceGate != nil && keyInfo != nil && keyInfo.TenantID != "" &&
+			!(keyInfo.TenantID == "default" && settings.TieredExemptDefaultTenant()) &&
+			!(keyInfo.IsInternal && settings.TieredExemptInternalKeys()) && !tenantBillingExempt(r.Context(), keyInfo) {
 		owner := ""
 		if keyInfo.OwnerUser != nil {
 			owner = *keyInfo.OwnerUser
@@ -1472,6 +1475,24 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 				"request_id", requestID, "owner_user", owner, "reason", blocked.Reason)
 			writeErrorJSON(w, http.StatusPaymentRequired, requestID, blocked.Reason, "insufficient_quota", "billing_insufficient_balance")
 			return nil, false
+		}
+	}
+	// ── 团队月度预算闸（2026-11-28 owner 决策接线）────────────────────
+	if s.tieredBalanceGate != nil && keyInfo != nil && keyInfo.TeamID != nil && *keyInfo.TeamID > 0 {
+		verdict, err := s.tieredBalanceGate.CheckTeamMonthlyBudget(r.Context(), *keyInfo.TeamID)
+		if err != nil {
+			slog.Warn("team budget check failed, allowing (fail-open)",
+				"request_id", requestID, "team_id", *keyInfo.TeamID, "error", err)
+		} else if verdict != nil && verdict.Over {
+			if verdict.EnforcementMode == "hard" {
+				slog.Warn("team monthly budget exceeded, blocking audio",
+					"request_id", requestID, "team_id", verdict.TeamID)
+				writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Team monthly budget exceeded", "rate_limit_exceeded", "team_budget_exceeded")
+				return nil, false
+			} else {
+				slog.Warn("team monthly budget exceeded (warn mode, allowing)",
+					"request_id", requestID, "team_id", verdict.TeamID)
+			}
 		}
 	}
 	return keyInfo, true
