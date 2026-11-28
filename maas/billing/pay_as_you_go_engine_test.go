@@ -300,12 +300,11 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "valid config",
 			config: &BillingConfig{
-				Mode: ModePayAsYouGo,
-				ConfigJSON: map[string]interface{}{
+				BillingMode: ModePayAsYouGo,
+				EngineConfig: map[string]interface{}{
 					"cents_per_credit": 2.5,
 					"currency":         "USD",
 				},
-				Currency: "USD",
 			},
 			wantErr: false,
 		},
@@ -318,8 +317,8 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "wrong mode",
 			config: &BillingConfig{
-				Mode: ModeTokenPlan,
-				ConfigJSON: map[string]interface{}{
+				BillingMode: ModeTokenPlan,
+				EngineConfig: map[string]interface{}{
 					"cents_per_credit": 2.5,
 				},
 			},
@@ -329,8 +328,8 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "missing cents_per_credit",
 			config: &BillingConfig{
-				Mode:       ModePayAsYouGo,
-				ConfigJSON: map[string]interface{}{},
+				BillingMode:  ModePayAsYouGo,
+				EngineConfig: map[string]interface{}{},
 			},
 			wantErr: true,
 			errMsg:  "must be a number",
@@ -338,8 +337,8 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "zero cents_per_credit",
 			config: &BillingConfig{
-				Mode: ModePayAsYouGo,
-				ConfigJSON: map[string]interface{}{
+				BillingMode: ModePayAsYouGo,
+				EngineConfig: map[string]interface{}{
 					"cents_per_credit": 0.0,
 				},
 			},
@@ -349,8 +348,8 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "negative cents_per_credit",
 			config: &BillingConfig{
-				Mode: ModePayAsYouGo,
-				ConfigJSON: map[string]interface{}{
+				BillingMode: ModePayAsYouGo,
+				EngineConfig: map[string]interface{}{
 					"cents_per_credit": -1.5,
 				},
 			},
@@ -360,8 +359,8 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "unsupported currency",
 			config: &BillingConfig{
-				Mode: ModePayAsYouGo,
-				ConfigJSON: map[string]interface{}{
+				BillingMode: ModePayAsYouGo,
+				EngineConfig: map[string]interface{}{
 					"cents_per_credit": 2.5,
 					"currency":         "INVALID",
 				},
@@ -372,8 +371,8 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 		{
 			name: "supported CNY currency",
 			config: &BillingConfig{
-				Mode: ModePayAsYouGo,
-				ConfigJSON: map[string]interface{}{
+				BillingMode: ModePayAsYouGo,
+				EngineConfig: map[string]interface{}{
 					"cents_per_credit": 18.0,
 					"currency":         "CNY",
 				},
@@ -402,12 +401,11 @@ func TestPayAsYouGoEngine_Validate(t *testing.T) {
 func TestPayAsYouGoEngine_FromConfig(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
 		config := &BillingConfig{
-			Mode: ModePayAsYouGo,
-			ConfigJSON: map[string]interface{}{
+			BillingMode: ModePayAsYouGo,
+			EngineConfig: map[string]interface{}{
 				"cents_per_credit": 2.5,
 				"currency":         "USD",
 			},
-			Currency: "USD",
 		}
 
 		engine, err := FromConfig(config)
@@ -416,14 +414,13 @@ func TestPayAsYouGoEngine_FromConfig(t *testing.T) {
 		assert.Equal(t, "USD", engine.Currency)
 	})
 
-	t.Run("currency from config_json overrides", func(t *testing.T) {
+	t.Run("currency from engine_config", func(t *testing.T) {
 		config := &BillingConfig{
-			Mode: ModePayAsYouGo,
-			ConfigJSON: map[string]interface{}{
+			BillingMode: ModePayAsYouGo,
+			EngineConfig: map[string]interface{}{
 				"cents_per_credit": 18.0,
 				"currency":         "CNY",
 			},
-			Currency: "USD", // Will be overridden
 		}
 
 		engine, err := FromConfig(config)
@@ -439,8 +436,8 @@ func TestPayAsYouGoEngine_FromConfig(t *testing.T) {
 
 	t.Run("invalid config fails validation", func(t *testing.T) {
 		config := &BillingConfig{
-			Mode: ModePayAsYouGo,
-			ConfigJSON: map[string]interface{}{
+			BillingMode: ModePayAsYouGo,
+			EngineConfig: map[string]interface{}{
 				"cents_per_credit": -1.0, // Invalid
 			},
 		}

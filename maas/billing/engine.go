@@ -148,22 +148,6 @@ type Discount struct {
 	Description string  // 说明
 }
 
-// BillingConfig 是计费配置的通用结构
-type BillingConfig struct {
-	// 计费模式
-	Mode BillingMode
-
-	// 模式特定配置（JSON格式）
-	// 不同引擎解析成不同的结构
-	ConfigJSON map[string]interface{}
-
-	// 生效时间
-	EffectiveFrom time.Time
-
-	// 货币
-	Currency string
-}
-
 // ValidationError 表示配置验证错误
 type ValidationError struct {
 	Field   string // 错误字段

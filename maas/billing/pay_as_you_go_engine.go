@@ -189,15 +189,15 @@ func (e *PayAsYouGoEngine) Validate(config *BillingConfig) error {
 		return &ValidationError{Field: "config", Message: "config cannot be nil"}
 	}
 
-	if config.Mode != ModePayAsYouGo {
+	if config.BillingMode != ModePayAsYouGo {
 		return &ValidationError{
-			Field:   "mode",
-			Message: fmt.Sprintf("expected pay_as_you_go, got %s", config.Mode),
+			Field:   "billing_mode",
+			Message: fmt.Sprintf("expected pay_as_you_go, got %s", config.BillingMode),
 		}
 	}
 
 	// 验证 CentsPerCredit
-	centsPerCredit, ok := config.ConfigJSON["cents_per_credit"].(float64)
+	centsPerCredit, ok := config.EngineConfig["cents_per_credit"].(float64)
 	if !ok {
 		return &ValidationError{
 			Field:   "cents_per_credit",
@@ -213,7 +213,7 @@ func (e *PayAsYouGoEngine) Validate(config *BillingConfig) error {
 	}
 
 	// 验证 Currency（如果提供）
-	if currency, ok := config.ConfigJSON["currency"].(string); ok && currency != "" {
+	if currency, ok := config.EngineConfig["currency"].(string); ok && currency != "" {
 		// 检查是否是支持的货币
 		supportedCurrencies := settings.SupportedCurrencies()
 		found := false
@@ -250,8 +250,8 @@ func NewPayAsYouGoUSDEngine(centsPerCredit float64) *PayAsYouGoEngine {
 //
 // 配置格式：
 //   {
-//     "mode": "pay_as_you_go",
-//     "config_json": {
+//     "billing_mode": "pay_as_you_go",
+//     "engine_config": {
 //       "cents_per_credit": 2.5,
 //       "currency": "CNY"
 //     }
@@ -261,13 +261,13 @@ func FromConfig(config *BillingConfig) (*PayAsYouGoEngine, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
-	centsPerCredit, ok := config.ConfigJSON["cents_per_credit"].(float64)
+	centsPerCredit, ok := config.EngineConfig["cents_per_credit"].(float64)
 	if !ok {
 		return nil, fmt.Errorf("cents_per_credit must be a number")
 	}
 
-	currency := config.Currency
-	if c, ok := config.ConfigJSON["currency"].(string); ok && c != "" {
+	currency := "USD" // 默认
+	if c, ok := config.EngineConfig["currency"].(string); ok && c != "" {
 		currency = c
 	}
 
