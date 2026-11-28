@@ -128,3 +128,5 @@ XIAOMI_API_KEY	component	外部服务 API key（发现逻辑）
 XIAOMI_BASE_URL	component	外部服务 base URL（发现逻辑）
 OOM_HELPER	component	OOM helper 子测试进程哨兵（e2e_cgroup_linux_test.go）：父测试 exec 自身二进制并设 OOM_HELPER=1 拉起 helper；与 PG/DSN 无关，不涉真库腿
 MY_ENDPOINTS_TEST_DSN	dsn_exclusive	我的端点真库腿测试的专用 DSN（admin/my_endpoints_realdb_test.go）：测试自建 fixture 并清理，只连自有库
+MAINTAIN_LIVE_BASE_URL	component	autoupdate/maintain_live_test.go 的活体 maintain 服务器地址（不设即 skip）；与 PG/DSN 无关，不涉真库腿
+MAINTAIN_LIVE_OLD_VERSION	component	autoupdate/maintain_live_test.go 的旧版本号夹具（不设即 skip）；与 PG/DSN 无关，不涉真库腿

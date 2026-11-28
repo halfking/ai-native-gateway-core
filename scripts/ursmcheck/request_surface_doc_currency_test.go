@@ -312,7 +312,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★（NewProjectionProcessor）注释块链前净增 +8 ＋ 车道合并 +3（部分落在
 		// ★ 链体内）⇒ ★ 逐行实测 Recovery **:9306**、SecurityHeaders **:9325** ⇒
 		// ★ 窗口 **9306-9325**（★ 前值 9295-9314）★★。
-		file: "cmd/gateway/main.go", from: 9306, to: 9325,		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
+		// ★★ 2026-11-29 第三十三次重钉（A6/L153 部署追平轮全量门收口）：★
+		// ★ 上游 A6 并行车 ad77e6fbaf（wantFamily）＋A5 731c207f73（CHECK 扩）
+		// ★ 等笔链前净增 ⇒ ★ 逐行实测 Recovery **:9315**、Auth **:9331**、
+		// ★ SecurityHeaders **:9334** ⇒ 窗口 **9315-9334**（★ 前值 9306-9325；
+		// ★ 与设计页 `docs/subsystems/request-surface.md` §2.1 同笔同步 ★★）。
+		file: "cmd/gateway/main.go", from: 9315, to: 9334,		// ★★ 2026-11-24 第二十四次重钉：★ 原锚 [9144,9163] ⇒ ★ 上游把
 		// ★ `cmd/gateway/main.go` 的中间件链整体下移 ⇒ ★ Recovery 落到 **9206**、
 		// ★ SecurityHeaders 落到 **9225** ⇒ ★ 本门按现状重钉为 [9205,9225]
 		// ★（★ 覆盖链体起点 `middleware.NewBuilder()` 到 SecurityHeaders 那一行）★。
@@ -361,7 +366,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★（NewProjectionProcessor）注释块链前净增 +8 ＋ 车道合并 +3 ⇒ ★
 		// ★ 合并树逐行实测 ⇒ ★ 自陈注释块漂到 **9308-9315** ⇒ ★ 重钉 [9308,9315] ★
 		// ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、★ 只是位置漂了 ★★）。
-		file: "cmd/gateway/main.go", from: 9308, to: 9315,
+		// ★★ 2026-11-28 第三十三次重钉（A6/L153 部署追平轮全量门收口）：★
+		// ★ 上游 A6 并行车 ad77e6fbaf（wantFamily）＋A5 731c207f73（CHECK 扩）
+		// ★ 等笔在链前净增 ⇒ ★ 合并树逐行实测 ⇒ ★ 自陈注释块漂到 **9317-9324**
+		// ★ ⇒ ★ 重钉 [9317,9324] ★（★ 仍是那 8 行的自陈注释块 ⇒ 语义对象未变、
+		// ★ 只是位置漂了 ★★）。
+		file: "cmd/gateway/main.go", from: 9317, to: 9324,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -402,7 +412,11 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★★ 2026-11-28 第三十二次重钉（L142 轮）：★ 同上（接线注释 +8 ＋
 		// ★ 车道合并 +3 ⇒ 链前净增 +11）⇒ ★ 合并树逐行实测 ⇒ ★ R49-A1 注释块
 		// ★ 漂到 **9261-9266** ⇒ ★ 重钉 [9261,9266] ★（★ 语义锚与判据不变 ★★）。
-		file: "cmd/gateway/main.go", from: 9261, to: 9266,
+		// ★★ 2026-11-28 第三十三次重钉（A6/L153 部署追平轮全量门收口）：★ 同上
+		// ★（上游 A6/A5 等笔链前净增）⇒ ★ 合并树逐行实测 ⇒ ★ R49-A1 注释块
+		// ★ 漂到 **9270-9275** ⇒ ★ 重钉 [9270,9275] ★（★ 仍是那 6 行注释块、
+		// ★ 语义锚与判据不变 ★★）。
+		file: "cmd/gateway/main.go", from: 9270, to: 9275,
 		// ★★★ 【2026-11-24 合并并行车后】：★ 并行车也独立重钉过同一锚点、
 		// ★★★ 其区间写作 **[9161,9166]**（★ 正好是那 6 行注释块）★★
 		// ★★★ ⇒ ★★ **本门保留 [9161,9168]**（★ 与设计页
