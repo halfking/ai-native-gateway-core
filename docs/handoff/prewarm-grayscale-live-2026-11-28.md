@@ -218,3 +218,18 @@ memora 仓有完整评测基建（`cmd/recall-eval` + `cmd/recall-eval-baseline`
 5. 上午 reindex 完成后 owner 会启 `99347c85` 的 memora-server——**核查其二进制是否含 61d6280a**（`go version -m` 看 vcs.revision）；若不含，在 99347c85 基座上重做薄层（方法同上节，新基座镜像 ID 以 `docker images memora:audit-99347c85...` 为准，amd64）。
 6. owner 的 reindex 用 `--resume` 且 per-batch 提交：若其流程中断，容器名 `goal-reindex` 可复跑续传。
 7. embedding 上游已切本地：Recall@5/nDCG 补测与 verify 重跑**不再依赖 kxpms 恢复**——reindex 完成后即可按 P1-4 补测路径执行（seed corpus → 真检索 → ranked 评分）。
+
+## 重大利好订正（2026-11-29 03:55 轮）——修复已随 owner 新线入主线
+
+**origin/main（owner 活跃线）已含同款 authz stamp 修复**：
+- `git log -S WithAuthorizedProject -- internal/v2/recall.go` 实证：修复以 `a146e33f`（2026-11-28 20:41 "squash: 双远端形态收敛 v2"）进入 origin/main，`recall.go:453` 现有「★ 2026-11-28 灰度放量轮修复」注释 + `WithAuthorizedProject(ctx, userID, ActionRead)` 条件回写，**语义与 61d6280a 一致**（同样只在 ctx 带项目选择时回写）。
+- 含义：owner 第三轮发布（99347c85 构建线 = reindex 工具线）**天然包含修复**——上午 server 上线后 `go version -m` 核查 vcs.revision 属 origin/main 谱系即可，**无需再叠薄层**。
+- 本机 detached worktree @ `475282e9`（origin/main HEAD，03:54）跑 `go test ./internal/v2/ -short` = **ok 114.9s**——owner 线健康。
+
+**03:51 免触碰实录**：goal-reindex 被重建（--resume 续跑 13300/62016），.30+.32 双机 ssh 1 分钟内各有新连接——owner 全程在线操作中，本会话全程只读观察零干预。
+
+**上午接续点（最终版，替换此前第 5 条）**：
+5. reindex（62016 条，速率 ~90-100/min，预计 ~09:00-10:00 完成）结束后 owner 启新 memora-server → `docker cp` + `go version -m` 核对 vcs.revision ∈ origin/main 谱系（含 a146e33f 修复即达标，不要求字面 61d6280a）。
+6. server 上线后：官方 verify 重跑（带 ACC_VERIFY_AUTH_HEADER_FILE）——**embedding 已本地化，candidate_promote 不再 503，预期全绿**。
+7. 全绿后按 P1-4 补测路径出 Recall@5/nDCG 终版报告（seed corpus → 真检索 → `recall-eval -mode ranked`，对照 degraded v2 基线 0.1818 与绝对门禁 0.25）。
+8. 若 owner 上线用的仍是旧基座（不含 a146e33f）：才需要叠 `memora:fix-61d6280a-recall-authz` 薄层（镜像 ID 4a4a86ea9e8c，amd64）。
