@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -81,5 +82,42 @@ func TestSessionRankingScopeUserTier(t *testing.T) {
 	sql := metrics.SessionRequestRankingObservableWhereForTest
 	if !strings.Contains(sql, "($4='' OR owner_user=$4)") {
 		t.Fatal("rankings observable WHERE lost owner narrowing ($4)")
+	}
+}
+
+// ★ user 档 Owner 传递判据：scope.owner 必须真的进入 metrics 查询。
+// 既有 TestSessionRankingScopeUserTier 只验 scope 字段与 SQL 文本，
+// 中间「handler 把 owner 传进查询」这一跳无人守——漏传 ⇒ user 档看到租户全员聚合。
+// 变异：buildSessionRankingQuery 删掉 Owner 行 ⇒ 本判据红。
+func TestSessionRankingQueryCarriesOwner(t *testing.T) {
+	u := SetAuthContext(httptest.NewRequest(http.MethodGet, "/api/admin/session-analytics/v2/model-ranking?start_date=2026-11-23&end_date=2026-11-23", nil),
+		&AuthContext{TenantID: "tenant-a", Role: "user", Username: "e2e-user", IsJWT: true})
+	scope, ok := prepareSessionRankingScope(httptest.NewRecorder(), u)
+	if !ok {
+		t.Fatal("scope not ok")
+	}
+	q := buildSessionRankingQuery(scope, "models", "", "")
+	if q.Owner != "e2e-user" || q.Tenant != "tenant-a" {
+		t.Fatalf("user tier query owner/tenant = %q/%q, want e2e-user/tenant-a", q.Owner, q.Tenant)
+	}
+	ta := SetAuthContext(httptest.NewRequest(http.MethodGet, "/api/admin/session-analytics/v2/model-ranking?start_date=2026-11-23&end_date=2026-11-23", nil),
+		&AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	scope2, _ := prepareSessionRankingScope(httptest.NewRecorder(), ta)
+	if q2 := buildSessionRankingQuery(scope2, "models", "", ""); q2.Owner != "" {
+		t.Fatalf("admin tier must not be owner-scoped, got %q", q2.Owner)
+	}
+}
+
+// handler 必须经 buildSessionRankingQuery 构造查询（防绕开该函数直接手写 struct 再漏 Owner）。
+func TestSessionRankingHandlerUsesQueryBuilder(t *testing.T) {
+	src, err := os.ReadFile("session_request_rankings_v2.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "metrics.SessionRequestRankingQuery{") && strings.Count(string(src), "metrics.SessionRequestRankingQuery{") != 1 {
+		t.Fatal("SessionRequestRankingQuery 只允许在 buildSessionRankingQuery 内构造")
+	}
+	if !strings.Contains(string(src), "ReadSessionRequestRanking(ctx, tx, buildSessionRankingQuery(") {
+		t.Fatal("handler 未经 buildSessionRankingQuery 构造查询")
 	}
 }
