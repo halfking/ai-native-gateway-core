@@ -21,10 +21,15 @@ import (
 // （成功完成时），prompt 增量 = 上轮 completion + slop。
 
 // loopGuardFlatTurn feeds ONE flat (no-progress) turn: prompt grows by
-// completion+slop only. Returns the new prompt size.
+// completion+slop only. The reply is the canned waiting message (each turn
+// the model "replies the same thing again"). Returns the new prompt size.
 func loopGuardFlatTurn(g *SessionLoopGuard, sess string, prompt, completion int, ts time.Time) int {
+	return loopGuardFlatTurnReply(g, sess, prompt, completion, "仍在等待你的裁决，无新情况，不会代为决定。", ts)
+}
+
+func loopGuardFlatTurnReply(g *SessionLoopGuard, sess string, prompt, completion int, reply string, ts time.Time) int {
 	next := prompt + completion + 80 // 80 tokens of reminder slop ⇒ ownOnly=+80
-	g.Observe(sess, next, completion, next, ts)
+	g.Observe(sess, next, completion, next, reply, ts)
 	return next
 }
 
@@ -135,7 +140,7 @@ func TestSessionLoopGuardProgressResetsImmediately(t *testing.T) {
 	// Real progress arrives: an ~8KB tool result (≈2100 tokens) enters the
 	// context next to the 300-token reply ⇒ ownOnly = 2100 > 512.
 	prompt += 2100 + 300
-	g.Observe(sess, prompt, 500, prompt, base.Add(3*time.Minute))
+	g.Observe(sess, prompt, 500, prompt, "tool result appended", base.Add(3*time.Minute))
 	g.at(base.Add(3*time.Minute + 1*time.Second))
 	if lr := g.Check(sess, prompt); lr.Verdict != LoopAllow || lr.ResetReason != "" {
 		t.Fatalf("after progress: verdict=%v reset=%q, want clean allow", lr.Verdict, lr.ResetReason)
@@ -177,7 +182,7 @@ func TestSessionLoopGuardProbeOnePerWindowAndExtension(t *testing.T) {
 	}
 	// The probe turned out flat ⇒ ladder extends: flatRun=13 ⇒ 60s window
 	// armed from the probe turn's ts (base+162s) ⇒ until base+222s.
-	g.Observe(sess, prompt+380, 300, prompt+380, base.Add(162*time.Second))
+	g.Observe(sess, prompt+380, 300, prompt+380, "still waiting", base.Add(162*time.Second))
 	g.at(base.Add(170 * time.Second))
 	if lr := g.Check(sess, prompt); lr.Verdict != LoopBackoff || lr.RetryAfter <= 30*time.Second || lr.RetryAfter > 60*time.Second {
 		t.Fatalf("after flat probe: verdict=%v retry=%v, want backoff in (30s,60s]", lr.Verdict, lr.RetryAfter)
@@ -249,7 +254,7 @@ func TestSessionLoopGuardEntryProgressReopens(t *testing.T) {
 	// zero — it takes another 3 flat turns before backoff arms again, not
 	// an instant re-trip on the old state.
 	prompt2 := prompt + 1100
-	g.Observe(sess, prompt2, 300, prompt2, base.Add(125*time.Second))
+	g.Observe(sess, prompt2, 300, prompt2, "resumed work", base.Add(125*time.Second))
 	prompt2 = loopGuardFlatTurn(g, sess, prompt2, 300, base.Add(135*time.Second))
 	if lr := g.Check(sess, prompt2); lr.Verdict != LoopAllow {
 		t.Fatalf("2 flat turns after reset (trip=3): verdict=%v, want allow (streak rebuilding from zero)", lr.Verdict)
@@ -303,7 +308,7 @@ func TestSessionLoopGuardIgnoresTinyAndConcurrent(t *testing.T) {
 	// re-sent forever (the sys:anon / health-probe shape) never enters the
 	// accounting because every Observe is below min_prompt_tokens.
 	for i := 1; i <= 10; i++ {
-		g.Observe("gw_tiny", 100, 50, 100, base.Add(time.Duration(i)*10*time.Second))
+		g.Observe("gw_tiny", 100, 50, 100, "tiny", base.Add(time.Duration(i)*10*time.Second))
 	}
 	if lr := g.Check("gw_tiny", 100); lr.Verdict != LoopAllow {
 		t.Fatalf("tiny prompts: verdict=%v, want allow", lr.Verdict)
@@ -311,7 +316,7 @@ func TestSessionLoopGuardIgnoresTinyAndConcurrent(t *testing.T) {
 
 	// Concurrent burst: 20 successes 100ms apart count as ONE turn at most.
 	for i := 1; i <= 20; i++ {
-		g.Observe("gw_burst", 100000, 300, 100000, base.Add(time.Duration(i)*100*time.Millisecond))
+		g.Observe("gw_burst", 100000, 300, 100000, "burst reply", base.Add(time.Duration(i)*100*time.Millisecond))
 	}
 	if lr := g.Check("gw_burst", 100000); lr.Verdict != LoopAllow {
 		t.Fatalf("concurrent burst: verdict=%v, want allow", lr.Verdict)
@@ -350,7 +355,7 @@ func TestSessionLoopGuardDisabledBySettings(t *testing.T) {
 	if lr := g.Check(sess, prompt); lr.Verdict != LoopAllow {
 		t.Fatalf("disabled: verdict=%v, want allow", lr.Verdict)
 	}
-	prompt = loopGuardFlatTurn(g, sess, prompt, 300, base.Add(2*time.Minute))
+	prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, "disabled-period reply", base.Add(2*time.Minute))
 
 	// Re-enable: the streak must NOT have grown while disabled (state was
 	// frozen at flat=12, but the disabled-period turn never counted).
@@ -370,7 +375,7 @@ func TestSessionLoopGuardDisabledBySettings(t *testing.T) {
 	}
 }
 
-// TestLoopGuardSpecsRegistered pins the settings surface: all 10 loop_guard
+// TestLoopGuardSpecsRegistered pins the settings surface: all 11 loop_guard
 // keys are registered, platform-scoped, hot-reloadable, and the enabled
 // flag defaults to true (protection on by default, per the 211 evidence).
 func TestLoopGuardSpecsRegistered(t *testing.T) {
@@ -388,6 +393,7 @@ func TestLoopGuardSpecsRegistered(t *testing.T) {
 		"loop_guard.terminal_turns",
 		"loop_guard.terminal_probe_interval_seconds",
 		"loop_guard.entry_progress_tokens",
+		"loop_guard.repeat_identical_limit",
 		"loop_guard.max_gap_seconds",
 		"loop_guard.min_prompt_tokens",
 	}
@@ -492,5 +498,147 @@ func TestSessionLoopGuardRejectionsUseRateLimitedPipeline(t *testing.T) {
 func TestSessionLoopGuardInternalKeyExempt(t *testing.T) {
 	for _, f := range []string{"handler.go", "messages.go", "responses.go"} {
 		requireFileContains(t, f, "!keyInfo.IsInternal")
+	}
+}
+
+// ── 重复回复快道（reply-fingerprint）────────────────────────────────────
+//
+// 211 取证（2026-11-28）：gw_872726fd 空转段 108 轮回复逐字节相同
+// （md5 d9e2becb…，turn 426-544）；gw_b1be9881 同一请求体重复 344 次、
+// 节拍 30.9s。这类会话的上下文增量可能被宿主 reminder 抬过 ownOnly
+// 判据，但回复指纹纹丝不动 ⇒ 用归一化指纹计数早拦。
+
+// TestSessionLoopGuardIdenticalRepliesTripFast pins: N consecutive
+// byte-identical replies (default limit 5) trip the guard WITHOUT
+// waiting for trip_after_turns=12 — the fast lane. The error code is
+// loop_guard_repeat and reports the repeat count.
+func TestSessionLoopGuardIdenticalRepliesTripFast(t *testing.T) {
+	g := newTestLoopGuard()
+	withLoopGuardSettings(t, map[string]int{"loop_guard.trip_after_turns": 12})
+	base := time.Date(2026, 11, 28, 10, 0, 0, 0, time.UTC)
+
+	sess := "gw_fastlane_test"
+	prompt := 400000
+	// 4 identical replies: below the limit of 5 — still allowed.
+	for i := 1; i <= 4; i++ {
+		prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, "仍在等待你的裁决，无新情况，不会代为决定。", base.Add(time.Duration(i)*6*time.Second))
+	}
+	g.at(base.Add(30 * time.Second))
+	if lr := g.Check(sess, prompt); lr.Verdict != LoopAllow {
+		t.Fatalf("4 identical replies < limit 5: verdict=%v, want allow", lr.Verdict)
+	}
+	// 5th identical reply trips immediately.
+	prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, "仍在等待你的裁决，无新情况，不会代为决定。", base.Add(36*time.Second))
+	g.at(base.Add(37 * time.Second))
+	lr := g.Check(sess, prompt)
+	if lr.Verdict != LoopBackoff {
+		t.Fatalf("5 identical replies: verdict=%v, want LoopBackoff via fast lane", lr.Verdict)
+	}
+	if lr.RepeatStreak != 5 {
+		t.Fatalf("RepeatStreak=%d, want 5", lr.RepeatStreak)
+	}
+	// Rejection shape names the repeat lane.
+	code, msg := loopGuardRejectionShape(lr)
+	if code != "loop_guard_repeat" || !strings.Contains(msg, "5 times") {
+		t.Fatalf("shape code=%q msg=%q, want loop_guard_repeat mentioning 5", code, msg)
+	}
+}
+
+// TestSessionLoopGuardReplyVariationResetsStreak pins: a changed reply
+// (even slightly different wording, or extra trailing punctuation /
+// whitespace) resets the fingerprint streak — paraphrasing models and
+// punctuation drift must not accumulate.
+func TestSessionLoopGuardReplyVariationResetsStreak(t *testing.T) {
+	g := newTestLoopGuard()
+	withLoopGuardSettings(t, nil)
+	base := time.Date(2026, 11, 28, 10, 0, 0, 0, time.UTC)
+
+	sess := "gw_paraphrase_test"
+	prompt := 400000
+	// Whitespace + trailing punctuation differences normalize to ONE fp:
+	// 4 normalized-equal replies stay under the limit of 5.
+	for i := 1; i <= 4; i++ {
+		r := []string{"仍在等待你的裁决。", "仍在等待你的裁决   ", "仍在等待你的裁决!", "仍在等待你的裁决……"}[i%4]
+		prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, r, base.Add(time.Duration(i)*10*time.Second))
+	}
+	g.at(base.Add(50 * time.Second))
+	if lr := g.Check(sess, prompt); lr.Verdict != LoopAllow {
+		t.Fatalf("normalized-equal replies must not trip: verdict=%v", lr.Verdict)
+	}
+	// A genuinely different reply resets the streak: even 4 more identical
+	// turns afterward (streak restarts at 1..4) stay allowed.
+	prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, "现在换了一个说法，情况有变化。", base.Add(60*time.Second))
+	if loopGuardReplyFingerprint("现在换了一个说法，情况有变化。") == loopGuardReplyFingerprint("仍在等待你的裁决。") {
+		t.Fatalf("distinct texts must hash distinct fps")
+	}
+	for i := 1; i <= 4; i++ {
+		prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, "仍在等待你的裁决。", base.Add(time.Duration(60+i*10)*time.Second))
+	}
+	g.at(base.Add(110 * time.Second))
+	if lr := g.Check(sess, prompt); lr.Verdict != LoopAllow {
+		t.Fatalf("streak restarted after variation: verdict=%v, want allow", lr.Verdict)
+	}
+}
+
+// TestSessionLoopGuardRepeatLimitZeroDisablesFastLane pins: setting the
+// limit to 0 disables the fingerprint lane entirely (operator escape
+// hatch), leaving only the context-delta lane.
+func TestSessionLoopGuardRepeatLimitZeroDisablesFastLane(t *testing.T) {
+	g := newTestLoopGuard()
+	withLoopGuardSettings(t, map[string]int{"loop_guard.repeat_identical_limit": 0, "loop_guard.trip_after_turns": 12})
+	base := time.Date(2026, 11, 28, 10, 0, 0, 0, time.UTC)
+
+	sess := "gw_nolane_test"
+	prompt := 400000
+	for i := 1; i <= 20; i++ {
+		prompt = loopGuardFlatTurnReply(g, sess, prompt, 300, "identical", base.Add(time.Duration(i)*10*time.Second))
+	}
+	g.at(base.Add(210 * time.Second))
+	lr := g.Check(sess, prompt)
+	// flatRun = 19 ≥ trip 12 ⇒ the SLOW lane trips; the fast lane must not
+	// have fired early (i.e. trip happened via flat counter semantics, and
+	// shape reports backoff by flat-run, not repeat).
+	if lr.Verdict == LoopAllow {
+		t.Fatalf("slow lane should still trip at flatRun=19")
+	}
+	// With the lane disabled the verdict must be the SLOW lane's shape
+	// (flat-run backoff), not the repeat lane's — even though streaks
+	// still accumulate internally, they must never produce an earlier
+	// trip or a repeat-branded rejection.
+	code, _ := loopGuardRejectionShape(lr)
+	if code == "loop_guard_repeat" {
+		t.Fatalf("disabled fast lane must not produce loop_guard_repeat, got %q", code)
+	}
+	if lr.Verdict != LoopBackoff {
+		t.Fatalf("verdict=%v, want LoopBackoff from the slow lane", lr.Verdict)
+	}
+}
+
+// TestSessionLoopGuardFingerprintNormalization pins the normalizer edges:
+// empty replies carry no fingerprint (ownOnly lane owns them), long
+// replies fingerprint on their 2KB tail, and the hash is stable.
+func TestSessionLoopGuardFingerprintNormalization(t *testing.T) {
+	if fp := loopGuardReplyFingerprint("   \n\t "); fp != "" {
+		t.Fatalf("whitespace-only reply must produce empty fp, got %q", fp)
+	}
+	a := loopGuardReplyFingerprint("同一句话，还在等待。")
+	b := loopGuardReplyFingerprint("同一句话，还在等待!")
+	c := loopGuardReplyFingerprint("同一句话，还在等待。  \n\t ")
+	d := loopGuardReplyFingerprint("同一句话，还在等待……")
+	if a != b || a != c || a != d {
+		t.Fatalf("normalization must fold trailing punctuation/whitespace: %q %q %q %q", a, b, c, d)
+	}
+	e := loopGuardReplyFingerprint("同一句话，已经完成。")
+	if a == e {
+		t.Fatalf("genuinely different texts must hash differently")
+	}
+	long := strings.Repeat("前缀内容保持不变。", 400) + "结尾标记X"
+	long2 := strings.Repeat("前缀内容保持不变。", 400) + "结尾标记X"
+	if loopGuardReplyFingerprint(long) != loopGuardReplyFingerprint(long2) {
+		t.Fatalf("identical long replies must hash equal")
+	}
+	diffTail := strings.Repeat("前缀内容保持不变。", 400) + "结尾标记Y"
+	if loopGuardReplyFingerprint(long) == loopGuardReplyFingerprint(diffTail) {
+		t.Fatalf("different tails must hash differently")
 	}
 }

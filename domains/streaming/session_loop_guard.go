@@ -41,7 +41,9 @@
 package streaming
 
 import (
+	"hash/fnv"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +62,7 @@ const (
 	loopGuardMaxGapKey          = "loop_guard.max_gap_seconds"
 	loopGuardMinPromptTokensKey = "loop_guard.min_prompt_tokens"
 	loopGuardEntryProgressKey   = "loop_guard.entry_progress_tokens"
+	loopGuardRepeatLimitKey     = "loop_guard.repeat_identical_limit"
 )
 
 // loopGuardConfig is a snapshot of the HotReload-able settings.
@@ -74,6 +77,7 @@ type loopGuardConfig struct {
 	maxGap             time.Duration
 	minPromptTokens    int
 	entryProgress      int
+	repeatIdentical    int
 }
 
 func loadLoopGuardConfig() loopGuardConfig {
@@ -88,6 +92,7 @@ func loadLoopGuardConfig() loopGuardConfig {
 		maxGap:             time.Duration(settings.GetPlatformInt(loopGuardMaxGapKey, 600)) * time.Second,
 		minPromptTokens:    settings.GetPlatformInt(loopGuardMinPromptTokensKey, 256),
 		entryProgress:      settings.GetPlatformInt(loopGuardEntryProgressKey, 2048),
+		repeatIdentical:    settings.GetPlatformInt(loopGuardRepeatLimitKey, 5),
 	}
 }
 
@@ -128,9 +133,10 @@ const (
 
 // LoopCheckResult is the entry-side decision.
 type LoopCheckResult struct {
-	Verdict    LoopVerdict
-	RetryAfter time.Duration // for rejections: suggested wait (≤ current window)
-	FlatRun    int
+	Verdict      LoopVerdict
+	RetryAfter   time.Duration // for rejections: suggested wait (≤ current window)
+	FlatRun      int
+	RepeatStreak int // consecutive identical-reply successes (fingerprint lane)
 	// Probe marks a request that passed because the backoff window had
 	// elapsed (one probe per window; Observe re-arms or resets afterwards).
 	Probe bool
@@ -149,6 +155,12 @@ type loopState struct {
 	lastSuccess      time.Time // last success ts
 	dueAt            time.Time // when the next probe may pass (zero while not tripped)
 	lastSeen         time.Time // last request seen at Check (allowed or blocked)
+	// reply-fingerprint fast lane（字节级重复回复，见 loopGuardNormalizeReply）：
+	// 同一归一化指纹连续出现 repeat_identical_limit 次 ⇒ 直接进入回退态，
+	// 不等 trip_after_turns 的上下文零增长计数——批量重试型宿主每轮可能
+	// 注入 reminder 使上下文增量超判据，但回复是逐字节相同的。
+	replyFP     string // normalized fingerprint of the last success reply
+	replyStreak int    // consecutive successes sharing the same fingerprint
 }
 
 // SessionLoopGuard tracks per-session no-progress loops. All methods are
@@ -244,10 +256,17 @@ func (g *SessionLoopGuard) Check(sessionID string, estPromptTokens int) LoopChec
 	if s.flatRun >= cfg.terminalTurns {
 		verdict = LoopTerminal
 	}
+	// repeatIdentical=0 disables the fingerprint lane entirely: don't
+	// surface the streak (or the repeat-branded rejection shape).
+	streak := 0
+	if cfg.repeatIdentical > 0 {
+		streak = s.replyStreak
+	}
 	return LoopCheckResult{
-		Verdict:    verdict,
-		RetryAfter: s.dueAt.Sub(now),
-		FlatRun:    s.flatRun,
+		Verdict:      verdict,
+		RetryAfter:   s.dueAt.Sub(now),
+		FlatRun:      s.flatRun,
+		RepeatStreak: streak,
 	}
 }
 
@@ -256,7 +275,7 @@ func (g *SessionLoopGuard) Check(sessionID string, estPromptTokens int) LoopChec
 // legitimate). promptTokens/completionTokens come from the finalized
 // request log; estPromptTokens is the gateway-side estimate of the same
 // request body.
-func (g *SessionLoopGuard) Observe(sessionID string, promptTokens, completionTokens, estPromptTokens int, ts time.Time) {
+func (g *SessionLoopGuard) Observe(sessionID string, promptTokens, completionTokens, estPromptTokens int, replyText string, ts time.Time) {
 	cfg := loadLoopGuardConfig()
 	if !cfg.enabled || sessionID == "" || promptTokens < cfg.minPromptTokens {
 		return
@@ -283,6 +302,7 @@ func (g *SessionLoopGuard) Observe(sessionID string, promptTokens, completionTok
 		if gap > cfg.maxGap {
 			s.flatRun = 0
 			s.dueAt = time.Time{}
+			s.replyStreak = 0
 		}
 	}
 
@@ -297,15 +317,49 @@ func (g *SessionLoopGuard) Observe(sessionID string, promptTokens, completionTok
 		}
 	}
 
+	// Reply-fingerprint fast lane: identical normalized replies stack a
+	// streak independent of the context-delta signal. progress resets it.
+	fp := loopGuardReplyFingerprint(replyText)
+	if fp != "" && fp == s.replyFP {
+		s.replyStreak++
+	} else {
+		s.replyFP = fp
+		s.replyStreak = 1
+	}
+
 	s.promptTokens = promptTokens
 	s.completionTokens = completionTokens
 	s.estPrompt = estPromptTokens
 	s.lastSuccess = ts
 
-	if s.flatRun >= cfg.tripAfterTurns {
+	if s.flatRun >= cfg.tripAfterTurns || (cfg.repeatIdentical > 0 && s.replyStreak >= cfg.repeatIdentical) {
 		// (Re)arm the backoff window deterministically from the ladder.
+		// The fingerprint lane uses the trip-tier window (it proves the
+		// loop with far fewer turns; escalating per extra repeat still
+		// happens naturally on the next flat probes via flatRun).
 		s.dueAt = ts.Add(loopGuardWindowFor(s.flatRun, cfg))
 	}
+}
+
+// loopGuardReplyFingerprint normalizes a completion's text and hashes it:
+// whitespace collapse + trailing-punctuation strip (models end waiting
+// messages with varying punctuation), truncated to the last 2KB so
+// verbose-but-identical tails still match. Empty/whitespace replies
+// return "" (no fingerprint — the ownOnly lane already covers them).
+// 非密码学用途，fnv 足够且无分配负担。
+func loopGuardReplyFingerprint(replyText string) string {
+	fields := strings.Fields(replyText)
+	if len(fields) == 0 {
+		return ""
+	}
+	joined := strings.Join(fields, " ")
+	if len(joined) > 2048 {
+		joined = joined[len(joined)-2048:]
+	}
+	joined = strings.TrimRight(joined, "。.!?！？…")
+	h := fnv.New64a()
+	h.Write([]byte(joined))
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // evictLocked keeps the state table bounded. Cheap path: drop entries idle
@@ -336,6 +390,15 @@ func loopGuardRejectionShape(lr LoopCheckResult) (code, msg string) {
 			"Session closed by loop guard after " + strconv.Itoa(lr.FlatRun) +
 				" consecutive no-progress turns (over-limit shutdown). Genuinely new input " +
 				"is required to resume; periodic retries will keep being rejected."
+	}
+	if lr.RepeatStreak >= 3 && lr.FlatRun+1 <= lr.RepeatStreak {
+		// Fingerprint-lane trip: the context-delta counter has not accumulated
+		// yet, but the replies are byte-identical — report the repeat count.
+		return "loop_guard_repeat",
+			"Session paused by loop guard: the model returned the identical reply " +
+				strconv.Itoa(lr.RepeatStreak) + " times in a row (no new information is being produced). " +
+				"Upstream calls are suspended to avoid wasting tokens. Send real new input " +
+				"(user message or task progress) to resume, or stop retrying and wait."
 	}
 	return "loop_guard_backoff",
 		"Session paused by loop guard: " + strconv.Itoa(lr.FlatRun) +

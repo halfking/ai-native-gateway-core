@@ -8259,7 +8259,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" &&
 		reqLog.PromptTokens != nil && reqLog.CompletionTokens != nil {
 		h.loopGuard.Observe(*reqLog.GwSessionID, *reqLog.PromptTokens, *reqLog.CompletionTokens,
-			estimatePromptTokens(requestBody), time.Now())
+			estimatePromptTokens(requestBody), streamTextContentForIntegrity(capture), time.Now())
 	}
 
 	var platformOriginStage string
