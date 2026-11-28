@@ -1861,7 +1861,23 @@ var candidateQuerySQLBaseTemplate = `
 			LEFT JOIN model_aliases ma
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
-		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		LEFT JOIN models_canonical mc ON mc.id = COALESCE(
+			mo.canonical_id,
+			ma.canonical_id,
+			-- (2026-11-29 模型↔供应商匹配链审计): offers whose ONLY canonical
+			-- linkage is standardized_name (canonical_id NULL + no ACTIVE alias —
+			-- e.g. the alias exists but status='deprecated') still match the WHERE
+			-- arms via standardized_name, yet the old join left mc.* NULL ⇒
+			-- _mc_family empty ⇒ the endpoint selector falls back to Stage 1C and
+			-- the raw→standard→family chain silently breaks for exactly these
+			-- rows. Fall back to the canonical whose name equals the offer's
+			-- standardized_name so family always resolves through the same
+			-- linkage the match arms use.
+			(SELECT mc2.id FROM models_canonical mc2
+			  WHERE mc2.canonical_name = mo.standardized_name
+			    AND COALESCE(mc2.status, 'active') != 'disabled'
+			  ORDER BY mc2.id
+			  LIMIT 1))
 		WHERE (
 		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
 		      mo.canonical_raw_name = $1

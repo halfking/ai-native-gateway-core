@@ -29,6 +29,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -216,6 +217,31 @@ func (h *Handler) putProviderEndpoint(w http.ResponseWriter, r *http.Request, pr
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 
+	// (2026-11-29 模型↔供应商匹配链审计 F2)：vendor_native 此前是自由文本
+	// （表注释里 "validated at write time (TODO r0924 follow-up)" 从未落地）⇒
+	// 运营写入与 models_canonical.family 词表不一致的值（如 glm / zhipu）⇒
+	// 端点选择器 Stage 1A/2/3 的家族匹配按【裸字符串相等】比对 mc.family 与
+	// pep.vendor_native ⇒ 永不命中 ⇒ 静默回落 Stage 4（主端点），写的人完全
+	// 无感。校验原则：
+	//   · 空/NULL 保持放行（存量 50/53 行就是 NULL，未配 = 不参与家族匹配）
+	//   · 非空值必须落在 model_families.id ∪ models_canonical.family 词表内
+	//     （与 /api/models/families 的权威口径一致），否则 400 并给出最接近的
+	//     词表项提示（前缀/子串命中一个即可），让写的人当场改对而不是上线后
+	//     从 endpoint_selector_decision 日志里反推。
+	if req.VendorNative != nil {
+		if v := strings.TrimSpace(*req.VendorNative); v != "" {
+			known, hint, err := h.checkVendorNativeFamily(ctx, v)
+			if err != nil {
+				writeInternalErr(w, "providerEndpoints.vendorNative", err)
+				return
+			}
+			if !known {
+				writeError(w, http.StatusBadRequest, "vendor_native must match a model family (models_canonical.family vocabulary): "+hint)
+				return
+			}
+		}
+	}
+
 	db := h.policyDB()
 	var kind string
 	if err := db.QueryRow(ctx, `SELECT COALESCE(kind,'') FROM providers WHERE id = $1`, providerID).Scan(&kind); err != nil {
@@ -400,4 +426,74 @@ func weightArg(w *int) any {
 		return nil
 	}
 	return int16(*w)
+}
+
+// checkVendorNativeFamily 校验 vendor_native 是否落在 family 词表内
+// （model_families.id ∪ models_canonical.family —— 与 /api/models/families
+// 的权威口径一致）。返回 (known, hint, err)：known=false 时 hint 给出词表里
+// 与输入前缀/子串最接近的一项（没有相近项则给词表头部若干项），让写的人
+// 当场改对。
+//
+// 词表直查 DB 而不是进程内缓存：family 词表是低频写、低 QPS 的管理面读，
+// 且挂过期缓存会让「刚建的新 family 写不进 vendor_native」这类幽灵故障。
+func (h *Handler) checkVendorNativeFamily(ctx context.Context, value string) (bool, string, error) {
+	rows, err := h.policyDB().Query(ctx, `
+		SELECT id FROM model_families
+		UNION
+		SELECT DISTINCT family FROM models_canonical
+		 WHERE family IS NOT NULL AND family <> ''
+	`)
+	if err != nil {
+		return false, "", err
+	}
+	defer rows.Close()
+	var hint string
+	count := 0
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return false, "", err
+		}
+		count++
+		if id == value {
+			return true, "", nil
+		}
+		// 近似提示：前缀或子串命中词表项则优先给（最多记一个）。
+		if hint == "" && (strings.HasPrefix(id, value) || strings.Contains(id, value) || strings.HasPrefix(value, id)) {
+			hint = id
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, "", err
+	}
+	if hint == "" {
+		// 无相近项 ⇒ 给词表前几个作样例（循环里 count 已统计；再扫一遍拿样例）。
+		if rows2, err2 := h.policyDB().Query(ctx, `
+			SELECT id FROM model_families
+			UNION
+			SELECT DISTINCT family FROM models_canonical WHERE family IS NOT NULL AND family <> ''
+			ORDER BY 1 LIMIT 8
+		`); err2 == nil {
+			defer rows2.Close()
+			var sb strings.Builder
+			first := true
+			for rows2.Next() {
+				var id string
+				if err := rows2.Scan(&id); err != nil {
+					break
+				}
+				if !first {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(id)
+				first = false
+			}
+			hint = "closest known families: " + sb.String()
+		} else {
+			hint = fmt.Sprintf("vocabulary has %d families; see GET /api/models/families", count)
+		}
+	} else {
+		hint = "closest match: " + hint
+	}
+	return false, hint, nil
 }
