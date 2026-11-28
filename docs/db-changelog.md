@@ -11272,3 +11272,36 @@ deploy-245 第 7 轮一次通过（3187/311ca42c，切换 33s，凭据解密冒�
 备份链：ledger-full-backup-20261128.sql（314 行）+ batch-result.txt（260 件逐件结果，
 211 acc-pg17:/tmp/）。**遗留**：620 的 duplicate provider_error_details 需要 operator
 裁决去重口径（迁移自带的 fail-closed 门，效果列已落地不阻塞）。
+## 2026-11-28T15:42:25Z — deploy 154 build_seq 3203 (731c207f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 491 | `491_work_type_default_routes.sql` | `cf96b28820daa10503f757d4dbc02fb1e69f43921dae2b7e99f86f2c65954d77` | applied+verified |
+
+
+### 补登（154 部署轮）：拓扑更正与 252 生产库账本对齐（真正的共享库）
+
+**拓扑更正**：本轮前期把 211 acc-pg17 误判为 245/154 共享库并完成了全套修复。
+实测更正：`172.16.2.210` = **252**（阿里云 VPC 内网 IP），`pg-252-pg17`（host 网络
+5432）才是 deploy-154/deploy-245 门禁实际读取的生产库（deploy-seamless
+`_env_file_for_target`：154=/etc/llm-gateway-go/env、245=/opt/llm-gateway-go/.env，
+两台 DATABASE_URL 均指向 172.16.2.210:5432）。211 acc-pg17（192.168.31.211:15432
+暴露）是 252 的 **历史快照副本**（dump 恢复，非流复制——两边 pg_is_in_recovery 均 f，
+且修复后 425 checksum 已分叉）。211 的修复对其本地测试环境自身仍是正确收口；
+其 260 件批量预演裁决因两库物理 schema 同构（同一条 ensure 链推进）而可直接映射。
+
+**252 生产库对齐动作**（备份 `/tmp/252-ledger-backup-20261128.sql` 320 行先 dump）：
+① 425 条件化 UPDATE → 正典 db3d505a（UPDATE 1，同 211）；② 830 记名纠正
+（UPDATE 1）；③ 641/830 走仓内退役声明（32daa01e5 的 .retired 已生效）；④
+260 件批量真应用 **194 OK / 66 FAIL**（账本 275→280 自登记 +5）；⑤ 560/855
+单件复跑后登记（560 rc=0 真应用；855 是 pg 容器 shm 63M 不足致 matview
+REFRESH 失败——`session_task_stats` 已由 ensure 链建好，效果已在，登记 applied；
+**252 容器 ShmSize=64M 未享受 N11 的 1G 调整，遗留**）；⑥ 17+1 件「效果已在、
+重放有害/无效」登记 applied（同 211 裁决映射）；⑦ 838 真跑成功（rc=0）+ 双账本
+补齐（批量后 schema_migrations 缺行是登记时序问题）。
+
+**终态**：schema_migrations 450 行；412-999 段仓库 495 号 vs 账本缺口 48 件
+**全部**为退役清单守卫件（by design 不登记不投喂）；checksum 抽查
+425/611/636/640/838/1000/1004/644 与仓内字节 8/8 MATCH。
+**154 部署实证**：门禁一次通过（489 迁移核对 + 641/830 退役跳过 + 838 校验），
+`3203-731c207f` 切换 44s，凭据解密冒烟 17/0 failed，公网 llm.kxpms.cn 200。
