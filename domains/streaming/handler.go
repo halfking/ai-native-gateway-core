@@ -1589,6 +1589,9 @@ type ChatHandler struct {
 	// nil disables external hooks (requests proceed without hook calls).
 	// See domains/hooks/externalhost/INTEGRATION_GUIDE.md for integration details.
 	externalHooks *externalhost.PipelineIntegrator
+	// externalHookTrustedProxyHops (W3 XFF 信任链, 2026-11-28)：受信反向代理层数，
+	// 0 = 不信任 XFF（默认）。SetExternalHookTrustedProxyHops 写入。
+	externalHookTrustedProxyHops int
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1674,6 +1677,17 @@ func (h *ChatHandler) SetExternalHooks(integrator *externalhost.PipelineIntegrat
 	h.externalHooks = integrator
 }
 
+// SetExternalHookTrustedProxyHops (W3 XFF 信任链, 2026-11-28) 声明网关前面有
+// N 层受信反向代理（同机 nginx = 1）。0（默认）= 不信任 XFF，来源判定维持
+// RemoteAddr 口径；>0 时 determineOrigin 按右锚定取 XFF 穿透地址判类。
+// Must be called before serving traffic (与 SetExternalHooks 同约束)。
+func (h *ChatHandler) SetExternalHookTrustedProxyHops(n int) {
+	if n < 0 {
+		n = 0
+	}
+	h.externalHookTrustedProxyHops = n
+}
+
 func (h *ChatHandler) SetRequestJourney(recorder *requestjourney.Recorder, gatewayInstanceID string) {
 	h.journeyRecorder = recorder
 	h.journeyGatewayInstanceID = strings.TrimSpace(gatewayInstanceID)
@@ -1732,7 +1746,37 @@ func (h *ChatHandler) emitTrace(ctx context.Context, requestID string, ev gwtrac
 // 原实现把整个私有网段（10./8、172.16-31./12、192.168./16）判为 local，
 // 等于让所有内网客户端的请求正文默认被外部钩子捕获——与"remote 默认不捕获正文"
 // 的隐私原则相悖。私有网段是"受信网络"，不是"本机"，一律按 remote 处理。
-func determineOrigin(r *http.Request, keyInfo *authentication.KeyInfo) contract.Origin {
+//
+// XFF 信任链（2026-11-28 修订，收口 INTEGRATION_GUIDE「仍未实现」第 3 项）：
+// 网关在同机 nginx 之后时 RemoteAddr 恒为 127.0.0.1，所有外部请求都会被判
+// local（正文捕获保护失效）。trustedProxyHops>0 表示「前面有 N 层**受信**代理」：
+// 取 X-Forwarded-For 从右往左第 N 个（即穿过 N 层代理后的客户端地址）判类，
+// 链长度 < N（代理层数与配置不符，可能伪造）时 fail-closed 按 OriginRemote。
+// 默认 0 = 不信任任何代理头，维持纯 RemoteAddr 判定（行为不变）。
+func determineOrigin(r *http.Request, keyInfo *authentication.KeyInfo, trustedProxyHops int) contract.Origin {
+	if trustedProxyHops > 0 {
+		client := trustedClientIP(r, trustedProxyHops)
+		if client == "" {
+			// XFF 缺失或短于声明层数 ⇒ 代理拓扑与配置不符，fail-closed 按
+			// remote（正文捕获保护生效）。**不回落 RemoteAddr**：hops>0 意味着
+			// 请求必然先过受信代理，此时 RemoteAddr 是代理自身（同机即回环），
+			// 回落等于把所有外部请求判成 local，保护失效。
+			if keyInfo != nil && keyInfo.IsInternal {
+				return contract.OriginGatewayKey
+			}
+			return contract.OriginRemote
+		}
+		if isLoopbackAddr(client) {
+			return contract.OriginLocal
+		}
+		// 穿过受信代理后是真实外部客户端：不再看 RemoteAddr（那是代理
+		// 自己的回环地址），直接落 key/remote 分类。
+		if keyInfo != nil && keyInfo.IsInternal {
+			return contract.OriginGatewayKey
+		}
+		return contract.OriginRemote
+	}
+
 	// Check for loopback first (highest precedence)
 	if isLoopbackAddr(r.RemoteAddr) {
 		return contract.OriginLocal
@@ -1745,6 +1789,28 @@ func determineOrigin(r *http.Request, keyInfo *authentication.KeyInfo) contract.
 
 	// Default to remote origin
 	return contract.OriginRemote
+}
+
+// trustedClientIP 从 X-Forwarded-For 里按右锚定取「穿过 trustedProxyHops 层
+// 受信代理后的客户端地址」。XFF 语义：client, proxy1, proxy2（左侧是原始客户端，
+// 每过一层代理右侧追加一个）。所以从右往左数第 hops 个元素是最后写入方之前的
+// 地址——即受信代理链外侧的客户端。链不存在或元素不足（含空元素）返回 ""，
+// 调用方 fail-closed。取出的地址只用于 loopback 判定，不做 CIDR 展开。
+func trustedClientIP(r *http.Request, trustedProxyHops int) string {
+	if r == nil || trustedProxyHops <= 0 {
+		return ""
+	}
+	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff == "" {
+		return ""
+	}
+	parts := strings.Split(xff, ",")
+	// 右锚定：XFF[len-hops] 是穿过 hops 层代理后的客户端地址。
+	idx := len(parts) - trustedProxyHops
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[idx])
 }
 
 // isLoopbackAddr checks if the remote address is a loopback address.
@@ -4920,7 +4986,7 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		hookCtx.Protocol = egressProtocol // resolved upstream protocol
 		hookCtx.Model = clientModel
-		hookCtx.Origin = determineOrigin(r, keyInfo)
+		hookCtx.Origin = determineOrigin(r, keyInfo, h.externalHookTrustedProxyHops)
 
 		// Build request payload
 		reqPayload := externalhost.BuildRequestPayload(
@@ -7350,7 +7416,7 @@ goalRetryLoopDone:
 		)
 		finalHookCtx.Protocol = egressProtocol
 		finalHookCtx.Model = clientModel
-		finalHookCtx.Origin = determineOrigin(r, keyInfo)
+		finalHookCtx.Origin = determineOrigin(r, keyInfo, h.externalHookTrustedProxyHops)
 		finalHookCtx.Abort = false // Client did not disconnect (we reached success path)
 
 		// Capture response in background (doesn't block)

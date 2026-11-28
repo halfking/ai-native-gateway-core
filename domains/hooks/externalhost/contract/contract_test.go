@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestContractVersionIsPinned(t *testing.T) {
@@ -348,3 +349,50 @@ func TestAllProtectedFields(t *testing.T) {
 		}
 	}
 }
+
+// TestTruncateReason (2026-11-28 W3 收口) 验证 reason 有界截断：
+// 短文本原样、超限截到 MaxReasonBytes 且 UTF-8 安全、恒 ≤ 上限。
+func TestTruncateReason(t *testing.T) {
+	t.Run("short reason passes through unchanged", func(t *testing.T) {
+		in := strings.Repeat("a", MaxReasonBytes)
+		if got := TruncateReason(in); got != in {
+			t.Fatalf("boundary-length reason was modified")
+		}
+	})
+
+	t.Run("oversized ascii reason truncated to limit", func(t *testing.T) {
+		in := strings.Repeat("a", MaxReasonBytes+500)
+		got := TruncateReason(in)
+		if len(got) != MaxReasonBytes {
+			t.Fatalf("len = %d, want %d", len(got), MaxReasonBytes)
+		}
+		if !strings.HasSuffix(got, "…") {
+			t.Fatalf("truncated reason missing ellipsis suffix")
+		}
+		if got[:MaxReasonBytes-len("…")] != strings.Repeat("a", MaxReasonBytes-len("…")) {
+			t.Fatalf("prefix content changed")
+		}
+	})
+
+	t.Run("oversized multibyte reason keeps valid utf-8", func(t *testing.T) {
+		// 每个"汉"3 字节；造一个会在字符中间被砍的长度。
+		in := strings.Repeat("汉", (MaxReasonBytes/3)+100)
+		got := TruncateReason(in)
+		if len(got) > MaxReasonBytes {
+			t.Fatalf("len = %d exceeds limit %d", len(got), MaxReasonBytes)
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncated reason is not valid UTF-8")
+		}
+		if !strings.HasSuffix(got, "…") {
+			t.Fatalf("truncated reason missing ellipsis suffix")
+		}
+	})
+
+	t.Run("empty string unchanged", func(t *testing.T) {
+		if got := TruncateReason(""); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+}
+

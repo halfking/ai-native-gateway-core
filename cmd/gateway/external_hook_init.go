@@ -51,6 +51,8 @@ type externalHookConfig struct {
 	CircuitOpenWindow time.Duration
 	// AllowRemoteBodyCapture 是否允许 remote 来源捕获正文；默认 false（W3.4 隐私原则）。
 	AllowRemoteBodyCapture bool
+	// TrustedProxyHops 受信反向代理层数（XFF 信任链，2026-11-28）；0 = 不信任 XFF。
+	TrustedProxyHops int
 }
 
 // loadExternalHookConfig 从环境读取装配配置。
@@ -64,6 +66,7 @@ type externalHookConfig struct {
 //	LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_THRESHOLD    熔断阈值（默认 5）
 //	LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_WINDOW_MS     熔断窗口（默认 30000）
 //	LLM_GATEWAY_EXTERNAL_HOOK_ALLOW_REMOTE_BODY    "1" 允许 remote 捕获正文（默认禁）
+//	LLM_GATEWAY_EXTERNAL_HOOK_TRUSTED_PROXY_HOPS   受信反向代理层数（默认 0=不信任 XFF）
 func loadExternalHookConfig() externalHookConfig {
 	cfg := externalHookConfig{
 		Enabled:                envBool("LLM_GATEWAY_EXTERNAL_HOOK_ENABLED", false),
@@ -71,6 +74,7 @@ func loadExternalHookConfig() externalHookConfig {
 		CircuitThreshold:       envInt("LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_THRESHOLD", externalhost.DefaultCircuitThreshold),
 		CircuitOpenWindow:      time.Duration(envInt("LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_WINDOW_MS", int(externalhost.DefaultCircuitOpenWindow.Milliseconds()))) * time.Millisecond,
 		AllowRemoteBodyCapture: envBool("LLM_GATEWAY_EXTERNAL_HOOK_ALLOW_REMOTE_BODY", false),
+		TrustedProxyHops:       envInt("LLM_GATEWAY_EXTERNAL_HOOK_TRUSTED_PROXY_HOPS", 0),
 	}
 
 	if p := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EXTERNAL_HOOK_MANIFEST")); p != "" {
