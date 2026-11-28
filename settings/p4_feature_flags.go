@@ -9,9 +9,11 @@ import (
 // P4FeatureFlags controls the r0924 supplier-protocol-optimization P4
 // (endpoint selector + Ollama native) rollout.
 //
-// All flags default to false/disabled to ensure zero impact on existing
-// routing until explicitly enabled. When disabled, the dispatcher continues
-// using legacy BaseURL/Protocol from provider.Candidate (Stage 4 fallback).
+// FF_ENDPOINT_SELECTOR defaults to true since A6 (2026-11-28 owner 拍板):
+// the selector only rewrites (BaseURL, Protocol) for providers with explicit
+// provider_endpoint_protocols rows; everyone else keeps the legacy primary
+// pair via Stage 4 fallback. FF_OLLAMA_NATIVE remains default=false — see the
+// ⛔ note on OllamaNativeEnabled (R72 audit §3.1).
 //
 // Design: docs/供应商协议优化-实施规划.md P4.1-P4.3
 type P4FeatureFlags struct {
@@ -20,8 +22,14 @@ type P4FeatureFlags struct {
 	// legacy candidate.BaseURL and candidate.Protocol without modification
 	// (Stage 4 fallback behavior).
 	//
-	// Default: false (selector disabled, legacy routing)
-	// Env: FF_ENDPOINT_SELECTOR=true
+	// Default: true since A6 (2026-11-28 owner 拍板). The selector only
+	// rewrites (BaseURL, Protocol) when the provider has explicit
+	// provider_endpoint_protocols rows; providers without endpoint rows and
+	// requests whose protocol has no matching endpoint fall back to the
+	// primary pair (Stage 4) — byte-identical to legacy routing. Rollback
+	// knob: FF_ENDPOINT_SELECTOR=false restores pre-A6 behavior with zero
+	// code change.
+	// Env: FF_ENDPOINT_SELECTOR=false to disable
 	EndpointSelectorEnabled bool
 
 	// OllamaNativeEnabled enables the ollama-native protocol executor.
@@ -46,20 +54,19 @@ type P4FeatureFlags struct {
 	OllamaNativeEnabled bool
 }
 
-// GetP4Flags returns the P4 feature flags, read from environment variables
-// (FF_ENDPOINT_SELECTOR, FF_OLLAMA_NATIVE) with default=false.
+// GetP4Flags returns the P4 feature flags. FF_ENDPOINT_SELECTOR defaults to
+// true since A6 (2026-11-28 owner 拍板): the selector is safe-by-construction
+// (Stage 4 fallback = legacy pair when no endpoint rows match) and its
+// decisions are observable via the endpoint_selector_decision log. FF_OLLAMA_NATIVE
+// remains default=false (⛔ see OllamaNativeEnabled — R72 audit §3.1).
 //
 // Usage in executor_dispatch.go:
 //
 //	p4flags := settings.GetP4Flags()
-//	if p4flags.EndpointSelectorEnabled {
-//	    decision := endpointselect.Select(...)
-//	    cand.BaseURL = decision.BaseURL
-//	    cand.Protocol = decision.Protocol
-//	}
+//	cand = selectDispatchEndpoint(cand, params.ClientProtocol, p4flags)
 func GetP4Flags() *P4FeatureFlags {
 	return &P4FeatureFlags{
-		EndpointSelectorEnabled: envBoolP4("FF_ENDPOINT_SELECTOR", false),
+		EndpointSelectorEnabled: envBoolP4("FF_ENDPOINT_SELECTOR", true),
 		OllamaNativeEnabled:     envBoolP4("FF_OLLAMA_NATIVE", false),
 	}
 }

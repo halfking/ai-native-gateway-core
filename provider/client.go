@@ -118,11 +118,6 @@ type Candidate struct {
 	OfferRawModel    string  `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
 	StandardizedName string  `json:"standardized_name"`
 	CanonicalID      *int    `json:"canonical_id,omitempty"`
-	// Family is the canonical model family (from models_canonical.family).
-	// Used by endpointselect.Select() for Stage 1A/2/3 family matching
-	// (r0924 supplier-protocol-optimization). Empty when the canonical
-	// row has no family or when the offer is not linked to a canonical.
-	Family           string  `json:"family,omitempty"`
 	SuccessRate      float64 `json:"success_rate"`
 	P95LatencyMs     int     `json:"p95_latency_ms"`
 	P50LatencyMs     int     `json:"p50_latency_ms"` // 2026-07-20: 用于 concurrency-aware latency scoring
@@ -269,6 +264,13 @@ type Candidate struct {
 	// provider_endpoint_protocols rows). Select() handles this as the
 	// Stage 4 fallback.
 	NativeEndpoints []endpointselect.EndpointLite `json:"native_endpoints,omitempty"`
+	// ModelFamily is the canonical family of the requested model
+	// (models_canonical.family via the matched CTE), carried so the
+	// dispatch-side selector call can pass a non-empty wantFamily —
+	// wiring the selector's Stage 1B/2/3 family-match stages (A6).
+	// Empty when the canonical row has no family set; Select() treats
+	// empty wantFamily exactly as before (Stage 1C semantics).
+	ModelFamily string `json:"model_family,omitempty"`
 }
 
 // CalcCost 是**死代码**：全仓零调用者（`grep -rn '\.CalcCost('` = 0）。
@@ -1978,11 +1980,7 @@ SELECT
 			-- legacy single-endpoint fallback.
 			pep_lateral.endpoints AS native_endpoints,
 			mo.canonical_id,
-			-- A6 (供应商协议自适应方案): canonical model family for
-			-- endpointselect.Select() wantFamily parameter. Stage 1A/2/3
-			-- matching (vendor_native == wantFamily) needs this. Empty when
-			-- the canonical row has no family or the offer is not linked.
-			COALESCE(mo._mc_family, '') AS family
+			mo._mc_family
 			FROM matched mo
 			JOIN credential_model_bindings cmb_mode ON cmb_mode.id = mo.id
 			JOIN credentials c ON c.id = mo.credential_id
@@ -2346,12 +2344,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
-		&cand.RecentCacheRate,
-		&cand.RecentCacheSamples,
-		&nativeEndpointsJSON,
-		&cand.CanonicalID,
-		&cand.Family,
-	); err != nil {
+			&cand.RecentCacheRate,
+			&cand.RecentCacheSamples,
+			&nativeEndpointsJSON,
+			&cand.CanonicalID,
+			&cand.ModelFamily,
+		); err != nil {
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
