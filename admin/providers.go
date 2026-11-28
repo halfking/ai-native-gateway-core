@@ -512,6 +512,9 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "endpoints":
+		// 协议自适应方案 A4：provider_endpoint_protocols 管理面（admin/provider_endpoints.go）。
+		h.handleProviderEndpoints(w, r, providerID, "")
 	case "settings/":
 		// Handle /api/providers/:id/settings/:key
 		settingKey := strings.TrimPrefix(subPath, "settings/")
@@ -529,6 +532,10 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		if len(subPath) > 7 && subPath[:7] == "models/" {
 			offerPath := subPath[7:]
 			h.handleProviderModelOffer(w, r, providerID, offerPath)
+			return
+		}
+		if strings.HasPrefix(subPath, "endpoints/") {
+			h.handleProviderEndpoints(w, r, providerID, strings.TrimPrefix(subPath, "endpoints/"))
 			return
 		}
 		if len(subPath) > 9 && subPath[:9] == "settings/" {
