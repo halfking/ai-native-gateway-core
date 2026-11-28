@@ -33,6 +33,13 @@ import (
 	"syscall"
 	"time"
 
+	// 2026-11-28 审计轮：内嵌 IANA tzdata。Alpine 运行时镜像无 tzdata 包，
+	// 系统 /usr/share/zoneinfo 缺失时 time.LoadLocation("Asia/Shanghai") 失败，
+	// settings.SystemTimezoneLocation 回退 UTC ⇒ 租户看板/统计面时间聚合漂移
+	// （211「unknown time zone Asia/Shanghai」实录，docs/operations/2026-11-23-211配置优化执行报告.md:39）。
+	// 部署脚本挂载宿主 zoneinfo 只是缓解，二进制内嵌才是治本（settings/timezone_tzdata_gate_test.go 钉住）。
+	_ "time/tzdata"
+
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
