@@ -11224,3 +11224,51 @@ migration_name/applied_at 不动。★ **431/432 排除**：修正对账后确�
 （task_default_routing/route_incident_events），与台账逐字节吻合 ⇒ 无需处置。
 ★ **遗留登记**：<500 号段历史撞号棘轮基线已有 431/432 双文件（`tests/migration_version_prefix_unique_test.sh`），
 本轮 425 的教训是**登记轮必须在干净树跑**（52ae9c32f 的 211 部署追平轮已立此规约，本轮是执行偏差）。
+
+### 补登（同轮第二道门禁后追记）：641 生效 + 830 记名修正
+
+- **641 退役声明已生效**（deploy-245 第三轮 WARN 跳过）：`32daa01e5` 的
+  `.retired` 文件被门禁识别（记名对上、含退役原因）⇒ 跳过 checksum 比对。
+- **830 台账记名修正**（同共享库 211 acc-pg17）：原行 migration_name 是
+  「把整段 description 当文件名」的畸形登记（checksum=retired-placeholder 占位），
+  与仓内 canonical 退役声明 `830_ursm_node_snapshot_min_partitioned.sql.skip`
+  （bg/partition_830_contract_test.go 钉住的 manual-by-design 形态）记名对不上
+  ⇒ 门禁 fatal。备份该行（/tmp/830-row-backup.txt 本会话 + 全表 dump
+  ledger-full-backup-20261128.sql 容器内）后条件化 UPDATE migration_name →
+  canonical 名（UPDATE 1，checksum 占位值保持不变——退役声明路径本就不校验 checksum）。
+
+### 补登（同轮第三道门禁）：1000-1005 checksum 台账补录
+
+- 共享库（211 acc-pg17）1000-1005 已于 2026-11-28 04:41 由配额车道部署轮应用
+  （billing P0 + 三级配额族），但 checksums 台账漏登记 ⇒ deploy 门禁
+  「缺少 checksum ledger」fatal。按 repair-252-migration-ledger.sh 同语义
+  （INSERT ON CONFLICT DO NOTHING + 本仓 canonical 字节 sha256）手动补录 6 行
+  （UPDATE 0/INSERT 6；事务包裹；全表 dump 备份已有）。
+- ⚠ 遗留：`repair-252-migration-ledger.sh` 的 canonical 解析不识别 `.retired`
+  声明（与 db-changelog 门禁的两套解析不对齐）⇒ 对含退役迁移的库无法直跑
+  （本轮实测 ERROR at 641）。建议后续统一两处解析语义（owner 轴待决项）。
+
+### 补登（同轮第四~六道门禁）：共享库账本系统性对齐（211 acc-pg17，245/154 共库）
+
+前四道门禁（425 checksum / 641 退役声明 / 830 记名 / 1000-1005 补录）清障后，
+pending 扫描仍暴露该库的**结构性账本漂移**：schema_migrations 停在 259 行（早期快照），
+物理 schema 却被 11-28 各车道 ensure 链推到最新 ⇒ 261 个 ≥412 pending 全量投喂，
+幂等件能过但**倒退件**（523 的 CREATE OR REPLACE VIEW 会删掉活视图的
+priority/context_window_source/context_window_updated_at 三列）会破坏现役 schema。
+
+**批量预演裁决**（260 件真实执行，64 FAIL 逐件裁决）：
+- **196 件真应用成功**（幂等 NOTICE 形态为主；含 636 死锁单跑复测、838 批量缺件补跑）；
+  其中含自登记账本的 23 件；其余 173 件随后按 canonical 字节补登记双账本
+  （schema_migrations.description=<canonical 文件名去后缀>，ON CONFLICT DO NOTHING）。
+- **17 件效果已在、旧字节重放有害/无效**（视图倒退 523/568/625/637/826/844；
+  形态演进 534/538/549/614/727/729/800/807；数据门 620[tenant_id 已 0 NULL]）——
+  全部对照 252 健康库基准确认效果后登记 applied（950 先例「账本登记已处理事实」语义）。
+- **46 件纯 v1 引用件**保持「账本缺 + 退役清单守卫拦」形态（by design；
+  清单经本轮实测补齐至 61 件，484/485/487/488/601/603/604 七件为实投喂炸出的漏枚举）。
+
+**结果**：账本 412-999 段 495 个号全部收敛（443 登记 + 46 守卫拦截 + 6 非 3 位号段）；
+checksum 抽查（523/611/636/640/1000/1004）与仓内字节全 MATCH；
+deploy-245 第 7 轮一次通过（3187/311ca42c，切换 33s，凭据解密冒烟 17/0 failed）。
+备份链：ledger-full-backup-20261128.sql（314 行）+ batch-result.txt（260 件逐件结果，
+211 acc-pg17:/tmp/）。**遗留**：620 的 duplicate provider_error_details 需要 operator
+裁决去重口径（迁移自带的 fail-closed 门，效果列已落地不阻塞）。

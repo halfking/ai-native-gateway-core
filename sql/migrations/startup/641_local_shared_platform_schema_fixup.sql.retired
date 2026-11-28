@@ -1,0 +1,14 @@
+641_local_shared_platform_schema_fixup.sql —— 退役声明（2026-11-28 deploy-245 中止轮补登）
+
+该迁移从未进入本仓任何提交（git 全历史无 641 号文件）。它是 2026-10-12 03:49 由
+RedClaw/ACC 观察者车道在共享库（211 acc-pg17，当时 245/154 同库）上直接执行的
+本地平台 schema fixup（description: 'local shared platform schema fixup for
+RedClaw/ACC observers'），checksums 台账登记为占位值
+retired-placeholder-no-checksum-verification ⇒ 字节本就不做校验。
+
+退役原因：字节不在仓内、无 canonical 来源可对账；效果已固化在库中，后续部署
+只需跳过 checksum 比对。按 db-changelog 退役声明规约（记名必须对上账本
+migration_name、必须写明退役原因）留痕于此。
+
+证据：211 acc-pg17 schema_migrations 641 行 + llm_gateway_migration_checksums
+占位行（2026-11-28 实查）；deploy-245 中止日志 candidate 为空。

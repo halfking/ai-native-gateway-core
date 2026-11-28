@@ -165,13 +165,17 @@ func TestDispatchRouteOllamaNative_FFGate(t *testing.T) {
 }
 
 // TestDispatchRouteOllamaNative_DefaultFlagsAreOff is the guard on the guard:
-// the whole FF design rests on both switches defaulting to false, so a stray
-// default flip would silently put every deployment on the new path with no
-// code change at all.
+// it pins the shipped defaults so a stray change surfaces in review. A6
+// (2026-11-28 owner 拍板) flipped FF_ENDPOINT_SELECTOR's default to true —
+// the selector is safe-by-construction (providers without endpoint rows and
+// unmatched protocols keep the legacy primary pair via Stage 4) — while
+// FF_OLLAMA_NATIVE stays false (⛔ R72 audit §3.1: IR/catalog vocabulary
+// mismatch 501s every Ollama request). Reverting either default must land
+// here as a deliberate one-line change, never as a drive-by.
 func TestDispatchRouteOllamaNative_DefaultFlagsAreOff(t *testing.T) {
 	flags := settings.GetP4Flags()
-	if flags.EndpointSelectorEnabled {
-		t.Error("FF_ENDPOINT_SELECTOR must default to false")
+	if !flags.EndpointSelectorEnabled {
+		t.Error("FF_ENDPOINT_SELECTOR must default to true since A6 (2026-11-28 owner 拍板)")
 	}
 	if flags.OllamaNativeEnabled {
 		t.Error("FF_OLLAMA_NATIVE must default to false")
