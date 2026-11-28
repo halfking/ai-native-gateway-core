@@ -11205,3 +11205,22 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 988 | `988_provider_invoice_usage_buckets.sql` | `3a46a04e819cc540c8590d6a02ab6c7bf33c6888860421948341959877186086` | applied+verified |
 | 989 | `989_migration_ledger_session_analytics_981_repair.sql` | `a66a2eddc8cf323d1b785dd74ffdd25cc255fc8b799c161f09e09458ea009599` | applied+verified |
 
+
+## 2026-11-28T22:xx — deploy 245 中止轮：425 checksum 台账修复（audit 车道）
+
+★ **事件**：deploy-245（目标 build_seq 3179 / 1f66e5ac）切换前迁移门禁 fail-closed：
+`checksum 不匹配 425:recorded=6dc945a5…:local=db3d505a…`（符号链接未切，245 在役 3178/6bbc51f5 零影响）。
+★ **根因**：2026-11-27 21:09 的 211 台账登记轮在一个 425 文件被**本地改写过的临时树**里执行
+（证据链：同批 426/427 与本仓字节逐字节吻合 ⇒ 同源；唯 425 登记值 6dc945a5 在 git 全历史
+＋211/154/245 四台机器全仓副本＋dangling blob＋stash 全部找不到对应字节 ⇒ 孤儿 checksum；
+本仓 425 mtime=7-17 15:10 晚于提交时间 14:08 ⇒「改后还原」特征）。425 的 DDL 效果
+（trigger_kind CHECK 含 sync_request）已在共享库真实应用且被后续迁移演进至 9 值形态
+（重放正典 4 值文件反而会**缩**约束——绝不能重跑；schema_migrations 有记录 ⇒ pending 扫描按号跳过 ⇒ 正常通道不会重跑）。
+★ **处置**（950 先例「恢复已应用字节」的变体：已应用字节不可得 ⇒ 次优=台账指向可验证正典）：
+备份 `pg_dump -t llm_gateway_migration_checksums`（314 行，211 acc-pg17:/tmp/ledger-full-backup-20261128.sql）后
+条件化 UPDATE 425 行 checksum → 正典 db3d505a…（WHERE 三条件含旧值精确匹配，防御性；UPDATE 1）。
+migration_name/applied_at 不动。★ **431/432 排除**：修正对账后确认它们的 DIFF 是对账脚本
+`ls|head -1` 取到 down/另一套文件的假阳性——deploy 门禁按 description 解析正典
+（task_default_routing/route_incident_events），与台账逐字节吻合 ⇒ 无需处置。
+★ **遗留登记**：<500 号段历史撞号棘轮基线已有 431/432 双文件（`tests/migration_version_prefix_unique_test.sh`），
+本轮 425 的教训是**登记轮必须在干净树跑**（52ae9c32f 的 211 部署追平轮已立此规约，本轮是执行偏差）。
