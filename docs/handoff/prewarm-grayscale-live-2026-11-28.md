@@ -157,6 +157,21 @@ ssh 211 'docker exec llm-gateway-211-$(cat /opt/kaixuan/data/llm-gateway/run/act
 
 **20:40 快照（slot b）**：requested=316 / miss=176 / timeout=140 / unavailable=0（认证链零失败持续）/ hit=0 / injected_bytes=0；checkpoint 664855 lag 55s 健康；DLQ 仍 1（terminal）。timeout 占比 ~44% 与 embedding 上游慢挂一致。
 
+## 续作轮核销（2026-11-28 晚，第三会话）
+
+| 待办 | 结果 |
+|---|---|
+| 监控 embedding 恢复 | ⚠️ 上游症状变化：503 → **502**（22:44 起两侧一致），仍宕。**211 侧监控线实际未死**（v3 pid 4191268 存活，22:54 仍出探针；前轮"静默死亡"判断被 ssh 包装 shell 假阳性干扰）。本地侧新增一条冗余监控（同脚本，log=/tmp/emb-watch3-r2.log，22:55 首探 502），双线互备。⚠️ 本机无 setsid，用 `nohup ... & disown` 替代 |
+| 五态快照 | ✅ slot b（第三连槽）：requested=149 / miss=139 / timeout=10 / **unavailable=0（认证链零失败跨三槽保持）** / hit=0 / injected_bytes=0。owner 今日第三次重发：镜像 `2.6.2-1f66e5ac-20261128-211`（`1f66e5ac` 已核实 ∈ main 线，与 4570c49 同源） |
+| 两键在位 | ✅ `memory.prewarm.enabled=true` + `tenant_allowlist="default"` 跨三次重发未漂移（`llm_gateway` 库 `public.settings_kv`） |
+| DLQ | ✅ 仍 1 条 terminal（`gateway_dead_letter_events` id=1 evt-prewarm-e2e-0003）；ASM 侧 `dead_letter_events`=0。注意 `_audit_dlq_ids_*`（gw=26093 / 20261028=34847）是审计 ID 快照表，非事件 DLQ，勿混淆 |
+| memora 修复部署 | ❌ 未部署（在役二进制 re-verified = `v0.0.0-20261115214133-8560dea20eea`）；trusted-authz ERROR 近 30min 仍 51 次（recall.go:524）；ASM 侧近 30min "degrading to knowledge-only"=0（timeout 慢挂而非取消路径）。**仍待 owner 窗口**，材料齐备性已复核：分支 `recall-authz-stamp-211`（`61d6280a` 修复 + `91b309c0` 基线，祖先链 8560dea2 ✓，双用例+产物入库 ✓，origin 已推 ✓） |
+| 网关/父仓收敛 | ✅ 同僚再推 6 提交（A6 端点选择器接线 owner 拍板默认开、ASM token 读侧 %q 解码根修、路由分析报告等，与本线零交集）→ 网关 FF 收敛 271bdc0→**4570c490ca**（双远端现名 `origin`=codeup + `github`，0/0 同址）；父仓指针 → **ac75a0a** 已推 origin |
+
+**下轮接续点**（不变，叠加两条）：
+5. 监控判定以 `ps -eo pid,args | awk '$2=="bash" && $3=="/tmp/emb-watch3.sh"'` + log 文件尾行为准（双机各一条，211 优先）；恢复信号 = log 出现 `EMBEDDING RECOVERED`。
+6. memora 部署窗口出现时：先 `go version -m` 复核在役提交，从 `8560dea2` 切面构建 `61d6280a`（勿用 codex/s5-audit-211 线），verify 带 `ACC_VERIFY_AUTH_HEADER_FILE`。
+
 ## P1-4 评测面补齐（2026-11-28 下午，不需 embedding 的部分已完成）
 
 memora 仓有完整评测基建（`cmd/recall-eval` + `cmd/recall-eval-baseline` + `internal/recalleval`，种子集 `eval/recall/dataset.json`）。本轮补齐两块：
