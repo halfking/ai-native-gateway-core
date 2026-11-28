@@ -203,3 +203,18 @@ memora 仓有完整评测基建（`cmd/recall-eval` + `cmd/recall-eval-baseline`
 **embedding 恢复后的补测路径**（终版报告唯一缺口）：生产 memora 上载入种子集 corpus（eval-tenant/eval-recall 隔离）→ 逐 case 真检索导出 ranked `{case_id:[mem_id...]}` → `recall-eval -mode ranked` 评分 → 与 degraded v2 基线对照。
 
 以上均在 memora 分支 `recall-authz-stamp-211`（`61d6280a` 修复 + `91b309c0` 评测基线，已推 origin）。
+
+## 第三轮发布接续（2026-11-29 02:30 观察轮）
+
+**新态势（02:24 例巡发现）**：
+- **owner（.32）00:40 起第三轮发布**，00:47:44 停掉了我的修复容器（`memora-server` fix@91b309c0，优雅退出 exit=0）——**不是回滚我的修复，是其发布流程的 writers-stopped 阶段**。
+- **本轮意图 = embedding 上游大迁移**：新起 `memora-embedding` 容器（本地 llama.cpp，**Qwen3-Embedding-0.6B-Q8_0**，shared-infra 网，`/health` = ok）替代持续 502/503 的 kxpms 远端；`goal-reindex` 容器以 `--all-tenants --writers-stopped --include-memories --resume` 全量重刷 62016 条向量（镜像 `99347c85` = 构建 `1a9d91e2`，**仍不含 61d6280a**）。
+- 速率 ~100 条/min ⇒ reindex 约需 **~9h**（到上午）。reindex 零 error，新通道工作正常。
+- 修复容器本体还在（exited，二进制 91b309c0 已验），回滚壳 `memora-server-pre-fix-20261128` 也在——**61d6280a 的薄层镜像 `memora:fix-61d6280a-recall-authz`（4a4a86ea9e8c）随时可再叠**。
+
+**过时监控线下线**：emb-watch3 双线（211 pid 4191268 + 本地 54406）已杀——脚本探的 kxpms 通道已被 owner 弃用（211 侧连接失败 HTTP 000、本地 401 key 失效），监控目标过时。**若仍需监控 embedding，目标应改为 `http://memora-embedding:8080/health`（shared-infra 网）**。
+
+**接续点（替换前述第 5/6 条）**：
+5. 上午 reindex 完成后 owner 会启 `99347c85` 的 memora-server——**核查其二进制是否含 61d6280a**（`go version -m` 看 vcs.revision）；若不含，在 99347c85 基座上重做薄层（方法同上节，新基座镜像 ID 以 `docker images memora:audit-99347c85...` 为准，amd64）。
+6. owner 的 reindex 用 `--resume` 且 per-batch 提交：若其流程中断，容器名 `goal-reindex` 可复跑续传。
+7. embedding 上游已切本地：Recall@5/nDCG 补测与 verify 重跑**不再依赖 kxpms 恢复**——reindex 完成后即可按 P1-4 补测路径执行（seed corpus → 真检索 → ranked 评分）。
