@@ -906,6 +906,30 @@ do_deploy() {
   local version bundle_dir deploy_start
   deploy_start=$(date +%s)
 
+  # 2026-11-29 handoff P1 配置 SSOT：245/154 都有 /etc/llm-gateway-go/env（SSOT）
+  # 与运行时 env（systemd EnvironmentFile 读的那份）两个文件；运维改 /etc、
+  # 部署脚本改运行时副本的历史让两者漂移（245 实证：/etc OPS_NODE_REGION=154
+  # 停留在旧值、IR 行缺失，而 /opt/.env 是对的）。部署前把 SSOT 同步进运行时
+  # 副本，运维侧的修改随每次部署生效、部署侧的注入不再被下次手工回写覆盖。
+  # 154 的运行时文件就是 /etc 本身（_env_file_for_target），同步是自拷贝 no-op，
+  # 统一走一遍保持两个目标同一条流水线。
+  log "[0/9] 配置 SSOT 同步 (/etc/llm-gateway-go/env → 运行时 env)"
+  local _ssot_env="/etc/llm-gateway-go/env"
+  local _runtime_env _ssot_bak
+  _runtime_env=$(_env_file_for_target)
+  _ssot_bak="${_runtime_env}.bak.presync.$(date +%Y%m%d-%H%M%S)"
+  if [[ "$_runtime_env" != "$_ssot_env" ]]; then
+    if $SSH_CMD "test -f '$_ssot_env'"; then
+      $SSH_CMD "cp -p '$_runtime_env' '$_ssot_bak' 2>/dev/null || true; cp '$_ssot_env' '$_runtime_env' && chmod 0600 '$_runtime_env' && chown root:root '$_runtime_env'" \
+        && ok "SSOT 已同步 → $_runtime_env (旧副本备份 $_ssot_bak)" \
+        || warn "SSOT 同步失败，沿用现有 $_runtime_env 继续"
+    else
+      warn "/etc/llm-gateway-go/env 不存在（此环境无 SSOT），沿用现有 $_runtime_env"
+    fi
+  else
+    ok "运行时 env 即 SSOT ($_runtime_env)，无需同步"
+  fi
+
   log "[0/9] 部署前 PG 预检"
   # The env file holds DB credentials; tighten a historically loose 0644
   # to root-only so every deploy run converges it to 0600.
