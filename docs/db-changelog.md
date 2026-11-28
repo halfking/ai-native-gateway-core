@@ -11236,3 +11236,14 @@ migration_name/applied_at 不动。★ **431/432 排除**：修正对账后确�
   ⇒ 门禁 fatal。备份该行（/tmp/830-row-backup.txt 本会话 + 全表 dump
   ledger-full-backup-20261128.sql 容器内）后条件化 UPDATE migration_name →
   canonical 名（UPDATE 1，checksum 占位值保持不变——退役声明路径本就不校验 checksum）。
+
+### 补登（同轮第三道门禁）：1000-1005 checksum 台账补录
+
+- 共享库（211 acc-pg17）1000-1005 已于 2026-11-28 04:41 由配额车道部署轮应用
+  （billing P0 + 三级配额族），但 checksums 台账漏登记 ⇒ deploy 门禁
+  「缺少 checksum ledger」fatal。按 repair-252-migration-ledger.sh 同语义
+  （INSERT ON CONFLICT DO NOTHING + 本仓 canonical 字节 sha256）手动补录 6 行
+  （UPDATE 0/INSERT 6；事务包裹；全表 dump 备份已有）。
+- ⚠ 遗留：`repair-252-migration-ledger.sh` 的 canonical 解析不识别 `.retired`
+  声明（与 db-changelog 门禁的两套解析不对齐）⇒ 对含退役迁移的库无法直跑
+  （本轮实测 ERROR at 641）。建议后续统一两处解析语义（owner 轴待决项）。
