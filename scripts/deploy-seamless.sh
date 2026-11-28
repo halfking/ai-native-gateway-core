@@ -298,16 +298,61 @@ if mismatches:
 '
 }
 
-# A single successful request can hit the new worker while another worker
-# still accepts traffic with the old upstream. Require independent connections
-# before retiring the previous gateway; never signal unrelated nginx workers.
+# 9.6 收敛语义（2026-11-29 245 seq 3207 假半切换态复盘后的重写）：
+# nginx graceful reload 不是瞬时原子路由切换。reload 后旧 worker 进入
+# "shutting down" 排空态，但在监听 socket 关闭前仍可能接受新连接，且用的
+# 是它启动时加载的旧 upstream 配置（245 实测 2026-11-29 04:09 受控复现：
+# 切 fragment + reload 后 12 个全新连接里前 2 个仍打到旧后端；02:39 现场
+# reload 后 ~3s 内 3 个探测样本全部返回旧身份）。零容忍的「20/20 必须全对」
+# 会把这段过渡期抖动判成「文件已切、流量未切」，触发假回滚——而候选本身
+# 是健康的（readyz 200），回滚反而把正确的发布撤掉了。
+#
+# 新判据（三段式收敛）：
+#   ① 总预算 40 个样本（>20，覆盖慢收敛）；
+#   ② 旧身份样本只允许出现在过渡期：出现即把「连续收敛计数」清零，
+#      并累计 bad_count；
+#   ③ 收敛判定 = 尾部连续 TAIL_CONSECUTIVE_OK（默认 20）个样本全部携带
+#      本次发布身份。即：尾部 20 连对，之前允许有旧身份抖动；
+#   ④ 传输层失败（curl 非零退出/非 2xx）与响应体解析失败仍然立即
+#      fail-closed return 1——它们不是「旧代 worker 的良性抖动」，是链路故障；
+#   ⑤ 预算耗尽仍不满足 ③ ⇒ 判半切换态（旧身份持续在场 = 真回退信号）。
+#
+# 传输层失败 fail-closed 而旧身份允许抖动的不对称是有意的：404/502/连接
+# 拒绝说明 nginx 或目标端口真的坏了（OOM/配置错/端口冲突），延续 9.5 的
+# 语义；「返回 200 但身份是旧的」只说明 reload 还没收敛完；而 200 但非
+# JSON（HTML 错误页等）说明网关本身坏了，同样 fail-closed。
 verify_nginx_identity_samples() {
   local url=$1 probe_args=$2 expected_version=$3 expected_seq=$4 expected_sha=$5 expected_date=$6
-  local sample body
-  for ((sample=1; sample<=20; sample++)); do
+  local sample body tail_consecutive=0 bad_count=0 match_rc
+  local total_samples=40 tail_needed=${NGINX_IDENTITY_TAIL_OK:-20}
+  for ((sample=1; sample<=total_samples; sample++)); do
+    # 样本间留 ~0.5s 间隔：ssh+curl 全速连发时 40 样本 ~2s 内打完，会整体
+    # 落在 reload 过渡窗内（旧 worker 还在接连接），预算被白白烧光。间隔让
+    # 40 样本覆盖 ~20s 的收敛窗；样本本身经 ssh 在目标机执行，节流也在
+    # 部署机侧 sleep，不影响目标机。
+    (( sample > 1 )) && sleep 0.5
     body=$("$SSH_CMD" "curl -kfSs ${probe_args} -H 'Connection: close' --max-time 5 '$url'" 2>/dev/null) || return 1
-    version_identity_matches "$body" "$expected_version" "$expected_seq" "$expected_sha" "$expected_date" || return 1
+    # 非法 JSON（invalid JSON）与合法 JSON 但旧身份必须区分：前者 fail-closed，
+    # 后者是 graceful reload 过渡期抖动。version_identity_matches 的诊断串打在
+    # stdout；errexit 下不能裸调（非零返回会终止脚本），必须挂在 if/|| 里。
+    local diag
+    diag=$(version_identity_matches "$body" "$expected_version" "$expected_seq" "$expected_sha" "$expected_date") && match_rc=0 || match_rc=$?
+    if (( match_rc == 0 )); then
+      tail_consecutive=$((tail_consecutive + 1))
+      (( tail_consecutive >= tail_needed )) && return 0
+    elif printf '%s' "$diag" | grep -q "invalid JSON"; then
+      # 200 但响应体不是合法 JSON：网关坏了（HTML 错误页/代理截断），
+      # 与传输层失败同语义 fail-closed。
+      return 1
+    else
+      # JSON 合法但身份是旧的：graceful reload 过渡期的良性抖动，
+      # 清零尾部连续计数、消耗预算继续等收敛。
+      tail_consecutive=0
+      bad_count=$((bad_count + 1))
+    fi
   done
+  # 40 个样本里始终凑不出尾部 20 连对：旧身份持续在场，判半切换态。
+  return 1
 }
 
 # detect_active_side — 部署前在目标机实测 8781/8782 哪个端口真正有网关在监听。
@@ -1706,9 +1751,12 @@ do_deploy() {
     if verify_nginx_identity_samples "$_nginx_hc_url" "$_nginx_probe_args" "$expected_release_version" "$expected_release_seq" "$expected_release_sha" "$expected_release_date"; then
       _nginx_converged=1
     else
-      warn "nginx 路由未连续收敛 — 补 reload 后重新验证20次独立连接"
+      warn "nginx 路由未收敛 (尾部连续新身份不足) — 补 reload 后重新验证"
       "$SSH_CMD" "systemctl reload nginx" >/dev/null 2>&1 || true
-      sleep 2
+      # graceful reload 后旧 worker 排空需要数秒；立即采样只会再次读旧代
+      # worker 的旧 upstream（02:39 现场即此形态：reload 后 ~3s 内 3 样本
+      # 全旧身份）。这里给一次有界的收敛等待，再进第二轮验证。
+      sleep 8
       if verify_nginx_identity_samples "$_nginx_hc_url" "$_nginx_probe_args" "$expected_release_version" "$expected_release_seq" "$expected_release_sha" "$expected_release_date"; then
         _nginx_converged=1
       fi
@@ -1717,7 +1765,7 @@ do_deploy() {
       _bluegreen_abort "nginx 实际路由版本与本次发布不符 (文件已切、流量未切 = 半切换态)" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
       exit 1
     fi
-    ok "nginx 路由身份仲裁通过（20次独立连接）"
+    ok "nginx 路由身份仲裁通过（尾部连续20次独立连接新身份）"
   fi
 
   # API readiness bypasses nginx's static root: also exercise HTML and its
