@@ -257,7 +257,7 @@ func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flag
 	}
 	decision := endpointselect.Select(endpointselect.CandidateLite{
 		BaseURL: cand.BaseURL, Protocol: cand.Protocol, NativeEndpoints: endpoints,
-	}, endpointselect.Protocol(clientProtocol), "")
+	}, endpointselect.Protocol(clientProtocol), cand.Family)
 	if decision.Protocol == endpointselect.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
 		return cand
 	}

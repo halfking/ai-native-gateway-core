@@ -118,6 +118,11 @@ type Candidate struct {
 	OfferRawModel    string  `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
 	StandardizedName string  `json:"standardized_name"`
 	CanonicalID      *int    `json:"canonical_id,omitempty"`
+	// Family is the canonical model family (from models_canonical.family).
+	// Used by endpointselect.Select() for Stage 1A/2/3 family matching
+	// (r0924 supplier-protocol-optimization). Empty when the canonical
+	// row has no family or when the offer is not linked to a canonical.
+	Family           string  `json:"family,omitempty"`
 	SuccessRate      float64 `json:"success_rate"`
 	P95LatencyMs     int     `json:"p95_latency_ms"`
 	P50LatencyMs     int     `json:"p50_latency_ms"` // 2026-07-20: 用于 concurrency-aware latency scoring
@@ -1847,7 +1852,7 @@ func candidateQuerySQLBase() string {
 var candidateQuerySQLBaseTemplate = `
 		WITH matched AS MATERIALIZED (
 		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw,
-		       mc.released_at AS _mc_released_at
+		       mc.released_at AS _mc_released_at, mc.family AS _mc_family
 		FROM model_offers mo
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
@@ -1972,7 +1977,12 @@ SELECT
 			-- (see pep_lateral LATERAL below). Empty array preserves the
 			-- legacy single-endpoint fallback.
 			pep_lateral.endpoints AS native_endpoints,
-			mo.canonical_id
+			mo.canonical_id,
+			-- A6 (供应商协议自适应方案): canonical model family for
+			-- endpointselect.Select() wantFamily parameter. Stage 1A/2/3
+			-- matching (vendor_native == wantFamily) needs this. Empty when
+			-- the canonical row has no family or the offer is not linked.
+			COALESCE(mo._mc_family, '') AS family
 			FROM matched mo
 			JOIN credential_model_bindings cmb_mode ON cmb_mode.id = mo.id
 			JOIN credentials c ON c.id = mo.credential_id
@@ -2336,11 +2346,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
-			&cand.RecentCacheRate,
-			&cand.RecentCacheSamples,
-			&nativeEndpointsJSON,
-			&cand.CanonicalID,
-		); err != nil {
+		&cand.RecentCacheRate,
+		&cand.RecentCacheSamples,
+		&nativeEndpointsJSON,
+		&cand.CanonicalID,
+		&cand.Family,
+	); err != nil {
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
