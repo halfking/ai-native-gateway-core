@@ -294,9 +294,13 @@ func TestChannelFileSetBaseline(t *testing.T) {
 	//     ⇒ 366。两通道独有清单不变（25 / 63）。★ 本轮同时代上游收口 492 的
 	//     embeddedSQLFiles map 缺条目（1357e62917 半点遗留，
 	//     TestStartupFilesAreAllEmbedded 由红转绿的实锚）。
+	// ★ 2026-11-28（A5 供应商协议自适应）：**基线 366/25/63 → 366/25/64** ★
+	//   新增 1007_credential_capabilities_multiprotocol.sql，扩展 CHECK 约束
+	//   支持多协议能力键（{protocol}_{nonstream|stream} 模式）。
+	//   仅安装器有 +1（63 → 64），交集与仅部署通道数不变。
 	wantBoth          = 366
 	wantOnlyDeploy    = 25
-	wantOnlyInstaller = 63
+	wantOnlyInstaller = 64
 	)
 	if both != wantBoth || onlyDeploy != wantOnlyDeploy || onlyInstaller != wantOnlyInstaller {
 		t.Errorf("★ 两条投递通道的文件集合变了：★ 交集 %d（期望 %d）/ 仅部署通道有 %d（期望 %d）/ 仅安装器有 %d（期望 %d）\n"+

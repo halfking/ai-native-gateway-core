@@ -2229,6 +2229,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   890 删 ⇒ hot cron 能力探针见函数在就执行 ⇒ 每批 42P01）。
 			//   down 件按 528 up 原体还原。
 			"1006_drop_orphan_v1_promote_function.sql",
+			// ★ 1007（2026-11-28 A5 供应商协议自适应配套）：扩展
+			//   credential_model_capabilities.capability CHECK 约束为通用的
+			//   {protocol}_{nonstream|stream} 模式，支持多协议能力键
+			//   （anthropic_messages_nonstream / gemini_generate_stream 等）。
+			//   向后兼容既有两个 Responses 族值。
+			"1007_credential_capabilities_multiprotocol.sql",
 		},
 	}
 }

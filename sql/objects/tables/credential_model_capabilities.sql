@@ -11,5 +11,5 @@ CREATE TABLE public.credential_model_capabilities (
     evidence_json jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT credential_model_capabilities_capability_check CHECK ((capability = 'native_responses_nonstream'::text))
+    CONSTRAINT credential_model_capabilities_capability_check CHECK ((capability ~ '^[a-z0-9_-]+_(nonstream|stream)$'::text))
 );
