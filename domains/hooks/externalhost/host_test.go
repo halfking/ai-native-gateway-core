@@ -3,6 +3,7 @@ package externalhost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -263,5 +264,24 @@ func TestHostTimeoutIsClamped(t *testing.T) {
 	h2 := New(Config{SocketPath: "/x", Timeout: 0})
 	if h2.Timeout() != contract.DefaultTimeout {
 		t.Errorf("timeout = %v, want %v", h2.Timeout(), contract.DefaultTimeout)
+	}
+}
+
+// TestOutcomeReasonBoundedByContract (2026-11-28 W3 收口) 端到端：
+// 钩子返回超长 block reason 时，宿主侧 Outcome.Reason 收敛到合同上限。
+func TestOutcomeReasonBoundedByContract(t *testing.T) {
+	long := strings.Repeat("x", contract.MaxReasonBytes+100)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload := fmt.Sprintf(`{"contract_version":%q,"decision":"block","reason":%q}`, contract.ContractVersion, long)
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+	host := New(Config{SocketPath: "/dev/null", BaseURL: srv.URL, Timeout: time.Second, HTTPClient: srv.Client()})
+	out := host.OnRequest(context.Background(), localCtx(), &contract.RequestPayload{Method: "POST"})
+	if out.Failure != contract.FailureNone {
+		t.Fatalf("unexpected failure: %v", out.Err)
+	}
+	if len(out.Reason) != contract.MaxReasonBytes {
+		t.Fatalf("reason len = %d, want %d", len(out.Reason), contract.MaxReasonBytes)
 	}
 }

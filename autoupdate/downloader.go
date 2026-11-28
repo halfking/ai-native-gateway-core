@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -41,8 +42,19 @@ type DownloadResult struct {
 func (d *Downloader) Download(ctx context.Context, url, expectedChecksum string) (*DownloadResult, error) {
 	start := time.Now()
 
-	// 创建临时文件
-	filename := filepath.Base(url)
+	// 解析 URL：path 段定文件名（查询串不参与），url 本身原样请求。
+	u, err := neturl.Parse(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse download url: %w", err)
+	}
+	// 创建临时文件。★ 文件名只取 URL 的 path 段：maintain 的下载地址带
+	// ?ticket=<HMAC> 查询串（10 分钟票），license-authority 的旧静态地址没有。
+	// 旧实现用整个 URL 的 Base() 当文件名 ⇒ 查询串进文件名 ⇒ JWT 一来就是
+	// 「file name too long」，对着 maintain 出票的地址**永远装不上**。
+	filename := filepath.Base(u.Path)
+	if filename == "" || filename == "/" || filename == "." {
+		filename = "llm-gateway-go"
+	}
 	tmpPath := filepath.Join(d.downloadDir, filename+".tmp")
 	finalPath := filepath.Join(d.downloadDir, filename)
 

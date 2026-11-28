@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -86,10 +87,11 @@ func (r *Rollback) Rollback(ctx context.Context, targetVersion string) (*Rollbac
 		return result, err
 	}
 
-	// 4. 更新版本文件
-	versionFile := filepath.Join(r.dataDir, "VERSION")
-	if err := os.WriteFile(versionFile, []byte(targetVersion+"\n"), 0644); err != nil {
-		result.Error = fmt.Sprintf("write version file: %v", err)
+	// 4. 更新版本元数据（version.json 真源 + VERSION 兼容文件）
+	if err := r.writeRollbackVersionFiles(targetVersion); err != nil {
+		result.Error = fmt.Sprintf("write version files: %v", err)
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("write version files after rollback: %w", err)
 	}
 
 	// 5. 重启服务（可选 — 与 install 对称）
@@ -187,6 +189,52 @@ func (r *Rollback) restoreBinary(backupPath string) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 
+	return nil
+}
+
+// writeRollbackVersionFiles 把版本元数据重写成 targetVersion。
+//
+// ★ 必须写 version.json（网关运行时的版本真源，见 cmd/gateway/version.go 与
+// installer.go 步骤 5 的版本身份漂移注释）。此前手动回滚只还原 VERSION：
+// 二进制回到旧版、version.json 仍报新版号 ⇒ Checker 拿错误基线去问远端 ⇒
+// 「已是最新」⇒ 节点永远停在旧二进制上且再也不会被提醒。
+//
+// 手动回滚没有 installer 那样的旧元数据快照（备份目录只存二进制），所以按
+// 现有 version.json 合成：version 与被恢复的二进制对齐，其余字段尽量保留。
+func (r *Rollback) writeRollbackVersionFiles(targetVersion string) error {
+	jsonPath := filepath.Join(r.dataDir, "version.json")
+	info := map[string]any{
+		"version":    targetVersion,
+		"git_tag":    "v" + strings.TrimPrefix(targetVersion, "v"),
+		"git_sha":    "unknown",
+		"build_seq":  0,
+		"build_date": time.Now().UTC().Format("20060102"),
+		"module":     "llm-gateway-go",
+	}
+	if raw, err := os.ReadFile(jsonPath); err == nil {
+		var existing map[string]any
+		if err := json.Unmarshal(raw, &existing); err == nil {
+			for key := range info {
+				if key == "version" {
+					continue
+				}
+				if v, ok := existing[key]; ok {
+					info[key] = v
+				}
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		encoded = []byte(`{"version": "` + targetVersion + `"}`)
+	}
+	if err := os.WriteFile(jsonPath, append(encoded, '\n'), 0644); err != nil {
+		return err
+	}
+	versionFile := filepath.Join(r.dataDir, "VERSION")
+	if err := os.WriteFile(versionFile, []byte(targetVersion+"\n"), 0644); err != nil {
+		return err
+	}
 	return nil
 }
 

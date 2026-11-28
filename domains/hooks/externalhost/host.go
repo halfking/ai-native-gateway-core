@@ -237,7 +237,7 @@ func (h *Host) invoke(ctx context.Context, hookCtx *contract.Context, point cont
 		return &Outcome{Decision: contract.DecisionContinue, Failure: kind, Err: err}
 	}
 
-	out := &Outcome{Decision: reply.Decision, Reason: reply.Reason}
+	out := &Outcome{Decision: reply.Decision, Reason: contract.TruncateReason(reply.Reason)}
 	switch reply.Decision {
 	case contract.DecisionBlock:
 		// 中止是钩子的显式意图，不算失败；但中止原因必须已通过校验。
@@ -259,11 +259,11 @@ func (h *Host) invoke(ctx context.Context, hookCtx *contract.Context, point cont
 			out.Response = contract.MergeResponse(resp, reply.Response)
 		}
 		return out
-	default:
-		if reply.Error != "" {
-			return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureHook,
-				Err: fmt.Errorf("external hook error: %s", reply.Error)}
-		}
+		default:
+			if reply.Error != "" {
+				return &Outcome{Decision: contract.DecisionContinue, Failure: contract.FailureHook,
+					Err: fmt.Errorf("external hook error: %s", contract.TruncateReason(reply.Error))}
+			}
 		return out
 	}
 }

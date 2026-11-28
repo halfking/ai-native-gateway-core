@@ -7643,9 +7643,11 @@ func main() {
 	// ── W3 External Hook wiring (2026-11-27) ─────────────────────────────
 	// 生产装配：外部钩子默认关（LLM_GATEWAY_EXTERNAL_HOOK_ENABLED=1 显式开启），
 	// 装载失败不阻断启动（fail-open 精神，仅告警）。见 external_hook_init.go。
+	// XFF 信任链（2026-11-28）：TrustedProxyHops>0 时来源判定按 XFF 穿透地址。
 	if ehCfg := loadExternalHookConfig(); ehCfg.Enabled {
 		if integrator := initExternalHooks(context.Background(), ehCfg, sup); integrator != nil {
 			chatHandler.SetExternalHooks(integrator)
+			chatHandler.SetExternalHookTrustedProxyHops(ehCfg.TrustedProxyHops)
 		}
 	}
 
