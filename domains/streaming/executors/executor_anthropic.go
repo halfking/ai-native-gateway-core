@@ -1380,7 +1380,7 @@ func (e *Executor) executeAnthropicOnce(
 					StatusCode: resp.StatusCode,
 					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 				})
-			e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
+			e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, errorsx.KindConcurrent)
 		}
 		if !errorsx.IsRetryable(errKind) {
 			if errorsx.IsContextLength(errKind) || shouldHeuristicCompact(resp.StatusCode, errKind, len(bodyBytes), cand.ContextWindow) {
