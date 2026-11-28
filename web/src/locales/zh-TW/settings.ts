@@ -14,6 +14,7 @@ export default {
     security: '安全',
     outputCompliance: '輸出合規',
     circuitBreaker: '熔斷',
+    loopGuard: '循環守衛',
     general: '其他',
   },
  list: {

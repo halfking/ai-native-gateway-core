@@ -12,6 +12,7 @@ export default {
     security: '安全',
     outputCompliance: '输出合规',
     circuitBreaker: '熔断',
+    loopGuard: '循环守卫',
     general: '其他',
   },
  list: {

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -657,6 +658,38 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		sessionID = provisionalSessionID
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+
+	// ── 会话无进展循环守卫（2026-11-28，session_loop_guard.go）────────
+	// 与 chat/messages 两面同型：session id 终定之后、任何上游工作之前。
+	// 拒绝走 Responses 信封（429）＋ EmitRateLimited。internal key 豁免。
+	if h.chatHandler.loopGuard != nil && (keyInfo == nil || !keyInfo.IsInternal) {
+		if lr := h.chatHandler.loopGuard.Check(sessionID, estimatePromptTokens(bodyBytes)); lr.Verdict != LoopAllow {
+			lgCode, lgMsg := loopGuardRejectionShape(lr)
+			retryAfter := lr.RetryAfter
+			if retryAfter < time.Second {
+				retryAfter = time.Second
+			}
+			slog.Warn("loop guard rejected request",
+				"request_id", requestID,
+				"session_id", sessionID,
+				"verdict", lgCode,
+				"flat_run", lr.FlatRun,
+				"retry_after_s", retryAfter.Seconds())
+			logCtx.SetKey(keyInfo)
+			logCtx.SetClientModel(clientModel)
+			logCtx.Body = bodyBytes
+			logCtx.SetFailureDetailOverride(lgCode)
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
+			logCtx.EmitRateLimited(lgCode, lgMsg, nil, nil)
+			*attemptLogged = true
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			w.Header().Set("X-Gw-Loop-Guard", lgCode)
+			writeResponsesError(w, http.StatusTooManyRequests, lgMsg, "rate_limit_error", lgCode)
+			return
+		}
+	}
+
 	logCtx.SetSession(sessionInfo)
 	if autoWire != nil {
 		recordAutoSelectionFromWire(r, sessionID, autoWire)

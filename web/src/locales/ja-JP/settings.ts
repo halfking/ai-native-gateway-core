@@ -14,6 +14,7 @@ export default {
     security: 'セキュリティ',
     outputCompliance: '出力コンプライアンス',
     circuitBreaker: 'サーキットブレーカー',
+    loopGuard: 'ループガード',
     general: 'その他',
   },
  list: {

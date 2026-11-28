@@ -194,6 +194,8 @@ const categories = computed(() => [
   { key: 'security',           label: t('settings.category.security'),  icon: Lock },
   { key: 'output_compliance',  label: t('settings.category.outputCompliance'),  icon: CircleCheck },
   { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: Warning },
+  // 2026-11-28: 会话无进展循环守卫（loop_guard.*，读方 session_loop_guard.go）。
+  { key: 'loop_guard',         label: t('settings.category.loopGuard'),  icon: AlarmClock },
   { key: 'general',            label: t('settings.category.general'),  icon: Setting },
 ])
 

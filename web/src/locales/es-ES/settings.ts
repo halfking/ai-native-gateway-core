@@ -13,6 +13,7 @@ export default {
     security: 'Seguridad',
     outputCompliance: 'Cumplimiento de salida',
     circuitBreaker: 'Disyuntor',
+    loopGuard: 'Protección anti-bucle',
     general: 'Otros',
   },
  list: {

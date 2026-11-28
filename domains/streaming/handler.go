@@ -1343,6 +1343,13 @@ type ChatHandler struct {
 	// re-executing the full routing + vendor path. nil disables
 	// the dedup (every request is treated as new).
 	idempotentCache *IdempotentCache
+	// loopGuard (2026-11-28) 会话无进展循环守卫：agent 宿主等待裁决期间
+	// 整段上下文固定节奏重发的空转循环（211 实测单会话 5.5 亿 prompt
+	// tokens/夜）——入口 Check（3 面）+ 完成侧 Observe（emitTelemetry
+	// 单一收口，chat/messages/responses 三面共用）。nil 完全惰性；生产
+	// 在 NewChatHandler 内构造，enabled 由 loop_guard.* 设置热加载控制。
+	// 见 session_loop_guard.go。
+	loopGuard *SessionLoopGuard
 
 	// sessionCompressor (v3, 2026-06-19) is the session-level
 	// intelligent compression. When non-nil, each request runs a
@@ -1619,7 +1626,7 @@ func NewChatHandler(cm *credential.Manager, l *credential.Limiter, matrix *trans
 	if auditor == nil {
 		auditor = &audit.LogSink{}
 	}
-	return &ChatHandler{circuit: cm, limiter: l, matrix: matrix, pools: pools, resolver: resolver, auditor: auditor, client: upstreampkg.New(), normalizer: NewNormalizer()}
+	return &ChatHandler{circuit: cm, limiter: l, matrix: matrix, pools: pools, resolver: resolver, auditor: auditor, client: upstreampkg.New(), normalizer: NewNormalizer(), loopGuard: NewSessionLoopGuard()}
 }
 
 func (h *ChatHandler) SetExecutor(exec *executors.Executor, prov providerResolver, sticky *executors.StickyCache) {
@@ -3914,6 +3921,34 @@ func (h *ChatHandler) serveWithExecutor(
 		applyProvisionalGatewaySessionHeader(r, logCtx.ProvisionalSessionID)
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+
+	// ── 会话无进展循环守卫（2026-11-28，session_loop_guard.go）────────
+	// 位置：session id 已终定（applyResolvedGatewaySession 之后）、审计/
+	// 路由之前 ⇒ 拒绝不产生任何上游调用。internal 回环 key 豁免（探测/
+	// 健康检查是合法固定节奏重发）。estPromptTokens 与 Observe 侧
+	// （emitTelemetry，InboundBody）同为 estimatePromptTokens 口径，
+	// 入口/出口的改写差（模型换名等）远小于入口进度阈值（entry_progress_tokens，默认 2048）。
+	if h.loopGuard != nil && (keyInfo == nil || !keyInfo.IsInternal) {
+		if lr := h.loopGuard.Check(sessionID, estimatePromptTokens(bodyBytes)); lr.Verdict != LoopAllow {
+			lgCode, lgMsg := loopGuardRejectionShape(lr)
+			retryAfter := lr.RetryAfter
+			if retryAfter < time.Second {
+				retryAfter = time.Second
+			}
+			slog.Warn("loop guard rejected request",
+				"request_id", requestID,
+				"session_id", sessionID,
+				"verdict", lgCode,
+				"flat_run", lr.FlatRun,
+				"retry_after_s", retryAfter.Seconds())
+			logCtx.SetFailureDetailOverride(lgCode)
+			captureAndEmitRateLimited(lgCode, lgMsg, nil, nil)
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			w.Header().Set("X-Gw-Loop-Guard", lgCode)
+			writeErrorJSON(w, http.StatusTooManyRequests, requestID, lgMsg, "rate_limit_error", lgCode)
+			return
+		}
+	}
 	h.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	if sessionID != "" && h.sessionPref != nil {
 		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
@@ -8208,6 +8243,23 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			Currency:         result.Candidate.Currency,
 			Convention:       CacheTokenConventionForProtocol(result.Candidate.Protocol),
 		})
+	}
+
+	// ── 会话无进展循环守卫：完成侧观察（2026-11-28，session_loop_guard.go）
+	// chat/messages/responses 三面的唯一收口（emitTelemetry 单一调用点）。
+	// 只统计成功轮：失败轮不进判据（客户端在失败后的重试是合法行为）；
+	// auto 子请求（auto-title/auto-summary，共享 gw_session_id）与无 usage
+	// 的轮不参与；internal key 豁免（与入口 Check 同口径）。
+	// estPromptTokens 用 requestBody（= result.InboundBody）与入口 Check
+	// 同估：模型换名等改写的偏差远小于入口进度阈值（entry_progress_tokens，默认 2048），
+	// 会话压缩的大幅缩小恰好等价于「有真实工作发生」（负向也触发重置）。
+	if h.loopGuard != nil && reqLog.Success &&
+		(reqLog.IsAutoRequest == nil || !*reqLog.IsAutoRequest) &&
+		(keyInfo == nil || !keyInfo.IsInternal) &&
+		reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" &&
+		reqLog.PromptTokens != nil && reqLog.CompletionTokens != nil {
+		h.loopGuard.Observe(*reqLog.GwSessionID, *reqLog.PromptTokens, *reqLog.CompletionTokens,
+			estimatePromptTokens(requestBody), time.Now())
 	}
 
 	var platformOriginStage string
