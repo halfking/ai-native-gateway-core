@@ -109,6 +109,81 @@ _has_retired_marker() {
   local f="$1"
   head -15 "$f" | grep -qiE '^[[:space:]]*--[[:space:]]*[-*>[:space:]]*\**(SUPERSEDED|SUPERCEDED|DEPRECATED)([^[:alnum:]_]|$)'
 }
+
+# ★ 2026-11-29：★ `.retired`/`.skip` 退役声明识别 —— 与部署侧门禁
+#   _deploy_migration_retirement_declarations（deploy-lib/db-changelog.sh）同构。
+#   修复缺陷：canonical 文件已整体退役（仅留 `619_*.sql.retired` 等声明）的
+#   **已应用**版本，load_candidates 的 `*.sql` glob 永远匹配不到 ⇒ canonical_for
+#   fail-fast「无法解析」⇒ 含退役迁移的库无法直跑 repair（2026-11-28 轮实测）。
+#   此类版本应用字节已不在仓内 ⇒ repair 无法（也不许）伪造 checksum ⇒ 语义：
+#     · 账本已有记名且与声明 canonical 一致 ⇒ 视为对齐，跳过 checksum 恢复；
+#     · 账本无记名 ⇒ 「账本缺+守卫拦」既定形态（46+48 件 v1 退役家族同款），
+#       跳过并单独计数，交部署门禁按其语义拦截；不再 fail-fast 阻塞整轮。
+#   硬边界与门禁同判据：退役说明必须非空（不许空壳占位）、记名必须唯一匹配。
+declare -a RETIRED_SKIPPED=()
+_retirement_declarations() {
+  local ver=$1 f base canonical
+  shopt -s nullglob
+  for f in "$REPO_ROOT"/sql/migrations/startup/"${ver}"_*.sql.skip \
+           "$REPO_ROOT"/sql/migrations/startup/"${ver}"_*.sql.bak.skip \
+           "$REPO_ROOT"/sql/migrations/startup/"${ver}"_*.sql.retired; do
+    [[ -f "$f" ]] || continue
+    base=${f##*/}
+    case "$base" in
+      *.sql.bak.skip) canonical=${base%.bak.skip} ;;
+      *.sql.skip)     canonical=${base%.skip} ;;
+      *.sql.retired)  canonical=${base%.retired} ;;
+      *) continue ;;
+    esac
+    printf '%s|%s\n' "$base" "$canonical"
+  done
+  shopt -u nullglob
+}
+
+_retired_skip_for() {
+  # 返回 0 = 按退役声明跳过（RETIRED_SKIPPED 已计数）；返回非 0 = 不按退役处理。
+  # 声明存在但畸形（说明为空/记名不匹配/不唯一）⇒ fail（与门禁同判据）。
+  local ver=$1
+  local -a decls=()
+  local d decl_base decl_canon row matched="" reason_ok=0
+  while IFS='|' read -r decl_base decl_canon; do
+    [[ -n "$decl_base" ]] || continue
+    decls+=("${decl_base}|${decl_canon}")
+  done < <(_retirement_declarations "$ver")
+  (( ${#decls[@]} > 0 )) || return 1
+
+  # 退役说明非空（.retired 需含退役关键词；.skip/.bak.skip 需非空白）
+  for d in ${decls[@]+"${decls[@]}"}; do
+    decl_base=${d%%|*}
+    if [[ "$decl_base" == *.retired ]]; then
+      grep -qiE '退役|retired|superseded|deprecated|作废|不再' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
+    else
+      grep -qE '[^[:space:]]' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
+    fi
+  done
+  (( reason_ok == 1 )) || fail "退役声明缺少退役说明：版本 $ver —— 与部署门禁同判据：不许空壳占位"
+
+  row=$(remote_psql "SELECT migration_name FROM public.llm_gateway_migration_checksums WHERE version=$(sql_quote "$ver") LIMIT 1" 2>/dev/null || true)
+  row=$(printf '%s' "$row" | tr -d '[:space:]')
+  if [[ -z "$row" ]]; then
+    local ledger_note=""
+    [[ "$ledger_status" == "present" ]] || ledger_note="（checksum ledger 表当前不存在）"
+    log "SKIP retired ${ver} - canonical 仅存退役声明、账本无记名${ledger_note} - 「账本缺+守卫拦」既定形态；repair 不伪造 checksum，交部署门禁语义拦截"
+    RETIRED_SKIPPED+=("$ver")
+    return 0
+  fi
+  for d in ${decls[@]+"${decls[@]}"}; do
+    decl_canon=${d#*|}
+    if [[ "$decl_canon" == "$row" ]]; then
+      [[ -z "$matched" ]] || fail "退役声明不唯一：version $ver 有多份声明与账本记名 '$row' 对应 —— 与部署门禁同判据"
+      matched=$decl_canon
+    fi
+  done
+  [[ -n "$matched" ]] || fail "版本 $ver 已退役但账本记名 '$row' 与任何退役声明的 canonical 不匹配 —— 与部署门禁同判据"
+  log "SKIP retired ${ver} - 账本记名 '${row}' 与退役声明对齐；应用字节不在仓内，checksum 不重算"
+  RETIRED_SKIPPED+=("$ver")
+  return 0
+}
 load_candidates() {
   local f base ver
   shopt -s nullglob
@@ -224,6 +299,11 @@ repair_tag="\$repair\$"
 while IFS='|' read -r ver description; do
   [[ -n "$ver" ]] || continue
   if ! file=$(canonical_for "$ver" "$description"); then
+    # ★ 2026-11-29：canonical 不在仓内时先走退役声明通道（.retired/.skip），
+    #   与部署门禁同判据；非退役的解析失败仍 fail-fast。
+    if _retired_skip_for "$ver"; then
+      continue
+    fi
     candidates=${CANDIDATES[$ver]-<none>}
     fail "cannot resolve applied version $ver description='$description' to one canonical local file (candidates: ${candidates//$'\n'/, })"
   fi
@@ -233,6 +313,10 @@ while IFS='|' read -r ver description; do
   resolved_count=$((resolved_count + 1))
   log "resolved $ver -> $file sha256=${checksum:0:12}..."
 done <<<"$applied_rows"
+
+if (( ${#RETIRED_SKIPPED[@]} > 0 )); then
+  log "retired-skip summary: ${#RETIRED_SKIPPED[@]} version(s) bypassed via retirement declarations: ${RETIRED_SKIPPED[*]}"
+fi
 
 if (( duplicate_rows > 0 )) || [[ "$constraint_status" != "present" || "$ledger_status" != "present" ]]; then
   if (( APPLY == 0 )); then
