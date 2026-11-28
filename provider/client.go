@@ -264,6 +264,13 @@ type Candidate struct {
 	// provider_endpoint_protocols rows). Select() handles this as the
 	// Stage 4 fallback.
 	NativeEndpoints []endpointselect.EndpointLite `json:"native_endpoints,omitempty"`
+	// ModelFamily is the canonical family of the requested model
+	// (models_canonical.family via the matched CTE), carried so the
+	// dispatch-side selector call can pass a non-empty wantFamily —
+	// wiring the selector's Stage 1B/2/3 family-match stages (A6).
+	// Empty when the canonical row has no family set; Select() treats
+	// empty wantFamily exactly as before (Stage 1C semantics).
+	ModelFamily string `json:"model_family,omitempty"`
 }
 
 // CalcCost 是**死代码**：全仓零调用者（`grep -rn '\.CalcCost('` = 0）。
@@ -1847,7 +1854,7 @@ func candidateQuerySQLBase() string {
 var candidateQuerySQLBaseTemplate = `
 		WITH matched AS MATERIALIZED (
 		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw,
-		       mc.released_at AS _mc_released_at
+		       mc.released_at AS _mc_released_at, mc.family AS _mc_family
 		FROM model_offers mo
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
@@ -1972,7 +1979,8 @@ SELECT
 			-- (see pep_lateral LATERAL below). Empty array preserves the
 			-- legacy single-endpoint fallback.
 			pep_lateral.endpoints AS native_endpoints,
-			mo.canonical_id
+			mo.canonical_id,
+			mo._mc_family
 			FROM matched mo
 			JOIN credential_model_bindings cmb_mode ON cmb_mode.id = mo.id
 			JOIN credentials c ON c.id = mo.credential_id
@@ -2340,6 +2348,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.RecentCacheSamples,
 			&nativeEndpointsJSON,
 			&cand.CanonicalID,
+			&cand.ModelFamily,
 		); err != nil {
 			return nil, err
 		}

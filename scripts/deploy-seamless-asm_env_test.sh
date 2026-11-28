@@ -146,6 +146,39 @@ check "plugin_id 未设回落空（网关 main.go 兜底默认）" "" "$(printf 
 OUT="$(run_asm_delegate "$TMP/does-not-exist")"
 check "无 env 文件 ⇒ base_url 空" "" "$(printf '%s\n' "$OUT" | sed -n 1p)"
 
+# ── 场景⑤c：token %q 形态读侧定点解码（2026-11-28 fc66158fc0 部署失败收口）──
+#   回归背景：dd_asm_event_env 曾对同块四键（endpoint/secret/base_url/
+#   plugin_id）做 _dd_unq，唯独 token 漏掉 ⇒ 写侧 %q 形态原样进 GW_ENV，
+#   backslash 密集值膨胀 ~2x，叠加部署机 shell 同名变量触发 100KB 守卫。
+#   判据：env 文件里的 %q 形态值读出后必须是解码后的原始值（往返恒等）。
+echo "[5c] token %q 读侧定点解码"
+run_asm_token() { # <env_file> ⇒ 打印解码后的 token
+  (
+    set -uo pipefail
+    ENV_FILE="$1"
+    ASM_INTERNAL_ENDPOINT=""
+    ASM_EVENT_SECRET=""
+    LLM_GATEWAY_ASM_BASE_URL=""
+    LLM_GATEWAY_ASM_PLUGIN_ID=""
+    ASM_PLUGIN_CONTEXT_TOKEN=""
+    log() { :; }
+    eval "$_DD_UNQ_FN"
+    eval "$ASM_BLK"
+    dd_asm_event_env "$ENV_FILE"
+    printf '%s\n' "$ASM_PLUGIN_CONTEXT_TOKEN"
+  )
+}
+RAW_TOKEN='abc$def ghi\jkl'
+QUOTED_TOKEN=$(printf '%q' "$RAW_TOKEN")
+printf 'export ASM_PLUGIN_CONTEXT_TOKEN=%s\n' "$QUOTED_TOKEN" > "$TMP/env.asmtoken"
+OUT="$(run_asm_token "$TMP/env.asmtoken")"
+check "token %q 形态解码回原值（往返恒等）" "$RAW_TOKEN" "$OUT"
+printf 'export ASM_PLUGIN_CONTEXT_TOKEN=plain-token-no-quoting\n' > "$TMP/env.asmtoken2"
+OUT="$(run_asm_token "$TMP/env.asmtoken2")"
+check "token 无转义字符时解码为恒等" "plain-token-no-quoting" "$OUT"
+OUT="$(run_asm_token "$TMP/does-not-exist")"
+check "无 env 文件 ⇒ token 空（prewarm 禁用口径）" "" "$OUT"
+
 # ── 场景⑥：注入 —— 双开关语义（只配一个 = 不注入）────────────────────────
 echo "[6] 注入：两个都齐才注入"
 run_inject() { # <endpoint> <secret> ⇒ 打印 GW_ENV（元素按行分隔）

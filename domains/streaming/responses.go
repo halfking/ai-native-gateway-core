@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -353,7 +355,9 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		maasSvc := h.chatHandler.maasSvc
 		billingExempt := tenantBillingExempt(r.Context(), keyInfo)
 		if maasSvc != nil && maasSvc.Enabled() && !billingExempt &&
-			keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+			keyInfo != nil && keyInfo.TenantID != "" &&
+			!(keyInfo.TenantID == "default" && settings.TieredExemptDefaultTenant()) &&
+			!(keyInfo.IsInternal && settings.TieredExemptInternalKeys()) {
 			owner := ""
 			if keyInfo.OwnerUser != nil {
 				owner = *keyInfo.OwnerUser
@@ -370,6 +374,27 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				*attemptLogged = true
 				writeResponsesError(w, http.StatusPaymentRequired, blocked.Reason, "insufficient_quota", "billing_insufficient_balance")
 				return
+			}
+		}
+		// ── 团队月度预算闸（2026-11-28 owner 决策接线）────────────────────
+		if maasSvc != nil && keyInfo != nil && keyInfo.TeamID != nil && *keyInfo.TeamID > 0 {
+			verdict, err := maasSvc.CheckTeamMonthlyBudget(r.Context(), *keyInfo.TeamID)
+			if err != nil {
+				slog.Warn("team budget check failed, allowing (fail-open)",
+					"request_id", requestID, "team_id", *keyInfo.TeamID, "error", err)
+			} else if verdict != nil && verdict.Over {
+				if verdict.EnforcementMode == "hard" {
+					slog.Warn("team monthly budget exceeded, blocking responses",
+						"request_id", requestID, "team_id", verdict.TeamID)
+					logCtx.SetError("team_budget_exceeded", "team monthly budget exceeded")
+					logCtx.EmitFailure("team_budget_exceeded", "team monthly budget exceeded", nil, nil)
+					*attemptLogged = true
+					writeResponsesError(w, http.StatusTooManyRequests, "Team monthly budget exceeded", "rate_limit_exceeded", "team_budget_exceeded")
+					return
+				} else {
+					slog.Warn("team monthly budget exceeded (warn mode, allowing)",
+						"request_id", requestID, "team_id", verdict.TeamID)
+				}
 			}
 		}
 	}
@@ -633,6 +658,38 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		sessionID = provisionalSessionID
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+
+	// ── 会话无进展循环守卫（2026-11-28，session_loop_guard.go）────────
+	// 与 chat/messages 两面同型：session id 终定之后、任何上游工作之前。
+	// 拒绝走 Responses 信封（429）＋ EmitRateLimited。internal key 豁免。
+	if h.chatHandler.loopGuard != nil && (keyInfo == nil || !keyInfo.IsInternal) {
+		if lr := h.chatHandler.loopGuard.Check(sessionID, estimatePromptTokens(bodyBytes)); lr.Verdict != LoopAllow {
+			lgCode, lgMsg := loopGuardRejectionShape(lr)
+			retryAfter := lr.RetryAfter
+			if retryAfter < time.Second {
+				retryAfter = time.Second
+			}
+			slog.Warn("loop guard rejected request",
+				"request_id", requestID,
+				"session_id", sessionID,
+				"verdict", lgCode,
+				"flat_run", lr.FlatRun,
+				"retry_after_s", retryAfter.Seconds())
+			logCtx.SetKey(keyInfo)
+			logCtx.SetClientModel(clientModel)
+			logCtx.Body = bodyBytes
+			logCtx.SetFailureDetailOverride(lgCode)
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
+			logCtx.EmitRateLimited(lgCode, lgMsg, nil, nil)
+			*attemptLogged = true
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			w.Header().Set("X-Gw-Loop-Guard", lgCode)
+			writeResponsesError(w, http.StatusTooManyRequests, lgMsg, "rate_limit_error", lgCode)
+			return
+		}
+	}
+
 	logCtx.SetSession(sessionInfo)
 	if autoWire != nil {
 		recordAutoSelectionFromWire(r, sessionID, autoWire)

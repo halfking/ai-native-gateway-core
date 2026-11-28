@@ -60,9 +60,21 @@ func NewResourceLimiter(pluginName string, limits discovery.ResourceLimits) (*Re
 	// Determine mode based on OS and cgroup availability
 	if runtime.GOOS == "linux" {
 		cgroupPath := filepath.Join("/sys/fs/cgroup", "llm-gateway-plugins", pluginName)
-		
+
 		// Check if cgroup v2 is mounted
 		if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+			// 父节点启用控制器委派（cgroup v2 「no internal process」约束）：
+			// 子组要有 memory.max/cpu.max/pids.max 控制文件，父目录必须先在
+			// cgroup.subtree_control 打开 +memory +cpu +pids。缺这一步 MkdirAll
+			// 出来的子组只有 cgroup.* 元文件，后续 writeCgroup 全部 ENOENT
+			// （2026-11-28 审计 F1：与 plugin-runtime/limiter 包 v1.4 修复对齐）。
+			// 幂等：重复写同值合法；父目录不存在则先建；写失败仅警告。
+			parent := "/sys/fs/cgroup/llm-gateway-plugins"
+			if mkErr := os.MkdirAll(parent, 0o755); mkErr != nil {
+				fmt.Printf("WARN: failed to create cgroup parent %s: %v (limits may not apply)\n", parent, mkErr)
+			} else if err := os.WriteFile(filepath.Join(parent, "cgroup.subtree_control"), []byte("+memory +cpu +pids"), 0o644); err != nil {
+				fmt.Printf("WARN: cannot enable subtree controllers for llm-gateway-plugins: %v (limits may not apply)\n", err)
+			}
 			// Try to create cgroup directory
 			if err := os.MkdirAll(cgroupPath, 0755); err != nil {
 				fmt.Printf("WARN: failed to create cgroup %s: %v (falling back to monitor mode)\n", cgroupPath, err)
@@ -364,62 +376,70 @@ func splitLines(s string) []string {
 }
 
 func parseMemory(mem string) (int64, error) {
-	// Parse formats like "256Mi", "512MB", "1Gi", "1GB"
+	// Parse formats like "256Mi", "512MB", "128M", "1G", or plain bytes.
+	// 2026-11-28 审计 F3：与 plugin-runtime/limiter 包的 parseMemory 语义对齐——
+	// 旧版把单字母后缀（512M）当 plain number 解析成 512 字节，且 MB/GB 走
+	// 1000 进制（limiter 包 MB/GB=1024 进制），两包行为漂移。本模块独立
+	// go.mod，不引入跨模块依赖，复制语义而不是 import。
 	if len(mem) < 2 {
 		return 0, fmt.Errorf("invalid memory format: %s", mem)
 	}
 
-	// Extract number and unit
 	var value int64
 	var unit string
-	var scanned int
 
-	if len(mem) >= 2 && (mem[len(mem)-2:] == "Mi" || mem[len(mem)-2:] == "Gi" || mem[len(mem)-2:] == "Ki") {
-		scanned, _ = fmt.Sscanf(mem, "%d%s", &value, &unit)
-		if scanned != 2 {
+	two := mem[len(mem)-2:]
+	switch two {
+	case "Mi", "Gi", "Ki", "MB", "GB", "KB":
+		if _, err := fmt.Sscanf(mem, "%d%s", &value, &unit); err != nil {
 			return 0, fmt.Errorf("invalid memory format: %s", mem)
 		}
-	} else if len(mem) >= 2 && (mem[len(mem)-2:] == "MB" || mem[len(mem)-2:] == "GB" || mem[len(mem)-2:] == "KB") {
-		scanned, _ = fmt.Sscanf(mem, "%d%s", &value, &unit)
-		if scanned != 2 {
-			return 0, fmt.Errorf("invalid memory format: %s", mem)
+	default:
+		// Single-letter suffix (M/G/K) or plain bytes
+		single := mem[len(mem)-1:]
+		if single == "M" || single == "G" || single == "K" {
+			if _, err := fmt.Sscanf(mem, "%d%s", &value, &unit); err != nil {
+				return 0, fmt.Errorf("invalid memory format: %s", mem)
+			}
+			// Normalize to the decimal form handled below.
+			unit = unit + "B"
+			if unit == "MB" || unit == "GB" || unit == "KB" {
+				break
+			}
+			return 0, fmt.Errorf("unknown unit: %s", unit)
 		}
-	} else {
-		// Try to parse as plain number (bytes)
-		scanned, _ = fmt.Sscanf(mem, "%d", &value)
-		if scanned != 1 {
+		// Plain number (bytes)
+		if _, err := fmt.Sscanf(mem, "%d", &value); err != nil {
 			return 0, fmt.Errorf("invalid memory format: %s", mem)
 		}
 		return value, nil
 	}
 
-	// Convert to bytes
+	// Convert to bytes（Ki/Mi/Gi 与 KB/MB/GB 统一 1024 进制，同 limiter 包）
 	switch unit {
-	case "Ki":
+	case "Ki", "KB":
 		return value * 1024, nil
-	case "Mi":
+	case "Mi", "MB":
 		return value * 1024 * 1024, nil
-	case "Gi":
+	case "Gi", "GB":
 		return value * 1024 * 1024 * 1024, nil
-	case "KB":
-		return value * 1000, nil
-	case "MB":
-		return value * 1000 * 1000, nil
-	case "GB":
-		return value * 1000 * 1000 * 1000, nil
 	default:
 		return 0, fmt.Errorf("unknown unit: %s", unit)
 	}
 }
 
 func parseCPU(cpu string) (int, error) {
-	// Parse formats like "25" (25%), "50" (50%), or "25%"
+	// Parse formats like "25" (25%), "50" (50%), or "25%".
 	var percent int
 	cpu = trimSuffix(cpu, "%")
 	if _, err := fmt.Sscanf(cpu, "%d", &percent); err != nil {
 		return 0, fmt.Errorf("invalid CPU format: %s", cpu)
 	}
 
+	// 0% → cpu.max="0 100000"，内核 quota=0=unlimited（审计 F5，与 limiter 包同语义拒绝）
+	if percent == 0 {
+		return 0, fmt.Errorf("CPU percent must be >= 1 (0%% would write cpu.max quota=0, which the kernel treats as unlimited): %s", cpu)
+	}
 	if percent < 0 || percent > 100 {
 		return 0, fmt.Errorf("CPU percent must be 0-100, got %d", percent)
 	}

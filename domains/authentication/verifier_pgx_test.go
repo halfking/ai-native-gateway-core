@@ -63,10 +63,11 @@ func TestKeyVerifier_Verify_Cache_StaleKeyPrefix(t *testing.T) {
 		"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
 		"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias",
 		"customer_id", // 2026-07-15 (migration 407): applications.customer_id
+		"team_id",     // 2026-11-28 (migration 057): api_keys.team_id
 		"expires_at",  // 2026-09-04 keystore: read-time expiry validation
 		"is_system",
 		"capabilities", // W4.2 能力绑 Key
-	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, nil, true, nil)
+	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, nil, nil, true, nil)
 	mp.ExpectQuery(`SELECT`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(rows)

@@ -231,6 +231,15 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 
 // selectDispatchEndpoint resolves a candidate only when the selector flag is
 // enabled. An unavailable native executor must never receive selector traffic.
+//
+// A6 (2026-11-28 owner 拍板): wantFamily now flows from the candidate's
+// canonical family (models_canonical.family via provider.Candidate.ModelFamily)
+// instead of a constant empty string, activating the selector's Stage 1B/2/3
+// family-match stages. Family candidates are preferred only WITHIN the same
+// protocol (protocol match outranks family match by design, see
+// internal/endpointselect stage ordering), so a family mismatch can never
+// redirect traffic to a different wire format — worst case is Stage 4
+// primary fallback, identical to the pre-A6 behavior.
 func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flags *settings.P4FeatureFlags) provider.Candidate {
 	if flags == nil || !flags.EndpointSelectorEnabled {
 		// r0926 P4 审计遗留（十六轮 E6c）：flag-off 的主端点回退此前完全
@@ -255,9 +264,13 @@ func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flag
 	if clientProtocol == "" {
 		clientProtocol = providercatalog.ProtocolOpenAICompletions
 	}
+	// A6: pass the candidate's canonical family as wantFamily. The selector
+	// itself normalizes matching against EndpointLite.VendorNative (both are
+	// free discovery-canonical family strings); empty family keeps the
+	// historical Stage 1C semantics unchanged.
 	decision := endpointselect.Select(endpointselect.CandidateLite{
 		BaseURL: cand.BaseURL, Protocol: cand.Protocol, NativeEndpoints: endpoints,
-	}, endpointselect.Protocol(clientProtocol), "")
+	}, endpointselect.Protocol(clientProtocol), cand.ModelFamily)
 	if decision.Protocol == endpointselect.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
 		return cand
 	}
@@ -274,6 +287,7 @@ func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flag
 	slog.Info("endpoint_selector_decision",
 		"match_rule", decision.MatchRule,
 		"client_protocol", clientProtocol,
+		"want_family", cand.ModelFamily,
 		"endpoint_protocol", string(decision.Protocol),
 		"endpoint_id", decision.EndpointID,
 		"vendor_native", decision.VendorNative,

@@ -12,6 +12,7 @@ export default {
     security: 'Security',
     outputCompliance: 'Output Compliance',
     circuitBreaker: 'Circuit Breaker',
+    loopGuard: 'Loop guard',
     general: 'Other',
   },
  list: {

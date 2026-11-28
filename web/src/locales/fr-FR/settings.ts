@@ -14,6 +14,7 @@ export default {
     security: 'Sécurité',
     outputCompliance: 'Conformité de sortie',
     circuitBreaker: 'Disjoncteur',
+    loopGuard: 'Garde anti-boucle',
     general: 'Autre',
   },
  list: {

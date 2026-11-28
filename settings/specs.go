@@ -78,6 +78,9 @@ func PlatformSpecs() []*Spec {
 	// 默认凌晨 02:00 UTC，HotReload）。
 	out = append(out, ReportRollupSpecs()...)
 	out = append(out, ReconciliationCalendarSpec())
+	// 2026-11-28: 三级/四级配额闸豁免独立开关（owner 决策落地：default 租户
+	// 与内部 key 的豁免从判定体写死改为独立可配置，默认值=存量行为零变化）。
+	out = append(out, TieredQuotaExemptionSpecs()...)
 	// 2026-10-14: P0-2 交互等待预算分级下调——生存协调器 deadline 的
 	// settings_kv 热加载覆盖（survival.interactive_deadline_seconds）。
 	out = append(out, SurvivalSpecs()...)
@@ -105,6 +108,10 @@ func PlatformSpecs() []*Spec {
 	//（gateway.display_name / system.skin / storage.attachment_public_base_url），
 	// admin basic-config 聚合端点 + settingsPut 即时热应用（读方见 system_config.go）。
 	out = append(out, SystemConfigSpecs()...)
+	// 2026-11-28: 会话无进展循环守卫（loop_guard.*，domains/streaming/
+	// session_loop_guard.go 读方）——agent 宿主等待裁决期间整段上下文
+	// 固定节奏重发的空转循环：自动回退 + 超次数关闭。
+	out = append(out, LoopGuardSpecs()...)
 	return out
 }
 

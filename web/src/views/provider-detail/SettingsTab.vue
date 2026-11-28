@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
@@ -10,8 +10,12 @@ import {
   getProviderSettings,
   setProviderSetting,
   deleteProviderSetting,
+  getProviderEndpoints,
+  putProviderEndpoint,
+  deleteProviderEndpoint,
   type ProviderDetail,
   type ProviderSetting,
+  type ProviderEndpoint,
 } from '../../api'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useActionMessage } from '../../composables/useActionMessage'
@@ -73,6 +77,8 @@ const protocolLabel = (p: string): string => {
       return 'Anthropic Messages'
     case 'gemini-generate':
       return 'Gemini Generate'
+    case 'ollama-native':
+      return 'Ollama Native'
     case PROTOCOL_ADAPTIVE:
       return ps('optionProtocolAdaptive')
     default:
@@ -83,6 +89,115 @@ const protocolLabel = (p: string): string => {
 // 仍存着别名，select 里不能再留重复项，否则显示成空/错项。
 const canonicalProtocolOption = (raw: string): string =>
   raw === 'google-gemini' ? 'gemini-generate' : raw
+
+// 端点表（方案 A4：provider_endpoint_protocols 的 admin 管理面）
+//
+// 与上面「自适应可用协议」是两件事：那是声明「这家供应商支持哪些协议」，
+// 这里是声明「每个协议的 base_url / 权重 / 主端点」。主端点不可直接降级、
+// 停用或删除（后端 409）——必须先把另一行提升为主端点。
+// 端点行的协议枚举 = 表 CHECK 五值（含 ollama-native，不含 adaptive 选择器）。
+// 不复用 adaptiveProtocolChoices：那是「自适应可声明的原厂协议」，少一个 ollama-native，
+// 用它会让 ollama 供应商的端点在页面上无法建出来。
+const endpointProtocolChoices = [
+  'openai-completions',
+  'openai-responses',
+  'anthropic-messages',
+  'gemini-generate',
+  'ollama-native',
+] as const
+const endpoints = ref<ProviderEndpoint[]>([])
+const endpointsLoading = ref(false)
+// 还能新增的协议（每协议至多一行）：用完则新增按钮禁用，避免空下拉。
+const availableEndpointProtocols = computed(() =>
+  endpointProtocolChoices.filter((p) => !endpoints.value.some((e) => e.protocol === p)),
+)
+const {
+  message: endpointsMsg,
+  error: endpointsErr,
+  notifySuccess: notifyEndpointsOk,
+  notifyError: notifyEndpointsErr,
+  clear: clearEndpointsMsg,
+} = useActionMessage()
+// editingEndpointId：行 id ⇒ 该行编辑；'NEW' ⇒ 新增行；null ⇒ 无编辑。
+const editingEndpointId = ref<number | 'NEW' | null>(null)
+const editEndpointProtocol = ref<string>(adaptiveProtocolChoices[0])
+const editEndpointBaseUrl = ref('')
+const editEndpointWeight = ref(100)
+const editEndpointPrimary = ref(false)
+const editEndpointEnabled = ref(true)
+const endpointSaving = ref(false)
+
+async function loadProviderEndpoints() {
+  endpointsLoading.value = true
+  try {
+    const resp = await getProviderEndpoints(props.provider.id)
+    endpoints.value = resp.endpoints || []
+  } catch (e: unknown) {
+    notifyEndpointsErr(ps('endpointLoadFailed', { msg: surfaceError(e) }))
+  } finally {
+    endpointsLoading.value = false
+  }
+}
+
+function startEditEndpoint(ep: ProviderEndpoint) {
+  clearEndpointsMsg()
+  editingEndpointId.value = ep.id
+  editEndpointProtocol.value = ep.protocol
+  editEndpointBaseUrl.value = ep.base_url
+  editEndpointWeight.value = ep.weight
+  editEndpointPrimary.value = ep.is_primary
+  editEndpointEnabled.value = ep.enabled
+}
+
+function startAddEndpoint() {
+  clearEndpointsMsg()
+  editingEndpointId.value = 'NEW'
+  // 已有的协议不再出现在新增下拉里：同协议再 PUT 只会变成「更新」，
+  // 让运营以为新增了一条。
+  editEndpointProtocol.value = availableEndpointProtocols.value[0] ?? endpointProtocolChoices[0]
+  editEndpointBaseUrl.value = ''
+  editEndpointWeight.value = 100
+  // 第一条端点天然是主端点（否则供应商落到「零主端点」）。
+  editEndpointPrimary.value = endpoints.value.length === 0
+  editEndpointEnabled.value = true
+}
+
+function cancelEditEndpoint() {
+  editingEndpointId.value = null
+}
+
+async function saveEndpoint() {
+  clearEndpointsMsg()
+  endpointSaving.value = true
+  try {
+    await putProviderEndpoint(props.provider.id, editEndpointProtocol.value, {
+      base_url: editEndpointBaseUrl.value,
+      weight: editEndpointWeight.value,
+      is_primary: editEndpointPrimary.value,
+      enabled: editEndpointEnabled.value,
+    })
+    editingEndpointId.value = null
+    await loadProviderEndpoints()
+    notifyEndpointsOk(ps('endpointSaved'))
+  } catch (e: unknown) {
+    // 失败保持编辑态：409（主端点保护）等需要运营改完再试，不能丢掉已填内容。
+    notifyEndpointsErr(ps('endpointSaveFailed', { msg: surfaceError(e) }))
+  } finally {
+    endpointSaving.value = false
+  }
+}
+
+async function removeEndpoint(protocol: string) {
+  if (!(await confirmDialog(ps('endpointDeleteConfirm')))) return
+  clearEndpointsMsg()
+  try {
+    await deleteProviderEndpoint(props.provider.id, protocol)
+    await loadProviderEndpoints()
+    notifyEndpointsOk(ps('endpointDeleted'))
+  } catch (e: unknown) {
+    notifyEndpointsErr(ps('endpointDeleteFailed', { msg: surfaceError(e) }))
+  }
+}
 
 // Basic provider settings
 const editName = ref(props.provider.display_name)
@@ -109,7 +224,7 @@ const checkMsg = ref('')
 
 // Load provider settings on mount
 onMounted(async () => {
-  await loadProviderSettings()
+  await Promise.all([loadProviderSettings(), loadProviderEndpoints()])
 })
 
 async function loadProviderSettings() {
@@ -420,6 +535,95 @@ async function runHealthCheck() {
       </div>
     </section>
 
+    <section class="card settings-section settings-section--endpoints">
+      <h3 class="section-title">{{ ps('endpointsTitle') }}</h3>
+      <div class="form-hint" style="margin-bottom: 12px;">
+        {{ ps('endpointsHint') }}
+      </div>
+      <div v-if="endpointsErr" class="alert alert-danger">
+        {{ endpointsErr }}
+      </div>
+      <div v-if="endpointsMsg" class="alert alert-success">
+        {{ endpointsMsg }}
+      </div>
+      <div v-if="endpointsLoading" class="empty">{{ ps('endpointsLoading') }}</div>
+      <div v-else-if="endpoints.length === 0 && editingEndpointId !== 'NEW'" class="empty">
+        {{ ps('endpointsEmpty') }}
+      </div>
+      <div v-else class="endpoints-table-wrapper">
+        <table class="endpoints-table">
+          <thead>
+            <tr>
+              <th>{{ ps('endpointProtocol') }}</th>
+              <th>{{ ps('fieldBaseUrl') }}</th>
+              <th style="width: 80px;">{{ ps('endpointWeight') }}</th>
+              <th style="width: 80px;">{{ ps('endpointPrimary') }}</th>
+              <th style="width: 80px;">{{ ps('endpointEnabled') }}</th>
+              <th style="width: 120px;">{{ ps('endpointActions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="ep in endpoints" :key="ep.id">
+              <template v-if="editingEndpointId === ep.id">
+                <!-- 编辑模式 -->
+                <td><code>{{ ep.protocol }}</code></td>
+                <td><input v-model="editEndpointBaseUrl" class="input input-sm" /></td>
+                <td><input v-model.number="editEndpointWeight" type="number" min="1" max="999" class="input input-sm" style="width: 70px;" /></td>
+                <td><input v-model="editEndpointPrimary" type="checkbox" /></td>
+                <td><input v-model="editEndpointEnabled" type="checkbox" /></td>
+                <td>
+                  <button class="btn btn-xs btn-primary" @click="saveEndpoint" :disabled="endpointSaving">{{ ps('endpointSave') }}</button>
+                  <button class="btn btn-xs btn-ghost" @click="cancelEditEndpoint">{{ ps('endpointCancel') }}</button>
+                </td>
+              </template>
+              <template v-else>
+                <!-- 只读模式 -->
+                <td>
+                  <code>{{ ep.protocol }}</code>
+                  <span v-if="ep.is_primary" class="badge badge-blue" style="margin-left: 6px;">{{ ps('endpointPrimary') }}</span>
+                </td>
+                <td><code class="url">{{ ep.base_url }}</code></td>
+                <td>{{ ep.weight }}</td>
+                <td>{{ ep.is_primary ? '✓' : '—' }}</td>
+                <td>{{ ep.enabled ? '✓' : '—' }}</td>
+                <td>
+                  <button class="btn btn-xs btn-ghost" @click="startEditEndpoint(ep)" :disabled="editingEndpointId !== null">
+                    {{ ps('endpointEdit') }}
+                  </button>
+                  <button class="btn btn-xs btn-ghost" @click="removeEndpoint(ep.protocol)" :disabled="editingEndpointId !== null">
+                    {{ ps('endpointDelete') }}
+                  </button>
+                </td>
+              </template>
+            </tr>
+            <!-- 新增行 -->
+            <tr v-if="editingEndpointId === 'NEW'">
+              <td>
+                <select v-model="editEndpointProtocol" class="input input-sm" style="width: 180px;">
+                  <option v-for="p in availableEndpointProtocols" :key="p" :value="p">
+                    {{ protocolLabel(p) }}
+                  </option>
+                </select>
+              </td>
+              <td><input v-model="editEndpointBaseUrl" class="input input-sm" placeholder="https://..." /></td>
+              <td><input v-model.number="editEndpointWeight" type="number" min="1" max="999" class="input input-sm" style="width: 70px;" /></td>
+              <td><input v-model="editEndpointPrimary" type="checkbox" /></td>
+              <td><input v-model="editEndpointEnabled" type="checkbox" /></td>
+              <td>
+                <button class="btn btn-xs btn-primary" @click="saveEndpoint" :disabled="endpointSaving">{{ ps('endpointSave') }}</button>
+                <button class="btn btn-xs btn-ghost" @click="cancelEditEndpoint">{{ ps('endpointCancel') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top: 12px;">
+        <button class="btn btn-sm" @click="startAddEndpoint" :disabled="editingEndpointId !== null || availableEndpointProtocols.length === 0">
+          {{ ps('endpointAddNew') }}
+        </button>
+      </div>
+    </section>
+
     <section class="card settings-section settings-section--edit">
       <h3 class="section-title">{{ ps('editTitle') }}</h3>
       <div class="settings-form">
@@ -618,6 +822,34 @@ async function runHealthCheck() {
 
 .adaptive-choice input[type='checkbox'] {
   margin: 0;
+}
+
+.endpoints-table-wrapper {
+  overflow-x: auto;
+}
+
+.endpoints-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.endpoints-table th,
+.endpoints-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.endpoints-table th {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.endpoints-table code.url {
+  word-break: break-all;
 }
 
 .info-grid {
