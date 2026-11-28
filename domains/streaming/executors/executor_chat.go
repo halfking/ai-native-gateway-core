@@ -2213,10 +2213,19 @@ func (e *Executor) executeOpenAI(
 				//
 				// 语义：上游返回 404/400/405 且错误体包含"unsupported/not found"等关键词
 				// → 记录负向记忆（provider, model, protocol）→ 用基协议重试本次请求。
+				//
+				// 守门 4（2026-11-29 L157 轮，TestExecuteOpenAIReqProbeModeMismatchRecordsWithoutFallback
+				// 基线红收口）：**非流式 openai-responses 客户端不做协议回退**——
+				// responses→chat 线格式切换对它不安全（与模式回退
+				// executor_chat.go:1992 的安全条件同族：非流式 responses 客户端
+				// 只有 handler 负责最终写入才安全；本路径不满足）。放行会复活
+				// 2026-11-02 生产事故的「同节点第二次上游调用」形态。
+				// 流式 responses / 非 responses 客户端不受影响（A3 原语义保留）。
 				if !protocolFallbackTried &&
 					cand.Protocol != providercatalog.ProtocolOpenAICompletions &&
+					(params.IsStream || params.ClientProtocol != "openai-responses" || params.SuppressSuccessWrite) &&
 					isProtocolUnsupportedError(cand.Protocol, resp.StatusCode, string(body[:n])) {
-					
+
 					slog.Warn("upstream protocol unsupported: falling back to base protocol",
 						"request_id", params.RequestID,
 						"provider_id", cand.ProviderID,
@@ -2226,17 +2235,17 @@ func (e *Executor) executeOpenAI(
 						"base_protocol", providercatalog.ProtocolOpenAICompletions,
 						"status", resp.StatusCode,
 					)
-					
+
 					// 记录负向记忆（TTL 24小时）
 					provider.RecordProtocolUnsupported(cand.ProviderID, cand.RawModel, cand.Protocol, 24*time.Hour)
-					
+
 					// 准备基协议重试体（复用客户端原始请求体）
 					var retryBody []byte
 					if len(clientSourceBody) > 0 {
 						// 基协议是 openai-completions，使用 chat 线格式
 						retryBody = clientSourceBody
 					}
-					
+
 					if len(retryBody) > 0 {
 						bodyBytes = retryBody
 						sourceBody = clientSourceBody
@@ -2245,11 +2254,11 @@ func (e *Executor) executeOpenAI(
 						e.ledgerRecordProbe(params, cand, nil, cand.Protocol, providercatalog.ProtocolOpenAICompletions)
 						// 协议回退是准入内的第二次上游调用，补记到准入 Governor 的 RPM/TPM 桶
 						meterExtraUpstreamCall(params)
-						
+
 						// ★ 关键：就地改写候选协议为基协议，触发重试
 						// 下一轮循环会用新协议重新构造请求（URL、请求体、响应解析全部自动适配）
 						cand.Protocol = providercatalog.ProtocolOpenAICompletions
-						
+
 						return nil, &retryableError{err: &upstreampkg.Error{
 							Kind:       errKind,
 							Message:    fmt.Sprintf("upstream %d (protocol unsupported; base protocol fallback retry)", resp.StatusCode),
