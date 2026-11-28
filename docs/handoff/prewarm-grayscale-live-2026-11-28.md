@@ -233,3 +233,15 @@ memora 仓有完整评测基建（`cmd/recall-eval` + `cmd/recall-eval-baseline`
 6. server 上线后：官方 verify 重跑（带 ACC_VERIFY_AUTH_HEADER_FILE）——**embedding 已本地化，candidate_promote 不再 503，预期全绿**。
 7. 全绿后按 P1-4 补测路径出 Recall@5/nDCG 终版报告（seed corpus → 真检索 → `recall-eval -mode ranked`，对照 degraded v2 基线 0.1818 与绝对门禁 0.25）。
 8. 若 owner 上线用的仍是旧基座（不含 a146e33f）：才需要叠 `memora:fix-61d6280a-recall-authz` 薄层（镜像 ID 4a4a86ea9e8c，amd64）。
+
+## 审计轮（2026-11-29 04:25）——三仓甄别与收敛
+
+| 仓 | 发现 | 处置 |
+|---|---|---|
+| memora | 本地 main 领先 1（`8f742470` expires_at 入库修复，author 11-23、commit-date 03:36 被并行会话 rebase）落后 4+；两轮 push 期间 origin 又涨（475282e9→66e30732 squash 维护轮） | 双轮 merge（339f41cd→500eee04）推平；**ExpiresAt 字段+binding 标签 merge 后在位**（grep 实证），BUILD_OK |
+| 网关 | origin 新 2 提交（billing Phase 1.5/1.6）；本地 4 文件脏改动（autoupdate manifest_error 透传链 + selfUpdate 前端，最后改动 04:17:42 = 审计时 7 分钟前，**并发会话活跃 WIP**，编译自洽） | 只 FF 收敛 2bf79002cf，WIP 不提交不回滚；双推 0/0 |
+| 父仓 | `ai-native-maintain` 指针漂移（99b04a9→b3d29c2-dirty，含 JWT_AUD 修复与 release 技能依赖，也是并发线） | 仅 bump `llm-gateway-go` 指针（0c239df），maintain 不动 |
+
+**教训补充**：本轮 push 时 origin 连续两次前进（memora 66e30732、网关 billing 1.5/1.6）——owner/同僚在凌晨高频并行，任何「fetch→commit→push」窗口都可能撞车，push 被 reject 后**先看新增提交内容再 merge**，勿盲目重推。
+
+**next（维持上午接续点）**：reindex 完成后核 server `vcs.revision` ∈ origin/main 谱系（含 a146e33f authz 修复即达标）→ verify 全绿（带 HEADER_FILE）→ P1-4 Recall@5/nDCG 终版补测。
