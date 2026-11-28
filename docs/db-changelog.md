@@ -11224,3 +11224,15 @@ migration_name/applied_at 不动。★ **431/432 排除**：修正对账后确�
 （task_default_routing/route_incident_events），与台账逐字节吻合 ⇒ 无需处置。
 ★ **遗留登记**：<500 号段历史撞号棘轮基线已有 431/432 双文件（`tests/migration_version_prefix_unique_test.sh`），
 本轮 425 的教训是**登记轮必须在干净树跑**（52ae9c32f 的 211 部署追平轮已立此规约，本轮是执行偏差）。
+
+### 补登（同轮第二道门禁后追记）：641 生效 + 830 记名修正
+
+- **641 退役声明已生效**（deploy-245 第三轮 WARN 跳过）：`32daa01e5` 的
+  `.retired` 文件被门禁识别（记名对上、含退役原因）⇒ 跳过 checksum 比对。
+- **830 台账记名修正**（同共享库 211 acc-pg17）：原行 migration_name 是
+  「把整段 description 当文件名」的畸形登记（checksum=retired-placeholder 占位），
+  与仓内 canonical 退役声明 `830_ursm_node_snapshot_min_partitioned.sql.skip`
+  （bg/partition_830_contract_test.go 钉住的 manual-by-design 形态）记名对不上
+  ⇒ 门禁 fatal。备份该行（/tmp/830-row-backup.txt 本会话 + 全表 dump
+  ledger-full-backup-20261128.sql 容器内）后条件化 UPDATE migration_name →
+  canonical 名（UPDATE 1，checksum 占位值保持不变——退役声明路径本就不校验 checksum）。
