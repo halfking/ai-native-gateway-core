@@ -136,6 +136,11 @@ func (s *CredibilityNodeSource) DiscoverTargets(ctx context.Context, scope strin
 		t.BaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 		t.Protocol = protocol
 		t.CatalogCode = catalogCode
+
+		// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+		// model_credibility_source 不针对具体模型名，只能用声明的基协议。
+		t.Protocol = resolveProbeProtocolWithoutModel(ctx, s.db, int(providerID), t.Protocol)
+
 		t.APIKey = apiKey
 		t.RawModelName = rawModelKey
 		t.OutboundModel = outModel

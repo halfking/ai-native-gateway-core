@@ -983,7 +983,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 	rows, err := g.db.Query(cctx, `
 		SELECT c.id, c.secret_ciphertext,
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
-		       COALESCE(p.catalog_code, '')
+		       COALESCE(p.catalog_code, ''), p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.balance_floor_usd IS NOT NULL
@@ -1007,14 +1007,20 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		baseURL    string
 		protocol   string
 		catalog    string
+		providerID int
 	}
 	var toRefresh []refreshRow
 	for rows.Next() {
 		var r refreshRow
-		if err := rows.Scan(&r.id, &r.ciphertext, &r.baseURL, &r.protocol, &r.catalog); err != nil {
+		if err := rows.Scan(&r.id, &r.ciphertext, &r.baseURL, &r.protocol, &r.catalog, &r.providerID); err != nil {
 			slog.Warn("balance_floor_guard: currency refresh scan failed", "error", err)
 			continue
 		}
+
+		// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+		// balance_floor_guard 不针对具体模型，只能用声明的基协议。
+		r.protocol = resolveProbeProtocolWithoutModel(cctx, g.db, r.providerID, r.protocol)
+
 		toRefresh = append(toRefresh, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -1066,7 +1072,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 	rows, err = g.db.Query(cctx, `
 		SELECT c.id,
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
-		       COALESCE(p.catalog_code, '')
+		       COALESCE(p.catalog_code, ''), p.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'balance_exhausted'
@@ -1087,10 +1093,14 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 	var toRestore []refreshRow
 	for rows.Next() {
 		var r refreshRow
-		if err := rows.Scan(&r.id, &r.baseURL, &r.protocol, &r.catalog); err != nil {
+		if err := rows.Scan(&r.id, &r.baseURL, &r.protocol, &r.catalog, &r.providerID); err != nil {
 			slog.Warn("balance_floor_guard: currency restore scan failed", "error", err)
 			continue
 		}
+
+		// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+		r.protocol = resolveProbeProtocolWithoutModel(cctx, g.db, r.providerID, r.protocol)
+
 		toRestore = append(toRestore, r)
 	}
 	if err := rows.Err(); err != nil {
