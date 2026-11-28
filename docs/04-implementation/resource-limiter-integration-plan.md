@@ -730,6 +730,8 @@ kill $GATEWAY_PID
 
 **清单步 4 已启动：245 rlcanary 旁路实例（2026-11-28，v1.7.2 观察轮）**：勘察发现两台长驻网关（211 prod 容器 / 245 蓝绿 candidate）均未启用插件运行时（无 `LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG`、无 plugins 目录），且 245 现网二进制（6bbc51f5）不含 rl 代码——"合入灰度块"实为一次小部署；而 6bbc51f5→b5f55c8b3 相差 417 提交（配额/request-metrics/菜单等其他车道工作，与 154 共享 PG 的迁移链），不宜借灰度名义上线。故改为 245 **独立旁路实例**：`/opt/llm-gateway-go/rlcanary/`（v1.7.1 b5f55c8b3 CGO=1 容器构建，lite 存储，端口 18781，独立 unit `llmgo-245-rlcanary.service`）+ canary 插件 + 模板灰度块；零 nginx 切流、零共享 DB 依赖、零迁移，回滚 = `systemctl stop && disable llmgo-245-rlcanary`。清单步 1-3 复验通过（cgroup v1 主机预期降级：`WARN: cgroupv2 not available (falling back to monitor mode)`，7 序列上线 `mode_info{monitor}=1`、`memory_limit=536870912`、usage≈5.6MB 读回非零、violations=0；plugin-nav 以进程存活 + socket 在位替代——JWT 鉴权依赖 DB，同 v1.6 结论）。24h 水位采集已就位：systemd timer `rlcanary-watermark.timer` 每 15min 追加快照至 `/opt/llm-gateway-go/rlcanary/watermark.log`（服务/插件活性 + 7 序列值）。**工程事实登记**：① lite 存储必须 CGO 构建（CGO=0 启动即败，mattn/go-sqlite3 驱动缺失）；② runtime config 的 `server.host` 归一化后必须与网关 listen host 一致（`:18781` 空主机 ⇒ 写 `0.0.0.0`，写 `127.0.0.1` 启动即败）；③ OOM 序列实名 `llmgw_plugin_oom_killed_total`（killed；交接文档曾误写 oom_kills_total），monitor 模式不读 memory.events 故无样本，cgroup 模式才有值；④ 观察对象是 canary 合成负载（稳态 8MB），验证 limiter 长跑稳定性/指标连续性/泄漏，真实插件水位待真实插件上线后另测。24h 后回填 `watermark.log` 摘要（violations 增速、usage/limit 水位、进程存活率）。
 
+**中期水位观察（2026-11-29 03:25 采录，观察窗 6.3h / 27 快照，非终验）**：全量 27 快照（2026-11-28 21:05:25 – 11-29 03:21:26，15min systemd 节奏无缺口）四项判据中期全过——① violations 全程 0（增速=0）；② usage 水位 2.21–13.74MB / 512MB（峰值仅 2.68%，远低于 50% 判据线）；③ 存活 27/27（100%，state=active plugin=alive）；④ threads 4–5 平稳（稳态 5）。`mode_info{monitor}=1` 全程不变（cgroup v1 主机预期降级，无异常回弹）。终验回填待观察窗收口（2026-11-29 21:05 后）。
+
 #### Phase 2: 灰度发布（1-2 周）
 
 1. 在 1-2 个测试环境启用 ResourceLimiter
