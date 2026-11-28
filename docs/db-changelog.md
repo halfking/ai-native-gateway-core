@@ -11247,3 +11247,28 @@ migration_name/applied_at 不动。★ **431/432 排除**：修正对账后确�
 - ⚠ 遗留：`repair-252-migration-ledger.sh` 的 canonical 解析不识别 `.retired`
   声明（与 db-changelog 门禁的两套解析不对齐）⇒ 对含退役迁移的库无法直跑
   （本轮实测 ERROR at 641）。建议后续统一两处解析语义（owner 轴待决项）。
+
+### 补登（同轮第四~六道门禁）：共享库账本系统性对齐（211 acc-pg17，245/154 共库）
+
+前四道门禁（425 checksum / 641 退役声明 / 830 记名 / 1000-1005 补录）清障后，
+pending 扫描仍暴露该库的**结构性账本漂移**：schema_migrations 停在 259 行（早期快照），
+物理 schema 却被 11-28 各车道 ensure 链推到最新 ⇒ 261 个 ≥412 pending 全量投喂，
+幂等件能过但**倒退件**（523 的 CREATE OR REPLACE VIEW 会删掉活视图的
+priority/context_window_source/context_window_updated_at 三列）会破坏现役 schema。
+
+**批量预演裁决**（260 件真实执行，64 FAIL 逐件裁决）：
+- **196 件真应用成功**（幂等 NOTICE 形态为主；含 636 死锁单跑复测、838 批量缺件补跑）；
+  其中含自登记账本的 23 件；其余 173 件随后按 canonical 字节补登记双账本
+  （schema_migrations.description=<canonical 文件名去后缀>，ON CONFLICT DO NOTHING）。
+- **17 件效果已在、旧字节重放有害/无效**（视图倒退 523/568/625/637/826/844；
+  形态演进 534/538/549/614/727/729/800/807；数据门 620[tenant_id 已 0 NULL]）——
+  全部对照 252 健康库基准确认效果后登记 applied（950 先例「账本登记已处理事实」语义）。
+- **46 件纯 v1 引用件**保持「账本缺 + 退役清单守卫拦」形态（by design；
+  清单经本轮实测补齐至 61 件，484/485/487/488/601/603/604 七件为实投喂炸出的漏枚举）。
+
+**结果**：账本 412-999 段 495 个号全部收敛（443 登记 + 46 守卫拦截 + 6 非 3 位号段）；
+checksum 抽查（523/611/636/640/1000/1004）与仓内字节全 MATCH；
+deploy-245 第 7 轮一次通过（3187/311ca42c，切换 33s，凭据解密冒烟 17/0 failed）。
+备份链：ledger-full-backup-20261128.sql（314 行）+ batch-result.txt（260 件逐件结果，
+211 acc-pg17:/tmp/）。**遗留**：620 的 duplicate provider_error_details 需要 operator
+裁决去重口径（迁移自带的 fail-closed 门，效果列已落地不阻塞）。
