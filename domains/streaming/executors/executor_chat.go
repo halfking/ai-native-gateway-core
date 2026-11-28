@@ -1192,6 +1192,11 @@ func (e *Executor) executeOpenAI(
 	// 说明还有别的问题，连续剥参交给 reqprobe 的有界多轮，本机制只兜
 	// 第一跳）。
 	paramRefusalTried := false
+	// A3 闸门 2（2026-11-28）：协议回退重试预算（每请求最多一次）。
+	// 若上游返回"协议不支持"错误（§2.7 同款判据），记录负向记忆并用基协议重试。
+	// 与 probe.modeTried（chat↔responses 模式回退）和 paramRefusalTried（参数
+	// 剔除）同机制：有界重试、跳过退避、不消耗外层预算。
+	protocolFallbackTried := false
 	// A successful Chat probe after an explicit "Responses API unsupported"
 	// verdict is also a valid execution path. Apply the same decision to live
 	// requests before the ordinary 5xx retry/failover branch handles relay 502s.
@@ -2189,6 +2194,65 @@ func (e *Executor) executeOpenAI(
 						return nil, &retryableError{err: &upstreampkg.Error{
 							Kind:       errKind,
 							Message:    fmt.Sprintf("upstream %d (chat unsupported; responses fallback retry)", resp.StatusCode),
+							Body:       append([]byte(nil), body[:n]...),
+							StatusCode: resp.StatusCode,
+							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+						}}
+					}
+				}
+
+				// A3 闸门 2（2026-11-28）：协议回退（adaptive protocol → base protocol）
+				// 守门条件（缺一不可）：
+				//  · !protocolFallbackTried —— 每请求至多一次
+				//  · cand.Protocol != openai-completions —— 基协议无回退空间
+				//  · isProtocolUnsupportedError —— 上游明确拒绝该协议（§2.7 同款判据）
+				//
+				// 与模式回退（chat↔responses）的分工：
+				//  · 模式回退：openai-responses 协议内部的两条线格式切换
+				//  · 协议回退：不同协议族之间的降级（anthropic-messages/gemini-generate → openai-completions）
+				//
+				// 语义：上游返回 404/400/405 且错误体包含"unsupported/not found"等关键词
+				// → 记录负向记忆（provider, model, protocol）→ 用基协议重试本次请求。
+				if !protocolFallbackTried &&
+					cand.Protocol != providercatalog.ProtocolOpenAICompletions &&
+					isProtocolUnsupportedError(cand.Protocol, resp.StatusCode, string(body[:n])) {
+					
+					slog.Warn("upstream protocol unsupported: falling back to base protocol",
+						"request_id", params.RequestID,
+						"provider_id", cand.ProviderID,
+						"credential_id", cand.CredentialID,
+						"raw_model", cand.RawModel,
+						"rejected_protocol", cand.Protocol,
+						"base_protocol", providercatalog.ProtocolOpenAICompletions,
+						"status", resp.StatusCode,
+					)
+					
+					// 记录负向记忆（TTL 24小时）
+					provider.RecordProtocolUnsupported(cand.ProviderID, cand.RawModel, cand.Protocol, 24*time.Hour)
+					
+					// 准备基协议重试体（复用客户端原始请求体）
+					var retryBody []byte
+					if len(clientSourceBody) > 0 {
+						// 基协议是 openai-completions，使用 chat 线格式
+						retryBody = clientSourceBody
+					}
+					
+					if len(retryBody) > 0 {
+						bodyBytes = retryBody
+						sourceBody = clientSourceBody
+						protocolFallbackTried = true
+						probeRetry = true
+						e.ledgerRecordProbe(params, cand, nil, cand.Protocol, providercatalog.ProtocolOpenAICompletions)
+						// 协议回退是准入内的第二次上游调用，补记到准入 Governor 的 RPM/TPM 桶
+						meterExtraUpstreamCall(params)
+						
+						// ★ 关键：就地改写候选协议为基协议，触发重试
+						// 下一轮循环会用新协议重新构造请求（URL、请求体、响应解析全部自动适配）
+						cand.Protocol = providercatalog.ProtocolOpenAICompletions
+						
+						return nil, &retryableError{err: &upstreampkg.Error{
+							Kind:       errKind,
+							Message:    fmt.Sprintf("upstream %d (protocol unsupported; base protocol fallback retry)", resp.StatusCode),
 							Body:       append([]byte(nil), body[:n]...),
 							StatusCode: resp.StatusCode,
 							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),

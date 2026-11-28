@@ -38,6 +38,9 @@ const ProviderSettingKeyAdaptiveAllowed = providercatalog.AdaptiveAllowedSetting
 //
 // 只读 cand.Protocol 与 cand.RawModel：不碰 RawModel 以外的任何字段，因此对
 // 非自适应候选是完全的空操作。
+//
+// ★ 2026-11-28 A3 闸门 2：在消解前检查负向记忆。若 (provider, model, protocol)
+// 组合曾被记录为不支持，直接降级到基协议（避免重复撞 404）。
 func resolveAdaptiveProtocols(cands []Candidate, allowedByProvider map[int][]string) int {
 	changed := 0
 	for i := range cands {
@@ -48,6 +51,20 @@ func resolveAdaptiveProtocols(cands []Candidate, allowedByProvider map[int][]str
 		// CanonicalID 是客户端侧归一产物，按它判定会把「客户端怎么写」混进
 		// 「上游认什么」，与「按原厂格式对接」的语义相反。
 		resolved := providercatalog.ResolveAdaptiveProtocol(cands[i].RawModel, allowedByProvider[cands[i].ProviderID])
+		
+		// ★ A3 闸门 2：检查负向记忆。若推荐协议曾被上游拒绝，直接降级基协议。
+		// 注意：只在推荐协议 != 基协议时检查（如果推荐已经是 completions，
+		// 就没有降级空间，负向记忆也无意义）。
+		baseProtocol := providercatalog.ProtocolOpenAICompletions
+		if resolved != baseProtocol && isProtocolUnsupported(cands[i].ProviderID, cands[i].RawModel, resolved) {
+			slog.Debug("adaptive protocol: negative memory hit, fallback to base protocol",
+				"provider_id", cands[i].ProviderID,
+				"model", cands[i].RawModel,
+				"rejected_protocol", resolved,
+				"base_protocol", baseProtocol)
+			resolved = baseProtocol
+		}
+		
 		if resolved == cands[i].Protocol {
 			continue
 		}
