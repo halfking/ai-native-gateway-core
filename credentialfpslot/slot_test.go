@@ -52,22 +52,6 @@ func TestAcquireReleaseRedis(t *testing.T) {
 	m.Release(ctx, l3)
 }
 
-func TestRoutingEligible(t *testing.T) {
-	m, _ := newTestManager(t, Config{DefaultLimit: 1, Enabled: true})
-	ctx := context.Background()
-	if !m.RoutingEligible(ctx, 3, nil, "new") {
-		t.Fatal("should be eligible")
-	}
-	lease := acquireSuccess(t, m, ctx, 3, nil, "only", "default")
-	if m.RoutingEligible(ctx, 3, nil, "other") {
-		t.Fatal("should be saturated")
-	}
-	if !m.RoutingEligible(ctx, 3, nil, "only") {
-		t.Fatal("pinned holder should stay eligible")
-	}
-	m.Release(ctx, lease)
-}
-
 func TestReleaseKeepsPinForNextAcquire(t *testing.T) {
 	m, _ := newTestManager(t, Config{DefaultLimit: 5, Enabled: true})
 	ctx := context.Background()

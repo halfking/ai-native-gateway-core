@@ -998,6 +998,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
 			DispatchAllowModelChange:    dispatchAllowModelChange,
 			DispatchModelAlternatives:   dispatchModelAlternatives,
+			// 2026-11-28：三面同形——内部回环流量不占指纹槽（见 internalKeyRequest）。
+			InternalRequest: internalKeyRequest(keyInfo),
 			// ★ F11（2026-11-02）：/v1/responses 会带 dispatch 的替代模型
 			// 列表（auto-route 换模态），而替代模型的候选解析在执行器里发生
 			// ⇒ 模态必须一起带过去，否则那次解析走的是无模态过滤的查询 ⇒
@@ -1237,6 +1239,11 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				// model_not_found / "All providers unavailable"。
 				errCode = surf.Code
 				errMsg = surf.Message
+			} else if surf, rateLimited := rateLimitExhaustedRejection(ee, clientModel); rateLimited {
+				// ★ 2026-11-28：全部候选被上游限流 ⇒ 落库 rate_limit（不是误导性的
+				// model_not_found）。渲染分支在下方 Exhausted 块（429 + Retry-After）。
+				errCode = surf.Code
+				errMsg = surf.Message
 			} else {
 				errCode = "model_not_found"
 				errMsg = "all providers unavailable"
@@ -1289,6 +1296,19 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 					writeResponsesStreamError(w, errMsg, "request_rejected")
 				} else {
 					writeResponsesError(w, http.StatusBadRequest, errMsg, "invalid_request_error", "request_rejected")
+				}
+				return
+			}
+			// ★ 2026-11-28：全部候选被上游限流 ⇒ 429 + Retry-After + retryable。
+			// 修前落 server_error "All providers unavailable" ⇒ 客户端把限流读成
+			// 不可重试的「没有可用节点」。与 chat 面（handler.go）同款契约，判定见
+			// rate_limit_exhausted.go。
+			if surf, rateLimited := rateLimitExhaustedRejection(execErr, clientModel); rateLimited {
+				setRateLimitHeaders(w, surf.RetryAfter)
+				if preStreamPrepared {
+					writeResponsesStreamError(w, surf.Message, surf.Code, rateLimitExtras(surf))
+				} else {
+					writeResponsesError(w, surf.Status, surf.Message, "rate_limit_error", surf.Code, rateLimitExtras(surf))
 				}
 				return
 			}
@@ -2001,11 +2021,22 @@ func convertChatResponseToResponses(body []byte, clientModel, requestID string) 
 	return result
 }
 
-func writeResponsesStreamError(w http.ResponseWriter, message, code string) {
+func writeResponsesStreamError(w http.ResponseWriter, message, code string, extras ...map[string]any) {
+	errObj := map[string]any{"code": code, "message": message}
+	// 2026-11-28：与 writeResponsesError 同款 extras（retryable / retry_after
+	// 随流内错误帧下发）。不传 ⇒ 形状不变。
+	for _, extra := range extras {
+		for k, v := range extra {
+			if v == nil || v == "" {
+				continue
+			}
+			errObj[k] = v
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"type": "response.failed",
 		"response": map[string]any{
-			"error": map[string]any{"code": code, "message": message},
+			"error": errObj,
 		},
 	})
 	_, _ = fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", payload)

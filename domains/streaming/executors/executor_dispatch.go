@@ -49,9 +49,16 @@ type dispatchCtx struct {
 	initialModel   string
 	holder         string
 	fpSlotDegraded bool
-	retryPerCred   int
-	tTotal         time.Time
-	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
+	// fpTail carries the candidates the fingerprint-slot partition demoted
+	// (preemptable first, then slotless; fpTailTier maps each credential to
+	// its tier). They are failover targets, never first choices: dispatchRoute
+	// appends them only on a re-route, after a failure or a capacity wait.
+	fpTail        []provider.Candidate
+	fpTailByModel map[string][]provider.Candidate
+	fpTailTier    map[int]string
+	retryPerCred  int
+	tTotal        time.Time
+	stickyCredID  *int // session-affinity pin (honored on first attempt; excluded once tried)
 	// stickyFailed / stickyFailKind (2026-09-19 会话保持): 本请求内 sticky
 	// 钉住的凭据是否被尝试过且失败，及其最终错误类型。由 dispatchForward
 	// 失败分支记录（pipeline 对同一请求的 attempt 串行，无需加锁），
@@ -117,16 +124,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModelSnapshot()), sticky, dctx.params.PinCredentialID, dctx.params.Policy, nil,
 		dctx.params.TenantID, dctx.params.ClientModel, dctx.params.RequestID,
 	)
-	refs := make([]dispatch.CredentialRef, 0, len(planned))
-	for _, c := range planned {
-		if !dispatchCandidateAllowed(c, dctx.params.PinCredentialID) {
-			continue
-		}
-		if qr.HasTriedCredential(c.CredentialID) {
-			continue
-		}
-		refs = append(refs, candidateToRef(c))
-	}
+	refs := dispatchRefsFor(qr, planned, dctx.params.PinCredentialID)
 	// 2026-08-13: X-LLM-Pin-Credential hard filter. A trusted internal caller
 	// (self-check / node-probe) pinned routing to one credential; drop every
 	// other candidate so the probe verdict is attributable to that exact node.
@@ -143,6 +141,14 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		return filtered, nil
 	}
 	refs = e.dispatchRouteSoftRank(refs)
+	// ★ 2026-11-28（glm-5.3-flash 单候选 429 事故）：指纹槽降档的候选在这里
+	// 加入梯子——只在**primary 已经帮不上忙**时：已有候选失败过、排队等过
+	// 容量、或 primary 在 Router 可用性门下一个不剩（此时不放尾档就是零尝试
+	// 直接「无路由」）。其余首试路径与修前逐字一致；primary 全败即可接着切，
+	// 而不是直接终态「All providers unavailable」。
+	if len(refs) == 0 || len(qr.TriedCredentials) > 0 || qr.CapacityRetryCount > 0 {
+		refs = append(refs, e.fpTailRefs(ctx, dctx, qr, qr.ResolvedModelSnapshot(), refs)...)
+	}
 	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 credential_selected
 	// 动作事件（S5，Router.PlanCandidates 输出，best-first 首个 ref）。
 	if len(refs) > 0 {
@@ -157,6 +163,95 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		})
 	}
 	return refs, nil
+}
+
+// dispatchRefsFor maps planned candidates to dispatch refs, dropping the
+// unavailable and the already-tried ones.
+func dispatchRefsFor(qr *dispatch.QueuedRequest, planned []provider.Candidate, pin *int) []dispatch.CredentialRef {
+	refs := make([]dispatch.CredentialRef, 0, len(planned))
+	for _, c := range planned {
+		if !dispatchCandidateAllowed(c, pin) || qr.HasTriedCredential(c.CredentialID) {
+			continue
+		}
+		refs = append(refs, candidateToRef(c))
+	}
+	return refs
+}
+
+// fpTailRefs plans the fingerprint-slot tail for a re-route and maps it to
+// refs that do not duplicate the primary set.
+//
+// ★ The tail goes through the same Router availability gate as the primary
+// set. A circuit_open preflight rejection is terminal in the failover ladder
+// (errorsx terminalActionKind), so a demoted candidate whose breaker opened
+// since the request started must not reach Forward — it would end the request
+// before a later, healthy sibling. Within the tail, preemptable candidates
+// stay ahead of slotless ones whatever the re-rank did: preempting an idle
+// holder still yields a real slot, a slotless run does not.
+func (e *Executor) fpTailRefs(ctx context.Context, dctx *dispatchCtx, qr *dispatch.QueuedRequest, model string, primary []dispatch.CredentialRef) []dispatch.CredentialRef {
+	tail := dctx.fpTailForModel(model)
+	if len(tail) == 0 {
+		return nil
+	}
+	planned := e.Router.PlanCandidatesPinned(
+		ctx, tail, nil, dctx.params.PinCredentialID, dctx.params.Policy, nil,
+		dctx.params.TenantID, dctx.params.ClientModel, dctx.params.RequestID,
+	)
+	refs := make([]dispatch.CredentialRef, 0, len(planned))
+	slotless := make([]dispatch.CredentialRef, 0, len(planned))
+	for _, c := range planned {
+		if refHasCredential(primary, c.CredentialID) || qr.HasTriedCredential(c.CredentialID) || !dispatchCandidateAllowed(c, nil) {
+			continue
+		}
+		if dctx.fpTailTier[c.CredentialID] == "preemptable" {
+			refs = append(refs, candidateToRef(c))
+		} else {
+			slotless = append(slotless, candidateToRef(c))
+		}
+	}
+	if len(refs)+len(slotless) == 0 {
+		return nil
+	}
+	slog.Info("dispatch: fingerprint-slot tail joined the failover ladder",
+		"request_id", dctx.params.RequestID,
+		"model", model,
+		"preemptable", len(refs),
+		"slotless", len(slotless),
+	)
+	return append(refs, slotless...)
+}
+
+func refHasCredential(refs []dispatch.CredentialRef, credentialID int) bool {
+	for _, r := range refs {
+		if r.CredentialID == credentialID {
+			return true
+		}
+	}
+	return false
+}
+
+// fpTailForModel returns the demoted candidates for a model. Only the
+// request's initial model has any: alternate models are resolved unpartitioned.
+func (d *dispatchCtx) fpTailForModel(model string) []provider.Candidate {
+	if d == nil {
+		return nil
+	}
+	if model == "" || model == d.initialModel {
+		return d.fpTail
+	}
+	return d.fpTailByModel[model]
+}
+
+// annotateFpTail records the demotion state on a failure context: how many
+// candidates were demoted, and whether this failure happened on one of them.
+func (d *dispatchCtx) annotateFpTail(extra map[string]any, credentialID int) {
+	if d == nil || extra == nil || len(d.fpTail) == 0 {
+		return
+	}
+	extra["fp_demoted_candidates"] = len(d.fpTail)
+	if tier, ok := d.fpTailTier[credentialID]; ok {
+		extra["fp_slot_tier"] = tier
+	}
 }
 
 func (e *Executor) dispatchRouteSoftRank(refs []dispatch.CredentialRef) []dispatch.CredentialRef {
@@ -214,6 +309,15 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 		if c.CredentialID == ref.CredentialID {
 			cand = c
 			break
+		}
+	}
+	if cand.CredentialID == 0 {
+		// The ref may point at a demoted (fingerprint-slot tail) candidate.
+		for _, c := range dctx.fpTailForModel(qr.ResolvedModelSnapshot()) {
+			if c.CredentialID == ref.CredentialID {
+				cand = c
+				break
+			}
 		}
 	}
 	if cand.CredentialID == 0 {
@@ -443,6 +547,8 @@ func (e *Executor) executeViaDispatch(
 	holder string,
 	fpSlotDegraded bool,
 	stickyCredID *int,
+	fpTail []provider.Candidate,
+	fpTailPreemptable int,
 ) (*ExecuteResult, error) {
 	if e.dispatchPipeline == nil {
 		return nil, errDispatchPipelineNotWired
@@ -451,6 +557,14 @@ func (e *Executor) executeViaDispatch(
 	if requestedModel == "" {
 		requestedModel = params.ClientModel
 	}
+	fpTailTier := make(map[int]string, len(fpTail))
+	for i, cand := range fpTail {
+		tier := "slotless"
+		if i < fpTailPreemptable {
+			tier = "preemptable"
+		}
+		fpTailTier[cand.CredentialID] = tier
+	}
 	dctx := &dispatchCtx{
 		params:         params,
 		candidates:     candidates,
@@ -458,6 +572,9 @@ func (e *Executor) executeViaDispatch(
 		initialModel:   requestedModel,
 		holder:         holder,
 		fpSlotDegraded: fpSlotDegraded,
+		fpTail:         fpTail,
+		fpTailByModel:  mapCandidatesByModel(fpTail),
+		fpTailTier:     fpTailTier,
 		// Dispatch mover owns same-node retry. Protocol-local loops must perform
 		// exactly one HTTP call or retry ownership multiplies (mover × protocol).
 		retryPerCred: 0,
@@ -893,6 +1010,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				}
 				extra["failure_stage"], extra["preflight_reason"] = dispatchFailureStage(out.Err)
 				extra["supplier"] = cand.CatalogCode
+				dctx.annotateFpTail(extra, cand.CredentialID)
 				e.FailureLogger.LogFailureWithKind(
 					params.R.Header.Get("X-Request-Id"), tenantFromCtx(params.R), params.SessionID,
 					cand.CredentialID, cand.ProviderID, cand.RawModel, params.AttemptNo,
@@ -939,7 +1057,8 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	// actual Acquire point as well; fingerprint isolation must not turn a
 	// healthy provider into a request failure under concurrent dispatch. ──
 	var fpLease *credentialfpslot.Lease
-	if e.FpSlots != nil && e.FpSlots.Enabled() {
+	if e.FpSlots != nil && e.FpSlots.Enabled() && !params.InternalRequest {
+		// Internal traffic never holds an identity slot (ExecParams.InternalRequest).
 		lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, dctx.holder, fpSlotTenantID(params))
 		if !ok {
 			dctx.fpSlotDegraded = true
