@@ -33,6 +33,10 @@ type InstallRequest struct {
 	// BinaryURL / SHA256 可由调用方显式指定（例如前端从检索结论里拿到）。
 	BinaryURL string `json:"binary_url,omitempty"`
 	SHA256    string `json:"sha256,omitempty"`
+	// ConfigUpdates 是本版本的主机配置变更（新增/强制更新）。前端从检索结论
+	// （RemoteRelease.ConfigUpdates，maintain manifest 下发）透传；为空时
+	// 安装器跳过配置步骤。
+	ConfigUpdates []EnvConfigUpdate `json:"config_updates,omitempty"`
 }
 
 // InstallJob 是一次安装任务的运行时状态。
@@ -208,7 +212,8 @@ func (e *Executor) run(ctx context.Context, req InstallRequest, job *InstallJob)
 
 	e.update(job, func(j *InstallJob) { j.Status = StatusUpgrading })
 	result, err := e.installer.InstallWithOptions(ctx, binaryPath, release, InstallOptions{
-		VersionJSON: versionJSON,
+		VersionJSON:   versionJSON,
+		ConfigUpdates: req.ConfigUpdates,
 	})
 	if result != nil {
 		e.update(job, func(j *InstallJob) {

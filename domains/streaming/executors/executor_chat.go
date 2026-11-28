@@ -1192,6 +1192,11 @@ func (e *Executor) executeOpenAI(
 	// 说明还有别的问题，连续剥参交给 reqprobe 的有界多轮，本机制只兜
 	// 第一跳）。
 	paramRefusalTried := false
+	// A3 闸门 2（2026-11-28）：协议回退重试预算（每请求最多一次）。
+	// 若上游返回"协议不支持"错误（§2.7 同款判据），记录负向记忆并用基协议重试。
+	// 与 probe.modeTried（chat↔responses 模式回退）和 paramRefusalTried（参数
+	// 剔除）同机制：有界重试、跳过退避、不消耗外层预算。
+	protocolFallbackTried := false
 	// A successful Chat probe after an explicit "Responses API unsupported"
 	// verdict is also a valid execution path. Apply the same decision to live
 	// requests before the ordinary 5xx retry/failover branch handles relay 502s.
@@ -2196,6 +2201,74 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 
+				// A3 闸门 2（2026-11-28）：协议回退（adaptive protocol → base protocol）
+				// 守门条件（缺一不可）：
+				//  · !protocolFallbackTried —— 每请求至多一次
+				//  · cand.Protocol != openai-completions —— 基协议无回退空间
+				//  · isProtocolUnsupportedError —— 上游明确拒绝该协议（§2.7 同款判据）
+				//
+				// 与模式回退（chat↔responses）的分工：
+				//  · 模式回退：openai-responses 协议内部的两条线格式切换
+				//  · 协议回退：不同协议族之间的降级（anthropic-messages/gemini-generate → openai-completions）
+				//
+				// 语义：上游返回 404/400/405 且错误体包含"unsupported/not found"等关键词
+				// → 记录负向记忆（provider, model, protocol）→ 用基协议重试本次请求。
+				//
+				// 守门 4（2026-11-29 L157 轮，TestExecuteOpenAIReqProbeModeMismatchRecordsWithoutFallback
+				// 基线红收口）：**非流式 openai-responses 客户端不做协议回退**——
+				// responses→chat 线格式切换对它不安全（与模式回退
+				// executor_chat.go:1992 的安全条件同族：非流式 responses 客户端
+				// 只有 handler 负责最终写入才安全；本路径不满足）。放行会复活
+				// 2026-11-02 生产事故的「同节点第二次上游调用」形态。
+				// 流式 responses / 非 responses 客户端不受影响（A3 原语义保留）。
+				if !protocolFallbackTried &&
+					cand.Protocol != providercatalog.ProtocolOpenAICompletions &&
+					(params.IsStream || params.ClientProtocol != "openai-responses" || params.SuppressSuccessWrite) &&
+					isProtocolUnsupportedError(cand.Protocol, resp.StatusCode, string(body[:n])) {
+
+					slog.Warn("upstream protocol unsupported: falling back to base protocol",
+						"request_id", params.RequestID,
+						"provider_id", cand.ProviderID,
+						"credential_id", cand.CredentialID,
+						"raw_model", cand.RawModel,
+						"rejected_protocol", cand.Protocol,
+						"base_protocol", providercatalog.ProtocolOpenAICompletions,
+						"status", resp.StatusCode,
+					)
+
+					// 记录负向记忆（TTL 24小时）
+					provider.RecordProtocolUnsupported(cand.ProviderID, cand.RawModel, cand.Protocol, 24*time.Hour)
+
+					// 准备基协议重试体（复用客户端原始请求体）
+					var retryBody []byte
+					if len(clientSourceBody) > 0 {
+						// 基协议是 openai-completions，使用 chat 线格式
+						retryBody = clientSourceBody
+					}
+
+					if len(retryBody) > 0 {
+						bodyBytes = retryBody
+						sourceBody = clientSourceBody
+						protocolFallbackTried = true
+						probeRetry = true
+						e.ledgerRecordProbe(params, cand, nil, cand.Protocol, providercatalog.ProtocolOpenAICompletions)
+						// 协议回退是准入内的第二次上游调用，补记到准入 Governor 的 RPM/TPM 桶
+						meterExtraUpstreamCall(params)
+
+						// ★ 关键：就地改写候选协议为基协议，触发重试
+						// 下一轮循环会用新协议重新构造请求（URL、请求体、响应解析全部自动适配）
+						cand.Protocol = providercatalog.ProtocolOpenAICompletions
+
+						return nil, &retryableError{err: &upstreampkg.Error{
+							Kind:       errKind,
+							Message:    fmt.Sprintf("upstream %d (protocol unsupported; base protocol fallback retry)", resp.StatusCode),
+							Body:       append([]byte(nil), body[:n]...),
+							StatusCode: resp.StatusCode,
+							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+						}}
+					}
+				}
+
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
 					resp.StatusCode != 429 && resp.StatusCode != 401 &&
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
@@ -2222,7 +2295,7 @@ func (e *Executor) executeOpenAI(
 							StatusCode: resp.StatusCode,
 							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 						})
-					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
+					e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",
 						"request_id", params.RequestID,
 						"credential_id", cand.CredentialID,
@@ -2670,16 +2743,16 @@ func (e *Executor) executeOpenAI(
 						if streamKind == errorsx.KindConcurrent {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
-							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+							e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind) {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
-							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+							e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
 						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
 						e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
-						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+						e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
 							"credential_id", cand.CredentialID,
 							"provider_id", cand.ProviderID,
@@ -2691,7 +2764,7 @@ func (e *Executor) executeOpenAI(
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind) {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
-							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
+							e.forceUnpinFpLeaseOnFatalKind(params.R.Context(), fpLease, cand.CredentialID, streamKind)
 						}
 						slog.Warn("non-resumable stream interrupted",
 							"credential_id", cand.CredentialID,

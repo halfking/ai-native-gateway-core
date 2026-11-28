@@ -653,6 +653,11 @@ func (b *CapabilityBackfill) dueBindings(ctx context.Context) ([]dueBinding, err
 			&d.ProviderEnabled, &d.ProviderDisabled, &d.BindingAvailable, &d.ProviderID); err != nil {
 			return nil, fmt.Errorf("capability_backfill scan row: %w", err)
 		}
+
+		// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+		// capability_backfill 不针对具体模型名，只能用声明的基协议。
+		d.Protocol = resolveProbeProtocolWithoutModel(qCtx, b.db, d.ProviderID, d.Protocol)
+
 		out = append(out, d)
 	}
 	if err := rows.Err(); err != nil {

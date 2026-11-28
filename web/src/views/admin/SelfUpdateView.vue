@@ -358,6 +358,9 @@ async function onInstallNow(): Promise<void> {
       restart: true,
       ...(latest?.binary_url ? { binary_url: latest.binary_url } : {}),
       ...(latest?.binary_sha256 ? { sha256: latest.binary_sha256 } : {}),
+      // 升级配置合同：把 manifest 下发的主机配置变更（新增/强制更新）随安装
+      // 请求透传给执行器——安装器写前先备份原配置，失败自动还原。
+      ...(latest?.config_updates?.length ? { config_updates: latest.config_updates } : {}),
     })
     job.value = created
     startPolling()

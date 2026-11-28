@@ -6,12 +6,13 @@
 >
 > 1. **装配面已接通**：`cmd/gateway/external_hook_init.go` 完成 loader→host→integrator→`chatHandler.SetExternalHooks` 全链装配（main.go 在 plugin canon 路由之后调用）。**默认关**——`LLM_GATEWAY_EXTERNAL_HOOK_ENABLED=1` 显式开启，未开启时零装配、零外部调用。
 > 2. **上线前必修项已修**（下面旧声明列出的缺陷逐条处置）：
->    - 来源判定：`isLocalNetwork`（RFC1918 一律 local）已替换为 `isLoopbackAddr`（只认 127/8 与 ::1）——私网客户端按 remote 走隐私路径。★ 反向代理场景仍需注意：来源仍取 TCP 对端地址，nginx 之后所有请求的对端都是代理自身（若代理跑在同机即 loopback）——X-Forwarded-For 信任链属后续演进，当前以"部署位置"控制来源分类。
+>    - 来源判定：`isLocalNetwork`（RFC1918 一律 local）已替换为 `isLoopbackAddr`（只认 127/8 与 ::1）——私网客户端按 remote 走隐私路径。★ 反向代理场景（2026-11-28 收口）：新增 XFF 信任链——`LLM_GATEWAY_EXTERNAL_HOOK_TRUSTED_PROXY_HOPS=N`（默认 0=不信任）声明前面有 N 层受信代理时，来源按 `X-Forwarded-For` 右锚定第 N 项判类；链缺失/短于声明层数 fail-closed 按 remote。
 >    - 凭据头脱敏：`BuildRequestPayload` 改为「精确黑名单 + 凭据语义词根（key/token/secret/credential/password/auth）」双保险（`pipeline_integration.go` 的 `isSensitiveHeader`），`x-goog-api-key`、内部凭据头等全部剔除。
 >    - 熔断与观测：新增 `metrics.go`——连续 5 次失败开熔断 30s（半开探测恢复）+ Prometheus 指标 `external_hook_calls_total{hook_point,result}` / `external_hook_duration_seconds` / `external_hook_circuit_open`。
 >    - 流式空正文：onResponse 对空 `result.ResponseBody` 用 `reassembleStreamBody(streamCapture)` 兜底重组成 assistant 正文。
 >    - 改写体校验：`host.go` 送出侧强制 `contract.BoundedCopy`（8MiB 上限兑现，`boundedRequest`/`boundedResponse`）。
-> 3. **仍未实现**（照抄旧文会失败的部分保持如实标注）：配置热 reload（需重启进程）、停钩子进程在线摘除（熔断器已兜底：连续失败后自动跳过）、X-Forwarded-For 信任链、钩子返回 reason 的截断。`config.ExternalHooks.Enabled` YAML 配置不存在——装配走环境变量（见下表）。
+>    - reason 截断（2026-11-28 收口）：钩子返回的 `reason`/`error` 经 `contract.TruncateReason` 收敛到 `MaxReasonBytes`（1024 字节、UTF-8 安全）后才进入 403 响应、日志、追踪与库。
+> 3. **仍未实现**（照抄旧文会失败的部分保持如实标注）：配置热 reload（需重启进程）、停钩子进程在线摘除（熔断器已兜底：连续失败后自动跳过）。`config.ExternalHooks.Enabled` YAML 配置不存在——装配走环境变量（见下表）。
 >
 > **环境变量清单**（`cmd/gateway/external_hook_init.go`）：
 >
@@ -24,6 +25,7 @@
 > | `LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_THRESHOLD` | `5` | 连续失败熔断阈值 |
 > | `LLM_GATEWAY_EXTERNAL_HOOK_CIRCUIT_WINDOW_MS` | `30000` | 熔断打开时长 |
 > | `LLM_GATEWAY_EXTERNAL_HOOK_ALLOW_REMOTE_BODY` | `false` | 允许 remote 来源捕获正文（W3.4，默认禁） |
+> | `LLM_GATEWAY_EXTERNAL_HOOK_TRUSTED_PROXY_HOPS` | `0` | 受信反向代理层数（XFF 信任链，2026-11-28；0=不信任 XFF） |
 >
 > 逐条历史证据（文件:行）见 `docs/operations/2026-11-23-211配置优化执行报告.md` §9.30 ㉓-44。
 

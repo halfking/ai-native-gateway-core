@@ -502,19 +502,23 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 
 	probeStart := time.Now()
 
-	for rows.Next() {
-		var s v2Snapshot
-		var ciphertext []byte
-		if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
-			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
-			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
-			&s.ProbeConsecutiveFailures, &s.ProviderID); err != nil {
-			if dbrows.SkipOrFail("bg.CredentialProbeV2.cycleAll", err) {
-				continue
+		for rows.Next() {
+			var s v2Snapshot
+			var ciphertext []byte
+			if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
+				&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
+				&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
+				&s.ProbeConsecutiveFailures, &s.ProviderID); err != nil {
+				if dbrows.SkipOrFail("bg.CredentialProbeV2.cycleAll", err) {
+					continue
+				}
 			}
-		}
 
-		// 2026-09-13 closeout (audit R5 / P5): a credential with fresh
+			// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+			// credential_probe_v2 不针对具体模型，只能用声明的基协议。
+			s.ProviderProtocol = resolveProbeProtocolWithoutModel(timeoutCtx, c.db, s.ProviderID, s.ProviderProtocol)
+
+			// 2026-09-13 closeout (audit R5 / P5): a credential with fresh
 		// successful REAL traffic and a currently-green health verdict does
 		// not need the hourly synthetic probe — the traffic IS the probe.
 		// Skipping it removes the largest healthy-fleet probe cost without
@@ -2604,13 +2608,17 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
 		&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
 		&s.ProbeConsecutiveFailures, &s.ProviderID,
-	)
-	if err != nil {
-		slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",
-			"credential_id", credID, "error", err)
-		return
-	}
-	apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
+		)
+		if err != nil {
+			slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",
+				"credential_id", credID, "error", err)
+			return
+		}
+
+		// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+		s.ProviderProtocol = resolveProbeProtocolWithoutModel(timeoutCtx, c.db, s.ProviderID, s.ProviderProtocol)
+
+		apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
 	if decErr != nil {
 		slog.Warn("credential probe v2: ProbeNow decrypt failed",
 			"credential_id", credID, "error", decErr)

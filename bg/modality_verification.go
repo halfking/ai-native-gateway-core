@@ -781,6 +781,11 @@ FROM `+modalityVerifyAddressableSource+` pp
 		); err != nil {
 			return nil, fmt.Errorf("modality_verification scan row: %w", err)
 		}
+
+		// 2026-11-28: 自适应协议消解（无模型上下文探针）。
+		// modality_verification 不针对具体模型名，只能用声明的基协议。
+		t.Protocol = resolveProbeProtocolWithoutModel(ctx, m.db, t.ProviderID, t.Protocol)
+
 		out = append(out, t)
 	}
 	if err := rows.Err(); err != nil {

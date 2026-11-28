@@ -2050,6 +2050,12 @@ var dropOrphanV1PromoteFunction1006 []byte
 //go:embed embeddata/startup/1006_drop_orphan_v1_promote_function.down.sql
 var dropOrphanV1PromoteFunction1006Down []byte
 
+//go:embed embeddata/startup/1007_credential_capabilities_multiprotocol.sql
+var credentialCapabilitiesMultiprotocol1007 []byte
+
+//go:embed embeddata/startup/1007_credential_capabilities_multiprotocol.down.sql
+var credentialCapabilitiesMultiprotocol1007Down []byte
+
 //go:embed embeddata/startup/983_request_metrics.sql
 var requestMetrics983 []byte
 
@@ -2933,6 +2939,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/1005_user_roles_array.down.sql":                userRolesArray1005Down,
 	"startup/1006_drop_orphan_v1_promote_function.sql":      dropOrphanV1PromoteFunction1006,
 	"startup/1006_drop_orphan_v1_promote_function.down.sql": dropOrphanV1PromoteFunction1006Down,
+	"startup/1007_credential_capabilities_multiprotocol.sql":      credentialCapabilitiesMultiprotocol1007,
+	"startup/1007_credential_capabilities_multiprotocol.down.sql": credentialCapabilitiesMultiprotocol1007Down,
 	// ★ 2026-11-28 42P01 根残留清理轮代上游收口：1357e62917（W4.3 渠道商车道轮）
 	//   为 492 加了 go:embed 变量与 StartupFiles 条目，但漏了本 map 条目
 	//   （五点同步的第 2 点半缺）⇒ setupSQLDir 物化不出 492 ⇒

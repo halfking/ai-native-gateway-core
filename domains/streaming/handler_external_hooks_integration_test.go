@@ -152,7 +152,7 @@ func TestDetermineOrigin(t *testing.T) {
 			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			req.RemoteAddr = tt.remoteAddr
 
-			got := determineOrigin(req, tt.keyInfo)
+			got := determineOrigin(req, tt.keyInfo, 0)
 			if got != tt.want {
 				t.Errorf("determineOrigin() = %v, want %v", got, tt.want)
 			}
@@ -193,5 +193,131 @@ func TestIsLoopbackAddr(t *testing.T) {
 				t.Errorf("isLoopbackAddr(%q) = %v, want %v", tt.remoteAddr, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDetermineOriginTrustedProxy (W3 XFF 信任链, 2026-11-28) 验证受信代理层数
+// 对来源判定的影响：同机 nginx（hops=1）之后 RemoteAddr 恒为 127.0.0.1，
+// 必须按 XFF 穿透地址判类；链短于声明层数时 fail-closed 按 remote。
+func TestDetermineOriginTrustedProxy(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		xff        string
+		hops       int
+		keyInfo    *authentication.KeyInfo
+		want       contract.Origin
+	}{
+		{
+			name:       "nginx same-host: external client behind one proxy",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "203.0.113.7",
+			hops:       1,
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+		{
+			name:       "nginx same-host: loopback client behind proxy stays local",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "127.0.0.1",
+			hops:       1,
+			keyInfo:    nil,
+			want:       contract.OriginLocal,
+		},
+		{
+			name:       "nginx same-host: gateway key classified via XFF client",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "203.0.113.7",
+			hops:       1,
+			keyInfo:    &authentication.KeyInfo{IsInternal: true},
+			want:       contract.OriginGatewayKey,
+		},
+		{
+			name:       "two proxy layers: right-anchored second element",
+			remoteAddr: "10.0.0.2:443",
+			xff:        "203.0.113.7, 10.0.0.1",
+			hops:       2,
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+		{
+			name:       "two proxy layers: proxied loopback inner hop is local",
+			remoteAddr: "10.0.0.2:443",
+			xff:        "127.0.0.1, 10.0.0.1",
+			hops:       2,
+			keyInfo:    nil,
+			want:       contract.OriginLocal,
+		},
+		{
+			name:       "chain shorter than declared hops: fail-closed remote",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "203.0.113.7",
+			hops:       2,
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+		{
+			name:       "missing XFF with hops declared: fail-closed remote",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "",
+			hops:       1,
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+		{
+			name:       "blank XFF elements do not count toward hops",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "203.0.113.7, , ",
+			hops:       1,
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+		{
+			name:       "hops=0 ignores XFF (default behavior unchanged)",
+			remoteAddr: "127.0.0.1:443",
+			xff:        "203.0.113.7",
+			hops:       0,
+			keyInfo:    nil,
+			want:       contract.OriginLocal,
+		},
+		{
+			name:       "forged XFF without trusted hops is ignored (spoof attempt)",
+			remoteAddr: "192.168.1.50:5555",
+			xff:        "127.0.0.1",
+			hops:       0,
+			keyInfo:    nil,
+			want:       contract.OriginRemote,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.xff != "" {
+				req.Header.Set("X-Forwarded-For", tt.xff)
+			}
+
+			got := determineOrigin(req, tt.keyInfo, tt.hops)
+			if got != tt.want {
+				t.Errorf("determineOrigin(hops=%d) = %v, want %v", tt.hops, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSetExternalHookTrustedProxyHops 验证 setter 的负值收敛与默认零值。
+func TestSetExternalHookTrustedProxyHops(t *testing.T) {
+	handler := &ChatHandler{}
+	if handler.externalHookTrustedProxyHops != 0 {
+		t.Fatal("expected default hops = 0")
+	}
+	handler.SetExternalHookTrustedProxyHops(1)
+	if handler.externalHookTrustedProxyHops != 1 {
+		t.Fatalf("hops = %d, want 1", handler.externalHookTrustedProxyHops)
+	}
+	handler.SetExternalHookTrustedProxyHops(-3)
+	if handler.externalHookTrustedProxyHops != 0 {
+		t.Fatalf("negative hops = %d, want 0", handler.externalHookTrustedProxyHops)
 	}
 }

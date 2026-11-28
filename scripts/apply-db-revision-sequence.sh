@@ -3052,6 +3052,14 @@ files=(
   #   ⇒ hot cron 能力探针见函数在就执行 ⇒ 每批 42P01；211 真机实证
   #   10 分钟 29 条 ERROR）。down 件按 528 up 原体还原。
   "$ROOT_DIR/sql/migrations/startup/1006_drop_orphan_v1_promote_function.sql"
+  # ★ 1007（2026-11-28 A5 供应商协议自适应配套，731c207f73 交付）：扩展
+  #   credential_model_capabilities CHECK 支持多协议能力键
+  #   （{protocol_prefix}_{nonstream|stream}；既有两值向后兼容）。
+  #   ★ 1007 原提交只投了安装器五点（embeddata/go:embed/map/StartupFiles/TSV），
+  #     **部署通道 files=() 缺位** ⇒ 部署库永不应用 ⇒ CHECK 扩展在 211/252
+  #     不生效（L137「登记≠投递」同型）——本行补第五点。自带 BEGIN/COMMIT
+  #     ＋ 5s lock_timeout 守卫；DROP CONSTRAINT IF EXISTS + ADD 幂等。
+  "$ROOT_DIR/sql/migrations/startup/1007_credential_capabilities_multiprotocol.sql"
 )
 
 

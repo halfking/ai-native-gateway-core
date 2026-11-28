@@ -18,6 +18,7 @@ type Installer struct {
 	binPath       string
 	backupDir     string
 	dataDir       string
+	envFile       string // 主机配置文件（升级配置合同的对象；默认 <dataDir>/.env）
 	migrationCmd  string // 数据库迁移命令（可选）
 	migrationArgs []string
 	serviceName   string // 安装完成后重启的 systemd 服务名
@@ -32,6 +33,7 @@ func NewInstaller(binPath, backupDir, dataDir string) *Installer {
 		binPath:       binPath,
 		backupDir:     backupDir,
 		dataDir:       dataDir,
+		envFile:       filepath.Join(dataDir, ".env"),
 		minBinarySize: 1 << 20, // 1 MiB
 	}
 }
@@ -57,6 +59,17 @@ func (i *Installer) SetDataDir(dir string) {
 	i.dataDir = strings.TrimSpace(dir)
 }
 
+// SetEnvFile 覆盖主机配置文件路径（升级配置合同的对象）。
+// 空串回退默认 <dataDir>/.env。传入 systemd EnvironmentFile 的实际路径即可。
+func (i *Installer) SetEnvFile(path string) {
+	if p := strings.TrimSpace(path); p != "" {
+		i.envFile = p
+	}
+}
+
+// EnvFile 返回生效的主机配置文件路径（日志/排障用）。
+func (i *Installer) EnvFile() string { return i.envFile }
+
 // SetMinBinarySize 覆盖二进制最小字节数（测试用）。
 func (i *Installer) SetMinBinarySize(size int64) {
 	i.minBinarySize = size
@@ -81,6 +94,12 @@ type InstallResult struct {
 	//   - RolledBack=true  ⇒ 节点仍在旧版本上 ⇒ 新版**仍待处理** ⇒ 提醒必须还在
 	//   - RolledBack=false ⇒ 装成功 ⇒ 提醒可以撤下
 	RolledBack bool
+	// ConfigBackupPath 是主机配置文件在应用配置变更前的备份路径（空=未改动配置）。
+	ConfigBackupPath string
+	// ConfigApplied 是实际写入的配置键（新增 + 强制覆盖）；ConfigKeptExisting 是
+	// 主机已有值被保留的键（非强制更新）——升级配置合同要求原配置保值。
+	ConfigApplied      []string
+	ConfigKeptExisting []string
 }
 
 // InstallOptions 是一次安装的可选参数。
@@ -90,6 +109,9 @@ type InstallOptions struct {
 	VersionJSON []byte
 	// SkipMigration 跳过数据库迁移（由外部编排迁移时机时使用）。
 	SkipMigration bool
+	// ConfigUpdates 是本版本要求应用的主机配置变更（新增/强制更新）。
+	// 语义见 EnvConfigUpdate；应用前自动备份原配置，任何后续步骤失败都会还原。
+	ConfigUpdates []EnvConfigUpdate
 }
 
 // Install 安装新版本（备份 + 替换）
@@ -139,6 +161,28 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 		return result, err
 	}
 
+	// 4.5 应用主机配置变更（升级配置合同：原配置保值，只处理新增/强制更新）。
+	//     时机在二进制替换之后、迁移/重启之前：新二进制重启时配置必须已就位；
+	//     快照先于改动落盘，之后任何一步失败都随二进制一起还原。
+	envSnapshot := i.snapshotEnvFile()
+	if len(opts.ConfigUpdates) > 0 {
+		cfgBackup, applied, kept, cfgErr := i.applyConfigUpdates(opts.ConfigUpdates)
+		if cfgErr != nil {
+			result.Error = fmt.Sprintf("apply config updates: %v", cfgErr)
+			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
+				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
+			}
+			_ = i.restoreEnvFile(envSnapshot)
+			result.Success = false
+			result.RolledBack = true
+			result.DurationMs = time.Since(start).Milliseconds()
+			return result, fmt.Errorf("apply config updates: %w", cfgErr)
+		}
+		result.ConfigBackupPath = cfgBackup
+		result.ConfigApplied = applied
+		result.ConfigKeptExisting = kept
+	}
+
 	// 5. 写入版本信息（only on success — a partial install must not
 	//    leave a future restart pointing at an incompatible binary).
 	//
@@ -155,6 +199,7 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 		if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 			result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 		}
+		_ = i.restoreEnvFile(envSnapshot)
 		_ = i.restoreVersionFiles(versionSnapshot)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, fmt.Errorf("write version file: %w", err)
@@ -167,6 +212,7 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 			}
+			_ = i.restoreEnvFile(envSnapshot)
 			_ = i.restoreVersionFiles(versionSnapshot)
 			result.Success = false
 			result.RolledBack = true
@@ -183,7 +229,9 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 			}
 			// ★ 二进制换回去了，版本元数据**必须**一起还原 —— 否则节点会顶着
-			//   新版号跑旧二进制（见步骤 5 的注释）。
+			//   新版号跑旧二进制（见步骤 5 的注释）。配置变更同理：原 env 随
+			//   快照还原，保证「升级失败 ⇒ 主机回到升级前完整状态」。
+			_ = i.restoreEnvFile(envSnapshot)
 			_ = i.restoreVersionFiles(versionSnapshot)
 			result.Success = false
 			result.RolledBack = true
@@ -563,4 +611,148 @@ func sanitizeVersionForFilename(version string) string {
 	}
 	replacer := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
 	return replacer.Replace(v)
+}
+
+// envSnapshot 是主机配置文件的快照，用于失败时原样还原（升级配置合同：
+// 改动前必备份，失败必还原——主机的原配置不可丢）。
+type envSnapshot struct {
+	content []byte
+	hadFile bool
+}
+
+func (i *Installer) snapshotEnvFile() envSnapshot {
+	snap := envSnapshot{}
+	if raw, err := os.ReadFile(i.envFile); err == nil {
+		snap.content = raw
+		snap.hadFile = true
+	}
+	return snap
+}
+
+// restoreEnvFile 按快照还原配置文件；快照里本来没有该文件时（首次安装）
+// 删掉新建的那个，免得留下「假装配置早就在」的痕迹。
+func (i *Installer) restoreEnvFile(snap envSnapshot) error {
+	if snap.hadFile {
+		return os.WriteFile(i.envFile, snap.content, 0640)
+	}
+	return os.Remove(i.envFile)
+}
+
+// applyConfigUpdates 按「新增/强制更新」语义改写主机配置文件，返回
+// （备份路径, 实际写入的键, 保留主机原值的键）。
+//
+// 规则：
+//   - 键已存在（KEY= 前缀行）⇒ 原值保留；仅 Forced=true 覆盖该行值部分，
+//     行内其余内容（行尾注释等）不动；
+//   - 键不存在 ⇒ 追加 KEY=value；
+//   - 改动任何一行之前先把原文件整体备份进 backupDir。
+//
+// 写入用临时文件+rename 原子替换；env 文件不存在时按空文件处理并新建。
+func (i *Installer) applyConfigUpdates(updates []EnvConfigUpdate) (string, []string, []string, error) {
+	if strings.TrimSpace(i.envFile) == "" {
+		return "", nil, nil, fmt.Errorf("env file path is empty")
+	}
+	var applied, kept []string
+	// 非强制且主机已有值 ⇒ 保留，不算改动；先探一遍，全部保留则不落备份不写盘。
+	raw, _ := os.ReadFile(i.envFile)
+	existing := map[string]int{} // key -> line index
+	for idx, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		trimmed = strings.TrimPrefix(trimmed, "export ")
+		if eq := strings.Index(trimmed, "="); eq > 0 {
+			key := strings.TrimSpace(trimmed[:eq])
+			existing[key] = idx
+		}
+	}
+	for _, u := range updates {
+		key := strings.TrimSpace(u.Key)
+		if key == "" {
+			return "", nil, nil, fmt.Errorf("config update has empty key")
+		}
+		if _, ok := existing[key]; ok && !u.Forced {
+			kept = append(kept, key)
+		}
+	}
+	if len(applied) == 0 && allKept(updates, existing) {
+		return "", applied, kept, nil
+	}
+
+	// 备份原配置（升级配置合同：改动前必备份）。
+	if err := os.MkdirAll(i.backupDir, 0o755); err != nil {
+		return "", nil, nil, fmt.Errorf("create backup dir: %w", err)
+	}
+	timestamp := time.Now().Format("20060102_150405")
+	envBase := sanitizeVersionForFilename(filepath.Base(i.envFile))
+	backupPath := filepath.Join(i.backupDir, fmt.Sprintf("%s_%s", envBase, timestamp))
+	if err := i.copyFile(i.envFile, backupPath); err != nil {
+		if !os.IsNotExist(err) {
+			return "", nil, nil, fmt.Errorf("backup env file: %w", err)
+		}
+		// 原文件不存在 ⇒ 无可备份，记录即可（首次安装形态）。
+		backupPath = ""
+	}
+
+	// 逐条应用。
+	lines := strings.Split(string(raw), "\n")
+	for _, u := range updates {
+		key := strings.TrimSpace(u.Key)
+		idx, ok := existing[key]
+		switch {
+		case ok && u.Forced:
+			lines[idx] = replaceEnvValue(lines[idx], u.Value)
+			applied = append(applied, key)
+		case ok:
+			// 原值保留（上面已计入 kept）
+		default:
+			lines = append(lines, key+"="+u.Value)
+			existing[key] = len(lines) - 1
+			applied = append(applied, key)
+		}
+	}
+	out := strings.Join(lines, "\n")
+	// 原文件以换行结尾 ⇒ 输出也必须以换行结尾（追加的最后一行不能裸奔）。
+	if strings.HasSuffix(string(raw), "\n") && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	tmp := i.envFile + ".update"
+	if err := os.WriteFile(tmp, []byte(out), 0o640); err != nil {
+		return backupPath, nil, nil, fmt.Errorf("write env file: %w", err)
+	}
+	if err := os.Rename(tmp, i.envFile); err != nil {
+		return backupPath, nil, nil, fmt.Errorf("replace env file: %w", err)
+	}
+	return backupPath, applied, kept, nil
+}
+
+// allKept 报告是否每一条 update 都命中已有键且非强制（⇒ 整个配置步骤是 no-op）。
+func allKept(updates []EnvConfigUpdate, existing map[string]int) bool {
+	for _, u := range updates {
+		key := strings.TrimSpace(u.Key)
+		if _, ok := existing[key]; !ok || u.Forced {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceEnvValue 只替换 KEY= 行中第一个 '=' 之后的值部分，保留键名、
+// 行首空白 / export 前缀与行尾注释（原值后第一个 " #" 起视为注释段原样保留；
+// 带引号值内含 " #" 的场景按无注释处理——env 文件值约定不含裸 #）。
+func replaceEnvValue(line, newValue string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	lead := line[:len(line)-len(trimmed)]
+	body := strings.TrimPrefix(trimmed, "export ")
+	prefix := lead + trimmed[:len(trimmed)-len(body)]
+	eq := strings.Index(body, "=")
+	if eq < 0 {
+		return line
+	}
+	trailing := ""
+	if ci := strings.Index(body[eq+1:], " #"); ci >= 0 {
+		trailing = body[eq+1+ci:]
+	}
+	return prefix + body[:eq+1] + newValue + trailing
 }

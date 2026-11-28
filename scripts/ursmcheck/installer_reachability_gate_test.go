@@ -51,8 +51,15 @@ const (
 // ★★ 可达性台账的棘轮（★ R163 轮实测值，★ 2026-10-27）。
 // ★★ 只许下降（★ 属主把迁移补进安装器清单之后 ⇒ 数字变小 ⇒ 仍绿）。
 // ★★ ★ installer-bug 的基线是 0 ⇒ ★★ 【任何一条安装器自身的 bug 都直接红】⇒ 不许有基线余量。
+// ★★ 2026-11-29（A6/L153 部署追平轮全量门收口）：new-install-gap 13 → **15**。
+//   ⇒ 成因＝三环境 census 全量重采后两条 prod-gap 升格：`idx_session_turns_multimodal_types_gw`
+//     （474）与 `idx_handoff_pending_proposal_created_at`（518）旧底账时 211 未应用
+//     （census 采集于 1003 部署之前 ⇒ 底账比真库旧），重采实证 211/252 已在役 ⇒
+//     创建迁移未进安装器清单 ⇒ new-install-gap。installer-bug 保持 0。
+//   ⇒ ★ 这是「升格」不是「劣化」：生产齐备 + 新装必缺 = 安装器投递欠账（待 owner
+//     拍板五点投递），比「生产也在缺」的 prod-gap 更准确。属主补投递后基线应再下降。
 var dbObjReachRatchet = map[string]int{
-	"new-install-gap": 13,
+	"new-install-gap": 15,
 	"installer-bug":   0,
 }
 

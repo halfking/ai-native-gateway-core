@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+// EnvConfigUpdate 是发布物携带的一条主机配置变更指令。
+//
+// 语义（升级配置合同）：Key 在主机 env 中已存在 ⇒ 原值保留，除非 Forced=true
+// 才覆盖；不存在 ⇒ 追加。安装器在改动前先备份原 env，失败自动还原——
+// 「保存主机上原来的配置，只处理新增或强制更新的配置」。
+type EnvConfigUpdate struct {
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Forced bool   `json:"forced"`
+	Note   string `json:"note,omitempty"`
+}
+
 // RemoteRelease 是远端发布源返回的一个候选升级版本。
 //
 // 字段分两层：
@@ -32,6 +44,9 @@ type RemoteRelease struct {
 
 	BinaryURL    string `json:"binary_url,omitempty"`
 	BinarySHA256 string `json:"binary_sha256,omitempty"`
+	// ConfigUpdates 是该版本要求应用的主机配置变更（新增/强制更新）。
+	// 旧服务端不下发 ⇒ nil，安装器跳过配置步骤（行为与旧版一致）。
+	ConfigUpdates []EnvConfigUpdate `json:"config_updates,omitempty"`
 }
 
 // RemoteSource 是远端版本检索源。
@@ -113,6 +128,9 @@ type manifestResponse struct {
 	BinaryURL    string `json:"binary_url"`
 	BinarySHA256 string `json:"binary_sha256"`
 	Changelog    string `json:"changelog"`
+	// ConfigUpdates：主机配置变更指令（新增/强制更新），maintain 发版中心
+	// 下发；旧服务端无此字段 ⇒ 解码为 nil，安装按无配置变更处理。
+	ConfigUpdates []EnvConfigUpdate `json:"config_updates,omitempty"`
 }
 
 // Latest 检索远端是否有比当前更新的版本。
@@ -179,6 +197,7 @@ func (s *HTTPRemoteSource) Latest(ctx context.Context, currentVersion string, cu
 	if err := json.Unmarshal(manifestBody, &mf); err == nil {
 		rel.BinaryURL = mf.BinaryURL
 		rel.BinarySHA256 = mf.BinarySHA256
+		rel.ConfigUpdates = mf.ConfigUpdates
 		if mf.Changelog != "" && rel.ReleaseNotes == "" {
 			rel.ReleaseNotes = mf.Changelog
 		}

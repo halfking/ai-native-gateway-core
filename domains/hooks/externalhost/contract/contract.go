@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ContractVersion 是外部钩子合同的线协议版本。
@@ -44,7 +45,43 @@ const (
 	MinTimeout     = 100 * time.Millisecond
 	MaxTimeout     = 10 * time.Second
 	MaxBodyBytes   = 8 << 20
+	// MaxReasonBytes 是钩子返回 reason/error 文本进入网关侧（403 响应体、
+	// 日志、追踪、库表）的字节上限。reason 由进程外钩子任意给定，不设上限
+	// 等于让外部组件决定网关日志与响应体的体积（W3 遗留缺口，2026-11-28 收口）。
+	MaxReasonBytes = 1024
 )
+
+// TruncateReason 把钩子返回的 reason/error 收敛到 MaxReasonBytes 字节内。
+//
+// 规则：
+//   - len(s) <= MaxReasonBytes：原样返回（不追加任何标记）。
+//   - 超限：截到 MaxReasonBytes-len("…") 字节并向后回退到 UTF-8 字符边界
+//     （不砍半个 rune），追加 "…" 表示已截断；结果恒 ≤ MaxReasonBytes 且为合法 UTF-8。
+//
+// 对非法 UTF-8 输入不做修复——Go 的 string 可携带任意字节，截断点回退
+// 只在存在合法多字节序列时生效，其余字节原样保留（调用方的 JSON 解码
+// 已经保证这里的输入来自合法 JSON 字符串）。
+func TruncateReason(s string) string {
+	if len(s) <= MaxReasonBytes {
+		return s
+	}
+	const ellipsis = "…"
+	limit := MaxReasonBytes - len(ellipsis)
+	cut := s[:limit]
+	// 回退 cut 末尾被砍半的多字节序列：末字节是续字节（0b10xxxxxx）时
+	// 向前找到首字节（0b11xxxxxx）或退到空串。
+	for limit > 0 && cut[len(cut)-1]&0xC0 == 0x80 {
+		cut = cut[:len(cut)-1]
+	}
+	// 末字节若是多字节序列的首字节但该序列长度超过剩余空间，同样回退。
+	if limit > 0 && cut[len(cut)-1]&0xC0 == 0xC0 {
+		r, _ := utf8.DecodeLastRuneInString(cut)
+		if r == utf8.RuneError {
+			cut = cut[:len(cut)-1]
+		}
+	}
+	return cut + ellipsis
+}
 
 // HookPoint 标识外部钩子的调用点。
 type HookPoint string

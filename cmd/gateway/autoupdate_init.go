@@ -34,6 +34,7 @@ type autoupdateConfig struct {
 	SourceToken         string
 	SourceRepoDir       string
 	ArtifactURLTemplate string
+	EnvFile             string // 主机配置文件（升级配置合同：新增/强制更新写这里）
 	CheckInterval       time.Duration
 }
 
@@ -50,6 +51,7 @@ var autoupdateEnvNames = []string{
 	"LLM_GATEWAY_UPDATE_SOURCE_DIR",
 	"LLM_GATEWAY_UPDATE_ARTIFACT_URL_TEMPLATE",
 	"LLM_GATEWAY_UPDATE_CHECK_INTERVAL",
+	"LLM_GATEWAY_UPDATE_ENV_FILE",
 }
 
 // loadAutoupdateConfig 从环境变量装配自更新配置。
@@ -65,6 +67,7 @@ func loadAutoupdateConfig() autoupdateConfig {
 		SourceToken:         strings.TrimSpace(os.Getenv("LLM_GATEWAY_UPDATE_SOURCE_TOKEN")),
 		SourceRepoDir:       strings.TrimSpace(os.Getenv("LLM_GATEWAY_UPDATE_SOURCE_DIR")),
 		ArtifactURLTemplate: envOrDefault("LLM_GATEWAY_UPDATE_ARTIFACT_URL_TEMPLATE", "https://llm.kxpms.cn/releases/{version}/llm-gateway-go"),
+		EnvFile:             envOrDefault("LLM_GATEWAY_UPDATE_ENV_FILE", filepath.Join(envOrDefault("LLM_GATEWAY_UPDATE_DATA_DIR", "/opt/llm-gateway-go"), ".env")),
 		CheckInterval:       6 * time.Hour,
 	}
 	if cfg.SourceURL == "" {
@@ -130,6 +133,11 @@ func setupAutoupdate(pool *pgxpool.Pool, adminGroup *echo.Group, version autoupd
 
 	rollback := autoupdate.NewRollback(cfg.BinPath, cfg.BackupDir, cfg.DataDir)
 	rollback.SetServiceName(cfg.ServiceName)
+	// 升级配置合同：发布物的配置变更（新增/强制更新）写主机配置文件，
+	// 默认 <dataDir>/.env；systemd EnvironmentFile 另有位置时用 env 覆盖。
+	// 安装器改前备份、失败还原；回滚器还原最新配置备份。
+	installer.SetEnvFile(cfg.EnvFile)
+	rollback.SetEnvFile(cfg.EnvFile)
 
 	api := autoupdate.NewAdminAPI(store, downloader, installer, rollback)
 

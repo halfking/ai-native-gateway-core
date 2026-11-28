@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ type Rollback struct {
 	binPath      string
 	backupDir    string
 	dataDir      string
+	envFile      string // 主机配置文件（回滚时还原其备份；默认 <dataDir>/.env）
 	serviceName  string // 可选：回滚后重启的 systemd 服务名
 	healthURL    string // 可选：默认 http://localhost:8781/healthz
 	startWait    time.Duration
@@ -29,6 +31,7 @@ func NewRollback(binPath, backupDir, dataDir string) *Rollback {
 		binPath:      binPath,
 		backupDir:    backupDir,
 		dataDir:      dataDir,
+		envFile:      filepath.Join(dataDir, ".env"),
 		healthURL:    "http://localhost:8781/healthz",
 		startWait:    5 * time.Second,
 		healthClient: &http.Client{Timeout: 10 * time.Second},
@@ -39,6 +42,13 @@ func NewRollback(binPath, backupDir, dataDir string) *Rollback {
 // the rollback. Pass an empty string to skip the restart step.
 func (r *Rollback) SetServiceName(name string) {
 	r.serviceName = strings.TrimSpace(name)
+}
+
+// SetEnvFile 覆盖主机配置文件路径（与 Installer.SetEnvFile 对应）。
+func (r *Rollback) SetEnvFile(path string) {
+	if p := strings.TrimSpace(path); p != "" {
+		r.envFile = p
+	}
 }
 
 // SetHealthURL overrides the post-rollback health-check endpoint. The
@@ -86,10 +96,19 @@ func (r *Rollback) Rollback(ctx context.Context, targetVersion string) (*Rollbac
 		return result, err
 	}
 
-	// 4. 更新版本文件
-	versionFile := filepath.Join(r.dataDir, "VERSION")
-	if err := os.WriteFile(versionFile, []byte(targetVersion+"\n"), 0644); err != nil {
-		result.Error = fmt.Sprintf("write version file: %v", err)
+	// 3.5 还原主机配置备份（升级配置合同的回退侧：回滚到旧版本 ⇒ 配置也回到
+	// 备份时的原值）。找不到配置备份时跳过——旧行为（配置未被动过）不受影响。
+	if err := r.restoreEnvBackup(); err != nil {
+		result.Error = fmt.Sprintf("restore env backup: %v", err)
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("restore env backup after rollback: %w", err)
+	}
+
+	// 4. 更新版本元数据（version.json 真源 + VERSION 兼容文件）
+	if err := r.writeRollbackVersionFiles(targetVersion); err != nil {
+		result.Error = fmt.Sprintf("write version files: %v", err)
+		result.DurationMs = time.Since(start).Milliseconds()
+		return result, fmt.Errorf("write version files after rollback: %w", err)
 	}
 
 	// 5. 重启服务（可选 — 与 install 对称）
@@ -187,6 +206,99 @@ func (r *Rollback) restoreBinary(backupPath string) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 
+	return nil
+}
+
+// restoreEnvBackup 把 backupDir 里最新的 env 备份（<env名>_<时间戳> 形态，
+// 与二进制备份同目录同命名风格）还原到配置文件路径。二进制已回到旧版本，
+// 配置若被强制更新过也必须一起回去，否则旧二进制读新配置可能起不来。
+func (r *Rollback) restoreEnvBackup() error {
+	envFile := r.envFile
+	if strings.TrimSpace(envFile) == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(r.backupDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read backup dir: %w", err)
+	}
+	base := filepath.Base(envFile) + "_"
+	var latest string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), base) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latest = filepath.Join(r.backupDir, entry.Name())
+		}
+	}
+	if latest == "" {
+		return nil
+	}
+	tmp := envFile + ".rollback"
+	if err := r.copyFile(latest, tmp); err != nil {
+		return fmt.Errorf("copy env backup: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o640); err != nil {
+		return fmt.Errorf("chmod env backup: %w", err)
+	}
+	if err := os.Rename(tmp, envFile); err != nil {
+		return fmt.Errorf("replace env file: %w", err)
+	}
+	return nil
+}
+
+// writeRollbackVersionFiles 把版本元数据重写成 targetVersion。
+//
+// ★ 必须写 version.json（网关运行时的版本真源，见 cmd/gateway/version.go 与
+// installer.go 步骤 5 的版本身份漂移注释）。此前手动回滚只还原 VERSION：
+// 二进制回到旧版、version.json 仍报新版号 ⇒ Checker 拿错误基线去问远端 ⇒
+// 「已是最新」⇒ 节点永远停在旧二进制上且再也不会被提醒。
+//
+// 手动回滚没有 installer 那样的旧元数据快照（备份目录只存二进制），所以按
+// 现有 version.json 合成：version 与被恢复的二进制对齐，其余字段尽量保留。
+func (r *Rollback) writeRollbackVersionFiles(targetVersion string) error {
+	jsonPath := filepath.Join(r.dataDir, "version.json")
+	info := map[string]any{
+		"version":    targetVersion,
+		"git_tag":    "v" + strings.TrimPrefix(targetVersion, "v"),
+		"git_sha":    "unknown",
+		"build_seq":  0,
+		"build_date": time.Now().UTC().Format("20060102"),
+		"module":     "llm-gateway-go",
+	}
+	if raw, err := os.ReadFile(jsonPath); err == nil {
+		var existing map[string]any
+		if err := json.Unmarshal(raw, &existing); err == nil {
+			for key := range info {
+				if key == "version" {
+					continue
+				}
+				if v, ok := existing[key]; ok {
+					info[key] = v
+				}
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		encoded = []byte(`{"version": "` + targetVersion + `"}`)
+	}
+	if err := os.WriteFile(jsonPath, append(encoded, '\n'), 0644); err != nil {
+		return err
+	}
+	versionFile := filepath.Join(r.dataDir, "VERSION")
+	if err := os.WriteFile(versionFile, []byte(targetVersion+"\n"), 0644); err != nil {
+		return err
+	}
 	return nil
 }
 

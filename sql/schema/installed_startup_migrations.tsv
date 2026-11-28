@@ -444,3 +444,4 @@
 426	1004_three_tier_model_policies.sql
 427	1005_user_roles_array.sql
 428	1006_drop_orphan_v1_promote_function.sql
+429	1007_credential_capabilities_multiprotocol.sql

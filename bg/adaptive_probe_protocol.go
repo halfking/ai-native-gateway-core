@@ -152,6 +152,21 @@ func resolveProbeProtocol(ctx context.Context, db *pgxpool.Pool, providerID int,
 	return resolved
 }
 
+// resolveProbeProtocolWithoutModel 把自适应协议消解到「基协议」（无模型上下文）。
+//
+// 用于五类探针（credential_probe_v2、modality_semantic_probe、balance_floor_guard、
+// capability_backfill、model_credibility_source）——它们本身不针对具体模型，只能
+// 用声明的第一个协议（allowed[0]）或默认 openai-completions。
+//
+// 非自适应输入原样返回（零数据库入口、零行为变化）。
+func resolveProbeProtocolWithoutModel(ctx context.Context, db *pgxpool.Pool, providerID int, protocol string) string {
+	if !providercatalog.IsAdaptiveProtocol(protocol) {
+		return protocol
+	}
+	// 传空串模型名 ⇒ ResolveAdaptiveProtocol 跳过推荐值判定、直接返回基协议。
+	return resolveAdaptiveProbeProtocol(protocol, "", adaptiveProbeAllowed(ctx, db, providerID))
+}
+
 // alignAdaptiveDirectTarget 把自适应供应商的直连探针目标消解到具体协议。
 // 非自适应输入原样返回（零数据库入口、零行为变化）。
 func (w *NodeProbeWorker) alignAdaptiveDirectTarget(ctx context.Context, providerID int, protocol, rawModel, baseURL string) (string, string) {
