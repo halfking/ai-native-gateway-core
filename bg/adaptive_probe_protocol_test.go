@@ -10,6 +10,7 @@
 package bg
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -144,5 +145,44 @@ func TestProbeSitesUseAdaptiveResolver(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAlignAdaptiveDirectTarget_PassThroughAndNilPool 钉 node_probe 直连腿的自适应消解：
+//   - 非自适应协议原样返回（零行为变化）；
+//   - 自适应 + 无库（⇒ 未声明）⇒ 基协议 openai-completions，URL 保持回落值。
+func TestAlignAdaptiveDirectTarget_PassThroughAndNilPool(t *testing.T) {
+	w := &NodeProbeWorker{}
+	for _, p := range []string{"openai-completions", "openai-responses", "anthropic-messages", "gemini-generate", ""} {
+		gotP, gotURL := w.alignAdaptiveDirectTarget(context.Background(), 1, p, "claude-opus-4.5", "https://x.example")
+		if gotP != p || gotURL != "https://x.example" {
+			t.Errorf("非自适应 %q 必须原样返回，got (%q,%q)", p, gotP, gotURL)
+		}
+	}
+	gotP, gotURL := w.alignAdaptiveDirectTarget(context.Background(), 1, "adaptive", "claude-opus-4.5", "https://x.example")
+	if gotP != "openai-completions" || gotURL != "https://x.example" {
+		t.Errorf("未声明的自适应必须退化为基协议且保持 URL，got (%q,%q)", gotP, gotURL)
+	}
+}
+
+// TestResolveDirectTargetAlignsAdaptive 是接线判据（源码锚点）：resolveDirectTarget
+// 的返回前必须经 alignAdaptiveDirectTarget，否则 node_probe 直连腿对自适应供应商
+// 恒按 chat 腿探、且 pep 协议匹配落空回落 p.base_url（与数据面分叉）。
+func TestResolveDirectTargetAlignsAdaptive(t *testing.T) {
+	raw, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read node_probe.go: %v", err)
+	}
+	body := string(raw)
+	idx := strings.Index(body, "func (w *NodeProbeWorker) resolveDirectTarget(")
+	if idx < 0 {
+		t.Fatal("resolveDirectTarget 不存在")
+	}
+	rest := body[idx:]
+	if end := strings.Index(rest, "\nfunc ("); end > 0 {
+		rest = rest[:end]
+	}
+	if !strings.Contains(rest, "alignAdaptiveDirectTarget(") {
+		t.Error("resolveDirectTarget 必须在返回前调用 alignAdaptiveDirectTarget（自适应直连腿消解）")
 	}
 }

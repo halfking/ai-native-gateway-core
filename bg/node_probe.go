@@ -3820,6 +3820,11 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 	// Decrypt succeeded — this instance's key config is coherent with the
 	// DB's envelopes, so clear the instance-level decrypt circuit.
 	w.resetDecryptFailures()
+	// 自适应供应商：上面两条 SQL 的 pep 协议匹配拿的是存储值 'adaptive'，
+	// 匹配不到任何行 ⇒ baseURL 回落 p.base_url、protocol 仍是选择器（探针落 chat 腿）。
+	// 这里按本次探测的模型消解成具体协议（与数据面 catalog.ResolveAdaptiveProtocol
+	// 同一个判定体），并按该协议重新对齐 pep 端点；pep 无匹配行则保持回落值。
+	protocol, baseURL = w.alignAdaptiveDirectTarget(ctx, providerID, protocol, model, baseURL)
 	return string(pt), outboundModel, baseURL, protocol, providerID, modality, nil
 }
 

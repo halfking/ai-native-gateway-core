@@ -151,3 +151,16 @@ func resolveProbeProtocol(ctx context.Context, db *pgxpool.Pool, providerID int,
 	}
 	return resolved
 }
+
+// alignAdaptiveDirectTarget 把自适应供应商的直连探针目标消解到具体协议。
+// 非自适应输入原样返回（零数据库入口、零行为变化）。
+func (w *NodeProbeWorker) alignAdaptiveDirectTarget(ctx context.Context, providerID int, protocol, rawModel, baseURL string) (string, string) {
+	if !providercatalog.IsAdaptiveProtocol(protocol) {
+		return protocol, baseURL
+	}
+	resolved := resolveProbeProtocol(ctx, w.db, providerID, protocol, rawModel)
+	if urls, err := w.listMatchedEndpointBaseURLs(ctx, providerID, resolved); err == nil && len(urls) > 0 {
+		baseURL = urls[0]
+	}
+	return resolved, baseURL
+}
