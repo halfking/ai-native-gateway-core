@@ -770,6 +770,7 @@ const NAME_SORT_EXEMPT = {
   'views/provider-detail/LogsTab.vue': '首列是时间，诊断日志按时间倒序',
   'views/provider-detail/ProbeHistoryTab.vue': '探测历史流水，按时间倒序；首列凭据只是上下文',
   'views/provider-detail/DiagTab.vue': '诊断快照按时间倒序，凭据列是次要上下文',
+  'views/provider-detail/SettingsTab.vue': '端点表（provider_endpoint_protocols，至多 5 行/供应商，每协议一行）：顺序是**业务语义**——后端 ORDER BY is_primary DESC, weight DESC, id ASC，主端点必须在首行；按协议名称重排会把主端点沉到中间。SettingsTab 本身不是名称列表，文件名含 Provider 命中启发式属误报（A4，L148）',
   'views/provider-detail/ErrorDetailTab.vue': '按错误类型聚合，频次序比名称序更有用',
   'views/tenant/MaaSAccountView.vue': 'recent_orders / recent_ledger 是「最近」流水',
   'views/tenant/MaaSUsageView.vue': '用量流水，按时间倒序',

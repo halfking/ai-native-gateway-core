@@ -56,11 +56,14 @@ func TestParseMemory(t *testing.T) {
 		wantErr  bool
 	}{
 		{"256Mi", 256 * 1024 * 1024, false},
-		{"512MB", 512 * 1000 * 1000, false},
+		// F3（2026-11-28 审计）：与 limiter 包语义对齐，MB/GB 统一 1024 进制
+		{"512MB", 512 * 1024 * 1024, false},
 		{"1Gi", 1024 * 1024 * 1024, false},
-		{"2GB", 2 * 1000 * 1000 * 1000, false},
+		{"2GB", 2 * 1024 * 1024 * 1024, false},
 		{"1024Ki", 1024 * 1024, false},
 		{"1048576", 1048576, false}, // bytes
+		{"512M", 512 * 1024 * 1024, false}, // 单字母后缀（旧版误解析成 512 字节）
+		{"1G", 1024 * 1024 * 1024, false},
 		{"invalid", 0, true},
 		{"", 0, true},
 	}
@@ -88,7 +91,9 @@ func TestParseCPU(t *testing.T) {
 		{"25", 25, false},
 		{"50", 50, false},
 		{"100", 100, false},
-		{"0", 0, false},
+		// F5（2026-11-28 审计）：0% → cpu.max quota=0 = 内核 unlimited，拒绝
+		{"0", 0, true},
+		{"0%", 0, true},
 		{"25%", 25, false},
 		{"50%", 50, false},
 		{"101", 0, true},  // > 100

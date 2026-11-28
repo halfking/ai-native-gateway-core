@@ -48,6 +48,9 @@ func TestValidate_DefaultResourceLimitsBad(t *testing.T) {
 		{"empty memory", &ResourceLimitsConfig{Memory: &MemoryLimitConfig{Limit: ""}}},
 		{"cpu over 100", &ResourceLimitsConfig{CPU: &CPULimitConfig{Limit: "150%"}}},
 		{"cpu garbage", &ResourceLimitsConfig{CPU: &CPULimitConfig{Limit: "fast"}}},
+		// F5（2026-11-28 审计）：0% → cgroup v2 quota=0 = unlimited，配置面拒绝。
+		{"cpu zero", &ResourceLimitsConfig{CPU: &CPULimitConfig{Limit: "0%"}}},
+		{"cpu zero bare", &ResourceLimitsConfig{CPU: &CPULimitConfig{Limit: "0"}}},
 		{"negative procs", &ResourceLimitsConfig{MaxProcesses: -1}},
 	}
 	for _, tc := range cases {

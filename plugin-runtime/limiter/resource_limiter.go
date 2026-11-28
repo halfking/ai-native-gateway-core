@@ -701,6 +701,13 @@ func parseCPU(cpu string) (int, error) {
 		return 0, fmt.Errorf("invalid CPU format: %s", cpu)
 	}
 
+	// 0% 在 cgroup v2 里会写成 cpu.max="0 100000"——quota=0 的内核语义是
+	// **unlimited**（不是 0%），配置意图与实际效果正好相反（2026-11-28 审计 F5）。
+	// 与其静默变成无限制，不如在解析面直接拒绝：调用方应删掉 cpu 块（无限制）
+	// 或写一个 >=1 的百分比。
+	if percent == 0 {
+		return 0, fmt.Errorf("CPU percent must be >= 1 (0%% would write cpu.max quota=0, which the kernel treats as unlimited): %s", cpu)
+	}
 	if percent < 0 || percent > 100 {
 		return 0, fmt.Errorf("CPU percent must be 0-100, got %d", percent)
 	}

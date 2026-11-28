@@ -13,6 +13,8 @@
 #      llmgw_plugin_limiter_mode_info{mode="cgroup"} = 1（Linux）
 #      llmgw_plugin_memory_usage_bytes > 0（启动 5s 后，cgroup 读回生效）
 #      llmgw_plugin_memory_limit_bytes = 536870912（512M）
+#      ⚠️ oom 序列实名 llmgw_plugin_oom_killed_total（killed；2026-11-28 审计 F4）
+#      仅 cgroup 模式有样本（读 memory.events）；monitor 降级模式无序列是预期
 #   4. 观察 24h：llmgw_plugin_limit_violations_total 增速、
 #      usage/limit 水位（§5.2 默认值够用性判据）
 #

@@ -105,6 +105,11 @@ type KeyInfo struct {
 	// 用于 request_context_attrs.customer_id 的派生。无映射时为 nil。
 	CustomerID *int64 `json:"customer_id,omitempty"`
 
+	// TeamID 团队归属（2026-11-28 team_budget_gate 接线轮）：来源 api_keys.team_id
+	//（迁移 057）。nil = 个人 key 不属任何团队 ⇒ 团队月度预算闸跳过（owner 决策：
+	// 无团队 id 的请求在实际检查中跳过）。
+	TeamID *int64 `json:"team_id,omitempty"`
+
 	// ExpiresAt carries api_keys.expires_at for the in-memory key store
 	// (keystore_sync.go, 2026-09-04). The store validates expiry at READ
 	// time so a key whose expires_at crosses "now" between syncs stops
@@ -540,6 +545,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			COALESCE(ak.status, 'active') AS status,
 			ak.key_alias,
 			app.customer_id,
+			ak.team_id,
 			ak.expires_at,
 			COALESCE(ak.is_system, FALSE),
 			COALESCE(ak.capabilities, '[]'::jsonb)::text
@@ -565,6 +571,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.Status,
 		&info.KeyAlias,
 		&info.CustomerID,
+		&info.TeamID,
 		&info.ExpiresAt,
 		&info.IsSystem,
 		&rawCapabilities,

@@ -129,9 +129,10 @@ func TestResourceLimiter_ParseMemory(t *testing.T) {
 		expected int64
 	}{
 		{"256Mi", 256 * 1024 * 1024},
-		{"512MB", 512 * 1000 * 1000},
+		// F3：与 limiter 包语义对齐，MB/GB 统一 1024 进制
+		{"512MB", 512 * 1024 * 1024},
 		{"1Gi", 1 * 1024 * 1024 * 1024},
-		{"2GB", 2 * 1000 * 1000 * 1000},
+		{"2GB", 2 * 1024 * 1024 * 1024},
 	}
 
 	for _, tt := range tests {
