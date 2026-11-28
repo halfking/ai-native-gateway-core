@@ -143,6 +143,9 @@ _retirement_declarations() {
 _retired_skip_for() {
   # 返回 0 = 按退役声明跳过（RETIRED_SKIPPED 已计数）；返回非 0 = 不按退役处理。
   # 声明存在但畸形（说明为空/记名不匹配/不唯一）⇒ fail（与门禁同判据）。
+  # ★ 2026-11-29 审计修正：退役说明检查只作用于**命中账本记名的那份声明**
+  #   （严格对齐门禁 db-changelog.sh：matched 后才查 reason）；账本无记名路径
+  #   门禁无对应分支（门禁直接报错），沿用「任一声明有说明」的保守放行。
   local ver=$1
   local -a decls=()
   local d decl_base decl_canon row matched="" reason_ok=0
@@ -152,20 +155,20 @@ _retired_skip_for() {
   done < <(_retirement_declarations "$ver")
   (( ${#decls[@]} > 0 )) || return 1
 
-  # 退役说明非空（.retired 需含退役关键词；.skip/.bak.skip 需非空白）
-  for d in ${decls[@]+"${decls[@]}"}; do
-    decl_base=${d%%|*}
-    if [[ "$decl_base" == *.retired ]]; then
-      grep -qiE '退役|retired|superseded|deprecated|作废|不再' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
-    else
-      grep -qE '[^[:space:]]' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
-    fi
-  done
-  (( reason_ok == 1 )) || fail "退役声明缺少退役说明：版本 $ver —— 与部署门禁同判据：不许空壳占位"
-
   row=$(remote_psql "SELECT migration_name FROM public.llm_gateway_migration_checksums WHERE version=$(sql_quote "$ver") LIMIT 1" 2>/dev/null || true)
   row=$(printf '%s' "$row" | tr -d '[:space:]')
   if [[ -z "$row" ]]; then
+    # 账本无记名：46+48 件 v1 退役件「账本缺+守卫拦」既定形态。门禁侧对
+    # 退役且无账本的件会直接报错拒部署；repair 不伪造 checksum，跳过并留痕。
+    for d in ${decls[@]+"${decls[@]}"}; do
+      decl_base=${d%%|*}
+      if [[ "$decl_base" == *.retired ]]; then
+        grep -qiE '退役|retired|superseded|deprecated|作废|不再' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
+      else
+        grep -qE '[^[:space:]]' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
+      fi
+    done
+    (( reason_ok == 1 )) || fail "退役声明缺少退役说明：版本 $ver —— 与部署门禁同判据：不许空壳占位"
     local ledger_note=""
     [[ "$ledger_status" == "present" ]] || ledger_note="（checksum ledger 表当前不存在）"
     log "SKIP retired ${ver} - canonical 仅存退役声明、账本无记名${ledger_note} - 「账本缺+守卫拦」既定形态；repair 不伪造 checksum，交部署门禁语义拦截"
@@ -176,10 +179,18 @@ _retired_skip_for() {
     decl_canon=${d#*|}
     if [[ "$decl_canon" == "$row" ]]; then
       [[ -z "$matched" ]] || fail "退役声明不唯一：version $ver 有多份声明与账本记名 '$row' 对应 —— 与部署门禁同判据"
-      matched=$decl_canon
+      matched=$d
     fi
   done
   [[ -n "$matched" ]] || fail "版本 $ver 已退役但账本记名 '$row' 与任何退役声明的 canonical 不匹配 —— 与部署门禁同判据"
+  # 退役说明检查只针对命中声明（与门禁 db-changelog.sh 退役分支同序同判据）
+  decl_base=${matched%%|*}
+  if [[ "$decl_base" == *.retired ]]; then
+    grep -qiE '退役|retired|superseded|deprecated|作废|不再' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
+  else
+    grep -qE '[^[:space:]]' "$REPO_ROOT/sql/migrations/startup/$decl_base" && reason_ok=1
+  fi
+  (( reason_ok == 1 )) || fail "退役声明缺少退役说明：$decl_base —— 退役必须写明为什么，否则「删掉」与「改错」长得一样"
   log "SKIP retired ${ver} - 账本记名 '${row}' 与退役声明对齐；应用字节不在仓内，checksum 不重算"
   RETIRED_SKIPPED+=("$ver")
   return 0
